@@ -7,6 +7,8 @@ import { assembleContext } from "./context";
 import { fallbackAnswer, mechanicalNote } from "./final";
 import { type AgentLimits, DEFAULT_LIMITS, type RunOutcome, runAgent } from "./loop";
 import { AGENT_SYSTEM_PROMPT } from "./prompt";
+import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
+import { createCompactor } from "./compaction";
 import { applyAnchors, type AnchorDecision, type AnchorChange } from "./anchors";
 export { MAX_GOAL_ANCHORS } from "./anchors";
 
@@ -29,6 +31,10 @@ export interface SocratesOptions {
   resolveWorkspace?: (goal: Goal) => { name: string; rootPath: string } | null;
   catalog?: CapabilityCatalog;
   limits?: Partial<AgentLimits>;
+  /** Context budgets; production uses the defaults. */
+  budgets?: Partial<ContextBudgets>;
+  /** The model that writes history checkpoints and handover capsules; defaults to the working agent's. */
+  compactorModel?: ModelClient;
   terminals?: SupervisorOptions;
   maxOutputTokens?: number;
   retryDelaysMs?: number[];
@@ -45,6 +51,8 @@ export interface HandleOptions {
   onAcknowledgment?: (text: string) => void;
   /** Explicit selections from the user, never inferred from model proposals. */
   anchorDecisions?: AnchorDecision[];
+  /** Quiet status lines while work continues, such as a context refresh during rollover. */
+  onStatus?: (text: string) => void;
 }
 
 export interface PartResult {
@@ -75,12 +83,14 @@ export class Socrates {
   readonly runner: ToolRunner;
   readonly calibration = new TokenCalibration();
   private readonly limits: AgentLimits;
+  private readonly budgets: ContextBudgets;
   private approveCurrent: Approve;
   private busy = false;
 
   constructor(private readonly options: SocratesOptions) {
     this.store = options.store;
     this.limits = { ...DEFAULT_LIMITS, ...options.limits };
+    this.budgets = { ...DEFAULT_BUDGETS, ...options.budgets };
     this.approveCurrent = options.approve;
     this.router = new GoalRouter({ store: options.store, routerModel: options.routerModel ?? options.model, mainModel: options.model, timeZone: options.timeZone });
     this.runner = new ToolRunner({
@@ -113,7 +123,7 @@ export class Socrates {
         else {
           try {
             if (setupError) throw setupError.error;
-            results.push(await this.runPart(part, routed.parts, signal, options.anchorDecisions ?? []));
+            results.push(await this.runPart(part, routed.parts, signal, options));
           } catch (error) {
             this.options.log?.(`agent part ${part.order} failed: ${error instanceof Error ? error.message : String(error)}`);
             const refs = { goal_id: part.goal.id, task_id: part.task.id, turn_id: part.turn.id, chat_id: part.turn.chatId };
@@ -140,21 +150,34 @@ export class Socrates {
     await this.runner.close();
   }
 
-  private async runPart(part: RoutedPart, parts: RoutedPart[], signal: AbortSignal, anchorDecisions: AnchorDecision[]): Promise<PartResult> {
+  private async runPart(part: RoutedPart, parts: RoutedPart[], signal: AbortSignal, options: HandleOptions): Promise<PartResult> {
     const { store } = this;
     const turn = part.turn;
     const goal = store.requireGoal(turn.goalId!);
     const workspace = this.workspaceFor(goal);
     const mcp = (await this.runner.mcpDefinitions(goal.id)).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     const skills = (await this.runner.capabilities.activeSkills(goal.id)).skills;
-    const context = assembleContext({
+    const assemble = (previousTurn?: number) =>
+      assembleContext({
+        store,
+        turn,
+        capabilities: { skills, mcpTools: mcp.map((d) => d.name) },
+        dependsOn: part.dependsOn.map((order) => ({ order, turn: parts.find((p) => p.order === order)!.turn })),
+        part: parts.length > 1 ? { order: part.order, count: parts.length } : null,
+        now: store.clock.now(),
+        timeZone: this.options.timeZone,
+        budgets: { retrievedMax: this.budgets.retrievedMax, previousTurn: previousTurn ?? this.budgets.previousTurn },
+      });
+    const context = assemble();
+    const compact = createCompactor({
       store,
+      model: this.options.compactorModel ?? this.options.model,
       turn,
-      capabilities: { skills, mcpTools: mcp.map((d) => d.name) },
-      dependsOn: part.dependsOn.map((order) => ({ order, turn: parts.find((p) => p.order === order)!.turn })),
-      part: parts.length > 1 ? { order: part.order, count: parts.length } : null,
-      now: store.clock.now(),
-      timeZone: this.options.timeZone,
+      budgets: this.budgets,
+      assemble,
+      ...(this.options.retryDelaysMs ? { retryDelaysMs: this.options.retryDelaysMs } : {}),
+      ...(options.onStatus ? { onStatus: options.onStatus } : {}),
+      ...(this.options.log ? { log: this.options.log } : {}),
     });
     const outcome = await runAgent({
       model: this.options.model,
@@ -165,12 +188,14 @@ export class Socrates {
       context,
       scope: { binding: { goalId: goal.id, taskId: turn.taskId!, chatId: turn.chatId, turnId: turn.id }, workspace, run: new RunState(), signal },
       limits: this.limits,
+      budgets: this.budgets,
+      compact,
       onResponse: (response, phase) => store.appendEvent("agent_message", { response, phase }, { goal_id: goal.id, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id }),
       ...(this.options.maxOutputTokens ? { maxOutputTokens: this.options.maxOutputTokens } : {}),
       ...(this.options.retryDelaysMs ? { retryDelaysMs: this.options.retryDelaysMs } : {}),
       ...(this.options.now ? { now: this.options.now } : {}),
     });
-    return this.persist(part, goal, workspace, signal.aborted ? { kind: "interrupted", reason: "cancelled", detail: null, toolCalls: outcome.toolCalls, steps: outcome.steps } : outcome, anchorDecisions);
+    return this.persist(part, goal, workspace, signal.aborted ? { kind: "interrupted", reason: "cancelled", detail: null, toolCalls: outcome.toolCalls, steps: outcome.steps } : outcome, options.anchorDecisions ?? []);
   }
 
   /**

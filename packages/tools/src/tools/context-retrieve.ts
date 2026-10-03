@@ -431,7 +431,29 @@ function inspect(input: Inspect, ctx: HandlerContext) {
       }
       build = (scale) => evidenceView(e, ctx, scale);
     } else if (/^hc-\d+$/i.test(ref)) {
-      throw new ToolError("checkpoint_not_found", `${ref} is not a history checkpoint of the current task.`, "This task has no checkpoints. Use search or inspect turn_number to recover earlier turns.");
+      const record = ctx.store.historyRecord(ctx.binding.taskId, Number(ref.slice(3)));
+      if (!record) {
+        const count = ctx.store.historyRecordCount(ctx.binding.taskId);
+        throw new ToolError(
+          "checkpoint_not_found",
+          `${ref} is not a history checkpoint of the current task.`,
+          count ? `This task's checkpoints and capsules run from hc-1 to hc-${count}.` : "This task has no checkpoints. Use search or inspect turn_number to recover earlier turns.",
+        );
+      }
+      const latest = ctx.store.latestHistoryRecord(ctx.binding.taskId)!;
+      build = () => ({
+        action: "inspect",
+        checkpoint: {
+          ref: record.handle,
+          kind: record.kind,
+          turns_covered: record.from > 0 ? { from: record.from, to: record.to } : null,
+          date: dateOf(ctx, record.createdAt),
+          active: record.number === latest.number,
+          mechanical: record.mechanical,
+        },
+        content: record.content,
+        bounded: true,
+      });
     } else if (/^r\d+$/i.test(ref)) {
       throw new ToolError("unknown_reference", `${ref} is not a search result of this run.`, "Run context_retrieve search again and inspect a ref it returns.");
     } else {

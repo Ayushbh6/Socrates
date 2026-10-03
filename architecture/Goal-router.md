@@ -621,6 +621,8 @@ When the turn is bound to the `general` task, the working agent receives the sam
 
 After excluding turns already present in chat history, the backend performs hybrid retrieval over the selected task's older exchanges—those compacted into a checkpoint or held in an earlier chat of the task's continuation chain—and, when specifically relevant to the current request, over the ledger entries of other tasks in the same goal.
 
+Until the embeddings segment, the block is narrower: BM25 over the current task's exchanges that history no longer shows (covered by the active checkpoint or capsule, or omitted), ranked against the current user message, at most three exchanges and `8,000` tokens in total, each with its `[TURN k]` label. Other tasks' entries wait for semantic retrieval, because keyword matching across tasks is too noisy. The block is omitted when nothing older matches.
+
 Hybrid retrieval uses semantic similarity, BM25 or equivalent keyword matching, and recency. It first retrieves compact ledger entries or turn references, then expands only the exact source exchanges or evidence required for the current turn. A summary is never treated as a replacement for its exact source.
 
 This section is therefore different from chat history: chat history is chronological and guaranteed recent; retrieved history is relevance-selected and explicitly excludes what chat history already shows.
@@ -732,6 +734,8 @@ const TaskHandover = z.object({
   key_evidence: z.array(z.object({ ref: z.string(), note: z.string() })),
 })
 ```
+
+The capsule is written by the same model call discipline as a checkpoint: it receives the task (title, objective, completion criteria, continuation note), the prior checkpoint or capsule, the older turns being handed over (everything outside the verbatim window), and the request in flight with its tool activity so far. It is validated like a checkpoint — verbatim outstanding quotes cited to turns of the task up to the current one, resolvable evidence refs, at most `8,000` tokens — and stored under the task's next `hc-N` handle, which checkpoints and capsules share. If the writer fails twice, the harness writes a mechanical capsule from the task record, the prior summary's carried fields, and the derived facts, marks it as mechanical, and records a warning; rollover never blocks the turn. `TaskHandover` also accepts the optional `more_outstanding_turns` field of the checkpoint schema.
 
 The capsule is a **system-generated continuation block, never a user message** — the user never wrote it, so it must not masquerade as one. The new chat's context follows the canonical working-agent context in `agent-harness.md`, with the capsule in place of a history checkpoint: the goal context, the capsule, the verbatim history window (the newest ~30k tokens of completed turns, exactly as they were attached), the current user message, and the in-flight turn with its older tool calls linearized and its newest calls intact. Every older exchange remains accessible through `context_retrieve`, and the continuation chat's `continuation_of` link lets the agent reach the previous chat directly.
 

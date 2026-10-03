@@ -7,7 +7,7 @@ import { fixedClock } from "@socrates/shared";
 import { LedgerStore } from "@socrates/store";
 import type { ApprovalRequest } from "@socrates/tools";
 import { afterEach } from "vitest";
-import { type AgentLimits, Socrates, type SocratesOptions } from "../src";
+import { type AgentLimits, type ContextBudgets, Socrates, type SocratesOptions } from "../src";
 import { createGoal, exchange } from "../../router/test/helpers";
 
 const cleanups: (() => Promise<void> | void)[] = [];
@@ -43,7 +43,11 @@ export interface World {
   taskId: string;
   approvals: ApprovalRequest[];
   /** Build a Socrates over scripted router and agent models. */
-  socrates(router: ScriptedStep[], agent: ScriptedStep[], options?: { limits?: Partial<AgentLimits>; approve?: boolean; now?: () => number; resolveWorkspace?: SocratesOptions["resolveWorkspace"] }): { socrates: Socrates; routerModel: ScriptedModel; model: ScriptedModel };
+  socrates(
+    router: ScriptedStep[],
+    agent: ScriptedStep[],
+    options?: { limits?: Partial<AgentLimits>; approve?: boolean; now?: () => number; resolveWorkspace?: SocratesOptions["resolveWorkspace"]; budgets?: Partial<ContextBudgets>; compactor?: ScriptedStep[] },
+  ): { socrates: Socrates; routerModel: ScriptedModel; model: ScriptedModel; compactor: ScriptedModel };
 }
 
 /**
@@ -71,6 +75,7 @@ export async function world(options: { files?: Record<string, string>; workspace
     socrates(routerSteps, agentSteps, o = {}) {
       const routerModel = new ScriptedModel("test:router", routerSteps);
       const model = new ScriptedModel("test:agent", agentSteps);
+      const compactor = new ScriptedModel("test:compactor", o.compactor ?? []);
       const socrates = new Socrates({
         store,
         model,
@@ -84,9 +89,11 @@ export async function world(options: { files?: Record<string, string>; workspace
         ...(o.limits ? { limits: o.limits } : {}),
         ...(o.now ? { now: o.now } : {}),
         ...(o.resolveWorkspace ? { resolveWorkspace: o.resolveWorkspace } : {}),
+        ...(o.budgets ? { budgets: o.budgets } : {}),
+        compactorModel: compactor,
       });
       cleanups.push(() => socrates.close());
-      return { socrates, routerModel, model };
+      return { socrates, routerModel, model, compactor };
     },
   };
   cleanups.push(() => store.close());

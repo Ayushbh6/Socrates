@@ -152,6 +152,22 @@ export interface TaskFact {
   createdAt: string;
 }
 
+/** A history checkpoint or handover capsule of a task, addressed as `hc-N`. */
+export interface HistoryRecord {
+  taskId: string;
+  number: number;
+  handle: string;
+  kind: "checkpoint" | "handover";
+  chatId: string;
+  turnId: string | null;
+  /** Covered project-turn range; 0/0 when the record covers no turns. */
+  from: number;
+  to: number;
+  content: unknown;
+  mechanical: boolean;
+  createdAt: string;
+}
+
 export interface TaskWithGoal {
   task: Task;
   goal: Goal;
@@ -227,6 +243,22 @@ function toTurn(r: Row): Turn {
     status: str(r.status) as Turn["status"],
     createdAt: str(r.created_at),
     completedAt: strOrNull(r.completed_at),
+  };
+}
+
+function toHistoryRecord(r: Row): HistoryRecord {
+  return {
+    taskId: str(r.task_id),
+    number: num(r.number),
+    handle: `hc-${num(r.number)}`,
+    kind: str(r.kind) as HistoryRecord["kind"],
+    chatId: str(r.chat_id),
+    turnId: strOrNull(r.turn_id),
+    from: num(r.from_turn),
+    to: num(r.to_turn),
+    content: JSON.parse(str(r.content)),
+    mechanical: num(r.mechanical) === 1,
+    createdAt: str(r.created_at),
   };
 }
 
@@ -498,6 +530,18 @@ export class LedgerStore {
         if (this.getEvent(p.response_event_id)?.type !== "assistant_response") throw new StoreError("Completion response is missing.");
         this.run("UPDATE turns SET response_event_id = ?, status = 'completed', completed_at = ? WHERE id = ?", p.response_event_id, e.at, e.turn_id); break;
       }
+      case "history_record_created": {
+        const p = e.payload as EventPayloads["history_record_created"];
+        this.insertHistoryRecord(e as StoredEvent<"history_record_created">, p);
+        break;
+      }
+      case "compaction_recorded": {
+        const p = e.payload as EventPayloads["compaction_recorded"];
+        this.run("UPDATE chats SET compaction_count = ? WHERE id = ?", p.count, e.chat_id);
+        break;
+      }
+      case "chat_closed":
+        this.run("UPDATE chats SET closed_at = ? WHERE id = ?", e.at, e.chat_id); break;
       case "turn_interrupted":
         this.run("UPDATE turns SET status = 'interrupted', completed_at = ? WHERE id = ?", e.at, e.turn_id); break;
       case "anchor_revised": {
@@ -527,7 +571,7 @@ export class LedgerStore {
         }
         break;
       }
-      case "file_changed": case "terminal_started": case "approval_decided": case "agent_warning": case "agent_message": case "anchor_question": case "anchor_decided": break;
+      case "file_changed": case "terminal_started": case "approval_decided": case "history_omitted": case "agent_warning": case "agent_message": case "anchor_question": case "anchor_decided": break;
       default: throw new StoreError(`Unsupported event type: ${e.type}`);
     }
   }
@@ -859,6 +903,83 @@ export class LedgerStore {
   currentChat(taskId: string): Chat {
     const r = this.get("SELECT * FROM chats WHERE task_id = ? AND closed_at IS NULL ORDER BY ordinal DESC LIMIT 1", taskId);
     return r ? toChat(r) : this.openChat(taskId);
+  }
+
+  // ── History checkpoints and rollover ─────────────────────────────────────
+
+  /** Store a checkpoint or handover capsule under the task's next handle `hc-N`. */
+  recordHistoryRecord(refs: TaskRefs & { chat_id: string }, input: { kind: HistoryRecord["kind"]; from: number; to: number; content: unknown; mechanical?: boolean }): HistoryRecord {
+    return this.transaction(() => {
+      const number = num(this.get("SELECT COALESCE(MAX(number), 0) + 1 AS n FROM history_records WHERE task_id = ?", refs.task_id)?.n);
+      const payload: EventPayloads["history_record_created"] = { number, kind: input.kind, from: input.from, to: input.to, content: input.content, mechanical: input.mechanical ?? false };
+      const event = this.appendEvent("history_record_created", payload, refs);
+      this.insertHistoryRecord(event, payload);
+      return this.historyRecord(refs.task_id, number)!;
+    });
+  }
+
+  private insertHistoryRecord(event: StoredEvent, p: EventPayloads["history_record_created"]): void {
+    if (!event.task_id || !event.chat_id) throw new StoreError("History records must be bound to a task chat.");
+    this.run(
+      "INSERT INTO history_records (task_id, number, kind, chat_id, turn_id, from_turn, to_turn, content, mechanical, event_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      event.task_id, p.number, p.kind, event.chat_id, event.turn_id, p.from, p.to, JSON.stringify(p.content), p.mechanical ? 1 : 0, event.id, event.at,
+    );
+  }
+
+  historyRecord(taskId: string, number: number): HistoryRecord | null {
+    const r = this.get("SELECT * FROM history_records WHERE task_id = ? AND number = ?", taskId, number);
+    return r ? toHistoryRecord(r) : null;
+  }
+
+  /** The task's newest checkpoint or capsule: the one in the prompt. Older ones are superseded. */
+  latestHistoryRecord(taskId: string): HistoryRecord | null {
+    const r = this.get("SELECT * FROM history_records WHERE task_id = ? ORDER BY number DESC LIMIT 1", taskId);
+    return r ? toHistoryRecord(r) : null;
+  }
+
+  historyRecordCount(taskId: string): number {
+    return num(this.get("SELECT COUNT(*) AS n FROM history_records WHERE task_id = ?", taskId)?.n);
+  }
+
+  /** Record one compaction of a chat and advance its count. */
+  recordCompaction(refs: TaskRefs & { chat_id: string }, payload: Omit<EventPayloads["compaction_recorded"], "count">): Chat {
+    return this.transaction(() => {
+      const chat = this.requireChat(refs.chat_id);
+      const full = { ...payload, count: chat.compactionCount + 1 };
+      this.appendEvent("compaction_recorded", full, refs);
+      this.run("UPDATE chats SET compaction_count = ? WHERE id = ?", full.count, chat.id);
+      return this.requireChat(chat.id);
+    });
+  }
+
+  /** Record turns a failed checkpoint leaves out of the prompt. */
+  recordOmission(refs: TaskRefs & { chat_id: string }, range: EventPayloads["history_omitted"]): void {
+    this.appendEvent("history_omitted", range, refs);
+  }
+
+  /**
+   * Turns omitted by a failed checkpoint that no later checkpoint or capsule
+   * has absorbed yet. The next successful one covers them again.
+   */
+  pendingOmission(taskId: string): { from: number; to: number } | null {
+    const latest = this.latestHistoryRecord(taskId);
+    const omitted = this.listEvents({ taskId, type: "history_omitted" }).at(-1)?.payload as EventPayloads["history_omitted"] | undefined;
+    return omitted && omitted.to > (latest?.to ?? 0) ? omitted : null;
+  }
+
+  /**
+   * Automatic rollover (Goal-router.md, "Task rollover"): close the chat and
+   * open its continuation, linked to the old chat and its handover capsule.
+   */
+  rolloverChat(chatId: string, handover: HistoryRecord): Chat {
+    return this.transaction(() => {
+      const chat = this.requireChat(chatId);
+      if (chat.closedAt) throw new StoreError("The chat is already closed.");
+      const task = this.requireTask(chat.taskId);
+      const event = this.appendEvent("chat_closed", { reason: "rollover", handover: handover.handle }, { goal_id: task.goalId, task_id: task.id, chat_id: chat.id });
+      this.run("UPDATE chats SET closed_at = ? WHERE id = ?", event.at, chat.id);
+      return this.openChat(task.id, { continuationOf: chat.id, handoverRef: handover.handle });
+    });
   }
 
   // ── Turns ────────────────────────────────────────────────────────────────

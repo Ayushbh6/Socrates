@@ -16,8 +16,10 @@
  * - `exchange_fts` is a derived full-text index over completed Q&A pairs used
  *   by `context_retrieve search`.
  * - `active_capabilities` is the goal-scoped active Skill and MCP set.
+ * - `history_records` holds each task's history checkpoints and handover
+ *   capsules under their task-scoped handles `hc-N`.
  */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /**
  * In-place upgrades from older schema versions, keyed by the version they
@@ -32,6 +34,8 @@ ALTER TABLE task_revisions ADD COLUMN completion_criteria TEXT;
 `,
   // Version 3 adds only new tables, which SCHEMA_SQL creates with IF NOT EXISTS.
   2: "",
+  // Version 4 adds history_records, also created by SCHEMA_SQL.
+  3: "",
 };
 
 export const SCHEMA_SQL = `
@@ -138,6 +142,21 @@ CREATE TABLE IF NOT EXISTS chats (
   opened_at        TEXT NOT NULL,
   closed_at        TEXT,
   UNIQUE (task_id, ordinal)
+);
+
+CREATE TABLE IF NOT EXISTS history_records (
+  task_id    TEXT NOT NULL REFERENCES tasks(id),
+  number     INTEGER NOT NULL,
+  kind       TEXT NOT NULL CHECK (kind IN ('checkpoint', 'handover')),
+  chat_id    TEXT NOT NULL REFERENCES chats(id),
+  turn_id    TEXT,
+  from_turn  INTEGER NOT NULL,
+  to_turn    INTEGER NOT NULL,
+  content    TEXT NOT NULL,
+  mechanical INTEGER NOT NULL,
+  event_id   TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (task_id, number)
 );
 
 CREATE TABLE IF NOT EXISTS turns (

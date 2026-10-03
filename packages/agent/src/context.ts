@@ -1,7 +1,9 @@
 import type { EventPayloads, TextPart } from "@socrates/contracts";
 import { renderActivity } from "@socrates/router";
 import type { Goal, LedgerStore, Task, Turn } from "@socrates/store";
-import { clarificationLine, historyParts, renderHistory } from "./history";
+import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
+import { clarificationLine, historyParts, taskHistory } from "./history";
+import { retrievedHistory } from "./retrieval";
 
 /** At most this many open tasks are listed in `<GOAL_STATE>`. */
 export const GOAL_STATE_MAX_TASKS = 8;
@@ -20,7 +22,7 @@ export interface ContextInput {
   part: { order: number; count: number } | null;
   now: Date;
   timeZone: string;
-  previousTurnBudget?: number;
+  budgets?: Pick<ContextBudgets, "previousTurn" | "retrievedMax">;
 }
 
 /**
@@ -35,14 +37,19 @@ export function assembleContext(input: ContextInput): TextPart[] {
   const task = store.requireTask(turn.taskId!);
 
   const parts: TextPart[] = [{ text: `${[goalBlock(store, goal), activeCapabilities(input.capabilities)].filter(Boolean).join("\n\n")}\n\n` }];
-  parts.push(...historyParts(renderHistory(store, turn.chatId!, turn.id, input.previousTurnBudget)));
+  const budgets = input.budgets ?? DEFAULT_BUDGETS;
+  const history = taskHistory(store, turn.id);
+  parts.push(...historyParts(store, history, budgets.previousTurn));
+  const message = currentMessage(store, turn);
+  const boundary = Math.max(history.summary?.to ?? 0, history.omitted?.to ?? 0);
 
   const volatile = [
     goal.general ? null : goalState(store, goal, task),
     task.general ? null : currentTask(task, input.part, store.requestForTurn(turn.id).request),
     task.general ? block("RECENT_ACTIVITY", renderActivity(store, input.now, input.timeZone)) : null,
     ...input.dependsOn.map((d) => evidenceFromPart(store, d.order, d.turn)),
-    `<CURRENT_USER_MESSAGE>\n${currentMessage(store, turn)}\n</CURRENT_USER_MESSAGE>`,
+    retrievedHistory(store, { taskId: task.id, message, boundary, maxTokens: budgets.retrievedMax }),
+    `<CURRENT_USER_MESSAGE>\n${message}\n</CURRENT_USER_MESSAGE>`,
   ].filter((b): b is string => b !== null);
   parts.push({ text: volatile.join("\n\n") });
   return parts;

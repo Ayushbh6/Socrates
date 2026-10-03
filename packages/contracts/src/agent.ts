@@ -27,3 +27,52 @@ export const FinalAnswer = z.strictObject({
   anchors: z.array(AnchorProposal).max(MAX_ANCHOR_PROPOSALS),
 });
 export type FinalAnswer = z.infer<typeof FinalAnswer>;
+
+/** Bounds of a history checkpoint or handover capsule (agent-harness.md, "Checkpoint schema"). */
+export const SUMMARY_MAX_TOKENS = 8_000;
+export const MAX_OUTSTANDING_REQUESTS = 10;
+export const OUTSTANDING_QUOTE_MAX_TOKENS = 200;
+export const OUTSTANDING_TOTAL_MAX_TOKENS = 2_000;
+
+/** One unanswered user request, quoted verbatim from the turn that made it. */
+export const OutstandingRequest = z.strictObject({
+  turn: z.number().int().min(1),
+  quote: z.string().min(1),
+});
+export const KeyEvidence = z.strictObject({ ref: z.string().min(1).max(40), note: z.string().min(1) });
+
+/**
+ * The compactor's backward-looking summary of completed turns. Flat and
+ * all-required except `more_outstanding_turns`, which lists the turns of
+ * unanswered requests beyond the ten quoted ones.
+ */
+export const HistoryCheckpoint = z.strictObject({
+  summary: z.string().min(1),
+  turns_covered: z.strictObject({ from: z.number().int().min(1), to: z.number().int().min(1) }),
+  progress: z.string(),
+  decisions: z.array(z.strictObject({ decision: z.string().min(1), rationale: z.string() })),
+  constraints: z.array(z.string()),
+  files_touched: z.array(z.string()),
+  open_threads: z.array(z.string()),
+  outstanding_requests: z.array(OutstandingRequest),
+  more_outstanding_turns: z.array(z.number().int().min(1)).optional(),
+  next_steps: z.array(z.string()),
+  key_evidence: z.array(KeyEvidence),
+});
+export type HistoryCheckpoint = z.infer<typeof HistoryCheckpoint>;
+
+/** The forward-looking capsule that opens a continuation chat (Goal-router.md, "The handover capsule"). */
+export const TaskHandover = z.strictObject({
+  task_objective: z.string().min(1),
+  completion_criteria: z.string(),
+  verified_progress: z.string(),
+  outstanding_requests: z.array(OutstandingRequest),
+  more_outstanding_turns: z.array(z.number().int().min(1)).optional(),
+  decisions: z.array(z.string()),
+  constraints: z.array(z.string()),
+  files_and_tests: z.array(z.string()),
+  blockers: z.array(z.string()),
+  next_action: z.string().min(1),
+  key_evidence: z.array(KeyEvidence),
+});
+export type TaskHandover = z.infer<typeof TaskHandover>;

@@ -100,9 +100,8 @@ describe("the agent loop", () => {
     expect(JSON.stringify(wrap.messages.at(-1))).toContain("limit of 2 model steps");
   });
 
-  it("ends at the context, token, and time limits", async () => {
+  it("ends at the token and time limits", async () => {
     for (const [limits, stop, usage] of [
-      [{ contextTokens: 10 }, "context", 0],
       [{ maxTokens: 1000 }, "tokens", 2000],
       [{ maxWallMs: 1 }, "time", 0],
     ] as const) {

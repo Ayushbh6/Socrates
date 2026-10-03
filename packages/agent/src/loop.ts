@@ -2,6 +2,8 @@ import { type FinalAnswer, type ModelClient, ModelError, type ModelMessage, type
 import type { TokenCalibration } from "@socrates/providers";
 import { abortable, countTokens } from "@socrates/shared";
 import type { CallScope, ToolRunner } from "@socrates/tools";
+import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
+import type { Compact, Measure } from "./compaction";
 import { mechanicalNote, validateFinalAnswer } from "./final";
 import { repairRequest, wrapUpRequest } from "./prompt";
 
@@ -13,15 +15,9 @@ export interface AgentLimits {
   finalizationMs?: number;
   /** Prompt plus output tokens across all of the turn's model calls. */
   maxTokens: number;
-  /**
-   * The calibrated request size that ends the turn with a wrap-up. Until
-   * compaction exists this is the compaction trigger; compaction will
-   * replace this stop with the turn continuing after compaction.
-   */
-  contextTokens: number;
 }
 
-export const DEFAULT_LIMITS: AgentLimits = { maxSteps: 200, maxWallMs: 60 * 60_000, maxTokens: 5_000_000, contextTokens: 160_000 };
+export const DEFAULT_LIMITS: AgentLimits = { maxSteps: 200, maxWallMs: 60 * 60_000, maxTokens: 5_000_000 };
 
 export interface RunInput {
   model: ModelClient;
@@ -33,6 +29,13 @@ export interface RunInput {
   context: TextPart[];
   scope: CallScope;
   limits: AgentLimits;
+  /** The compaction trigger and the hard ceiling. */
+  budgets?: Pick<ContextBudgets, "trigger" | "target" | "ceiling">;
+  /**
+   * Compaction at the trigger. Without it, reaching the trigger ends the turn
+   * with a wrap-up, as before compaction existed.
+   */
+  compact?: Compact;
   maxOutputTokens?: number;
   /** Delays before retrying a transient provider failure; one retry per entry. */
   retryDelaysMs?: number[];
@@ -49,8 +52,6 @@ export type RunOutcome =
 
 const TRANSIENT = new Set<ModelError["kind"]>(["rate_limit", "server", "network"]);
 
-export const HARD_CONTEXT_TOKENS = 180_000;
-
 type Phase = "work" | "wrap_up" | "repair";
 type CallResult = { kind: "response"; response: ModelResponse } | { kind: "failed"; detail: string } | { kind: "cancelled" | "deadline" | "context" };
 
@@ -62,6 +63,14 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
   const messages: ModelMessage[] = [{ role: "user", content: input.context }];
   const baseTokens = countTokens(input.system) + countTokens(JSON.stringify(input.tools)) + 32;
   const sizes: number[] = [messageTokens(messages[0]!)];
+  const budgets = input.budgets ?? DEFAULT_BUDGETS;
+  const measure: Measure = (list) => input.calibration.measure(model.id, baseTokens + list.reduce((n, m) => n + messageTokens(m), 0));
+  /**
+   * Hysteresis (agent-harness.md, "Token budget and trigger points"): after a
+   * compaction, the next one waits until the request has grown by the gap
+   * between trigger and target, even when the target could not be reached.
+   */
+  let compactedAt: number | null = null;
   let steps = 0, spent = 0, toolCalls = 0;
   const deadline = new AbortController();
   const workSignal = AbortSignal.any([scope.signal, deadline.signal]);
@@ -95,7 +104,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
       if (scope.signal.aborted) return { kind: "cancelled" };
       if ((phase === "work" && timeExpired()) || signal.aborted) return { kind: "deadline" };
       // The same gate covers ordinary requests, retries, wrap-up and repair.
-      if (input.calibration.measure(model.id, harnessCount) >= HARD_CONTEXT_TOKENS) return { kind: "context" };
+      if (input.calibration.measure(model.id, harnessCount) >= budgets.ceiling) return { kind: "context" };
       try {
         const response = await abortable(model.complete({
           system: input.system, messages: withRollingBreakpoint(messages), tools: input.tools,
@@ -172,8 +181,18 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
     while (true) {
       if (scope.signal.aborted) return interrupted("cancelled");
       const size = input.calibration.measure(model.id, baseTokens + sizes.reduce((a, b) => a + b, 0));
-      const limit = steps >= limits.maxSteps ? "steps" : timeExpired() ? "time" : spent >= limits.maxTokens ? "tokens" : size >= limits.contextTokens ? "context" : null;
+      const limit = steps >= limits.maxSteps ? "steps" : timeExpired() ? "time" : spent >= limits.maxTokens ? "tokens" : size >= budgets.trigger && !input.compact ? "context" : null;
       if (limit) return await wrapUp(limit);
+      if (size >= budgets.trigger && input.compact && (compactedAt === null || size >= compactedAt + budgets.trigger - budgets.target)) {
+        // Compaction is synchronous and mid-turn; the turn continues after it.
+        const compacted = await input.compact(messages, measure, workSignal);
+        if (scope.signal.aborted) return interrupted("cancelled");
+        if (compacted === null) return await wrapUp("time");
+        messages.splice(0, messages.length, ...compacted);
+        sizes.splice(0, sizes.length, ...compacted.map(messageTokens));
+        compactedAt = measure(messages);
+        continue;
+      }
       const result = await call("work", workSignal);
       if (result.kind === "deadline") return await wrapUp("time");
       if (result.kind !== "response") return failedCall(result, "context");
@@ -228,7 +247,8 @@ function withRollingBreakpoint(messages: ModelMessage[]): ModelMessage[] {
   return out;
 }
 
-function messageTokens(m: ModelMessage): number {
+/** Harness-standard size of one message, counting native replay content conservatively. */
+export function messageTokens(m: ModelMessage): number {
   if (m.role === "user") return countTokens(userText(m.content)) + 16;
   if (m.role === "tool") return countTokens(m.content) + countTokens(m.toolName) + 16;
   const normalized = countTokens(m.content) + (m.toolCalls?.length ? countTokens(JSON.stringify(m.toolCalls)) : 0);

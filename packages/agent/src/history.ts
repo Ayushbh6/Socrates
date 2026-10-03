@@ -1,7 +1,8 @@
 import type { EventPayloads, TextPart } from "@socrates/contracts";
 import { countTokens } from "@socrates/shared";
-import type { Evidence, LedgerStore, Turn } from "@socrates/store";
+import type { Evidence, HistoryRecord, LedgerStore, Turn } from "@socrates/store";
 import { head, headTail } from "@socrates/tools";
+import { omissionMarker, renderRecord } from "./summaries";
 
 /** Turn N−1 is fitted to this size (agent-harness.md, "Fitting turn N−1"). */
 export const PREVIOUS_TURN_BUDGET_TOKENS = 20_000;
@@ -14,36 +15,49 @@ const MARKER_TOKENS = 60;
 /** Calls that collapse to one line in step 1: reproducible, or already reflected on disk. */
 const COLLAPSIBLE = new Set(["edit", "apply_patch", "glob", "grep", "context_retrieve", "capability_search", "capability_control", "terminal_control"]);
 
+/** What chat history holds for one request: an optional summary and the turns after it. */
+export interface History {
+  /** The active checkpoint or handover capsule. */
+  summary: HistoryRecord | null;
+  /** Turns a failed compaction omitted, not yet absorbed by a checkpoint. */
+  omitted: { from: number; to: number } | null;
+  /** Completed turns after the summary, oldest first; the last one is N−1. */
+  turns: Turn[];
+}
+
 /**
- * The completed turns of one task chat in their three-tier shape
- * (agent-harness.md, "Three-tier history attachment"): older turns as Q&A
- * only, the newest completed turn with its tool activity, fitted to its
- * budget. Everything is rendered from the event log alone, so the same turn
- * always renders to the same text and stays cache-stable.
+ * The history of the current turn's task (agent-harness.md, "Three-tier
+ * history attachment"). It runs across the task's whole chain of chats: the
+ * newest checkpoint or capsule, then every ended turn of the task after the
+ * turns it covers. A turn that was in flight during a rollover therefore
+ * stays in history even though it is recorded under the closed chat.
  */
-export function renderHistory(store: LedgerStore, chatId: string, currentTurnId: string, budget = PREVIOUS_TURN_BUDGET_TOKENS): { older: string[]; previous: string | null } {
-  const turns = chatTurns(store, chatId, currentTurnId);
-  const last = turns.at(-1);
-  return {
-    older: turns.slice(0, -1).map((t) => renderExchangeTurn(store, t)),
-    previous: last ? renderFullTurn(store, last, budget) : null,
-  };
-}
-
-/** History as prompt parts: one part per turn, with cache breakpoints after the Q&A turns and after N−1. */
-export function historyParts(history: { older: string[]; previous: string | null }): TextPart[] {
-  const parts: TextPart[] = history.older.map((text) => ({ text: `${text}\n\n` }));
-  if (parts.length) parts[parts.length - 1]!.cache = true;
-  if (history.previous) parts.push({ text: `${history.previous}\n\n`, cache: true });
-  return parts;
-}
-
-/** Ended turns of one chat before the current turn, oldest first. */
-function chatTurns(store: LedgerStore, chatId: string, currentTurnId: string): Turn[] {
+export function taskHistory(store: LedgerStore, currentTurnId: string): History {
   const current = store.requireTurn(currentTurnId);
-  return store
+  const summary = store.latestHistoryRecord(current.taskId!);
+  const omitted = store.pendingOmission(current.taskId!);
+  const boundary = Math.max(summary?.to ?? 0, omitted?.to ?? 0);
+  const turns = store
     .turnsForTask(current.taskId!)
-    .filter((t) => t.chatId === chatId && t.id !== currentTurnId && t.projectTurn < current.projectTurn && t.status !== "in_progress");
+    .filter((t) => t.id !== currentTurnId && t.projectTurn < current.projectTurn && t.projectTurn > boundary && t.status !== "in_progress");
+  return { summary, omitted, turns };
+}
+
+/**
+ * History as prompt parts, one per block, rendered from the event log alone
+ * so the same history always yields the same text. Older turns are Q&A only;
+ * the newest is fitted to the N−1 budget. Cache breakpoints fall after the
+ * last stable part before N−1, and after N−1.
+ */
+export function historyParts(store: LedgerStore, history: History, previousTurnBudget = PREVIOUS_TURN_BUDGET_TOKENS): TextPart[] {
+  const parts: TextPart[] = [];
+  if (history.summary) parts.push({ text: `${renderRecord(history.summary)}\n\n` });
+  if (history.omitted) parts.push({ text: `${omissionMarker(history.omitted)}\n\n` });
+  const last = history.turns.at(-1);
+  for (const t of history.turns.slice(0, -1)) parts.push({ text: `${renderExchangeTurn(store, t)}\n\n` });
+  if (parts.length) parts[parts.length - 1]!.cache = true;
+  if (last) parts.push({ text: `${renderFullTurn(store, last, previousTurnBudget)}\n\n`, cache: true });
+  return parts;
 }
 
 /** A turn as its request and final response only (tier 3). */

@@ -55,10 +55,29 @@ export interface EventPayloads {
    * completion proposal, recorded with the task's completed status.
    */
   turn_completed: { project_turn: number; response_event_id: string; stop?: TurnStop; task_complete_reason?: string | null };
+  /**
+   * A history checkpoint or handover capsule, stored under its task-scoped
+   * handle `hc-N`. `from`/`to` is the project-turn range it covers; 0/0 means
+   * it covers no turns. `content` is the validated schema output, or the
+   * harness's mechanical capsule when `mechanical` is true.
+   */
+  history_record_created: { number: number; kind: "checkpoint" | "handover"; from: number; to: number; content: unknown; mechanical: boolean };
+  /** Turns a failed checkpoint left out of the prompt until a later checkpoint absorbs them. */
+  history_omitted: { from: number; to: number };
+  /** One compaction of a chat: the layers that ran and the checkpoint it wrote. */
+  compaction_recorded: {
+    count: number;
+    layers: ("checkpoint" | "linearize" | "failsafe")[];
+    checkpoint: string | null;
+    before_tokens: number;
+    after_tokens: number;
+  };
+  /** A chat closed by automatic rollover; its continuation opens with the handover capsule. */
+  chat_closed: { reason: "rollover"; handover: string };
   /** A turn that ended without a final answer: cancelled by the user, or failed. */
   turn_interrupted: { project_turn: number; reason: "cancelled" | "failed"; tool_calls: number; continuation_note: string };
   /** An operational warning about one turn, such as a rejected final answer or anchor proposal. */
-  agent_warning: { kind: "final_answer_invalid" | "anchor_rejected" | "model_error" | "agent_error" | "context_limit"; detail: string };
+  agent_warning: { kind: "final_answer_invalid" | "anchor_rejected" | "model_error" | "agent_error" | "context_limit" | "compactor_failed" | "compaction_failsafe"; detail: string };
   /**
    * One working-agent tool call, exactly as the model emitted it. `handle` is
    * the call's permanent evidence handle within its task ("e12").

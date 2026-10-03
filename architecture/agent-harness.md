@@ -1046,7 +1046,9 @@ Every token number in either architecture document is an absolute value under th
 
 The `20,000`-token gap between the trigger and the ceiling is a reserve, the same size the established harnesses keep (OpenCode reserves 20,000 tokens below the input limit, Pi 16,384; Codex compacts at 90% of the window). It absorbs any remaining counting error, such as the first requests to a newly used model before its ratio is calibrated, since the provider's tokenizer can count noticeably more than `o200k` on code. The model's own reply is covered separately by the `200,000`-token minimum window. Raising the trigger toward `170,000` would halve that reserve, so the trigger stays at `160,000`.
 
-The gap between trigger and target is the hysteresis: after compaction, the prompt must grow by at least 80k tokens before the trigger fires again, so compaction never runs on consecutive steps.
+The gap between trigger and target is the hysteresis: after compaction, the prompt must grow by at least 80k tokens before the trigger fires again, so compaction never runs on consecutive steps. The harness enforces this directly: the next compaction of a turn waits until the request has grown by the trigger–target gap beyond the size the last compaction produced. A compaction that could not reach the target therefore does not fire again on every step.
+
+All of these values are one configurable budget object (`trigger`, `target`, `ceiling`, `verbatimWindow`, `intactWindow`, `previousTurn`, the `8,000`-token checkpoint and capsule bound, the `8,000`-token `<RETRIEVED_HISTORY>` bound, and five compactions per chat). Production uses the values above; tests and evaluations shrink them so compaction happens within a few cheap turns.
 
 Token counting uses one harness-standard tokenizer for every model: `tiktoken` with the `o200k` encoding. Budgets that shape the prompt—the verbatim window, the intact in-turn window, the N−1 budget, and the per-result ceiling—are measured with it directly. They need only be consistent, not exact. Byte-pair encoding is superlinear in the length of a single unbroken run, so runs of 64 or more non-space characters (a progress bar, padding, a long URL) are encoded in 32-character pieces split at code-point boundaries. The cost stays linear and decoding stays exact. Text without such runs is counted exactly; a long run is over-counted, which is the safe direction for every budget (measured: about 1% for base64, up to 25% for long URLs, up to 2× for one repeated character).
 
@@ -1104,7 +1106,9 @@ When the trigger fires, the harness first compacts completed history:
 2. Every completed turn older than the window, together with the prior active checkpoint when one exists, becomes the compacted span.
 3. The compacted span is sent to one dedicated compactor model call, which produces the new history checkpoint.
 
-This is the only LLM call compaction ever makes; it is a bounded, small-context request, not a second agent.
+This is the only LLM call compaction ever makes; it is a bounded request, not a second agent. The compactor is the working agent's model unless the application configures another: copying unanswered requests verbatim out of a long span needs the stronger model. A span that would itself reach the ceiling is not sent; the mechanical fallback below applies.
+
+History is a property of the task, not of one chat: it is the newest checkpoint or capsule followed by every ended turn of the task after the turns it covers, across the task's chain of chats. Turns omitted by a failed compaction (below) are part of the next span even though they are not shown.
 
 Layer 1 is skipped when there is no completed turn older than the verbatim window—for example, during the first turn of a task chat, or when the first long turn is still in flight. The trigger then proceeds directly to layer 2.
 
@@ -1128,6 +1132,8 @@ outstanding_requests:
 - turn 1: "(7) How do I handle the edge case where..."
 </COMPACTED_SPAN>
 ```
+
+Each turn of the span also lists its tool activity in the one-line grammar of layer 2, at most thirty lines, so the compactor sees the files, commands, and evidence handles it may cite in `key_evidence`.
 
 The prior checkpoint, when present, is always part of the input so the compactor can carry its unresolved obligations forward and check them against the newer turns. Turn numbers flow straight through into the output: the model copies them from the labeled input and never invents numbers.
 
@@ -1154,6 +1160,7 @@ const HistoryCheckpoint = z.object({
     turn: z.number(),      // project turn where the request was made
     quote: z.string(),     // VERBATIM quote of the unanswered request
   })),
+  more_outstanding_turns: z.array(z.number()).optional(), // turns of unanswered requests beyond the ten quoted
   next_steps: z.array(z.string()),
   key_evidence: z.array(z.object({
     ref: z.string(),          // e-style handle into the event log
@@ -1166,7 +1173,7 @@ const HistoryCheckpoint = z.object({
 
 - A request is outstanding if no subsequent turn in the compacted span fully addressed it, or if it was carried forward as outstanding from the prior checkpoint and remains unresolved.
 - The quote is copied verbatim, never paraphrased. For a partially answered message, the granularity is the unanswered sub-request, not the whole message.
-- Hard bounds: at most `10` entries, each quote at most `200` tokens, aggregate at most `2,000` tokens. If more than 10 exist, the excess becomes a `context_retrieve` reference instead of a quote.
+- Hard bounds: at most `10` entries, each quote at most `200` tokens, aggregate at most `2,000` tokens. If more than 10 exist, the turns holding the rest are listed in `more_outstanding_turns`, and the prompt tells the agent to read those turns with `context_retrieve inspect turn_number`.
 - The next compaction's compactor receives the prior checkpoint, resolves entries that newer turns answered, and carries the rest forward. Obligations survive chained compactions until genuinely done.
 
 The schema is flat, all-required, and one level deep for structured-output reliability across providers. The compactor prompt instructs it to preserve exact identifiers—paths, test names, error strings—verbatim inside string fields and never paraphrase them.
@@ -1193,7 +1200,9 @@ Active checkpoint (in the prompt, always present, coarsest)
 
 The active checkpoint needs no inspection—it is already verbatim in the prompt. Inspection exists for superseded checkpoints and evidence drill-down: when the active summary compressed away a needed detail, the agent inspects an earlier checkpoint, or more commonly follows a `key_evidence` ref directly to the exact underlying event. The harness validates that a checkpoint's `turns_covered` range and cited turn numbers match the input it was built from, so a checkpoint can never claim coverage it does not have.
 
-If the checkpoint call fails or returns invalid output, the harness retries once and then falls back to purely mechanical trimming, recording an operational warning. Compaction never blocks the turn on a failing compactor. The mechanical fallback still protects obligations and makes the gap visible:
+The harness validates every checkpoint before storing it: the schema; `turns_covered` exactly equal to the span it sent (from the prior checkpoint's first turn, or the span's first turn, to the span's last turn); every outstanding quote found verbatim in the user text of the cited turn, which must be a turn of this task inside the range (only whitespace and quote style may differ); every `more_outstanding_turns` entry likewise; every `key_evidence` ref resolving to stored evidence (`eN` of this task, or a qualified `gN/tN/eM`); and the rendered checkpoint at most `8,000` tokens. Checkpoints and capsules are stored as `history_record_created` events under task-scoped `hc-N` handles; `context_retrieve inspect hc-N` returns the exact stored content and whether it is still the active one.
+
+If the checkpoint call fails or returns invalid output, the harness retries once, sending the exact validation errors back, and then falls back to purely mechanical trimming, recording an operational warning and a `history_omitted` event for the span. Compaction never blocks the turn on a failing compactor. The mechanical fallback still protects obligations and makes the gap visible:
 
 - the prior active checkpoint, when one exists, stays in the prompt unchanged, so its `outstanding_requests` remain visible verbatim;
 - the turns of the compacted span leave the prompt and are replaced by one omission marker such as `[TURNS 11–25 OMITTED — compactor unavailable; use context_retrieve inspect turn_number to recover them]`;
@@ -1205,7 +1214,7 @@ If the prompt is still above the target after the history checkpoint—or layer 
 
 This is how a single enormous turn is handled. When the first message of a task drives sixty tool calls and crosses the trigger, there is no history to checkpoint; the turn itself is made lean by linearizing its older calls while the newest work stays intact.
 
-Walking backward from the newest tool call, calls and their results stay intact while they fit within the `30,000`-token intact in-turn window. Every older call is linearized with one bounded line:
+Walking backward from the newest model step, steps (one model response with all of its tool calls and their results) stay intact while they fit within the `30,000`-token intact in-turn window. The newest step always stays intact, even when it alone is larger, because it holds the results the agent is about to use; linearizing it would only make the agent fetch them again. Every older call is linearized with one bounded line, and the lines are placed together in one block right after `<CURRENT_USER_MESSAGE>`, so the in-flight turn reads as the user's request, the linearized earlier activity, then the newest intact steps:
 
 | Tool | Linear form |
 |---|---|
@@ -1223,17 +1232,17 @@ Rules for the grammar:
 
 - The call input (command, path, pattern) is verbatim; the outcome is one bounded clause.
 - For failures, the first error line is included because that is the signal the agent needs.
-- Every line ends with the evidence handle for that call, such as `[e14]`. Everything else—the complete input and the complete result—is behind that handle and resolvable through `context_retrieve` `inspect`.
+- Every line carries the evidence handle for that call, written as `TOOL CALL [e14] tool …`. Everything else—the complete input and the complete result—is behind that handle and resolvable through `context_retrieve` `inspect`.
 
 Linearization reduces a hundred-call turn from potentially 80–150k tokens to roughly 3–4k. It is lossless where it matters—inputs stay exact—and it works because tool outputs are already bounded at ingestion (see below). A representative linearized block:
 
 ```text
-[TURN 12 — tool activity]
-- read memory/compact.ts (lines 1–120) [e10]
-- terminal: pytest tests/memory/ → 2 failed (assert source_ref is None) [e11]
-- edit memory/compact.ts (+3 −1) [e12]
-- edit memory/rebuild.ts (+2 −0) [e13]
-- terminal: pytest tests/memory/ → 24 passed [e14]
+[TURN 12 — earlier tool activity of this turn, linearized; context_retrieve inspect recovers each handle]
+- TOOL CALL [e10] read memory/compact.ts (lines 1–120 of 340)
+- TOOL CALL [e11] terminal: pytest tests/memory/ → exit 1 · last line: "2 failed"
+- TOOL CALL [e12] edit memory/compact.ts (+3 −1)
+- TOOL CALL [e13] edit memory/rebuild.ts (+2 −0)
+- TOOL CALL [e14] terminal: pytest tests/memory/ → exit 0 · last line: "24 passed"
 ```
 
 The same grammar renders the calls that "Fitting turn N−1" collapses in tier 2 of history attachment.
@@ -1313,13 +1322,15 @@ Turns older than the verbatim window become one checkpoint artifact, the newest 
 
 ### Failsafe
 
-If the prompt is still above the target after layer 1 and layer 2—which bounded ingestion makes effectively unreachable—the harness shrinks the intact in-turn window and hard-truncates excerpts, then logs an operational warning. It never silently sends an over-budget request and never pretends the context is smaller than it is.
+If the prompt is still above the target after layer 1 and layer 2—which bounded ingestion makes effectively unreachable—the harness applies, in order and only as far as needed: the intact window halved, then quartered, down to the newest step alone; turn N−1 refitted to `4,000` tokens; and the newest step's results hard-truncated (head and tail, never below `1,000` tokens each, each naming its evidence handle). It records the failsafe and, if the target is still not reached, an operational warning. The `180,000`-token ceiling remains the final gate: it never silently sends an over-budget request and never pretends the context is smaller than it is.
 
 ### Compaction count and rollover
 
 Each time the `160,000`-token trigger fires inside a task chat counts as exactly one compaction, whether it ran layer 1, layer 2, or both. The count belongs to the chat, not the task.
 
-A chat holds at most five compactions. When the trigger would fire for the sixth time in the same chat, the harness performs the automatic task rollover described in `Goal-router.md` ("Task rollover") instead of compacting: it writes a handover capsule, closes the chat, and continues the same task in a linked continuation chat whose count starts at zero. A long task therefore appears in Standard view as a chain of chats: chat 1 holds compactions 1–5, chat 2 holds compactions 6–10, and the eleventh compaction-level trigger starts chat 3.
+A chat holds at most five compactions. When the trigger would fire for the sixth time in the same chat, the harness performs the automatic task rollover described in `Goal-router.md` ("Task rollover") instead of compacting: it writes a handover capsule, closes the chat, and continues the same task in a linked continuation chat whose count starts at zero.
+
+Each compaction is a `compaction_recorded` event (its layers, the checkpoint it wrote, and the sizes before and after) that advances the chat's count; a rollover is a `chat_closed` event plus the continuation's `chat_opened`, and is not itself a compaction. Rollover happens wherever the trigger fires, which is usually between two steps of a long turn. The turn that was in flight stays recorded under the closed chat, and it continues immediately in the new context: the capsule, the verbatim window, and the turn's own work with older calls linearized. Because history is built across the task's chain of chats, the next turn still sees that turn even though it lives in the old chat. The application receives one quiet status line, "Refreshing this long task's context…". A long task therefore appears in Standard view as a chain of chats: chat 1 holds compactions 1–5, chat 2 holds compactions 6–10, and the eleventh compaction-level trigger starts chat 3.
 
 ### Continuity guarantees
 
@@ -1407,9 +1418,8 @@ Further rules:
 - Terminal sessions persist independently of one HTTP request and can be rediscovered, read, awaited, or stopped in later turns.
 - Cancellation propagates to model requests and tool execution. A cancelled call is refused before it starts and after any approval it waited for, file tools check again just before writing, and a command or service launch that is cancelled is stopped.
 - Step, time, and token limits are configurable safeguards for one turn, not a tiny fixed loop count. Defaults: `200` model steps, `60` minutes of wall time, and `5,000,000` tokens across the turn's model calls.
-- If a limit is reached, the harness saves the exact state and makes one final request with tools disabled, asking for the `FinalAnswer`: what was done and what remains. The user sees an honest partial result instead of a pretended completion. The completed turn records which limit ended it (`stop`: `steps`, `time`, `tokens`, or `context`).
-- Until compaction is implemented, a request whose calibrated size reaches the `160,000`-token trigger is treated as the `context` limit: the turn wraps up instead of compacting. The compaction stage replaces this stop with compaction, after which the turn continues.
-- Every provider request, including retries, wrap-up and repair, passes the calibrated `180,000`-token hard gate. Counts include native replay blocks as well as normalized text. If the final request itself cannot fit, the harness sends no oversized request: it saves a mechanical partial answer and continuation note, records `context_limit`, and applies no model-proposed state. This is the pre-compaction failsafe, not history compaction.
+- If a limit is reached, the harness saves the exact state and makes one final request with tools disabled, asking for the `FinalAnswer`: what was done and what remains. The user sees an honest partial result instead of a pretended completion. The completed turn records which limit ended it (`stop`: `steps`, `time`, `tokens`, or `context`). Reaching the compaction trigger is not a limit: the turn compacts and continues; `context` is recorded only when no request can be kept under the ceiling.
+- Every provider request, including retries, wrap-up and repair, passes the calibrated `180,000`-token hard gate. Counts include native replay blocks as well as normalized text. If the final request itself cannot fit, the harness sends no oversized request: it saves a mechanical partial answer and continuation note, records `context_limit`, and applies no model-proposed state. It is the last gate behind compaction, not a substitute for it.
 - The wall-time deadline aborts pending model requests, tool operations and approval waits. No new mutation starts after expiry. Tool-free finalization (wrap-up and any one repair) has a separate shared allowance, default `60,000` ms and configurable as `finalizationMs`; its expiry records failure. User cancellation aborts both allowances. Late provider responses or approvals cannot resume work.
 - Part setup is covered by turn failure handling. If workspace resolution, an application acknowledgment callback or context setup throws, the failed part is interrupted and later bound parts are finalized as not started. Exact tool evidence remains available. Application diagnostics stay out of model-facing errors.
 - Cancellation makes no further model call. The turn is recorded as interrupted (a `turn_interrupted` event with the reason and the number of tool calls) with a mechanical continuation note such as "Interrupted by the user after 14 tool calls."

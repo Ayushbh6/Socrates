@@ -11,7 +11,7 @@ export type FinalValidation = { ok: true; value: FinalAnswer } | { ok: false; er
 export function validateFinalAnswer(text: string): FinalValidation {
   let raw: unknown;
   try {
-    raw = parseObject(text);
+    raw = parseJsonObject(text);
   } catch {
     return { ok: false, errors: ["The message must be one JSON object with full_answer, continuation_note, goal_note, task_complete, and anchors; it could not be parsed as one JSON object."] };
   }
@@ -33,7 +33,7 @@ export function validateFinalAnswer(text: string): FinalValidation {
  * from its first "{" to its last "}". Code fences inside full_answer are part
  * of the answer and never delimit the object.
  */
-function parseObject(text: string): unknown {
+export function parseJsonObject(text: string): unknown {
   const trimmed = text.trim();
   const wrapped = /^```(?:json)?\s*\n([\s\S]*)\n```$/i.exec(trimmed);
   const body = wrapped ? wrapped[1]! : trimmed;

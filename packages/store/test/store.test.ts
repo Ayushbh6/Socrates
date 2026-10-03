@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { countTokens, fixedClock } from "@socrates/shared";
 import { beforeEach, describe, expect, it } from "vitest";
 import { LedgerStore, parseGoalSelector, parseTaskSelector, renderLedgerRow, runLedgerQuery, toFtsQuery } from "../src";
-import { SCHEMA_SQL } from "../src/schema";
+import { SCHEMA_SQL, SCHEMA_VERSION } from "../src/schema";
 
 const TZ = "UTC";
 
@@ -315,12 +315,12 @@ describe("goal objectives and task completion criteria", () => {
     raw.close();
 
     const store = LedgerStore.open({ path });
-    expect(store.getMeta("schema_version")).toBe("3");
+    expect(store.getMeta("schema_version")).toBe(String(SCHEMA_VERSION));
     expect(store.requireGoal("goal_old")).toMatchObject({ title: "Old goal", objective: null });
     const task = store.createTask("goal_old", { title: "New task", completionCriteria: "It works." });
     expect(task.completionCriteria).toBe("It works.");
     store.close();
-    expect(LedgerStore.open({ path }).getMeta("schema_version")).toBe("3");
+    expect(LedgerStore.open({ path }).getMeta("schema_version")).toBe(String(SCHEMA_VERSION));
     rmSync(dir, { recursive: true, force: true });
   });
 });
@@ -386,7 +386,7 @@ describe("tool evidence", () => {
     original.setMeta("schema_version", "2");
     original.close();
     const upgraded = LedgerStore.open({ path });
-    expect(upgraded.getMeta("schema_version")).toBe("3");
+    expect(upgraded.getMeta("schema_version")).toBe(String(SCHEMA_VERSION));
     expect(upgraded.searchExchanges({ fts: toFtsQuery("overflow"), limit: 5 })).toHaveLength(1);
     upgraded.close();
     rmSync(dir, { recursive: true, force: true });

@@ -17,7 +17,7 @@ The design lives in [`architecture/`](architecture):
 | `@socrates/providers` | Anthropic, DeepSeek, OpenRouter, OpenAI-compatible and Gemini Interactions model adapters, a scripted test model, token calibration |
 | `@socrates/router` | The Goal Router: input assembly, candidate retrieval, validation, repair, escalation, fallback, binding |
 | `@socrates/tools` | The working agent's ten permanent tools behind one tool runner: corrective errors, workspace access and approval policy, bounded results, persisted evidence (`eN`), the terminal supervisor, and the capability catalog interface |
-| `@socrates/agent` | The working agent: `Socrates.handle` runs one message end to end (route, bind, agent loop per part, `FinalAnswer` validation and persistence), context assembly in the canonical layout, three-tier history with N−1 fitting, per-turn limits, cancellation, and prompt-cache breakpoints |
+| `@socrates/agent` | The working agent: `Socrates.handle` runs one message end to end (route, bind, agent loop per part, `FinalAnswer` validation and persistence), context assembly in the canonical layout, three-tier history with N−1 fitting, per-turn limits, cancellation, and prompt-cache breakpoints, and compaction: history checkpoints, in-turn linearization, the failsafe, automatic rollover with handover capsules, and `<RETRIEVED_HISTORY>` |
 
 ## Development
 
@@ -45,7 +45,10 @@ SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:goal     # real router and sc
 pnpm eval:tools                                          # all ten tools, persistent restart and event replay
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:tools --live # also verify a provider-selected tool call
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:agent  # real router and working agent on a disposable project
+SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:compaction # compaction and rollover with shrunken budgets
 ```
+
+`eval:compaction` shrinks the context budgets so a few real turns cross the compaction trigger: it checks that a history checkpoint carries an unanswered question verbatim and that the agent answers it afterwards, that rollover continues a turn in a linked chat, that a restart keeps the work, that no request reaches the ceiling, and that every projection replays from events.
 
 `eval:agent` runs the working agent through `Socrates.handle` on a disposable calculator project under `.socrates/evals/agent-*`: a multi-step fix with real edits and test runs, continuation, a restart that rebuilds history from the event log, a compound message, cancellation and recovery, a step-limit wrap-up, explicit anchor approval, cancellation concurrent with a final response, and event-only replay. Only the synthetic fixture reaches the provider. The [Agent-stage closure report](docs/reviews/agent-stage-closure.md) records the reviewed safeguards and their regression coverage.
 

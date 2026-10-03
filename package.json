@@ -14,6 +14,7 @@
     "eval:goal": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/router/eval/run-goal-e2e.ts",
     "eval:tools": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/tools/eval/run-tools-e2e.ts",
     "eval:agent": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/agent/eval/run-agent-e2e.ts",
+    "eval:compaction": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/agent/eval/run-compaction-e2e.ts",
     "eval:provider": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/providers/eval/run-provider-smoke.ts"
   },
   "devDependencies": {
