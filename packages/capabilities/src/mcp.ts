@@ -4,6 +4,7 @@ import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotoc
 import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+import { abortable } from "@socrates/shared";
 import type { McpToolSnapshot } from "@socrates/contracts";
 import type { LedgerStore } from "@socrates/store";
 import type { Availability, McpCallResult } from "@socrates/tools";
@@ -39,6 +40,7 @@ export class McpServer {
   private failure: { kind: "offline" | "authentication_required"; at: number } | null = null;
   private stderr: string[] = [];
   private closed = false;
+  private readonly lifetime = new AbortController();
 
   constructor(
     readonly config: McpServerConfig,
@@ -64,19 +66,20 @@ export class McpServer {
   }
 
   /** Connect when not connected, once at a time, and list the tools. */
-  connect(): Promise<Client> {
+  connect(signal?: AbortSignal): Promise<Client> {
+    signal?.throwIfAborted();
     if (this.client) return Promise.resolve(this.client);
     if (this.closed) return Promise.reject(new Error(`MCP server ${this.name} is closed.`));
     const availability = this.availability();
     if (availability !== "available") return Promise.reject(new Error(`MCP server ${this.name} is ${availability}.`));
-    this.connecting ??= this.open().finally(() => (this.connecting = null));
-    return this.connecting;
+    this.connecting ??= this.open(signal).finally(() => (this.connecting = null));
+    return signal ? abortable(this.connecting, signal) : this.connecting;
   }
 
   /** The tool as the server advertises it now; fresh asks the server for its tools/list again. */
-  async tool(name: string, fresh = false): Promise<McpToolSnapshot> {
-    const client = await this.connect();
-    if (fresh) await this.list(client);
+  async tool(name: string, fresh = false, signal?: AbortSignal): Promise<McpToolSnapshot> {
+    const client = await this.connect(signal);
+    if (fresh) await this.list(client, signal);
     const tool = this.tools.find((t) => t.name === name);
     if (!tool) throw new Error(`MCP server ${this.name} does not advertise ${name}.`);
     return tool;
@@ -87,7 +90,7 @@ export class McpServer {
    * only an unreachable server throws.
    */
   async call(tool: string, input: Record<string, unknown>, signal: AbortSignal): Promise<McpCallResult> {
-    const client = await this.connect();
+    const client = await this.connect(signal);
     try {
       const result = await client.callTool({ name: tool, arguments: input }, undefined, { signal, timeout: MCP_CALL_TIMEOUT_MS, resetTimeoutOnProgress: true });
       return { content: renderResult(result), isError: result.isError === true };
@@ -99,6 +102,7 @@ export class McpServer {
 
   async close(): Promise<void> {
     this.closed = true;
+    this.lifetime.abort();
     const client = this.client ?? (await this.connecting?.catch(() => null));
     this.client = null;
     await client?.close().catch(() => {});
@@ -108,7 +112,8 @@ export class McpServer {
     return (this.options.now ?? Date.now)();
   }
 
-  private async open(): Promise<Client> {
+  private async open(requestSignal?: AbortSignal): Promise<Client> {
+    const signal = requestSignal ? AbortSignal.any([requestSignal, this.lifetime.signal]) : this.lifetime.signal;
     const client = new Client(
       { name: "socrates", version: "0.2.0" },
       { listChanged: { tools: { autoRefresh: false, onChanged: () => void this.list(client).catch((e) => this.diagnose("tools/list after list_changed failed", e)) } } },
@@ -124,12 +129,13 @@ export class McpServer {
       });
     }
     try {
-      await client.connect(transport, { timeout: this.options.connectTimeoutMs ?? MCP_CONNECT_TIMEOUT_MS });
-      await this.list(client);
+      await abortable(client.connect(transport, { signal, timeout: this.options.connectTimeoutMs ?? MCP_CONNECT_TIMEOUT_MS }), signal);
+      await this.list(client, signal);
+      signal.throwIfAborted();
     } catch (error) {
       await client.close().catch(() => {});
       const unauthorized = error instanceof UnauthorizedError || (error instanceof StreamableHTTPError && (error.code === 401 || error.code === 403));
-      this.failure = { kind: unauthorized ? "authentication_required" : "offline", at: this.now() };
+      if (!signal.aborted) this.failure = { kind: unauthorized ? "authentication_required" : "offline", at: this.now() };
       this.diagnose("connection failed", error);
       throw error;
     }
@@ -147,17 +153,21 @@ export class McpServer {
   }
 
   /** Read the complete tools/list and record it when it changed. */
-  private async list(client: Client): Promise<void> {
+  private async list(client: Client, requestSignal?: AbortSignal): Promise<void> {
+    const signal = requestSignal ? AbortSignal.any([requestSignal, this.lifetime.signal]) : this.lifetime.signal;
+    signal.throwIfAborted();
     const tools: McpToolSnapshot[] = [];
     let cursor: string | undefined;
     do {
-      const page = await client.listTools(cursor ? { cursor } : undefined, { timeout: this.options.connectTimeoutMs ?? MCP_CONNECT_TIMEOUT_MS });
+      const page = await abortable(client.listTools(cursor ? { cursor } : undefined, { signal, timeout: this.options.connectTimeoutMs ?? MCP_CONNECT_TIMEOUT_MS }), signal);
+      signal.throwIfAborted();
       for (const t of page.tools) {
         tools.push({ name: t.name, description: (t.description ?? t.title ?? "").trim(), read_only: t.annotations?.readOnlyHint === true, input_schema: t.inputSchema as McpToolSnapshot["input_schema"] });
       }
       cursor = page.nextCursor;
     } while (cursor);
     tools.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    signal.throwIfAborted();
     this.tools = tools;
     const digest = createHash("sha256").update(JSON.stringify(tools)).digest("hex");
     this.options.store.recordMcpToolSnapshot({ server: this.name, digest, tools });

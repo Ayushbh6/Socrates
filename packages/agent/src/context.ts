@@ -1,4 +1,5 @@
-import type { EventPayloads, TextPart } from "@socrates/contracts";
+import type { EventPayloads, ModelMessage, TextPart } from "@socrates/contracts";
+import type { ActiveCapabilities } from "@socrates/tools";
 import { renderActivity } from "@socrates/router";
 import type { Goal, LedgerStore, Task, Turn } from "@socrates/store";
 import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
@@ -15,7 +16,7 @@ export interface ContextInput {
   store: LedgerStore;
   turn: Turn;
   /** Active Skill instructions and active MCP public names of the goal. */
-  capabilities: { skills: { name: string; instructions: string }[]; mcpTools: string[] };
+  capabilities: ActiveCapabilities;
   /** The goal's frozen `<AVAILABLE_SKILLS>` block, or null. */
   shelf?: string | null;
   /** This turn's `<CAPABILITY_CANDIDATES>` block, or null. */
@@ -77,9 +78,15 @@ function goalBlock(store: LedgerStore, goal: Goal): string {
 }
 
 function activeCapabilities(c: ContextInput["capabilities"]): string | null {
-  if (!c.skills.length && !c.mcpTools.length) return null;
+  if (!c.skills.length && !c.mcpTools.length && !c.staleSkills?.length) return null;
   const lines: string[] = [];
-  for (const s of c.skills) lines.push(`Skill ${s.name}:`, s.instructions.trim(), "");
+  for (const s of c.skills) {
+    lines.push(`Skill ${s.name}:`, s.instructions.trim());
+    if (s.resourceBase) lines.push(`resource_base: ${JSON.stringify(s.resourceBase)}`);
+    if (s.dependencies?.length) lines.push(`dependencies (activate separately when needed): ${s.dependencies.join(", ")}`);
+    lines.push("");
+  }
+  if (c.staleSkills?.length) lines.push(`Stale Skills (instructions withheld; search and activate again): ${c.staleSkills.join(", ")}`);
   if (c.mcpTools.length) lines.push(`Active MCP tools: ${c.mcpTools.join(", ")}`);
   return block("ACTIVE_CAPABILITIES", lines.join("\n"));
 }
@@ -138,4 +145,35 @@ function currentMessage(store: LedgerStore, turn: Turn): string {
   const original = (store.getEvent(bound.request_event_id)!.payload as EventPayloads["user_message"]).text;
   const { clarification } = store.requestForTurn(turn.id);
   return clarification ? `${original}\n${clarificationLine(clarification)}` : original;
+}
+
+/** Synchronize only capability exposure. Keep native calls and exact stored evidence intact.
+ * An in-flight activation carries its instructions until linearized; don't duplicate it in the prefix. */
+export function refreshCapabilityContext(messages: ModelMessage[], capabilities: ActiveCapabilities): ModelMessage[] {
+  const inFlight = new Set<string>();
+  let changed = false;
+  const next = messages.map((message): ModelMessage => {
+    if (message.role !== "tool" || message.toolName !== "capability_control" || message.isError) return message;
+    let result: Record<string, unknown>;
+    try { result = JSON.parse(message.content); } catch { return message; }
+    if (result.kind !== "skill" || result.status !== "activated" || typeof result.instructions !== "string") return message;
+    const active = capabilities.skills.find((s) => s.name === result.name && s.instructions === result.instructions && (s.version === undefined || s.version === result.version));
+    if (active) { inFlight.add(active.name); return message; }
+    changed = true;
+    const { instructions, resource_base, dependencies, ...historical } = result;
+    return { ...message, content: JSON.stringify({ ...historical, note: "Historical activation; this version is no longer active. Exact result remains in context_retrieve." }) };
+  });
+  const first = next[0];
+  if (!first || first.role !== "user" || typeof first.content === "string") return changed ? next : messages;
+  const parts = [...first.content];
+  if (!parts[0]) return changed ? next : messages;
+  const block = activeCapabilities({ ...capabilities, skills: capabilities.skills.filter((s) => !inFlight.has(s.name)) });
+  const prefix = parts[0].text.replace(/\n*<ACTIVE_CAPABILITIES>[\s\S]*<\/ACTIVE_CAPABILITIES>\s*$/, "").trimEnd();
+  const text = `${prefix}${block ? `\n\n${block}` : ""}\n\n`;
+  if (text !== parts[0].text) {
+    changed = true;
+    parts[0] = { ...parts[0], text };
+    next[0] = { ...first, content: parts };
+  }
+  return changed ? next : messages;
 }

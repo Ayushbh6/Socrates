@@ -1,7 +1,8 @@
 import { type FinalAnswer, type ModelClient, ModelError, type ModelMessage, type ModelResponse, type TextPart, type ToolCall, type ToolDefinition, type TurnStop } from "@socrates/contracts";
 import type { TokenCalibration } from "@socrates/providers";
 import { abortable } from "@socrates/shared";
-import type { CallScope, ToolRunner } from "@socrates/tools";
+import type { ActiveCapabilities, CallScope, ToolRunner } from "@socrates/tools";
+import { refreshCapabilityContext } from "./context";
 import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
 import type { Compact, Measure } from "./compaction";
 import { mechanicalNote, validateFinalAnswer } from "./final";
@@ -31,7 +32,10 @@ export interface RunInput {
    * The current tool list, read again after every step so an MCP tool
    * activated mid-turn is callable on the next step.
    */
-  refreshTools?: () => Promise<ToolDefinition[]>;
+  refreshTools?: (signal: AbortSignal) => Promise<ToolDefinition[]>;
+  capabilities?: () => ActiveCapabilities;
+  /** Include capability restoration and other part setup in the wall-time allowance. */
+  startedAt?: number;
   /** The assembled working context: the first user message. */
   context: TextPart[];
   scope: CallScope;
@@ -65,7 +69,7 @@ type CallResult = { kind: "response"; response: ModelResponse } | { kind: "faile
 /** Run the model and tools until a final answer, interruption or bounded wrap-up. */
 export async function runAgent(input: RunInput): Promise<RunOutcome> {
   const now = input.now ?? Date.now;
-  const started = now();
+  const started = input.startedAt ?? now();
   const { model, limits, scope } = input;
   const messages: ModelMessage[] = [{ role: "user", content: input.context }];
   let tools = input.tools;
@@ -106,7 +110,16 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
   });
   const invalid = (text: string, errors: string[], stop: TurnStop): RunOutcome => ({ kind: "invalid", text, errors, stop, toolCalls, steps });
 
+  const syncCapabilities = () => {
+    if (!input.capabilities) return;
+    const next = refreshCapabilityContext(messages, input.capabilities());
+    if (next === messages) return;
+    // Ordinary steps keep their cached counts; only changed capability content is retokenized.
+    for (let i = 0; i < next.length; i++) if (next[i] !== messages[i]) sizes[i] = messageTokens(next[i]!);
+    messages.splice(0, messages.length, ...next);
+  };
   const call = async (phase: Phase, signal: AbortSignal): Promise<CallResult> => {
+    syncCapabilities();
     const harnessCount = baseTokens + sizes.reduce((a, b) => a + b, 0);
     for (let attempt = 0; ; attempt++) {
       if (scope.signal.aborted) return { kind: "cancelled" };
@@ -188,6 +201,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
   try {
     while (true) {
       if (scope.signal.aborted) return interrupted("cancelled");
+      syncCapabilities();
       const size = input.calibration.measure(model.id, baseTokens + sizes.reduce((a, b) => a + b, 0));
       const limit = steps >= limits.maxSteps ? "steps" : timeExpired() ? "time" : spent >= limits.maxTokens ? "tokens" : size >= budgets.trigger && !input.compact ? "context" : null;
       if (limit) return await wrapUp(limit);
@@ -216,9 +230,9 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
       }
       if (response.toolCalls.length === 0) return await finish(response, "final");
       await appendResponse(response, workSignal);
-      if (input.refreshTools) {
+      if (input.refreshTools && !workSignal.aborted) {
         // A failed refresh keeps the previous list; dispatch still revalidates every MCP call.
-        const next = await input.refreshTools().catch(() => tools);
+        const next = await abortable(input.refreshTools(workSignal), workSignal).catch(() => tools);
         if (JSON.stringify(next) !== JSON.stringify(tools)) {
           tools = next;
           baseTokens = requestTokens(input.system, [], tools);

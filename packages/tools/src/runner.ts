@@ -3,7 +3,7 @@ import { abortable, countTokens } from "@socrates/shared";
 import type { LedgerStore, TaskRefs } from "@socrates/store";
 import { RESULT_CEILING_TOKENS, headTail } from "./bounds";
 import { type CapabilityCatalog, StaticCatalog } from "./catalog";
-import { type ApprovalRequest, type Approve, type HandlerContext, type RunState, type ToolBinding, throwIfCancelled } from "./context";
+import { type ApprovalRequest, type Approve, type HandlerContext, type RunState, type ToolBinding, throwIfCancelled, requireWorkspace } from "./context";
 import { toDefinition } from "./definitions";
 import { INTERNAL_ERROR, ToolError, renderError } from "./errors";
 import type { ToolHandler, ToolOutput } from "./handler";
@@ -88,8 +88,8 @@ export class ToolRunner {
   }
 
   /** Schemas of MCP tools active for a goal, appended after the permanent tools. */
-  mcpDefinitions(goalId: string): Promise<ToolDefinition[]> {
-    return this.capabilities.definitions(goalId);
+  mcpDefinitions(goalId: string, signal?: AbortSignal): Promise<ToolDefinition[]> {
+    return this.capabilities.definitions(goalId, signal);
   }
 
   /** The terminal supervisor that owns processes started in one workspace. */
@@ -131,7 +131,7 @@ export class ToolRunner {
     try {
       throwIfCancelled(scope.signal);
       if (!handler) {
-        const mcp = await this.capabilities.resolve(scope.binding.goalId, call.name);
+        const mcp = await this.capabilities.resolve(scope.binding.goalId, call.name, scope.signal);
         if (mcp) handler = this.capabilities.mcpHandler(call.name, mcp.name, mcp.tool, scope.binding.goalId) as ToolHandler;
       }
       if (!handler) {
@@ -153,6 +153,7 @@ export class ToolRunner {
         store.recordFileChange(refs, { call_id: call.id, path: m.path, action: m.action, from_path: m.fromPath, before: m.before, after: m.after });
       }
     } catch (caught) {
+      if (scope.signal.aborted && !(caught instanceof ToolError)) caught = new ToolError("cancelled", "The call was cancelled.", "Inspect the recorded outcome before deciding whether to retry.", false);
       if (caught instanceof ToolError) {
         error = caught.body();
         failureDetail = caught.detail;
@@ -197,6 +198,12 @@ export class ToolRunner {
       approve,
       timeZone,
       catalog: this.catalog,
+      resolveReadPath: async (input) => {
+        throwIfCancelled(scope.signal);
+        const resource = await this.capabilities.resourcePath(scope.binding.goalId, input, scope.signal);
+        throwIfCancelled(scope.signal);
+        return resource ?? requireWorkspace(scope).resolve(input);
+      },
       terminals: scope.workspace ? this.terminals(scope.workspace) : null,
       async requireApproval(request: ApprovalRequest) {
         throwIfCancelled(scope.signal);

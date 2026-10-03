@@ -1,15 +1,26 @@
 import { CapabilityControlInput, CapabilitySearchInput, type ToolDefinition } from "@socrates/contracts";
-import { countTokens } from "@socrates/shared";
+import path from "node:path";
+import { countTokens, abortable } from "@socrates/shared";
 import type { LedgerStore } from "@socrates/store";
 import { z } from "zod";
 import { RESULT_CEILING_TOKENS, head } from "../bounds";
-import { type CapabilityCatalog, type CatalogEntry, type LoadedMcpTool, type McpCallResult, type McpToolEntry, mcpPublicName } from "../catalog";
+import { type CapabilityCatalog, type CatalogEntry, type LoadedMcpTool, type LoadedSkill, type McpCallResult, type McpToolEntry, mcpPublicName } from "../catalog";
 import { type HandlerContext, throwIfCancelled } from "../context";
 import { scoreCapability } from "../discovery";
+import { WorkspaceRoot, type ResolvedPath } from "../workspace";
 import { ToolError } from "../errors";
 import { hashBytes } from "../files";
 import { compileToolSchema } from "../schema";
 import { type ToolHandler, json } from "../handler";
+
+export interface ActiveSkill {
+  name: string;
+  instructions: string;
+  version?: string;
+  resourceBase?: LoadedSkill["resourceBase"];
+  dependencies?: string[];
+}
+export interface ActiveCapabilities { skills: ActiveSkill[]; mcpTools: string[]; staleSkills?: string[] }
 
 export const SEARCH_DEFAULT_LIMIT = 3;
 export const SEARCH_MAX_LIMIT = 5;
@@ -28,12 +39,20 @@ export const MAX_ACTIVE_MCP_SCHEMA_TOKENS = 16_000;
 export class CapabilityRuntime {
   private readonly byGoal = new Map<string, Map<string, { publicName: string; tool: LoadedMcpTool }>>();
   /** Validated instructions of active Skills, by goal and name, so context can be rebuilt mid-turn without loading again. */
-  private readonly skillText = new Map<string, Map<string, { digest: string; instructions: string }>>();
+  private readonly skillText = new Map<string, Map<string, { digest: string; skill: LoadedSkill }>>();
+  private readonly staleSkills = new Map<string, string[]>();
 
   constructor(
     private readonly store: LedgerStore,
     readonly catalog: CapabilityCatalog,
   ) {}
+
+  /** A new turn must not reuse prior context if setup is interrupted before revalidation. */
+  beginTurn(goalId: string): void {
+    this.byGoal.delete(goalId);
+    this.skillText.delete(goalId);
+    this.staleSkills.delete(goalId);
+  }
 
   set(goalId: string, name: string, publicName: string, tool: LoadedMcpTool): void {
     if (!this.byGoal.has(goalId)) this.byGoal.set(goalId, new Map());
@@ -42,15 +61,17 @@ export class CapabilityRuntime {
 
   delete(goalId: string, name: string): void {
     this.byGoal.get(goalId)?.delete(name);
+    this.skillText.get(goalId)?.delete(name);
   }
 
   get(goalId: string, name: string) {
     return this.byGoal.get(goalId)?.get(name);
   }
 
-  rememberSkill(goalId: string, name: string, digest: string, instructions: string): void {
+  rememberSkill(goalId: string, name: string, digest: string, skill: LoadedSkill): void {
     if (!this.skillText.has(goalId)) this.skillText.set(goalId, new Map());
-    this.skillText.get(goalId)!.set(name, { digest, instructions });
+    this.skillText.get(goalId)!.set(name, { digest, skill });
+    this.staleSkills.set(goalId, (this.staleSkills.get(goalId) ?? []).filter((n) => n !== name));
   }
 
   /**
@@ -59,32 +80,39 @@ export class CapabilityRuntime {
    * validated by activeSkills or by activation, so a Skill activated earlier
    * in this turn is present when compaction rebuilds the context.
    */
-  current(goalId: string): { skills: { name: string; instructions: string }[]; mcpTools: string[] } {
-    const skills: { name: string; instructions: string }[] = [];
+  current(goalId: string): ActiveCapabilities {
+    const skills: ActiveSkill[] = [];
     const mcpTools: string[] = [];
-    for (const c of this.store.listActiveCapabilities(goalId)) {
+    const active = this.store.listActiveCapabilities(goalId);
+    for (const c of active) {
       if (c.kind === "skill") {
         const text = this.skillText.get(goalId)?.get(c.name);
-        if (text && text.digest === c.digest) skills.push({ name: c.name, instructions: text.instructions });
+        if (text && text.digest === c.digest) skills.push({ name: c.name, instructions: text.skill.instructions, version: text.skill.version, resourceBase: text.skill.resourceBase, dependencies: text.skill.dependencies });
       } else {
         const loaded = this.get(goalId, c.name);
         if (loaded) mcpTools.push(loaded.publicName);
       }
     }
-    return { skills, mcpTools: mcpTools.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)) };
+    const staleSkills = (this.staleSkills.get(goalId) ?? []).filter((name) => active.some((c) => c.name === name));
+    return { skills, mcpTools: mcpTools.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), ...(staleSkills.length ? { staleSkills } : {}) };
   }
 
   /** Refresh the goal's active schemas for the next model request. */
-  async rehydrate(goalId: string): Promise<void> {
+  async rehydrate(goalId: string, signal?: AbortSignal): Promise<void> {
     const active = this.store.listActiveCapabilities(goalId).filter((c) => c.kind === "mcp");
     const refreshed: { item: typeof active[number]; entry: McpToolEntry; tool: LoadedMcpTool; digest: string }[] = [];
     let total = 0;
     for (const item of active) {
+      signal?.throwIfAborted();
       const entry = this.catalog.entries().find((e): e is McpToolEntry => e.kind === "mcp" && e.name === item.name);
       if (!entry || entry.availability !== "available") continue;
       let tool: LoadedMcpTool;
-      try { tool = await this.catalog.loadMcpTool(entry.name); }
-      catch { continue; }
+      try {
+        const loading = this.catalog.loadMcpTool(entry.name, { signal });
+        tool = await (signal ? abortable(loading, signal) : loading);
+        signal?.throwIfAborted();
+      }
+      catch { signal?.throwIfAborted(); continue; }
       if (validateSchema(entry.name, tool)) continue;
       total += countTokens(JSON.stringify(tool.inputSchema));
       const digest = hashBytes(JSON.stringify(tool.inputSchema));
@@ -95,6 +123,7 @@ export class CapabilityRuntime {
     }
     // Validate the complete set before replacing persisted digests or cached
     // definitions, so a failed refresh cannot leave a partial replacement.
+    signal?.throwIfAborted();
     this.byGoal.set(goalId, new Map());
     for (const { item, entry, tool, digest } of refreshed) {
       if (digest !== item.digest || tool.schemaVersion !== item.version) this.store.activateCapability(goalId, { kind: "mcp", name: entry.name, version: tool.schemaVersion, digest });
@@ -102,8 +131,8 @@ export class CapabilityRuntime {
     }
   }
 
-  async definitions(goalId: string): Promise<ToolDefinition[]> {
-    await this.rehydrate(goalId);
+  async definitions(goalId: string, signal?: AbortSignal): Promise<ToolDefinition[]> {
+    await this.rehydrate(goalId, signal);
     return this.store.listActiveCapabilities(goalId).flatMap((c) => {
       const entry = c.kind === "mcp" ? this.get(goalId, c.name) : undefined;
       return entry ? [{ name: entry.publicName, description: entry.tool.description, inputSchema: entry.tool.inputSchema }] : [];
@@ -111,7 +140,7 @@ export class CapabilityRuntime {
   }
 
   /** Revalidate at dispatch; a schema changed since surfacing must never execute. */
-  async resolve(goalId: string, publicName: string): Promise<{ name: string; tool: LoadedMcpTool } | null> {
+  async resolve(goalId: string, publicName: string, signal?: AbortSignal): Promise<{ name: string; tool: LoadedMcpTool } | null> {
     const active = this.store.listActiveCapabilities(goalId).filter((c) => c.kind === "mcp");
     const entries = this.catalog.entries();
     const entry = entries.find((e): e is McpToolEntry => e.kind === "mcp" && mcpPublicName(e.server, e.tool) === publicName && active.some((c) => c.name === e.name));
@@ -121,8 +150,12 @@ export class CapabilityRuntime {
       throw new ToolError("capability_unavailable", `${entry.name} is ${entry.availability}.`, "Search or activate it again once available.");
     }
     let tool: LoadedMcpTool;
-    try { tool = await this.catalog.loadMcpTool(entry.name); }
-    catch {
+    try {
+      const loading = this.catalog.loadMcpTool(entry.name, { signal });
+      tool = await (signal ? abortable(loading, signal) : loading);
+      signal?.throwIfAborted();
+    } catch {
+      signal?.throwIfAborted();
       this.delete(goalId, entry.name);
       throw new ToolError("capability_unavailable", `${entry.name} could not be reached.`, "Search or activate it again.");
     }
@@ -142,24 +175,46 @@ export class CapabilityRuntime {
    * activated version, for the goal's context. A Skill whose content changed
    * or cannot be loaded is reported as stale instead of silently replaced.
    */
-  async activeSkills(goalId: string): Promise<{ skills: { name: string; version: string; instructions: string }[]; stale: string[] }> {
+  async activeSkills(goalId: string, signal?: AbortSignal): Promise<{ skills: { name: string; version: string; instructions: string }[]; stale: string[] }> {
     const skills: { name: string; version: string; instructions: string }[] = [];
     const stale: string[] = [];
+    this.skillText.set(goalId, new Map());
     for (const active of this.store.listActiveCapabilities(goalId)) {
+      signal?.throwIfAborted();
       if (active.kind !== "skill") continue;
       const entry = this.catalog.entries().find((e) => e.kind === "skill" && e.name === active.name);
       if (!entry || entry.availability !== "available") { stale.push(active.name); continue; }
       try {
-        const skill = await this.catalog.loadSkill(active.name);
+        const loading = this.catalog.loadSkill(active.name);
+        const skill = await (signal ? abortable(loading, signal) : loading);
+        signal?.throwIfAborted();
         if (skill.version === active.version && countTokens(skill.instructions) <= MAX_SKILL_TOKENS && hashBytes(skill.instructions) === active.digest) {
           skills.push({ name: active.name, version: skill.version, instructions: skill.instructions });
-          this.rememberSkill(goalId, active.name, active.digest, skill.instructions);
+          this.rememberSkill(goalId, active.name, active.digest, skill);
         } else stale.push(active.name);
       } catch {
+        signal?.throwIfAborted();
         stale.push(active.name);
       }
     }
+    this.staleSkills.set(goalId, stale);
     return { skills, stale };
+  }
+
+  /** Read-only access to explicitly activated, still-valid Skill resources.
+   * WorkspaceRoot applies realpath containment, including symlink escapes. */
+  async resourcePath(goalId: string, input: string, signal?: AbortSignal): Promise<ResolvedPath | null> {
+    if (!path.isAbsolute(input)) return null;
+    await this.activeSkills(goalId, signal);
+    for (const { skill } of this.skillText.get(goalId)?.values() ?? []) {
+      if (skill.resourceBase.kind !== "directory") continue;
+      try {
+        const root = WorkspaceRoot.open("Skill resources", skill.resourceBase.path);
+        const file = root.resolve(input);
+        return { abs: file.abs, rel: file.abs };
+      } catch { /* Another Skill may own this path. */ }
+    }
+    return null;
   }
 
   /** A handler that dispatches calls of one active MCP tool to its server. */
@@ -272,11 +327,13 @@ export function capabilityControlTool(loaded: CapabilityRuntime): ToolHandler<Ca
       const goalId = ctx.binding.goalId;
       const refs = { task_id: ctx.binding.taskId, chat_id: ctx.binding.chatId, turn_id: ctx.binding.turnId };
       if (input.action === "list") {
-        await loaded.rehydrate(goalId);
+        await loaded.rehydrate(goalId, ctx.signal);
+        await loaded.activeSkills(goalId, ctx.signal);
         const active = ctx.store.listActiveCapabilities(goalId).map((c) => ({
           kind: c.kind,
           name: c.name,
           version: c.version,
+          ...(c.kind === "skill" && loaded.current(goalId).staleSkills?.includes(c.name) ? { availability: "stale", correction: "Search and activate this Skill again." } : {}),
           ...(c.kind === "mcp" ? { public_name: loaded.get(goalId, c.name)?.publicName ?? null } : {}),
         }));
         const result = { action: "list", active };
@@ -311,8 +368,11 @@ export function capabilityControlTool(loaded: CapabilityRuntime): ToolHandler<Ca
       const existing = current.find((c) => c.name === entry.name);
 
       if (entry.kind === "skill") {
-        const skill = await ctx.catalog.loadSkill(entry.name);
+        let skill: LoadedSkill;
+        try { skill = await ctx.catalog.loadSkill(entry.name); }
+        catch { throw new ToolError("capability_unavailable", `${entry.name} could not be loaded.`, "Search again after repairing or reinstalling this Skill."); }
         if (existing && existing.version === skill.version && existing.digest === hashBytes(skill.instructions)) {
+          loaded.rememberSkill(goalId, entry.name, existing.digest, skill);
           const result = { kind: "skill", name: entry.name, status: "already_active", version: skill.version };
           return { content: json(result), result };
         }
@@ -329,13 +389,13 @@ export function capabilityControlTool(loaded: CapabilityRuntime): ToolHandler<Ca
         if (countTokens(json(result)) > RESULT_CEILING_TOKENS) throw new ToolError("skill_too_large", `${entry.name} and its metadata exceed the result ceiling.`, "Shorten the Skill or continue without it.", false);
         throwIfCancelled(ctx.signal);
         ctx.store.activateCapability(goalId, { kind: "skill", name: entry.name, version: skill.version, digest: hashBytes(skill.instructions) }, refs);
-        loaded.rememberSkill(goalId, entry.name, hashBytes(skill.instructions), skill.instructions);
+        loaded.rememberSkill(goalId, entry.name, hashBytes(skill.instructions), skill);
         return { content: json(result), result, facts: [{ kind: "capability", value: `skill ${entry.name}` }] };
       }
 
       let tool: LoadedMcpTool;
-      try { tool = await ctx.catalog.loadMcpTool(entry.name, { fresh: true }); }
-      catch { throw new ToolError("capability_unavailable", `${entry.name} could not be reached.`, "Continue without it, or search for an alternative.", false); }
+      try { tool = await abortable(ctx.catalog.loadMcpTool(entry.name, { fresh: true, signal: ctx.signal }), ctx.signal); }
+      catch { throwIfCancelled(ctx.signal); throw new ToolError("capability_unavailable", `${entry.name} could not be reached.`, "Continue without it, or search for an alternative.", false); }
       const publicName = mcpPublicName(entry.server, entry.tool);
       const invalid = validateSchema(entry.name, tool);
       if (invalid) throw invalid;
@@ -345,7 +405,7 @@ export function capabilityControlTool(loaded: CapabilityRuntime): ToolHandler<Ca
         const result = { kind: "mcp", name: entry.name, status: "already_active", public_name: publicName, schema_version: tool.schemaVersion };
         return { content: json(result), result };
       }
-      await loaded.rehydrate(goalId);
+      await loaded.rehydrate(goalId, ctx.signal);
       throwIfCancelled(ctx.signal);
       const otherMcp = current.filter((c) => c.kind === "mcp" && c.name !== entry.name);
       const otherTokens = otherMcp.reduce((sum, c) => sum + countTokens(JSON.stringify(loaded.get(goalId, c.name)?.tool.inputSchema ?? {})), 0);

@@ -14,7 +14,7 @@ const FRAME_TOKENS = 200;
 export const readTool: ToolHandler<ReadInput> = {
   name: "read",
   description: [
-    "Read a window of lines from one UTF-8 text file in the workspace. Output lines are prefixed with their 1-based number and a colon (\"42: text\"); the prefix is not part of the file.",
+    "Read a window of lines from one UTF-8 text file in the workspace, or an absolute resource path under a valid active Skill. Skill resource access is read-only. Output lines are prefixed with their 1-based number and a colon (\"42: text\"); the prefix is not part of the file.",
     `Defaults: offset 1, limit ${READ_DEFAULT_LIMIT} lines. A window also stops at about ${RESULT_CEILING_TOKENS} tokens; when more remains the footer gives the next offset to continue from.`,
     `Lines longer than ${READ_MAX_LINE_CHARS} characters are cut with a marker. Use glob to list directories and grep to find text; binary files are rejected.`,
   ].join(" "),
@@ -22,7 +22,7 @@ export const readTool: ToolHandler<ReadInput> = {
   concurrency: "parallel",
   mutating: false,
   async execute(input, ctx) {
-    const file = requireWorkspace(ctx).resolve(input.path);
+    const file = ctx.resolveReadPath ? await ctx.resolveReadPath(input.path) : requireWorkspace(ctx).resolve(input.path);
     const text = await readTextFile(file);
     const all = splitLines(text.text);
     const offset = input.offset ?? 1;

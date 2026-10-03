@@ -22,7 +22,7 @@ export interface SkillEntry {
 
 export interface McpToolEntry {
   kind: "mcp";
-  /** Catalog name, "server.tool". */
+  /** Canonical catalog name from mcpCatalogName; dots inside components are escaped. */
   name: string;
   server: string;
   tool: string;
@@ -69,11 +69,11 @@ export interface CapabilityCatalog {
    * the server's tools/list is requested again instead of read from the
    * live connection's current listing (activation does this).
    */
-  loadMcpTool(name: string, options?: { fresh?: boolean }): Promise<LoadedMcpTool>;
+  loadMcpTool(name: string, options?: { fresh?: boolean; signal?: AbortSignal }): Promise<LoadedMcpTool>;
   /** Invoke one MCP tool on its server. Throws when the server cannot be reached. */
   callMcpTool(name: string, input: Record<string, unknown>, signal: AbortSignal): Promise<McpCallResult>;
   /** Pick up sources that changed since the catalog was opened, such as newly installed Skills. */
-  refresh?(): Promise<void>;
+  refresh?(signal?: AbortSignal): Promise<void>;
   /** Stop every connection the catalog opened; called when Socrates closes. */
   close?(): Promise<void>;
 }
@@ -125,4 +125,13 @@ export function mcpPublicName(server: string, tool: string): string {
   if (plain(server) && plain(tool) && name.length <= MAX_PUBLIC_NAME) return name;
   const suffix = createHash("sha256").update(`${server}\0${tool}`).digest("hex").slice(0, 8);
   return `${name.slice(0, MAX_PUBLIC_NAME - suffix.length - 1)}_${suffix}`;
+}
+
+/** Reversible component encoding keeps catalog identities unique, including dots and percent signs.
+ * Plain names retain their persisted names and approvals. Escaped identities use a dot-free
+ * namespace so no legacy dotted name or approval can be mistaken for a new encoded identity. */
+export function mcpCatalogName(server: string, tool: string): string {
+  const component = (value: string) => encodeURIComponent(value).replace(/\./g, "%2E");
+  const a = component(server), b = component(tool);
+  return a === server && b === tool ? `${server}.${tool}` : `mcp:${a}/${b}`;
 }

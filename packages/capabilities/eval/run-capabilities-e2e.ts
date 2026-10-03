@@ -33,7 +33,8 @@ const root = path.join(dir, "shop");
 const notes = path.join(dir, "tracker-notes.txt");
 const SIGNATURE = "Signed: Socrates release desk";
 const files: Record<string, string> = {
-  "home/skills/release-notes/SKILL.md": `---\nname: release-notes\ndescription: Write release notes for a fix or a set of merged changes, in the team's house format.\n---\n\n# Release notes\n\nWhen you write release notes:\n1. Start with the line "RELEASE NOTES" followed by the ticket id when there is one.\n2. List each change as a bullet that starts with "Fixed:", "Added:" or "Changed:".\n3. End with the exact line "${SIGNATURE}".\n`,
+  "home/skills/release-notes/SKILL.md": `---\nname: release-notes\ndescription: Write release notes for a fix or a set of merged changes, in the team's house format.\n---\n\n# Release notes\n\nWhen you write release notes:\n1. Start with the line "RELEASE NOTES" followed by the ticket id when there is one.\n2. List each change as a bullet that starts with "Fixed:", "Added:" or "Changed:".\n3. Read template.txt under this Skill resource_base using read, and include its resource code in your release notes.\n4. End with the exact line "${SIGNATURE}".\n`,
+  "home/skills/release-notes/template.txt": "Resource code: release-template-9.\n",
   "home/skills/pdf/SKILL.md": "---\nname: pdf\ndescription: Read, render, inspect, and create PDF files.\n---\n\nUse a PDF library to read or write PDF files.\n",
   "home/mcp.json": JSON.stringify({ mcpServers: { tracker: { command: process.execPath, args: [createRequire(import.meta.url).resolve("tsx/cli"), fileURLToPath(new URL("../test/fixture-server.ts", import.meta.url))], env: { FIXTURE_NOTES: notes } } } }, null, 2),
   "shop/src/cart.js": "export function canCheckout(items) {\n  return items.length > 50 ? false : true;\n}\n",
@@ -125,6 +126,10 @@ async function run() {
   assert.equal(shelfBlocks.size, 1, "the shelf must stay byte-identical across turns");
   passed("the Skill pinned on the frozen shelf is activated and its instructions are followed", `${toolCalls(second.result.parts[0]!.turn.id).join(" → ")}; ${short(second.result.text)}`);
 
+  assert.match(second.result.text, /release-template-9/);
+  assert(store.evidenceForTurn(second.result.parts[0]!.turn.id).some((e) => e.tool === "read" && e.status === "ok" && JSON.stringify(e.input).includes("template.txt")));
+  passed("a global Skill resource is read through the scoped read tool", "template.txt is outside the project workspace");
+
   // 3. A mutating MCP tool asks once per goal; the second call reuses the approval.
   const third = await ask("Add a note to the tracker notebook: \"checkout limit off-by-one confirmed\". Then add a second note: \"release notes drafted\".");
   const fourth = await ask("Add one more note to the tracker notebook: \"ready for review\".");
@@ -172,6 +177,25 @@ async function run() {
   assert(ticketCalls.some((e) => e.status === "ok" && JSON.stringify(e.input).includes("ticket_id")), `calls: ${JSON.stringify(ticketCalls.map((e) => e.input))}`);
   assert.match(sixth.result.text, /Mira/);
   passed("a server's schema change reaches the agent as one replacement schema", `${ticketCalls.map((e) => JSON.stringify(e.input)).join(", ")}; ${short(sixth.result.text)}`);
+
+  // Edited Skill: withhold the old body, explicitly reactivate the new version.
+  const skillFile = path.join(home, "skills/release-notes/SKILL.md");
+  const updatedSignature = "Signed: Updated release desk";
+  writeFileSync(skillFile, readFileSync(skillFile, "utf8").replace(SIGNATURE, updatedSignature));
+  const updated = await ask("For the same checkout work, use the updated release-notes Skill to draft ticket 42 release notes again.");
+  assert(context(updated.made[0]!).includes("Stale Skills (instructions withheld; search and activate again): release-notes"));
+  assert(!context(updated.made[0]!).includes(phrase), "stale instructions must be withheld");
+  assert.match(updated.result.text, /Signed: Updated release desk/);
+  assert(store.evidenceForTurn(updated.result.parts[0]!.turn.id).some((e) => e.tool === "capability_control" && e.status === "ok" && JSON.stringify(e.result).includes('"status":"activated"')));
+  passed("an edited Skill is withheld and explicitly reactivated with its new version");
+
+  const deactivated = await ask("Deactivate the release-notes Skill for the checkout goal. Then check ticket 42 in the tracker and tell me its status in one plain sentence.");
+  const deactivatedGoal = deactivated.result.parts[0]!.turn.goalId!;
+  assert(!store.listActiveCapabilities(deactivatedGoal).some((c) => c.kind === "skill" && c.name === "release-notes"));
+  const afterDeactivation = deactivated.made.filter((r) => r.messages.some((m) => m.role === "tool" && m.toolName === "capability_control" && m.content.includes('"status":"deactivated"')));
+  assert(afterDeactivation.length > 0);
+  for (const r of afterDeactivation) assert(!everything(r).includes(`End with the exact line "${updatedSignature}"`));
+  passed("deactivation removes Skill instructions from the next request while work continues");
 
   // 7. Event-only replay of every projection, including the active capability set.
   const recovered = LedgerStore.open({ path: ":memory:" });

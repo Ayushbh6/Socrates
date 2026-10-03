@@ -2,7 +2,7 @@ import type { LedgerStore } from "@socrates/store";
 import type { CapabilityCatalog } from "./catalog";
 import { ToolError } from "./errors";
 import type { TerminalSupervisor } from "./terminals";
-import type { WorkspaceRoot } from "./workspace";
+import type { WorkspaceRoot, ResolvedPath } from "./workspace";
 
 /** The goal, task, chat, and turn a tool call belongs to. */
 export interface ToolBinding {
@@ -85,6 +85,8 @@ export interface HandlerContext {
   approve: Approve;
   timeZone: string;
   catalog: CapabilityCatalog;
+  /** Resolve read-only access to an active Skill resource, or fall back to workspace policy. */
+  resolveReadPath?: (input: string) => Promise<ResolvedPath>;
   /** The terminal supervisor of the selected workspace, when there is one. */
   terminals: TerminalSupervisor | null;
   /** Ask the user, record the decision, and fail with a corrective error when denied or cancelled. */
@@ -96,7 +98,7 @@ export function throwIfCancelled(signal: AbortSignal): void {
   if (signal.aborted) throw new ToolError("cancelled", "The call was cancelled before it changed anything.", "No action needed.", false);
 }
 
-export function requireWorkspace(ctx: HandlerContext): WorkspaceRoot {
+export function requireWorkspace(ctx: Pick<HandlerContext, "workspace">): WorkspaceRoot {
   if (!ctx.workspace) {
     throw new ToolError(
       "no_workspace",

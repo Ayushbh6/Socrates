@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 import type { LedgerStore } from "@socrates/store";
-import type { CapabilityCatalog, CatalogEntry, LoadedMcpTool, LoadedSkill, McpCallResult } from "@socrates/tools";
+import { mcpCatalogName, type CapabilityCatalog, type CatalogEntry, type LoadedMcpTool, type LoadedSkill, type McpCallResult } from "@socrates/tools";
 import { McpServer } from "./mcp";
 import { readMcpConfig } from "./mcp-config";
 import { type InstalledSkill, loadSkill, scanSkills } from "./skills";
@@ -54,16 +54,19 @@ export class InstalledCatalog implements CapabilityCatalog {
   static async open(options: InstalledCatalogOptions): Promise<InstalledCatalog> {
     const catalog = new InstalledCatalog(options);
     await catalog.refresh();
-    const known = options.store.mcpToolSnapshots();
-    await Promise.allSettled(catalog.servers.filter((s) => !known.has(s.name) && s.availability() === "available").map((s) => s.connect()));
     return catalog;
   }
 
-  /** Rescan the Skills folder; Skills installed or removed since opening are picked up. */
-  async refresh(): Promise<void> {
+  /** Rescan Skills and retry first discovery for servers without a snapshot after backoff. */
+  async refresh(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     const scan = scanSkills(path.join(this.home, "skills"));
     for (const problem of scan.problems) this.options.log?.(problem);
     this.skills = scan.skills;
+    // First discovery can fail transiently. Retry only unknown lists, outside search.
+    const known = this.options.store.mcpToolSnapshots();
+    await Promise.allSettled(this.servers.filter((s) => !known.has(s.name) && s.availability() === "available").map((s) => s.connect(signal)));
+    signal?.throwIfAborted();
   }
 
   entries(): CatalogEntry[] {
@@ -72,12 +75,12 @@ export class InstalledCatalog implements CapabilityCatalog {
       const availability = server.availability();
       return server.tools.map((t) => ({
         kind: "mcp" as const,
-        name: `${server.name}.${t.name}`,
+        name: mcpCatalogName(server.name, t.name),
         server: server.name,
         tool: t.name,
         description: t.description.length > MCP_DESCRIPTION_MAX_CHARS ? `${t.description.slice(0, MCP_DESCRIPTION_MAX_CHARS - 1)}…` : t.description,
         tags: [],
-        aliases: [],
+        aliases: mcpCatalogName(server.name, t.name) === `${server.name}.${t.name}` ? [] : [`${server.name}.${t.name}`],
         availability,
         readOnly: t.read_only,
       }));
@@ -91,9 +94,9 @@ export class InstalledCatalog implements CapabilityCatalog {
     return loadSkill(skill);
   }
 
-  async loadMcpTool(name: string, options: { fresh?: boolean } = {}): Promise<LoadedMcpTool> {
+  async loadMcpTool(name: string, options: { fresh?: boolean; signal?: AbortSignal } = {}): Promise<LoadedMcpTool> {
     const { server, tool } = this.resolve(name);
-    const t = await server.tool(tool, options.fresh ?? false);
+    const t = await server.tool(tool, options.fresh ?? false, options.signal);
     return {
       schemaVersion: createHash("sha256").update(JSON.stringify(t.input_schema)).digest("hex").slice(0, 12),
       description: t.description,
@@ -113,10 +116,11 @@ export class InstalledCatalog implements CapabilityCatalog {
     await Promise.all(this.servers.map((s) => s.close()));
   }
 
-  /** Split a catalog name, `server.tool`, by its configured server. */
+  /** Resolve the exact catalog record; never infer identity from a dotted prefix. */
   private resolve(name: string): { server: McpServer; tool: string } {
-    const server = this.servers.filter((s) => name.startsWith(`${s.name}.`)).sort((a, b) => b.name.length - a.name.length)[0];
-    if (!server) throw new Error(`No configured MCP server provides ${name}.`);
-    return { server, tool: name.slice(server.name.length + 1) };
+    const entry = this.entries().find((e) => e.kind === "mcp" && e.name === name);
+    if (!entry || entry.kind !== "mcp") throw new Error(`No configured MCP server provides ${name}.`);
+    const server = this.servers.find((s) => s.name === entry.server)!;
+    return { server, tool: entry.tool };
   }
 }

@@ -236,7 +236,7 @@ describe("InstalledCatalog", () => {
 
     const skill = (await call("capability_search", { query: "release-notes", kind: "skill" })).matches[0];
     expect(await call("capability_control", { action: "activate", ref: skill.ref })).toMatchObject({ status: "activated", instructions: "# Release notes\nStart with RELEASE NOTES.", dependencies: [{ kind: "mcp", name: "tracker.ticket_get", status: "active" }] });
-    expect(runner.capabilities.current(goal.id)).toEqual({ skills: [{ name: "release-notes", instructions: "# Release notes\nStart with RELEASE NOTES." }], mcpTools: ["mcp__tracker__note_add", "mcp__tracker__ticket_get"] });
+    expect(runner.capabilities.current(goal.id)).toEqual({ skills: [{ name: "release-notes", instructions: "# Release notes\nStart with RELEASE NOTES.", version: expect.any(String), resourceBase: { kind: "directory", path: path.join(dir, "skills/release-notes") }, dependencies: ["tracker.ticket_get"] }], mcpTools: ["mcp__tracker__note_add", "mcp__tracker__ticket_get"] });
   });
 });
 

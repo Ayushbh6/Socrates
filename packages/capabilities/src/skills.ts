@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 import type { LoadedSkill } from "@socrates/tools";
 import { parse as parseYaml } from "yaml";
@@ -80,13 +80,15 @@ export function scanSkills(root: string): { skills: InstalledSkill[]; problems: 
  * catalog names listed in the optional frontmatter `dependencies`.
  */
 export function loadSkill(skill: InstalledSkill): LoadedSkill {
+  const metadata = readSkillMetadata(skill.dir);
+  if ("error" in metadata) throw new Error(`Skill ${skill.name} is invalid: ${metadata.error}.`);
   const text = readFileSync(path.join(skill.dir, SKILL_FILE), "utf8");
   const parsed = parseSkillFile(text);
   if ("error" in parsed) throw new Error(`Skill ${skill.name} can no longer be read: ${parsed.error}.`);
   return {
     version: createHash("sha256").update(text).digest("hex").slice(0, 12),
     instructions: parsed.body.trim(),
-    resourceBase: { kind: "directory", path: skill.dir },
+    resourceBase: { kind: "directory", path: realpathSync(skill.dir) },
     dependencies: strings(parsed.frontmatter.dependencies),
   };
 }

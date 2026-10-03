@@ -1,4 +1,5 @@
 import type { EventRefs, ModelClient, TurnStop } from "@socrates/contracts";
+import { abortable } from "@socrates/shared";
 import { TokenCalibration } from "@socrates/providers";
 import { GoalRouter, type RoutedPart } from "@socrates/router";
 import type { Goal, LedgerStore, Task, Turn } from "@socrates/store";
@@ -114,7 +115,6 @@ export class Socrates {
       this.approveCurrent = options.approve ?? this.options.approve;
       const routed = await this.router.route(message, signal);
       if (routed.kind === "clarify") return { kind: "clarify", text: routed.text };
-      await this.runner.capabilities.catalog.refresh?.().catch((error) => this.options.log?.(`capability refresh failed: ${error instanceof Error ? error.message : String(error)}`));
       let setupError: { error: unknown } | null = null;
       try { if (routed.acknowledgment) options.onAcknowledgment?.(routed.acknowledgment); }
       catch (error) { setupError = { error }; }
@@ -129,12 +129,15 @@ export class Socrates {
             if (setupError) throw setupError.error;
             results.push(await this.runPart(part, routed.parts, signal, options));
           } catch (error) {
-            this.options.log?.(`agent part ${part.order} failed: ${error instanceof Error ? error.message : String(error)}`);
+            const cancelled = signal.aborted;
             const refs = { goal_id: part.goal.id, task_id: part.task.id, turn_id: part.turn.id, chat_id: part.turn.chatId };
-            this.store.recordWarning(refs, { kind: "agent_error", detail: "The agent could not finish setting up or running this part." });
+            if (!cancelled) {
+              this.options.log?.(`agent part ${part.order} failed: ${error instanceof Error ? error.message : String(error)}`);
+              this.store.recordWarning(refs, { kind: "agent_error", detail: "The agent could not finish setting up or running this part." });
+            }
             const calls = this.store.evidenceForTurn(part.turn.id).length;
-            this.store.interruptTurn(part.turn.id, { reason: signal.aborted ? "cancelled" : "failed", toolCalls: calls, continuationNote: mechanicalNote("Interrupted by an agent failure", calls) });
-            results.push({ order: part.order, turn: this.store.requireTurn(part.turn.id), task: this.store.requireTask(part.task.id), status: "interrupted", stop: null, answer: "I could not finish this part. The work so far is saved; ask me to continue.", toolCalls: calls });
+            this.store.interruptTurn(part.turn.id, { reason: cancelled ? "cancelled" : "failed", toolCalls: calls, continuationNote: mechanicalNote(cancelled ? "Interrupted by the user" : "Interrupted by an agent failure", calls) });
+            results.push({ order: part.order, turn: this.store.requireTurn(part.turn.id), task: this.store.requireTask(part.task.id), status: "interrupted", stop: null, answer: cancelled ? `Stopped after ${calls} tool call${calls === 1 ? "" : "s"}.` : "I could not finish this part. The work so far is saved; ask me to continue.", toolCalls: calls });
           }
         }
         if (results.at(-1)!.status === "interrupted") stopped = true;
@@ -160,11 +163,29 @@ export class Socrates {
     const { store } = this;
     const turn = part.turn;
     const goal = store.requireGoal(turn.goalId!);
+    const startedAt = (this.options.now ?? Date.now)();
     const workspace = this.workspaceFor(goal);
     const capabilities = this.runner.capabilities;
-    const tools = async () => [...this.runner.definitions, ...(await this.runner.mcpDefinitions(goal.id))];
-    const initialTools = await tools();
-    await capabilities.activeSkills(goal.id);
+    capabilities.beginTurn(goal.id);
+    const tools = async (signal: AbortSignal) => [...this.runner.definitions, ...(await this.runner.mcpDefinitions(goal.id, signal))];
+    const setupDeadline = new AbortController();
+    const setupSignal = AbortSignal.any([signal, setupDeadline.signal]);
+    const setupTimer = setTimeout(() => setupDeadline.abort(), Math.max(0, this.limits.maxWallMs - ((this.options.now ?? Date.now)() - startedAt)));
+    let initialTools = this.runner.definitions;
+    try {
+      if (capabilities.catalog.refresh) {
+        await abortable(capabilities.catalog.refresh(setupSignal), setupSignal).catch((error) => {
+          setupSignal.throwIfAborted();
+          this.options.log?.(`capability refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      }
+      initialTools = await tools(setupSignal);
+      await capabilities.activeSkills(goal.id, setupSignal);
+      setupSignal.throwIfAborted();
+    } catch (error) {
+      if (signal.aborted || !setupDeadline.signal.aborted) throw error;
+      // Setup exhausted the working allowance. The loop makes only its bounded tool-free wrap-up.
+    } finally { clearTimeout(setupTimer); }
     const run = new RunState();
     const shelf = skillShelf(store, capabilities.catalog, goal.id, this.options.shelf);
     const candidates = capabilityCandidates({ store, catalog: capabilities.catalog, goalId: goal.id, message: store.requestForTurn(turn.id).request, run });
@@ -200,6 +221,8 @@ export class Socrates {
       system: AGENT_SYSTEM_PROMPT,
       tools: initialTools,
       refreshTools: tools,
+      capabilities: () => capabilities.current(goal.id),
+      startedAt,
       context,
       scope: { binding: { goalId: goal.id, taskId: turn.taskId!, chatId: turn.chatId, turnId: turn.id }, workspace, run, signal },
       limits: this.limits,
