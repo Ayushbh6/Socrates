@@ -99,13 +99,13 @@ export interface PartResult {
 }
 
 /**
- * `notice` is the one line the main conversation shows when the message's
- * work ran in a lane (sent there, or handed to it): finished, stopped, or
- * waiting for an answer. Null for work done in the main conversation.
+ * `notices` contains one line per lane part (or clarification), each with its
+ * own outcome. `notice` joins these lines for simple consumers, or is null
+ * for work done entirely in the main conversation.
  */
 export type HandleResult =
-  | { kind: "clarify"; text: string; laneId: string | null; notice: string | null }
-  | { kind: "answered"; text: string; acknowledgment: string | null; parts: PartResult[]; laneId: string | null; notice: string | null };
+  | { kind: "clarify"; text: string; laneId: string | null; notice: string | null; notices: string[] }
+  | { kind: "answered"; text: string; acknowledgment: string | null; parts: PartResult[]; laneId: string | null; notice: string | null; notices: string[] };
 
 /** At most this many lanes run at once (agent-harness.md, "Lanes"). */
 export const MAX_RUNNING_LANES = 4;
@@ -160,7 +160,7 @@ export class Socrates {
   private readonly laneQueues = new Map<string, Promise<void>>();
   /** Runs in progress per goal; only the first resets the goal's capability cache. */
   private readonly goalRuns = new Map<string, number>();
-  /** Approval requests each lane is waiting on now. */
+  /** Approval requests per live turn; removed when a turn stops, even if its callback never settles. */
   private readonly approvalsWaiting = new Map<string, number>();
   /** Each running turn's approval callback and lane. */
   private readonly approvers = new Map<string, { approve: Approve; laneId: string | null }>();
@@ -176,14 +176,15 @@ export class Socrates {
       approve: async (request, origin) => {
         const run = origin?.turnId ? this.approvers.get(origin.turnId) : undefined;
         const lane = run?.laneId ?? null;
-        if (lane) this.approvalsWaiting.set(lane, (this.approvalsWaiting.get(lane) ?? 0) + 1);
+        const approvalKey = origin?.turnId;
+        if (approvalKey) this.approvalsWaiting.set(approvalKey, (this.approvalsWaiting.get(approvalKey) ?? 0) + 1);
         try {
           return await (run?.approve ?? this.options.approve)(request, origin ? { ...origin, laneId: lane } : undefined);
         } finally {
-          if (lane) {
-            const n = (this.approvalsWaiting.get(lane) ?? 1) - 1;
-            if (n > 0) this.approvalsWaiting.set(lane, n);
-            else this.approvalsWaiting.delete(lane);
+          if (approvalKey) {
+            const n = (this.approvalsWaiting.get(approvalKey) ?? 1) - 1;
+            if (n > 0) this.approvalsWaiting.set(approvalKey, n);
+            else this.approvalsWaiting.delete(approvalKey);
           }
         }
       },
@@ -201,12 +202,22 @@ export class Socrates {
 
   /** Open lanes, oldest first, and whether each is running. */
   lanes(): LaneState[] {
-    return this.store.listLanes().map((lane) => ({ ...lane, running: this.laneRuns.has(lane.id), waitingForApproval: (this.approvalsWaiting.get(lane.id) ?? 0) > 0 }));
+    return this.store.listLanes().map((lane) => ({ ...lane, running: this.laneRuns.has(lane.id), waitingForApproval: this.waitingForApproval(lane.id) }));
+  }
+
+  private waitingForApproval(laneId: string): boolean {
+    return [...this.approvers].some(([turnId, run]) => run.laneId === laneId && (this.approvalsWaiting.get(turnId) ?? 0) > 0);
+  }
+
+  private laneActivity(): Map<string, string | null> {
+    const activity = new Map<string, string | null>([...this.laneRuns.keys()].map((id) => [id, null]));
+    for (const [turnId, run] of this.approvers) if (run.laneId) activity.set(run.laneId, turnId);
+    return activity;
   }
 
   /** What every lane beside the main conversation is doing, for `<LANES>`. */
   private laneViews(): LaneView[] {
-    return laneSummaries(this.store, this.store.clock.now()).map((s) => ({ ...s, waitingForApproval: (this.approvalsWaiting.get(s.lane.id) ?? 0) > 0 }));
+    return laneSummaries(this.store, this.store.clock.now(), null, this.laneActivity()).map((s) => ({ ...s, waitingForApproval: this.waitingForApproval(s.lane.id) }));
   }
 
   /** Close an idle lane; its history stays in the ledger. */
@@ -327,10 +338,10 @@ export class Socrates {
         const turn = this.store.bindTurn({ userEventId: userEvent.id, taskId: target.task.id, route: "lane" });
         parts = [{ order: 1, request: message, dependsOn: [], turn, goal: target.goal, task: target.task, chat: this.store.currentChat(target.task.id), clarification: null, created: { goal: false, task: false } }];
       } else {
-        const routed = await this.router.route(message, signal, { laneId, userEventId });
+        const routed = await this.router.route(message, signal, { laneId, userEventId, laneActivity: this.laneActivity() });
         if (routed.kind === "clarify") {
           const notice = laneId ? laneNotice(this.store.requireLane(laneId).number, { kind: "clarify", question: routed.text }) : null;
-          return { kind: "clarify", text: routed.text, laneId, notice };
+          return { kind: "clarify", text: routed.text, laneId, notice, notices: notice ? [notice] : [] };
         }
         parts = routed.parts;
         acknowledgment = routed.acknowledgment;
@@ -365,11 +376,9 @@ export class Socrates {
         results.length === 1
           ? results[0]!.answer
           : [acknowledgment, ...results.map((r) => `**${r.order}. ${r.task.title}**\n\n${r.answer}`)].filter(Boolean).join("\n\n");
-      const inLane = results.find((r) => r.turn.laneId);
-      const notice = inLane
-        ? laneNotice(this.store.requireLane(inLane.turn.laneId!).number, { kind: "done", status: results.some((r) => r.status === "interrupted") ? "interrupted" : "completed", title: inLane.task.title, answer: inLane.answer })
-        : null;
-      return { kind: "answered", text, acknowledgment, parts: results, laneId, notice };
+      const notices = results.filter((r) => r.turn.laneId).map((r) =>
+        laneNotice(this.store.requireLane(r.turn.laneId!).number, { kind: "done", status: r.status, title: r.task.title, answer: r.answer }));
+      return { kind: "answered", text, acknowledgment, parts: results, laneId, notice: notices.length ? notices.join("\n") : null, notices };
     } finally {
       releaseMain();
       // Index what this message added, in the background; replies never wait for it.
@@ -416,6 +425,7 @@ export class Socrates {
         return await this.runPart({ ...part, turn: this.store.requireTurn(part.turn.id) }, parts, signal, options, fresh);
       } finally {
         this.approvers.delete(part.turn.id);
+        this.approvalsWaiting.delete(part.turn.id);
         const n = (this.goalRuns.get(goalId) ?? 1) - 1;
         if (n > 0) this.goalRuns.set(goalId, n);
         else this.goalRuns.delete(goalId);

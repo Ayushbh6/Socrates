@@ -1,10 +1,11 @@
 import type { ModelClient, ModelRequest, ModelResponse } from "@socrates/contracts";
-import { abortable } from "@socrates/shared";
+import { abortable, countTokens } from "@socrates/shared";
+import { laneSummaries } from "@socrates/router";
 import { LedgerStore } from "@socrates/store";
 import type { ApprovalOrigin, ApprovalRequest } from "@socrates/tools";
 import { describe, expect, it } from "vitest";
 import { continueTask, createGoal, createTask, decision, defineTask } from "../../router/test/helpers";
-import { MAX_RUNNING_LANES, Socrates, type SocratesOptions } from "../src";
+import { LANES_MAX_TOKENS, lanesBlock, MAX_RUNNING_LANES, Socrates, type SocratesOptions } from "../src";
 import { call, contextText, final, world } from "./helpers";
 
 type Out = { text: string } | { toolCalls: { name: string; input: unknown }[] };
@@ -485,13 +486,13 @@ describe("the main conversation sees its lanes", () => {
     const mainContext = contextText(agent.requests.at(-1)!);
     const block = /<LANES>\n([\s\S]*?)\n<\/LANES>/.exec(mainContext)![1]!;
     expect(block).toBe([
-      `lane 1 · finished at 10:00 · g2/t1 "Write notes" in goal "Notes" · workspace project`,
-      `  note: Finished Note the plan.`,
-      `  answer: Done with Note the plan. All good.`,
       `lane 2 · working since 10:00 · g3/t1 "Read a.txt" in goal "Reading" · workspace project`,
       `  latest step: read a.txt`,
       `lane 3 · waiting for the user's approval · g4/t1 "Run forever" in goal "Runner" · workspace project`,
       `  latest step: terminal: echo hi`,
+      `lane 1 · finished at 10:00 · g2/t1 "Write notes" in goal "Notes" · workspace project`,
+      `  note: Finished Note the plan.`,
+      `  answer: Done with Note the plan. All good.`,
     ].join("\n"));
     expect(mainContext.indexOf("<LANES>")).toBeGreaterThan(mainContext.indexOf("<CURRENT_TASK>"));
     expect(mainContext.indexOf("<LANES>")).toBeLessThan(mainContext.indexOf("<CURRENT_USER_MESSAGE>"));
@@ -552,5 +553,119 @@ it("<LANES> marks a working lane's note as being from before its current run", a
   expect(block).toContain(`  note from before this run: ${w.store.requireTask(w.taskId).continuationNote}`);
   hold.open();
   await lane;
+  await s.close();
+});
+
+it("keeps the active lane turn visible when a newer handoff is queued or cancelled", async () => {
+  const w = await world();
+  const started = gate(), hold = gate(), handed = gate();
+  const s = socrates(w.store, new Responder("router", () => continueTask()), new Responder("agent", async (m) => {
+    if (m === "First") { started.open(); await hold.opened; }
+    return final();
+  }));
+  const first = s.handle("First", { lane: "new" });
+  await started.opened;
+  const original = w.store.latestLaneTurn(s.lanes()[0]!.id)!;
+  const stop = new AbortController();
+  w.clock.advance(60_000);
+  const next = s.handle("Next", { signal: stop.signal, onHandoff() { handed.open(); } });
+  await handed.opened;
+  expect(w.store.latestLaneTurn(original.laneId!)!.id).toBe(original.id);
+  stop.abort(); await next;
+  const summary = laneSummaries(w.store, w.clock.now())[0]!;
+  expect(summary).toMatchObject({ status: "working", at: original.createdAt, text: null });
+  hold.open(); await first; await s.close();
+});
+
+it("clears cancelled approval state and ignores its late settlement during a newer approval", async () => {
+  const w = await world();
+  const asked = gate(), old = gate(), askedAgain = gate(), newer = gate();
+  const counts = new Map<string, number>();
+  const s = socrates(w.store, new Responder("router", () => continueTask()), new Responder("agent", (m) => {
+    const n = counts.get(m) ?? 0; counts.set(m, n + 1);
+    return n === 0 ? { toolCalls: [call("terminal", { command: "echo ok", timeout_ms: 0 })] } : final();
+  }));
+  const stop = new AbortController();
+  const first = s.handle("First", { lane: "new", signal: stop.signal, approve: async () => { asked.open(); await old.opened; return true; } });
+  await asked.opened;
+  expect(s.lanes()[0]!.waitingForApproval).toBe(true);
+  stop.abort(); await first;
+  expect(s.lanes()[0]).toMatchObject({ running: false, waitingForApproval: false });
+  const second = s.handle("Second", { lane: s.lanes()[0]!.id, approve: async () => { askedAgain.open(); await newer.opened; return true; } });
+  await askedAgain.opened;
+  old.open(); await Promise.resolve(); await Promise.resolve();
+  expect(s.lanes()[0]!.waitingForApproval).toBe(true);
+  newer.open(); await second;
+  expect(s.lanes()[0]!.waitingForApproval).toBe(false);
+  await s.close();
+});
+
+it("keeps live lanes visible within budget despite oversized notes and many finished lanes", async () => {
+  const w = await world();
+  for (let i = 0; i < 44; i++) {
+    const lane = w.store.openLane();
+    const turn = w.store.bindTurn({ userEventId: w.store.recordUserMessage("Work", lane.id).id, taskId: w.taskId, route: "test" });
+    if (i < 40) w.store.completeTurn(turn.id, { responseEventId: w.store.recordResponse("Done").id, continuationNote: "very large note ".repeat(3000) });
+  }
+  const block = lanesBlock(w.store, laneSummaries(w.store, w.clock.now()).map((s) => ({ ...s, waitingForApproval: false })), w.clock.now(), "UTC")!;
+  expect(countTokens(block)).toBeLessThanOrEqual(LANES_MAX_TOKENS);
+  for (const n of [41, 42, 43, 44]) expect(block).toContain(`lane ${n} · working`);
+  expect(block).toContain("more lanes omitted");
+});
+
+it("gives general-task lane runs their lane identity", async () => {
+  const w = await world();
+  const router = new Responder("router", () => ({ text: decision({ decision: "resume_existing", goal_label: "general", workspace_confidence: null }) }));
+  const agent = new Responder("agent", () => final());
+  const s = socrates(w.store, router, agent);
+  await s.handle("What is two plus two?", { lane: "new" });
+  expect(contextText(agent.requests[0]!)).toContain("lane: you are lane 1");
+  await s.close();
+});
+
+it("reports every compound lane part with its own outcome", async () => {
+  const w = await world();
+  const text = "Fix the server, then write the docs.";
+  const router = new Responder("router", () => ({ text: decision({ decision: "compound", workspace_confidence: null, parts: [
+    { order: 1, request: "Fix the server", decision: "continue_current", goal_label: "current", task_decision: "continue_task", task_label: "current", new_goal_title: null, new_task_title: null, workspace_confidence: "high", reason: "r", depends_on: [] },
+    { order: 2, request: "write the docs", decision: "continue_current", goal_label: "current", task_decision: "create_task", task_label: null, new_goal_title: null, new_task_title: "Write docs", ...defineTask("Write docs"), workspace_confidence: "high", reason: "r", depends_on: [1] },
+  ] as never }) }));
+  const stop = new AbortController();
+  let steps = 0;
+  const agent = new Responder("agent", () => { if (++steps === 2) stop.abort(); return final({ full_answer: "Server fixed." }); });
+  const s = socrates(w.store, router, agent);
+  const result = await s.handle(text, { lane: "new", signal: stop.signal });
+  expect(result.notices).toHaveLength(2);
+  expect(result.notices[0]).toBe("Lane 1 finished: Fix the server — Server fixed.");
+  expect(result.notices[1]).toMatch(/^Lane 1 stopped: Write docs/);
+  expect(result.notice).toBe(result.notices.join("\n"));
+  await s.close();
+});
+
+it("uses live run state after restart, including while a recovered lane resumes", async () => {
+  const w = await world();
+  const lane = w.store.openLane();
+  w.store.openLane(); // An empty panel left open by the previous process.
+  const previous = w.store.bindTurn({ userEventId: w.store.recordUserMessage("Earlier work", lane.id).id, taskId: w.taskId, route: "test" });
+  w.store.completeTurn(previous.id, { responseEventId: w.store.recordResponse("Earlier work finished").id });
+  const stale = w.store.bindTurn({ userEventId: w.store.recordUserMessage("Old work", lane.id).id, taskId: w.taskId, route: "test" });
+  const started = gate(), hold = gate();
+  const router = new Responder("router", () => ({ text: decision({ decision: "resume_existing", goal_label: "general", workspace_confidence: null }) }));
+  const agent = new Responder("agent", async (m) => { if (m === "Resume") { started.open(); await hold.opened; } return final(); });
+  const s = socrates(w.store, router, agent);
+  await s.handle("Status");
+  expect(contextText(router.requests.at(-1)!)).toContain("lane 1 — stopped");
+  expect(contextText(agent.requests.at(-1)!)).toContain("lane 1 · stopped");
+  expect(contextText(agent.requests.at(-1)!)).toContain("lane 2 · idle");
+  w.clock.advance(60_000);
+  const run = s.handle("Resume", { lane: lane.id });
+  await started.opened;
+  await s.handle("Status again");
+  expect(contextText(agent.requests.at(-1)!)).toContain("lane 1 · working since 10:01");
+  hold.open(); await run;
+  await s.handle("Final status");
+  expect(contextText(agent.requests.at(-1)!)).toContain("lane 1 · finished");
+  // Summary repair does not rewrite the exact history of the interrupted process.
+  expect(w.store.requireTurn(stale.id).status).toBe("in_progress");
   await s.close();
 });

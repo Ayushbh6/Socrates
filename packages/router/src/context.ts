@@ -71,6 +71,8 @@ export interface BuildContextOptions {
    * conversation and this lane.
    */
   laneId?: string | null;
+  /** Host snapshot: active lanes mapped to their executing turn, or null while routing/queued. */
+  laneActivity?: ReadonlyMap<string, string | null>;
 }
 
 /** An open goal whose scope matched gets this much, in fused-rank units. */
@@ -126,7 +128,7 @@ export function buildRoutingContext(store: LedgerStore, message: string, options
     section("KNOWN_GOALS", renderKnownGoals(store, goals, current)),
   ];
   // Work running or recently finished in parallel lanes, other than the lane being routed.
-  const lanes = laneSummaries(store, now, laneId);
+  const lanes = laneSummaries(store, now, laneId, options.laneActivity);
   if (lanes.length) sections.push(section("LANES", renderLanesForRouter(store, lanes, now, options.timeZone)));
   const laneSelectors = {
     goals: lanes.flatMap((l) => (l.goal ? [l.goal.number] : [])),

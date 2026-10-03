@@ -1238,9 +1238,14 @@ export class LedgerStore {
     return this.all(`SELECT * FROM lanes ${options.includeClosed ? "" : "WHERE closed_at IS NULL"} ORDER BY lane_number`).map(toLane);
   }
 
-  /** The newest turn that ran, or waits to run, in a lane. */
-  latestLaneTurn(laneId: string): Turn | null {
-    const r = this.get("SELECT * FROM turns WHERE lane_id = ? ORDER BY project_turn DESC LIMIT 1", laneId);
+  /** The earliest unfinished turn in a lane, otherwise its most recently finished turn.
+   * Queued handoffs and later cancelled turns must not hide work still in progress.
+   * Runtime-aware callers can disable that preference and use the latest stored activity.
+   */
+  latestLaneTurn(laneId: string, unfinishedFirst = true): Turn | null {
+    const r = this.get(`SELECT * FROM turns WHERE lane_id = ? ORDER BY
+      ${unfinishedFirst ? "(status = 'in_progress') DESC, CASE WHEN status = 'in_progress' THEN project_turn END ASC," : ""}
+      COALESCE(completed_at, created_at) DESC, project_turn DESC LIMIT 1`, laneId);
     return r ? toTurn(r) : null;
   }
 

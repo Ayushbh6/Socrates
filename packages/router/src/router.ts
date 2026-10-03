@@ -108,7 +108,7 @@ export class GoalRouter {
   }
 
   /** Persist the exact message, route it, and bind it. A lane's message is recorded in that lane. */
-  async route(message: string, signal?: AbortSignal, options: { laneId?: string | null; userEventId?: string } = {}): Promise<RoutingResult> {
+  async route(message: string, signal?: AbortSignal, options: { laneId?: string | null; userEventId?: string; laneActivity?: ReadonlyMap<string, string | null> } = {}): Promise<RoutingResult> {
     signal?.throwIfAborted();
     const laneId = options.laneId ?? null;
     const userEvent = options.userEventId ? this.store.getEvent(options.userEventId) : this.store.recordUserMessage(message, laneId);
@@ -118,6 +118,7 @@ export class GoalRouter {
       timeZone: this.timeZone,
       semantic,
       laneId,
+      ...(options.laneActivity ? { laneActivity: options.laneActivity } : {}),
       ...(this.historyBudgetTokens !== undefined ? { historyBudgetTokens: this.historyBudgetTokens } : {}),
     });
     const seen = emptySeen();

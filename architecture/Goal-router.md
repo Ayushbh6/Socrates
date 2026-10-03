@@ -301,7 +301,7 @@ The labels `older_1`, `older_2`, and `older_3` are temporary ranks for this requ
 
 #### 4. `LANES`
 
-Present only when work runs or recently finished in parallel lanes beside the conversation (`agent-harness.md`, "Lanes"); a lane being routed does not see itself. One line per open lane: its number, status (working, waiting for the user's answer, finished or stopped with the time), and its goal and task with `gN` and `gN/tN` selectors. A lane that finished or stopped more than `24` hours ago is left out. The selectors are valid labels without a `ledger_query`.
+Present only when work runs or recently finished in parallel lanes beside the conversation (`agent-harness.md`, "Lanes"); a lane being routed does not see itself. One line per open lane, selecting its earliest unfinished turn before its most recently finished turn so queued handoffs do not hide ongoing work (the host's live turn overrides this ledger-only fallback, including after restart): its number, status (working, waiting for the user's answer, finished or stopped with the time), and its goal and task with `gN` and `gN/tN` selectors. A lane that finished or stopped more than `24` hours ago is left out. The selectors are valid labels without a `ledger_query`.
 
 A message that only asks how a lane's work is going routes to `general`, even when the lane works on the current task, and is answered from `<LANES>` without disturbing the lane. A message that changes or adds to a lane's work routes to that lane's task by its selectors and is handed to the lane. New, separate work is never routed into a lane's task merely because the lane exists.
 

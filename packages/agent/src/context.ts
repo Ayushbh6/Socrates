@@ -58,7 +58,7 @@ export function assembleContext(input: ContextInput): TextPart[] {
 
   const volatile = [
     goal.general ? null : goalState(store, goal, task),
-    task.general ? null : currentTask(task, input.part, store.requestForTurn(turn.id).request, laneOf(store, turn)),
+    task.general && !turn.laneId ? null : currentTask(task, input.part, store.requestForTurn(turn.id).request, laneOf(store, turn)),
     task.general ? block("RECENT_ACTIVITY", renderActivity(store, input.now, input.timeZone)) : null,
     input.lanes ?? null,
     ...input.dependsOn.map((d) => evidenceFromPart(store, d.order, d.turn)),
