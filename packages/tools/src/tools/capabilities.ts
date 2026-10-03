@@ -359,7 +359,7 @@ export function capabilityControlTool(loaded: CapabilityRuntime): ToolHandler<Ca
       const entry = ctx.catalog.entries().find((e) => e.kind === ref.entryKind && e.name === ref.name);
       if (!entry) throw new ToolError("capability_unavailable", `${ref.name} is no longer in the catalog.`, "Search again with capability_search.");
       if (entry.availability === "authentication_required") {
-        throw new ToolError("authentication_required", `${entry.name} needs credentials before it can be used.`, "Tell the user this server needs its credentials configured in ~/.socrates/mcp.json; do not ask for credentials.", false);
+        throw new ToolError("authentication_required", `${entry.name} needs credentials before it can be used.`, "Tell the user this server needs its credentials configured in mcp.json in the Socrates data folder; do not ask for credentials.", false);
       }
       if (entry.availability !== "available") {
         throw new ToolError("capability_unavailable", `${entry.name} is ${entry.availability}.`, "Continue without it, or search for an alternative.", false);

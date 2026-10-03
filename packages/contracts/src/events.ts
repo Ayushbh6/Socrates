@@ -81,7 +81,8 @@ export interface EventPayloads {
   /** A chat closed by automatic rollover; its continuation opens with the handover capsule. */
   chat_closed: { reason: "rollover"; handover: string };
   /** A turn that ended without a final answer: cancelled by the user, or failed. */
-  turn_interrupted: { project_turn: number; reason: "cancelled" | "failed"; tool_calls: number; continuation_note: string };
+  /** `restarted`: the process stopped while the turn ran; found unfinished at the next start. */
+  turn_interrupted: { project_turn: number; reason: "cancelled" | "failed" | "restarted"; tool_calls: number; continuation_note: string };
   /** An operational warning about one turn, such as a rejected final answer or anchor proposal. */
   agent_warning: { kind: "final_answer_invalid" | "anchor_rejected" | "model_error" | "agent_error" | "context_limit" | "compactor_failed" | "compaction_failsafe"; detail: string };
   /**

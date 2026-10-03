@@ -10,9 +10,9 @@ import { type InstalledSkill, loadSkill, scanSkills } from "./skills";
 /** MCP tool descriptions in the catalog are bounded; the live schema arrives only on activation. */
 export const MCP_DESCRIPTION_MAX_CHARS = 400;
 
-/** The user's global Socrates folder: `$SOCRATES_HOME`, or `~/.socrates`. */
+/** The user's Socrates data folder: `$SOCRATES_HOME`, or `~/.socrates-v2` (never Socrates 0.1's `~/.socrates`). */
 export function socratesHome(): string {
-  return process.env.SOCRATES_HOME || path.join(homedir(), ".socrates");
+  return process.env.SOCRATES_HOME || path.join(homedir(), ".socrates-v2");
 }
 
 export interface InstalledCatalogOptions {

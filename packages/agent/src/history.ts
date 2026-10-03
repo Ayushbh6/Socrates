@@ -267,5 +267,7 @@ function responseSection(store: LedgerStore, turn: Turn): string {
   const interruption = store.interruption(turn.id);
   if (!interruption) return "(No answer was given.)";
   const calls = `${interruption.tool_calls} tool call${interruption.tool_calls === 1 ? "" : "s"}`;
-  return interruption.reason === "cancelled" ? `(The user stopped this turn after ${calls}; no answer was given.)` : `(This turn failed after ${calls}; no answer was given.)`;
+  return interruption.reason === "cancelled" ? `(The user stopped this turn after ${calls}; no answer was given.)`
+    : interruption.reason === "restarted" ? `(Socrates stopped while this turn ran, after ${calls}; no answer was given.)`
+    : `(This turn failed after ${calls}; no answer was given.)`;
 }

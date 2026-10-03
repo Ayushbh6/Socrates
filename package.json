@@ -8,6 +8,7 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "server": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx apps/server/src/main.ts",
     "test": "NODE_OPTIONS=--disable-warning=ExperimentalWarning vitest run",
     "test:watch": "NODE_OPTIONS=--disable-warning=ExperimentalWarning vitest",
     "eval:router": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/router/eval/run-router-eval.ts",

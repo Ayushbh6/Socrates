@@ -107,6 +107,18 @@ export type HandleResult =
   | { kind: "clarify"; text: string; laneId: string | null; notice: string | null; notices: string[] }
   | { kind: "answered"; text: string; acknowledgment: string | null; parts: PartResult[]; laneId: string | null; notice: string | null; notices: string[] };
 
+/**
+ * Interrupt every turn a stopped process left running, before a new Socrates
+ * starts: each keeps its exact evidence and gets a mechanical note, so the
+ * user can continue it. Returns the turns it interrupted.
+ */
+export function interruptUnfinishedTurns(store: LedgerStore): Turn[] {
+  return store.unfinishedTurns().map((turn) => {
+    const calls = store.evidenceForTurn(turn.id).length;
+    return store.interruptTurn(turn.id, { reason: "restarted", toolCalls: calls, continuationNote: mechanicalNote("Interrupted when Socrates stopped", calls) });
+  });
+}
+
 /** At most this many lanes run at once (agent-harness.md, "Lanes"). */
 export const MAX_RUNNING_LANES = 4;
 

@@ -627,6 +627,10 @@ export class LedgerStore {
     return r ? toWorkspace(r) : null;
   }
 
+  listWorkspaces(): Workspace[] {
+    return this.all("SELECT * FROM workspaces ORDER BY created_at, name").map(toWorkspace);
+  }
+
   findWorkspaceByName(name: string): Workspace | null {
     const r = this.get("SELECT * FROM workspaces WHERE name = ? COLLATE NOCASE", name);
     return r ? toWorkspace(r) : null;
@@ -1168,7 +1172,7 @@ export class LedgerStore {
    * and long-running work"): record why, and keep the task's ledger entry
    * truthful with a mechanical continuation note.
    */
-  interruptTurn(turnId: string, input: { reason: "cancelled" | "failed"; toolCalls: number; continuationNote: string }): Turn {
+  interruptTurn(turnId: string, input: { reason: "cancelled" | "failed" | "restarted"; toolCalls: number; continuationNote: string }): Turn {
     return this.transaction(() => {
       const turn = this.requireInProgressTurn(turnId);
       const task = this.reviseTask(turn.taskId!, { continuationNote: input.continuationNote });
@@ -1236,6 +1240,27 @@ export class LedgerStore {
   /** Lanes in the order they were opened; open ones only unless asked. */
   listLanes(options: { includeClosed?: boolean } = {}): Lane[] {
     return this.all(`SELECT * FROM lanes ${options.includeClosed ? "" : "WHERE closed_at IS NULL"} ORDER BY lane_number`).map(toLane);
+  }
+
+  /** Task turns still marked in progress, oldest first: after a restart, turns the stopped process never finished. */
+  unfinishedTurns(): Turn[] {
+    return this.all("SELECT * FROM turns WHERE status = 'in_progress' ORDER BY project_turn").map(toTurn);
+  }
+
+  /**
+   * One conversation's turns, newest first, before a project turn: the main
+   * conversation's are those whose message was sent there (including turns
+   * later handed to a lane), a lane's are those that ran in it.
+   */
+  conversationTurns(laneId: string | null, options: { before?: number; limit: number }): Turn[] {
+    const where = laneId ? "t.lane_id = ?" : "json_extract(e.payload, '$.lane_id') IS NULL";
+    return this.all(
+      `SELECT t.* FROM turns t JOIN events e ON e.id = t.user_event_id
+        WHERE ${where} AND t.project_turn < ? ORDER BY t.project_turn DESC LIMIT ?`,
+      ...(laneId ? [laneId] : []),
+      options.before ?? Number.MAX_SAFE_INTEGER,
+      options.limit,
+    ).map(toTurn);
   }
 
   /** The earliest unfinished turn in a lane, otherwise its most recently finished turn.

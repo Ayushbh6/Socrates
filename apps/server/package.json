@@ -1,0 +1,22 @@
+{
+  "name": "@socrates/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@socrates/agent": "workspace:*",
+    "@socrates/capabilities": "workspace:*",
+    "@socrates/contracts": "workspace:*",
+    "@socrates/providers": "workspace:*",
+    "@socrates/retrieval": "workspace:*",
+    "@socrates/router": "workspace:*",
+    "@socrates/shared": "workspace:*",
+    "@socrates/store": "workspace:*",
+    "@socrates/tools": "workspace:*",
+    "fastify": "^5.8.5",
+    "zod": "^4.1.0"
+  }
+}
