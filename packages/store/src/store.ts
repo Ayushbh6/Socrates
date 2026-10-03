@@ -70,6 +70,16 @@ export interface Turn {
   status: "in_progress" | "completed" | "interrupted";
   createdAt: string;
   completedAt: string | null;
+  /** The lane the turn ran in; null for the main conversation. */
+  laneId: string | null;
+}
+
+/** A parallel lane (agent-harness.md, "Lanes"). */
+export interface Lane {
+  id: string;
+  number: number;
+  openedAt: string;
+  closedAt: string | null;
 }
 
 export interface Anchor {
@@ -178,6 +188,8 @@ type Row = Record<string, unknown>;
 
 const str = (v: unknown): string => String(v);
 const strOrNull = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
+/** The turns of one conversation: the main one (null) or a lane, which takes one parameter. */
+const channel = (laneId: string | null): string => (laneId ? "lane_id = ?" : "lane_id IS NULL");
 const num = (v: unknown): number => Number(v);
 
 function toGoal(r: Row): Goal {
@@ -243,7 +255,12 @@ function toTurn(r: Row): Turn {
     status: str(r.status) as Turn["status"],
     createdAt: str(r.created_at),
     completedAt: strOrNull(r.completed_at),
+    laneId: strOrNull(r.lane_id),
   };
+}
+
+function toLane(r: Row): Lane {
+  return { id: str(r.id), number: num(r.lane_number), openedAt: str(r.opened_at), closedAt: strOrNull(r.closed_at) };
 }
 
 function toHistoryRecord(r: Row): HistoryRecord {
@@ -432,13 +449,13 @@ export class LedgerStore {
   }
 
   /** Persist the exact user message before anything else happens to it. */
-  recordUserMessage(text: string): StoredEvent<"user_message"> {
-    return this.appendEvent("user_message", { text });
+  recordUserMessage(text: string, laneId: string | null = null): StoredEvent<"user_message"> {
+    return this.appendEvent("user_message", laneId ? { text, lane_id: laneId } : { text });
   }
 
-  /** The latest turn, independent of the bounded router-history window. */
-  pendingClarification(): Turn | null {
-    const r = this.get("SELECT * FROM turns ORDER BY project_turn DESC LIMIT 1");
+  /** The conversation's latest turn when it is a clarification: the main conversation's, or a lane's. */
+  pendingClarification(laneId: string | null = null): Turn | null {
+    const r = this.get(`SELECT * FROM turns WHERE ${channel(laneId)} ORDER BY project_turn DESC LIMIT 1`, ...(laneId ? [laneId] : []));
     return r && r.kind === "clarification" ? toTurn(r) : null;
   }
 
@@ -520,11 +537,23 @@ export class LedgerStore {
       case "turn_bound": {
         const p = e.payload as EventPayloads["turn_bound"];
         if (!p.user_event_id) throw new StoreError("Legacy turn event has no user-message linkage.");
-        this.run("INSERT INTO turns (id, project_turn, kind, goal_id, task_id, chat_id, part_order, user_event_id, workspace_confidence, gate_armed, status, created_at) VALUES (?, ?, 'task', ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?)", e.turn_id, p.project_turn, e.goal_id, e.task_id, e.chat_id, p.part_order, p.user_event_id, p.workspace_confidence, p.first_mutation_gate_armed ? 1 : 0, e.at); break;
+        this.run("INSERT INTO turns (id, project_turn, kind, goal_id, task_id, chat_id, part_order, user_event_id, workspace_confidence, gate_armed, status, created_at, lane_id) VALUES (?, ?, 'task', ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?, ?)", e.turn_id, p.project_turn, e.goal_id, e.task_id, e.chat_id, p.part_order, p.user_event_id, p.workspace_confidence, p.first_mutation_gate_armed ? 1 : 0, e.at, this.laneOfMessage(p.user_event_id)); break;
       }
       case "clarification_bound": {
         const p = e.payload as EventPayloads["clarification_bound"];
-        this.run("INSERT INTO turns (id, project_turn, kind, user_event_id, gate_armed, status, created_at) VALUES (?, ?, 'clarification', ?, 0, 'in_progress', ?)", e.turn_id, p.project_turn, p.user_event_id, e.at); break;
+        this.run("INSERT INTO turns (id, project_turn, kind, user_event_id, gate_armed, status, created_at, lane_id) VALUES (?, ?, 'clarification', ?, 0, 'in_progress', ?, ?)", e.turn_id, p.project_turn, p.user_event_id, e.at, this.laneOfMessage(p.user_event_id)); break;
+      }
+      case "lane_opened": {
+        const p = e.payload as EventPayloads["lane_opened"];
+        this.run("INSERT INTO lanes (id, lane_number, opened_at) VALUES (?, ?, ?)", p.lane_id, p.lane_number, e.at); break;
+      }
+      case "lane_closed": {
+        const p = e.payload as EventPayloads["lane_closed"];
+        this.run("UPDATE lanes SET closed_at = ? WHERE id = ?", e.at, p.lane_id); break;
+      }
+      case "turn_moved_to_lane": {
+        const p = e.payload as EventPayloads["turn_moved_to_lane"];
+        this.run("UPDATE turns SET lane_id = ? WHERE id = ?", p.lane_id, e.turn_id); break;
       }
       case "turn_completed": {
         const p = e.payload as EventPayloads["turn_completed"];
@@ -1027,8 +1056,8 @@ export class LedgerStore {
       );
       this.run(
         `INSERT INTO turns (id, project_turn, kind, goal_id, task_id, chat_id, part_order, user_event_id, response_event_id,
-                            workspace_confidence, gate_armed, status, created_at, completed_at)
-         VALUES (?, ?, 'task', ?, ?, ?, ?, ?, NULL, ?, ?, 'in_progress', ?, NULL)`,
+                            workspace_confidence, gate_armed, status, created_at, completed_at, lane_id)
+         VALUES (?, ?, 'task', ?, ?, ?, ?, ?, NULL, ?, ?, 'in_progress', ?, NULL, ?)`,
         id,
         projectTurn,
         task.goalId,
@@ -1039,6 +1068,7 @@ export class LedgerStore {
         input.workspaceConfidence ?? null,
         gateArmed ? 1 : 0,
         event.at,
+        this.laneOfMessage(input.userEventId),
       );
       return this.requireTurn(id);
     });
@@ -1058,14 +1088,15 @@ export class LedgerStore {
       const completed = this.appendEvent("turn_completed", { project_turn: projectTurn, response_event_id: response.id }, { turn_id: id });
       this.run(
         `INSERT INTO turns (id, project_turn, kind, goal_id, task_id, chat_id, part_order, user_event_id, response_event_id,
-                            workspace_confidence, gate_armed, status, created_at, completed_at)
-         VALUES (?, ?, 'clarification', NULL, NULL, NULL, NULL, ?, ?, NULL, 0, 'completed', ?, ?)`,
+                            workspace_confidence, gate_armed, status, created_at, completed_at, lane_id)
+         VALUES (?, ?, 'clarification', NULL, NULL, NULL, NULL, ?, ?, NULL, 0, 'completed', ?, ?, ?)`,
         id,
         projectTurn,
         userEventId,
         response.id,
         bound.at,
         completed.at,
+        this.laneOfMessage(userEventId),
       );
       return this.requireTurn(id);
     });
@@ -1166,9 +1197,67 @@ export class LedgerStore {
     return turn;
   }
 
-  /** The goal, task, and chat of the most recent task turn. "Current" is global across workspaces. */
-  currentBinding(): CurrentBinding | null {
-    const r = this.get("SELECT * FROM turns WHERE kind = 'task' ORDER BY project_turn DESC LIMIT 1");
+  // ── Lanes ────────────────────────────────────────────────────────────────
+
+  openLane(): Lane {
+    return this.transaction(() => {
+      const id = newId("lane");
+      const number = num(this.get("SELECT COALESCE(MAX(lane_number), 0) + 1 AS n FROM lanes")!.n);
+      const event = this.appendEvent("lane_opened", { lane_id: id, lane_number: number });
+      this.run("INSERT INTO lanes (id, lane_number, opened_at) VALUES (?, ?, ?)", id, number, event.at);
+      return this.requireLane(id);
+    });
+  }
+
+  closeLane(laneId: string): Lane {
+    return this.transaction(() => {
+      const lane = this.requireLane(laneId);
+      if (lane.closedAt) return lane;
+      const event = this.appendEvent("lane_closed", { lane_id: laneId });
+      this.run("UPDATE lanes SET closed_at = ? WHERE id = ?", event.at, laneId);
+      return this.requireLane(laneId);
+    });
+  }
+
+  getLane(id: string): Lane | null {
+    const r = this.get("SELECT * FROM lanes WHERE id = ?", id);
+    return r ? toLane(r) : null;
+  }
+
+  requireLane(id: string): Lane {
+    const lane = this.getLane(id);
+    if (!lane) throw new StoreError(`Lane ${id} does not exist.`);
+    return lane;
+  }
+
+  /** Lanes in the order they were opened; open ones only unless asked. */
+  listLanes(options: { includeClosed?: boolean } = {}): Lane[] {
+    return this.all(`SELECT * FROM lanes ${options.includeClosed ? "" : "WHERE closed_at IS NULL"} ORDER BY lane_number`).map(toLane);
+  }
+
+  /** Hand a main-conversation turn to the lane whose run holds its task. */
+  moveTurnToLane(turnId: string, laneId: string): Turn {
+    return this.transaction(() => {
+      const turn = this.requireTurn(turnId);
+      this.requireLane(laneId);
+      this.appendEvent("turn_moved_to_lane", { lane_id: laneId }, { goal_id: turn.goalId, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turnId });
+      this.run("UPDATE turns SET lane_id = ? WHERE id = ?", laneId, turnId);
+      return this.requireTurn(turnId);
+    });
+  }
+
+  private laneOfMessage(userEventId: string): string | null {
+    const payload = this.getEvent(userEventId)?.payload as EventPayloads["user_message"] | undefined;
+    return payload?.lane_id ?? null;
+  }
+
+  /**
+   * The goal, task, and chat of the conversation's most recent task turn:
+   * the main conversation's by default, or a lane's. "Current" is global
+   * across workspaces; a lane's work never changes the main conversation's.
+   */
+  currentBinding(laneId: string | null = null): CurrentBinding | null {
+    const r = this.get(`SELECT * FROM turns WHERE kind = 'task' AND ${channel(laneId)} ORDER BY project_turn DESC LIMIT 1`, ...(laneId ? [laneId] : []));
     if (!r) return null;
     const turn = toTurn(r);
     const goal = this.requireGoal(turn.goalId!);
@@ -1177,11 +1266,14 @@ export class LedgerStore {
   }
 
   /**
-   * Completed exchanges, newest first. Each user message appears once even
-   * when a compound route bound it to several tasks.
+   * Completed exchanges of the given conversations (the main one by default),
+   * newest first. Each user message appears once even when a compound route
+   * bound it to several tasks.
    */
-  *recentExchanges(): Generator<Exchange> {
+  *recentExchanges(lanes: (string | null)[] = [null]): Generator<Exchange> {
     const batch = 50;
+    const ids = lanes.filter((l): l is string => l !== null);
+    const where = [...(lanes.includes(null) ? ["t.lane_id IS NULL"] : []), ...(ids.length ? [`t.lane_id IN (${ids.map(() => "?").join(", ")})`] : [])].join(" OR ") || "0";
     let before = Number.MAX_SAFE_INTEGER;
     const seen = new Set<string>();
     while (true) {
@@ -1190,10 +1282,11 @@ export class LedgerStore {
            FROM turns t
            JOIN events ue ON ue.id = t.user_event_id
            JOIN events re ON re.id = t.response_event_id
-          WHERE t.response_event_id IS NOT NULL AND t.project_turn < ?
+          WHERE t.response_event_id IS NOT NULL AND t.project_turn < ? AND (${where})
           ORDER BY t.project_turn DESC
           LIMIT ?`,
         before,
+        ...ids,
         batch,
       );
       if (rows.length === 0) return;

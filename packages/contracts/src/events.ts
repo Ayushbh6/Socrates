@@ -8,7 +8,13 @@ import type { JsonSchema, ModelResponse } from "./model";
  */
 
 export interface EventPayloads {
-  user_message: { text: string };
+  /** `lane_id`: the lane the message was sent to; absent for the main conversation. */
+  user_message: { text: string; lane_id?: string };
+  /** A parallel lane (agent-harness.md, "Lanes"); numbers are never reused. */
+  lane_opened: { lane_id: string; lane_number: number };
+  lane_closed: { lane_id: string };
+  /** A main-conversation turn whose task was busy in a lane, handed to that lane. */
+  turn_moved_to_lane: { lane_id: string };
   routing_completed: {
     outcome: "decision" | "clarify";
     decision: unknown;

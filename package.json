@@ -17,6 +17,7 @@
     "eval:compaction": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/agent/eval/run-compaction-e2e.ts",
     "eval:capabilities": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/capabilities/eval/run-capabilities-e2e.ts",
     "eval:embeddings": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/retrieval/eval/run-embeddings-e2e.ts",
+    "eval:lanes": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/agent/eval/run-lanes-e2e.ts",
     "eval:provider": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/providers/eval/run-provider-smoke.ts"
   },
   "devDependencies": {

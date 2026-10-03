@@ -211,7 +211,7 @@ export class ToolRunner {
       terminals: scope.workspace ? this.terminals(scope.workspace) : null,
       async requireApproval(request: ApprovalRequest) {
         throwIfCancelled(scope.signal);
-        const granted = await abortable(approve(request), scope.signal).catch(error => {
+        const granted = await abortable(approve(request, scope.binding), scope.signal).catch(error => {
           throwIfCancelled(scope.signal);
           throw error;
         });

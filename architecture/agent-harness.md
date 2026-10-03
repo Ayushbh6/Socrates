@@ -983,6 +983,18 @@ Rules:
 - `<CURRENT_USER_MESSAGE>` holds the user's original message exactly. When the router asked a clarification first, one line after it records the question and the user's answer. In a compound part it still holds the whole message, and `<CURRENT_TASK>` names the part this run handles (`this_turn: part 2 of 2 …`).
 - `<PROJECT_CONTEXT>` (at most `3,000` tokens) shows every active and provisional anchor of the goal: one under `1,500` tokens whole, a larger one as an outline of its headings with their line numbers, followed by at most `3` of its sections. Sections are chosen by fusing a keyword ranking with a meaning ranking; both read the message together with the current task's title and continuation note, because a request such as "let's start today's lesson" names no day while the note "Day 9 completed" does. At most `2` sections of other workspace files follow, on a `strong` meaning match against the current request alone (without the task title or continuation note), labelled `related file`. Text is always read from disk when the context is assembled; the index only picks sections, and a vector of content that has changed since it was indexed selects nothing. A missing anchor is reported in one line, and an anchor that may hold credentials (the same patterns the index skips) is named but never shown. Without a workspace, or with nothing to show, the block is omitted.
 
+## Lanes
+
+Socrates is one assistant with one main conversation. Work that should run alongside it goes into a **lane**: a run of the same Socrates, with the same memory, working one task in its own panel. Lanes are not separate chats; every goal, task, note, anchor and Skill is shared, and the ledger records everything once.
+
+- **Where a message goes.** The application chooses per message: the main conversation (the default), a new lane, or an open lane. The main conversation handles one message at a time; a message sent while it is busy is held by the application until it is free ("Queue"). At most `4` lanes run at once; a fifth is refused before anything is recorded. A lane's work is queued, never refused.
+- **Routing.** A lane's first message, and an answer to a lane's own clarification, go through the Goal Router like any message; the router sees the main conversation's exchanges and the lane's own, never another lane's, and until the lane has a task its "current" is the main conversation's, where it was started. A lane's later messages continue the lane's task directly, without a routing call. A compound message sent to a lane runs its parts in order inside that lane.
+- **"Current" stays per conversation.** The main conversation's current task is the task of its own most recent turn; a lane's turns never change it (`Goal-router.md`, "Workspace resolution").
+- **One run per task.** A task is worked by one run at a time. A message for a task that is already running waits for that run to finish its turn. A main-conversation message whose task is queued or running in a lane is handed to that lane: its turn moves to the lane (`turn_moved_to_lane`), it runs there next, and the main conversation is immediately free for the next message. A message handed to a running lane is picked up after the lane's current turn, not in the middle of it.
+- **Approvals and cancellation per run.** Each approval request carries its goal, task, turn and lane, so the application shows it in the panel that asked. Each message has its own cancellation; stopping one lane leaves the main conversation and the other lanes running. Runs of the same goal share its active capabilities; only the first concurrent run resets the goal's capability cache.
+- **Shared services.** Runs share the event log, the ledger, the embedding index, the terminal supervisor, MCP connections, and the per-workspace mutation lock; two lanes working in one repository take turns writing, and the stale-edit check stops silent overwrites.
+- **Lifecycle.** Lanes are numbered for good (`lane_opened`, `lane_closed`); an idle lane can be closed and its history stays in the ledger. After a restart, open lanes return as idle panels with their history.
+
 ## Compound tasks
 
 A `compound` route creates one stored user turn with multiple ordered work units. Each part is a task (in the goal/task/chat model): part 1 runs in its task, part 2 in its own.
@@ -1466,7 +1478,7 @@ Compaction summaries are not embedded: every turn they cover is embedded as its 
 - Filesystem tools resolve every path to its real target before applying the access policy, so a symbolic link cannot escape the workspace, cannot reach protected repository metadata through an alias, and cannot split one file's stale-edit record into two.
 - File mutations take one lock per workspace, shared by every run in the process, and recheck the file's content immediately before writing.
 - Terminal commands use the same workspace and approval policy.
-- Approval is one injected `approve` callback owned by the application. It is consulted for the first-mutation gate (`Goal-router.md`, "Workspace resolution"), `SIGKILL`, `timeout_ms: 0`, and the first call of a non-read-only MCP tool in each goal (see "MCP approvals"). A denial is a corrective tool error, never a crash.
+- Approval is one injected `approve` callback owned by the application; each message may supply its own, and every request names the goal, task, turn and lane it comes from (see "Lanes"). It is consulted for the first-mutation gate (`Goal-router.md`, "Workspace resolution"), `SIGKILL`, `timeout_ms: 0`, and the first call of a non-read-only MCP tool in each goal (see "MCP approvals"). A denial is a corrective tool error, never a crash.
 - A turn without a workspace (general conversation, or a new goal before a workspace is chosen) can still answer and use `context_retrieve` and capability tools; workspace filesystem and terminal tools fail with `no_workspace` (the read-only active-Skill resource exception above still applies), and the agent asks the user where the work belongs.
 - Every mutating tool records its effect before the next model step.
 - Terminal sessions persist independently of one HTTP request and can be rediscovered, read, awaited, or stopped in later turns.
@@ -1507,3 +1519,8 @@ The working agent is built in this order; each stage is one reviewed change:
 
 - **E1, the retrieval core:** the embedding clients, the LanceDB index with background indexing, and the one hybrid scoring path, used by router goal candidates, `context_retrieve` search, `<RETRIEVED_HISTORY>` (including one strongly related exchange from another task of the goal), and capability candidates. See "Embeddings and hybrid retrieval".
 - **E2, `<PROJECT_CONTEXT>`:** the workspace file index and the anchor and related-file sections of `<PROJECT_CONTEXT>`. See "Project files" and "Working-agent context".
+
+**Lanes** follow, in two changes:
+
+- **L1, parallel runs:** lanes in the event log, concurrent runs in one Socrates with one run per task, handing main-conversation messages to a busy lane, per-run approvals and cancellation, and a main-conversation "current" that lanes never change. See "Lanes".
+- **L2, main's awareness of lanes:** a `<LANES>` block in the main conversation's context, lane finish notices, and routing that understands lanes.

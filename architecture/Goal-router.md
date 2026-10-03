@@ -193,7 +193,7 @@ The user who sees the wrong workspace corrects it with one click or one sentence
 
 **The first-mutation gate.** When a workspace was resolved with low confidence (multiple plausible candidates, resolved by the prefer-latest rule) and the task's first mutating tool call (`edit`, `apply_patch`, mutating `terminal`) arrives, the harness pauses for one lightweight confirmation before executing it. Read-only work — searching, reading, answering — never gates. The gate fires at most once per task and never for a workspace the user confirmed or that was unambiguous.
 
-"Current" is global, not per-workspace: the current goal is the most recently worked-on goal across all workspaces. `continue_current` therefore means "continue whatever we were last doing," which matches how users actually talk.
+"Current" is global, not per-workspace: the current goal is the most recently worked-on goal across all workspaces. `continue_current` therefore means "continue whatever we were last doing," which matches how users actually talk. It belongs to the main conversation: work running in a parallel lane never changes it, and a lane's own "current" is its task (`agent-harness.md`, "Lanes").
 
 ## Exact router input
 

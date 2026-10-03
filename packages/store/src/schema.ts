@@ -18,8 +18,10 @@
  * - `active_capabilities` is the goal-scoped active Skill and MCP set.
  * - `history_records` holds each task's history checkpoints and handover
  *   capsules under their task-scoped handles `hc-N`.
+ * - `lanes` are the parallel lanes; a turn's `lane_id` is the lane it ran in,
+ *   null for the main conversation.
  */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /**
  * In-place upgrades from older schema versions, keyed by the version they
@@ -36,6 +38,8 @@ ALTER TABLE task_revisions ADD COLUMN completion_criteria TEXT;
   2: "",
   // Version 4 adds history_records, also created by SCHEMA_SQL.
   3: "",
+  // Version 5 adds lanes (created by SCHEMA_SQL) and each turn's lane.
+  4: "ALTER TABLE turns ADD COLUMN lane_id TEXT;",
 };
 
 export const SCHEMA_SQL = `
@@ -174,9 +178,17 @@ CREATE TABLE IF NOT EXISTS turns (
   status               TEXT NOT NULL CHECK (status IN ('in_progress', 'completed', 'interrupted')),
   created_at           TEXT NOT NULL,
   completed_at         TEXT,
+  lane_id              TEXT,
   CHECK (kind = 'clarification' OR (goal_id IS NOT NULL AND task_id IS NOT NULL AND chat_id IS NOT NULL))
 );
 CREATE INDEX IF NOT EXISTS turns_by_task ON turns(task_id, project_turn);
+
+CREATE TABLE IF NOT EXISTS lanes (
+  id          TEXT PRIMARY KEY,
+  lane_number INTEGER NOT NULL UNIQUE,
+  opened_at   TEXT NOT NULL,
+  closed_at   TEXT
+);
 
 CREATE TABLE IF NOT EXISTS anchors (
   id         TEXT PRIMARY KEY,

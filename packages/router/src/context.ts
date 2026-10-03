@@ -61,21 +61,29 @@ export interface BuildContextOptions {
   historyBudgetTokens?: number;
   /** Meaning matches of goals and tasks for candidateQuery(), from the semantic index. */
   semantic?: SemanticHit[];
+  /**
+   * The lane the message was sent to. A lane answers its own clarifications
+   * and continues its own task; until it has one, "current" is the main
+   * conversation's, where the lane was started. History shows the main
+   * conversation and this lane.
+   */
+  laneId?: string | null;
 }
 
 /** An open goal whose scope matched gets this much, in fused-rank units. */
 export const OPEN_GOAL_BOOST = 0.05;
 
 /** What candidate retrieval searches for: the message, plus the pending request it answers. */
-export function candidateQuery(store: LedgerStore, message: string): string {
-  const pending = store.pendingClarification();
+export function candidateQuery(store: LedgerStore, message: string, laneId: string | null = null): string {
+  const pending = store.pendingClarification(laneId);
   return pending ? `${(store.getEvent(pending.userEventId)!.payload as { text: string }).text} ${message}` : message;
 }
 
 export function buildRoutingContext(store: LedgerStore, message: string, options: BuildContextOptions): RoutingContext {
   const now = store.clock.now();
-  const current = store.currentBinding();
-  const pendingTurn = store.pendingClarification();
+  const laneId = options.laneId ?? null;
+  const current = (laneId ? store.currentBinding(laneId) : null) ?? store.currentBinding();
+  const pendingTurn = store.pendingClarification(laneId);
   const pending = pendingTurn ? {
     turn: pendingTurn,
     request: (store.getEvent(pendingTurn.userEventId)!.payload as { text: string }).text,
@@ -93,7 +101,7 @@ export function buildRoutingContext(store: LedgerStore, message: string, options
     });
   }
 
-  selectOlderCandidates(store, candidateQuery(store, message), now, current?.goal.id ?? null, options.semantic ?? []).forEach((goal, i) => {
+  selectOlderCandidates(store, candidateQuery(store, message, laneId), now, current?.goal.id ?? null, options.semantic ?? []).forEach((goal, i) => {
     const label = `older_${i + 1}`;
     goals.set(label, {
       label,
@@ -104,7 +112,7 @@ export function buildRoutingContext(store: LedgerStore, message: string, options
     });
   });
 
-  const exchanges = collectHistory(store, options.historyBudgetTokens ?? ROUTER_HISTORY_BUDGET_TOKENS, goals);
+  const exchanges = collectHistory(store, options.historyBudgetTokens ?? ROUTER_HISTORY_BUDGET_TOKENS, goals, laneId ? [null, laneId] : [null]);
   const answeringClarification = pending !== null;
   const zeroHistory = !store.hasAnyActivity();
 
@@ -274,11 +282,12 @@ function collectHistory(
   store: LedgerStore,
   budget: number,
   goals: Map<string, GoalEntry>,
+  lanes: (string | null)[],
 ): { text: string; newest: Exchange | null } {
   const blocks: string[] = [];
   let used = 0;
   let newest: Exchange | null = null;
-  for (const exchange of store.recentExchanges()) {
+  for (const exchange of store.recentExchanges(lanes)) {
     newest ??= exchange;
     const tag = tagFor(exchange, goals, store);
     const block = renderExchange(tag, exchange.userMessage, exchange.response);

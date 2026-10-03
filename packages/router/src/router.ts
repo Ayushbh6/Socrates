@@ -106,13 +106,15 @@ export class GoalRouter {
     this.maxSteps = options.maxSteps ?? 6;
   }
 
-  /** Persist the exact message, route it, and bind it. */
-  async route(message: string, signal?: AbortSignal): Promise<RoutingResult> {
-    const userEvent = this.store.recordUserMessage(message);
-    const semantic = this.semantic ? await this.semantic.search(candidateQuery(this.store, message), { kinds: ["goal", "task"], limit: 30 }, signal) : [];
+  /** Persist the exact message, route it, and bind it. A lane's message is recorded in that lane. */
+  async route(message: string, signal?: AbortSignal, options: { laneId?: string | null } = {}): Promise<RoutingResult> {
+    const laneId = options.laneId ?? null;
+    const userEvent = this.store.recordUserMessage(message, laneId);
+    const semantic = this.semantic ? await this.semantic.search(candidateQuery(this.store, message, laneId), { kinds: ["goal", "task"], limit: 30 }, signal) : [];
     const ctx = buildRoutingContext(this.store, message, {
       timeZone: this.timeZone,
       semantic,
+      laneId,
       ...(this.historyBudgetTokens !== undefined ? { historyBudgetTokens: this.historyBudgetTokens } : {}),
     });
     const seen = emptySeen();

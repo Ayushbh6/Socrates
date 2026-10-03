@@ -2,7 +2,7 @@ import type { EventRefs, ModelClient, TurnStop } from "@socrates/contracts";
 import { abortable } from "@socrates/shared";
 import { TokenCalibration } from "@socrates/providers";
 import { GoalRouter, type RoutedPart } from "@socrates/router";
-import type { Goal, LedgerStore, Task, Turn } from "@socrates/store";
+import type { Goal, Lane, LedgerStore, Task, Turn } from "@socrates/store";
 import type { SemanticHit, SemanticIndex } from "@socrates/retrieval";
 import { type Approve, type CapabilityCatalog, RunState, type ShelfOptions, type SupervisorOptions, ToolRunner, WorkspaceRoot, capabilityCandidates, skillShelf } from "@socrates/tools";
 import { taskHistory } from "./history";
@@ -68,6 +68,20 @@ export interface HandleOptions {
   anchorDecisions?: AnchorDecision[];
   /** Quiet status lines while work continues, such as a context refresh during rollover. */
   onStatus?: (text: string) => void;
+  /**
+   * Where the message goes: omitted, the main conversation; "new", a new
+   * lane; or an open lane's id. The first message of a lane is routed like
+   * any other; later ones continue the lane's task.
+   */
+  lane?: "new" | string;
+  /** Receives a new lane's id as soon as it is opened, before routing. */
+  onLane?: (laneId: string) => void;
+  /**
+   * A part of a main-conversation message whose task is busy in a lane was
+   * handed to that lane; it runs there next, and the main conversation is
+   * free for the next message.
+   */
+  onHandoff?: (laneId: string) => void;
 }
 
 export interface PartResult {
@@ -84,13 +98,33 @@ export interface PartResult {
 }
 
 export type HandleResult =
-  | { kind: "clarify"; text: string }
-  | { kind: "answered"; text: string; acknowledgment: string | null; parts: PartResult[] };
+  | { kind: "clarify"; text: string; laneId: string | null }
+  | { kind: "answered"; text: string; acknowledgment: string | null; parts: PartResult[]; laneId: string | null };
+
+/** At most this many lanes run at once (agent-harness.md, "Lanes"). */
+export const MAX_RUNNING_LANES = 4;
+
+/** Work Socrates cannot take now: the main conversation is busy, too many lanes run, the lane is closed, or a running lane cannot be closed. */
+export class SocratesBusyError extends Error {
+  constructor(readonly reason: "main_busy" | "lane_limit" | "lane_closed" | "lane_running", message: string) {
+    super(message);
+    this.name = "SocratesBusyError";
+  }
+}
+
+/** A lane as the application shows it: its record, and whether work is running in it now. */
+export interface LaneState extends Lane {
+  running: boolean;
+}
 
 /**
- * One Socrates conversation (agent-harness.md, "Exact per-turn lifecycle"):
+ * One Socrates (agent-harness.md, "Exact per-turn lifecycle" and "Lanes"):
  * persist the message, route and bind it, then run the working agent once per
- * routed part and persist its final result. Messages are handled one at a time.
+ * routed part and persist its final result. The main conversation handles one
+ * message at a time; up to MAX_RUNNING_LANES lanes run alongside it. One task
+ * is worked by one run at a time: a message for a busy task waits for it, and
+ * a main-conversation message whose task is busy in a lane is handed to that
+ * lane.
  */
 export class Socrates {
   readonly store: LedgerStore;
@@ -99,19 +133,31 @@ export class Socrates {
   readonly calibration = new TokenCalibration();
   private readonly limits: AgentLimits;
   private readonly budgets: ContextBudgets;
-  private approveCurrent: Approve;
-  private busy = false;
+  private mainBusy = false;
+  private closed = false;
+  private readonly lifetime = new AbortController();
+  private readonly inflight = new Set<Promise<unknown>>();
+  /** Messages in progress per lane, including ones waiting for a task. */
+  private readonly laneRuns = new Map<string, number>();
+  /** The newest run queued on each task; its `done` settles after every earlier run on the task. */
+  private readonly taskLocks = new Map<string, { laneId: string | null; done: Promise<void> }>();
+  /** Runs in progress per goal; only the first resets the goal's capability cache. */
+  private readonly goalRuns = new Map<string, number>();
+  /** Each running turn's approval callback and lane. */
+  private readonly approvers = new Map<string, { approve: Approve; laneId: string | null }>();
 
   constructor(private readonly options: SocratesOptions) {
     this.store = options.store;
     this.limits = { ...DEFAULT_LIMITS, ...options.limits };
     this.budgets = { ...DEFAULT_BUDGETS, ...options.budgets };
-    this.approveCurrent = options.approve;
     this.router = new GoalRouter({ store: options.store, routerModel: options.routerModel ?? options.model, mainModel: options.model, timeZone: options.timeZone, ...(options.semantic ? { semantic: options.semantic } : {}) });
     this.runner = new ToolRunner({
       store: options.store,
       timeZone: options.timeZone,
-      approve: (request) => this.approveCurrent(request),
+      approve: (request, origin) => {
+        const run = origin?.turnId ? this.approvers.get(origin.turnId) : undefined;
+        return (run?.approve ?? this.options.approve)(request, origin ? { ...origin, laneId: run?.laneId ?? null } : undefined);
+      },
       ...(options.catalog ? { catalog: options.catalog } : {}),
       ...(options.semantic ? { semantic: options.semantic } : {}),
       ...(options.terminals ? { terminals: options.terminals } : {}),
@@ -119,27 +165,118 @@ export class Socrates {
     });
   }
 
-  async handle(message: string, options: HandleOptions = {}): Promise<HandleResult> {
-    if (this.busy) throw new Error("Socrates is already handling a message.");
-    this.busy = true;
+  /** True while the main conversation is working on a message. */
+  get busy(): boolean {
+    return this.mainBusy;
+  }
+
+  /** Open lanes, oldest first, and whether each is running. */
+  lanes(): LaneState[] {
+    return this.store.listLanes().map((lane) => ({ ...lane, running: this.laneRuns.has(lane.id) }));
+  }
+
+  /** Close an idle lane; its history stays in the ledger. */
+  closeLane(laneId: string): Lane {
+    if (this.laneRuns.has(laneId)) throw new SocratesBusyError("lane_running", "This lane is still working; stop it before closing it.");
+    return this.store.closeLane(laneId);
+  }
+
+  /**
+   * Handle one message: in the main conversation, in a new lane (`lane: "new"`),
+   * or in an open lane. Throws SocratesBusyError, before recording anything,
+   * when the main conversation is busy, MAX_RUNNING_LANES lanes already run,
+   * or the lane is closed.
+   */
+  handle(message: string, options: HandleOptions = {}): Promise<HandleResult> {
+    if (this.closed) return Promise.reject(new Error("Socrates is closed."));
+    let laneId: string | null;
     try {
-      const signal = options.signal ?? new AbortController().signal;
-      this.approveCurrent = options.approve ?? this.options.approve;
-      const routed = await this.router.route(message, signal);
-      if (routed.kind === "clarify") return { kind: "clarify", text: routed.text };
+      laneId = this.claim(options.lane);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    if (laneId && options.lane === "new") options.onLane?.(laneId);
+    const run = this.handleIn(laneId, message, options);
+    this.inflight.add(run);
+    void run.finally(() => this.inflight.delete(run)).catch(() => {});
+    return run;
+  }
+
+  /** Stop every run, then terminals, every MCP server connection, and the embedding index. */
+  async close(): Promise<void> {
+    this.closed = true;
+    this.lifetime.abort();
+    await Promise.allSettled([...this.inflight]);
+    await this.runner.close();
+    await this.runner.capabilities.catalog.close?.();
+    await this.options.semantic?.close();
+  }
+
+  /** Reserve the message's conversation: the main one, or a lane (opening it when new). */
+  private claim(target: HandleOptions["lane"]): string | null {
+    if (!target) {
+      if (this.mainBusy) throw new SocratesBusyError("main_busy", "Socrates is already working on a message in the main conversation.");
+      this.mainBusy = true;
+      return null;
+    }
+    if (target !== "new") {
+      const lane = this.store.getLane(target);
+      if (!lane || lane.closedAt) throw new SocratesBusyError("lane_closed", "That lane is closed.");
+    }
+    if (!(target !== "new" && this.laneRuns.has(target)) && this.laneRuns.size >= MAX_RUNNING_LANES) {
+      throw new SocratesBusyError("lane_limit", `${MAX_RUNNING_LANES} lanes are already working; wait for one to finish or stop one.`);
+    }
+    const laneId = target === "new" ? this.store.openLane().id : target;
+    this.enterLane(laneId);
+    return laneId;
+  }
+
+  private enterLane(laneId: string): void {
+    this.laneRuns.set(laneId, (this.laneRuns.get(laneId) ?? 0) + 1);
+  }
+
+  private leaveLane(laneId: string): void {
+    const n = (this.laneRuns.get(laneId) ?? 1) - 1;
+    if (n > 0) this.laneRuns.set(laneId, n);
+    else this.laneRuns.delete(laneId);
+  }
+
+  private async handleIn(laneId: string | null, message: string, options: HandleOptions): Promise<HandleResult> {
+    let holdsMain = laneId === null;
+    const releaseMain = () => {
+      if (!holdsMain) return;
+      holdsMain = false;
+      this.mainBusy = false;
+    };
+    try {
+      const signal = AbortSignal.any([this.lifetime.signal, ...(options.signal ? [options.signal] : [])]);
+      // A lane with a task continues it directly; only its first message, or an answer to its clarification, is routed.
+      const target = laneId && !this.store.pendingClarification(laneId) ? this.store.currentBinding(laneId) : null;
+      let parts: RoutedPart[];
+      let acknowledgment: string | null = null;
       let setupError: { error: unknown } | null = null;
-      try { if (routed.acknowledgment) options.onAcknowledgment?.(routed.acknowledgment); }
-      catch (error) { setupError = { error }; }
+      if (laneId && target) {
+        const userEvent = this.store.recordUserMessage(message, laneId);
+        const turn = this.store.bindTurn({ userEventId: userEvent.id, taskId: target.task.id, route: "lane" });
+        parts = [{ order: 1, request: message, dependsOn: [], turn, goal: target.goal, task: target.task, chat: this.store.currentChat(target.task.id), clarification: null, created: { goal: false, task: false } }];
+      } else {
+        const routed = await this.router.route(message, signal, { laneId });
+        if (routed.kind === "clarify") return { kind: "clarify", text: routed.text, laneId };
+        parts = routed.parts;
+        acknowledgment = routed.acknowledgment;
+        try { if (acknowledgment) options.onAcknowledgment?.(acknowledgment); }
+        catch (error) { setupError = { error }; }
+      }
 
       const results: PartResult[] = [];
       let stopped = false;
-      for (const part of routed.parts) {
+      for (const part of parts) {
         // A part runs only after every earlier part finished with an answer.
         if (stopped || signal.aborted) results.push(this.skipPart(part));
         else {
           try {
             if (setupError) throw setupError.error;
-            results.push(await this.runPart(part, routed.parts, signal, options));
+            results.push(await this.runLocked(part, parts, signal, options, laneId, releaseMain));
           } catch (error) {
             const cancelled = signal.aborted;
             const refs = { goal_id: part.goal.id, task_id: part.task.id, turn_id: part.turn.id, chat_id: part.turn.chatId };
@@ -157,31 +294,69 @@ export class Socrates {
       const text =
         results.length === 1
           ? results[0]!.answer
-          : [routed.acknowledgment, ...results.map((r) => `**${r.order}. ${r.task.title}**\n\n${r.answer}`)].filter(Boolean).join("\n\n");
-      return { kind: "answered", text, acknowledgment: routed.acknowledgment, parts: results };
+          : [acknowledgment, ...results.map((r) => `**${r.order}. ${r.task.title}**\n\n${r.answer}`)].filter(Boolean).join("\n\n");
+      return { kind: "answered", text, acknowledgment, parts: results, laneId };
     } finally {
-      this.approveCurrent = this.options.approve;
-      this.busy = false;
+      releaseMain();
+      if (laneId) this.leaveLane(laneId);
       // Index what this message added, in the background; replies never wait for it.
       this.options.semantic?.scheduleSync();
     }
   }
 
-  /** Stop terminals, every MCP server connection, and the embedding index. */
-  async close(): Promise<void> {
-    await this.runner.close();
-    await this.runner.capabilities.catalog.close?.();
-    await this.options.semantic?.close();
+  /**
+   * Run one part once its task is free. A main-conversation part whose task
+   * is queued or running in a lane moves to that lane, and the main
+   * conversation is free for the next message.
+   */
+  private async runLocked(part: RoutedPart, parts: RoutedPart[], signal: AbortSignal, options: HandleOptions, channel: string | null, releaseMain: () => void): Promise<PartResult> {
+    const taskId = part.task.id;
+    const held = this.taskLocks.get(taskId);
+    let laneId = channel;
+    let handedOff = false;
+    if (channel === null && held?.laneId) {
+      laneId = held.laneId;
+      this.store.moveTurnToLane(part.turn.id, laneId);
+      this.enterLane(laneId);
+      handedOff = true;
+      releaseMain();
+      options.onHandoff?.(laneId);
+    }
+    const previous = held?.done ?? Promise.resolve();
+    let unlock!: () => void;
+    const mine = new Promise<void>((done) => (unlock = done));
+    const entry = { laneId, done: previous.then(() => mine) };
+    this.taskLocks.set(taskId, entry);
+    const goalId = part.goal.id;
+    try {
+      await abortable(previous, signal);
+      const fresh = !this.goalRuns.get(goalId);
+      this.goalRuns.set(goalId, (this.goalRuns.get(goalId) ?? 0) + 1);
+      this.approvers.set(part.turn.id, { approve: options.approve ?? this.options.approve, laneId });
+      try {
+        return await this.runPart({ ...part, turn: this.store.requireTurn(part.turn.id) }, parts, signal, options, fresh);
+      } finally {
+        this.approvers.delete(part.turn.id);
+        const n = (this.goalRuns.get(goalId) ?? 1) - 1;
+        if (n > 0) this.goalRuns.set(goalId, n);
+        else this.goalRuns.delete(goalId);
+      }
+    } finally {
+      unlock();
+      if (this.taskLocks.get(taskId) === entry) this.taskLocks.delete(taskId);
+      if (handedOff) this.leaveLane(laneId!);
+    }
   }
 
-  private async runPart(part: RoutedPart, parts: RoutedPart[], signal: AbortSignal, options: HandleOptions): Promise<PartResult> {
+  private async runPart(part: RoutedPart, parts: RoutedPart[], signal: AbortSignal, options: HandleOptions, fresh: boolean): Promise<PartResult> {
     const { store } = this;
     const turn = part.turn;
     const goal = store.requireGoal(turn.goalId!);
     const startedAt = (this.options.now ?? Date.now)();
     const workspace = this.workspaceFor(goal);
     const capabilities = this.runner.capabilities;
-    capabilities.beginTurn(goal.id);
+    // Another run of this goal is mid-turn: keep the goal's capability state it is using.
+    if (fresh) capabilities.beginTurn(goal.id);
     const tools = async (signal: AbortSignal) => [...this.runner.definitions, ...(await this.runner.mcpDefinitions(goal.id, signal))];
     const setupDeadline = new AbortController();
     const setupSignal = AbortSignal.any([signal, setupDeadline.signal]);

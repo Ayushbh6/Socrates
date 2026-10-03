@@ -206,11 +206,13 @@ describe("turn lifecycle", () => {
     expect(model.requests[1]!.messages.at(-1)!.content).toContain("hello");
   });
 
-  it("handles one message at a time", async () => {
+  it("the main conversation handles one message at a time", async () => {
     const w = await world();
     const { socrates } = w.socrates([continueTask(), continueTask()], [final(), final()]);
     const running = socrates.handle("One.");
-    await expect(socrates.handle("Two.")).rejects.toThrow("already handling");
+    expect(socrates.busy).toBe(true);
+    await expect(socrates.handle("Two.")).rejects.toMatchObject({ name: "SocratesBusyError", reason: "main_busy" });
     await running;
+    expect(socrates.busy).toBe(false);
   });
 });

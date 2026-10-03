@@ -24,8 +24,14 @@ export interface ApprovalRequest {
   subject?: string;
 }
 
+/** Where an approval request comes from, so the application can show it in the right place. */
+export interface ApprovalOrigin extends ToolBinding {
+  /** The lane the run belongs to; null for the main conversation. */
+  laneId?: string | null;
+}
+
 /** Application-owned approval (agent-harness.md, "Safety and long-running work"). */
-export type Approve = (request: ApprovalRequest) => Promise<boolean>;
+export type Approve = (request: ApprovalRequest, origin?: ApprovalOrigin) => Promise<boolean>;
 
 /** What a run-scoped short reference (`r1`, `c1`) points at. */
 export type RunRef =

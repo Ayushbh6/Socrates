@@ -305,7 +305,7 @@ describe("goal objectives and task completion criteria", () => {
   it("migrates a version 1 store in place without losing rows", () => {
     const dir = mkdtempSync(join(tmpdir(), "socrates-migrate-"));
     const path = join(dir, "v1.db");
-    const v1 = SCHEMA_SQL.replace(/^\s*objective\s+TEXT,\n/m, "").replace(/^\s*completion_criteria TEXT,\n/gm, "");
+    const v1 = SCHEMA_SQL.replace(/^\s*objective\s+TEXT,\n/m, "").replace(/^\s*completion_criteria TEXT,\n/gm, "").replace(/^\s*lane_id\s+TEXT,\n/m, "");
     expect(v1).not.toContain("completion_criteria");
     const raw = new DatabaseSync(path);
     raw.exec(v1);
@@ -383,6 +383,8 @@ describe("tool evidence", () => {
     const reply = original.recordResponse("Hero overflow fixed.", a.refs);
     original.completeTurn(a.turn.id, { responseEventId: reply.id });
     original.db.exec("DELETE FROM exchange_fts");
+    // A version 2 store predates each turn's lane.
+    original.db.exec("ALTER TABLE turns DROP COLUMN lane_id");
     original.setMeta("schema_version", "2");
     original.close();
     const upgraded = LedgerStore.open({ path });
@@ -404,5 +406,79 @@ describe("tool evidence", () => {
     expect(store.firstMutationGatePending(task.id)).toBe(true);
     store.recordApproval({ goal_id: goal.id, task_id: task.id }, { kind: "first_mutation", granted: true, detail: "edit a.ts" });
     expect(store.firstMutationGatePending(task.id)).toBe(false);
+  });
+});
+
+describe("lanes", () => {
+  /** One completed exchange in a task, sent to the main conversation or a lane. */
+  function turnIn(store: LedgerStore, taskId: string, text: string, laneId: string | null = null) {
+    const user = store.recordUserMessage(text, laneId);
+    const turn = store.bindTurn({ userEventId: user.id, taskId, route: "test" });
+    store.completeTurn(turn.id, { responseEventId: store.recordResponse(`Re: ${text}`, { turn_id: turn.id }).id });
+    return store.requireTurn(turn.id);
+  }
+
+  it("numbers lanes for good, keeps each conversation's current task and history apart, and rebuilds them from events", () => {
+    const { store, clock } = openStore();
+    const goal = store.createGoal({ title: "Shop" });
+    const main = store.createTask(goal.id, { title: "Checkout" });
+    const side = store.createTask(goal.id, { title: "Docs" });
+    const a = store.openLane();
+    const b = store.openLane();
+    expect([a.number, b.number]).toEqual([1, 2]);
+
+    turnIn(store, main.id, "Fix checkout.");
+    const inLane = turnIn(store, side.id, "Write the docs.", a.id);
+    expect(inLane.laneId).toBe(a.id);
+    expect(store.currentBinding()!.task.id).toBe(main.id);
+    expect(store.currentBinding(a.id)!.task.id).toBe(side.id);
+    expect(store.currentBinding(b.id)).toBeNull();
+    expect([...store.recentExchanges()].map((e) => e.userMessage)).toEqual(["Fix checkout."]);
+    expect([...store.recentExchanges([null, a.id])].map((e) => e.userMessage)).toEqual(["Write the docs.", "Fix checkout."]);
+
+    // A clarification belongs to the conversation that asked it.
+    const question = store.recordUserMessage("Open the other one.", b.id);
+    store.recordClarification(question.id, "Which one?");
+    expect(store.pendingClarification()).toBeNull();
+    expect(store.pendingClarification(b.id)?.laneId).toBe(b.id);
+
+    // A main turn handed to a lane leaves main's current task as it was.
+    const handed = turnIn(store, side.id, "Also add a changelog.");
+    expect(store.currentBinding()!.task.id).toBe(side.id);
+    expect(store.moveTurnToLane(handed.id, a.id).laneId).toBe(a.id);
+    expect(store.currentBinding()!.task.id).toBe(main.id);
+
+    store.closeLane(b.id);
+    expect(store.listLanes().map((l) => l.number)).toEqual([1]);
+    expect(store.openLane().number).toBe(3);
+
+    const rebuilt = LedgerStore.open({ path: ":memory:", clock });
+    rebuilt.restoreEvents(store.listEvents());
+    expect(rebuilt.listLanes({ includeClosed: true })).toEqual(store.listLanes({ includeClosed: true }));
+    expect(rebuilt.requireTurn(handed.id).laneId).toBe(a.id);
+    expect(rebuilt.currentBinding()!.task.id).toBe(main.id);
+    expect(rebuilt.pendingClarification(b.id)?.id).toBe(store.pendingClarification(b.id)?.id);
+    rebuilt.close();
+    store.close();
+  });
+
+  it("migrates a version 4 store: every existing turn belongs to the main conversation", () => {
+    const dir = mkdtempSync(join(tmpdir(), "socrates-migrate-"));
+    const path = join(dir, "v4.db");
+    const original = LedgerStore.open({ path });
+    const goal = original.createGoal({ title: "Old" });
+    const task = original.createTask(goal.id, { title: "Old task" });
+    turnIn(original, task.id, "Earlier work.");
+    original.db.exec("ALTER TABLE turns DROP COLUMN lane_id");
+    original.db.exec("DROP TABLE lanes");
+    original.setMeta("schema_version", "4");
+    original.close();
+
+    const upgraded = LedgerStore.open({ path });
+    expect(upgraded.getMeta("schema_version")).toBe(String(SCHEMA_VERSION));
+    expect(upgraded.currentBinding()!.task.id).toBe(task.id);
+    expect(upgraded.openLane().number).toBe(1);
+    upgraded.close();
+    rmSync(dir, { recursive: true, force: true });
   });
 });
