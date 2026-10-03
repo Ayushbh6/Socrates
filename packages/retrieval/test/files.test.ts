@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { EmbeddingClient } from "@socrates/contracts";
@@ -130,10 +130,10 @@ describe("which files are indexed", () => {
     write(outside, { "secret.txt": "outside the workspace" });
     write(root, { "bin.dat": Buffer.from([1, 0, 2]), "big.txt": "x".repeat(300 * 1024), "ok.txt": "fine" });
     symlinkSync(path.join(outside, "secret.txt"), path.join(root, "link.txt"));
-    expect(await readIndexable(path.join(root, "bin.dat"))).toBeNull();
-    expect(await readIndexable(path.join(root, "big.txt"))).toBeNull();
-    expect(await readIndexable(path.join(root, "link.txt"))).toBeNull();
-    expect((await readIndexable(path.join(root, "ok.txt")))?.text).toBe("fine");
+    expect(await readIndexable(path.join(root, "bin.dat"), root)).toBeNull();
+    expect(await readIndexable(path.join(root, "big.txt"), root)).toBeNull();
+    expect(await readIndexable(path.join(root, "link.txt"), root)).toBeNull();
+    expect((await readIndexable(path.join(root, "ok.txt"), root))?.text).toBe("fine");
   });
 });
 
@@ -186,4 +186,103 @@ describe("indexing workspace files", () => {
     expect(passes.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(new Set(embedder.documents.filter((t) => t.startsWith("notes/"))).size).toBe(FILE_EMBEDS_PER_PASS + 40);
   });
+});
+
+
+describe("E2 review regressions", () => {
+  it("never embeds a tracked file beneath a symlinked parent", async () => {
+    const root = dir(), outside = dir();
+    write(root, { "docs/note.txt": "safe original" });
+    write(outside, { "note.txt": "outside-canary" });
+    execFileSync("git", ["init", "-q"], { cwd: root });
+    execFileSync("git", ["add", "docs/note.txt"], { cwd: root });
+    renameSync(path.join(root, "docs"), path.join(root, "old-docs"));
+    symlinkSync(outside, path.join(root, "docs"));
+    const { store, workspaceId } = await workspaceStore(root);
+    const embedder = recording();
+    const retrieval = await open(store, embedder);
+    expect(embedder.documents.join("\n")).not.toContain("outside-canary");
+    expect(await retrieval.search("note", { kinds: ["file_section"], workspaceIds: [workspaceId], paths: ["docs/note.txt"], limit: 5 })).toEqual([]);
+  });
+
+  it("removes old sections when a previously indexed directory becomes a link", async () => {
+    const root = dir(), outside = dir();
+    write(root, { "docs/note.txt": "safe original" });
+    write(outside, { "note.txt": "outside-canary" });
+    execFileSync("git", ["init", "-q"], { cwd: root });
+    execFileSync("git", ["add", "docs/note.txt"], { cwd: root });
+    const { store, workspaceId } = await workspaceStore(root);
+    const embedder = recording();
+    const retrieval = await open(store, embedder);
+    renameSync(path.join(root, "docs"), path.join(root, "old-docs"));
+    symlinkSync(outside, path.join(root, "docs"));
+    await retrieval.sync();
+    expect(embedder.documents.join("\n")).not.toContain("outside-canary");
+    expect(await retrieval.search("note", { kinds: ["file_section"], workspaceIds: [workspaceId], paths: ["docs/note.txt"], limit: 5 })).toEqual([]);
+  });
+
+  it("covers long lines completely with accurate line numbers", () => {
+    const long = "x".repeat(4500) + "TAIL_CANARY";
+    for (const rel of ["data.json", "notes.md"]) {
+      const sections = fileSections(rel, `intro\n${long}\nafter`);
+      expect(sections.every((s) => s.text.length <= 4000)).toBe(true);
+      expect(sections.some((s) => s.text.includes("TAIL_CANARY") && s.startLine === 2 && s.endLine === 2)).toBe(true);
+      expect(sections.some((s) => s.text.includes("after") && s.endLine === 3)).toBe(true);
+      const windows = fileSections(rel, long);
+      expect(windows[0]!.text + windows[1]!.text.slice(600)).toBe(long);
+    }
+  });
+
+  it("resumes a single large file within the section budget and indexes every section once", async () => {
+    const root = dir();
+    write(root, { "notes.md": Array.from({ length: 600 }, (_, i) => `# Section ${i}\nunique ${i}\n`).join("") });
+    const { store, workspaceId } = await workspaceStore(root);
+    const embedder = recording();
+    const counts: number[] = [];
+    const original = Retrieval.prototype.sync;
+    const spy = vi.spyOn(Retrieval.prototype, "sync").mockImplementation(async function(this: Retrieval) {
+      const before = embedder.documents.filter((t) => t.startsWith("notes.md")).length;
+      const result = await original.call(this);
+      counts.push(embedder.documents.filter((t) => t.startsWith("notes.md")).length - before);
+      return result;
+    });
+    cleanups.push(() => spy.mockRestore());
+    const retrieval = await open(store, embedder);
+    expect(counts).toEqual([256, 256, 88]);
+    expect(new Set(embedder.documents.filter((t) => t.startsWith("notes.md"))).size).toBe(600);
+    expect(await retrieval.search("unique", { kinds: ["file_section"], workspaceIds: [workspaceId], limit: 650 })).toHaveLength(600);
+  });
+
+  it("restarts a partial file after an edit and removes the superseded sections", async () => {
+    const root = dir();
+    const document = (version: string) => Array.from({ length: 600 }, (_, i) => `# Section ${i}\n${version} ${i}\n`).join("");
+    write(root, { "notes.md": document("OLD") });
+    const { store, workspaceId } = await workspaceStore(root);
+    const embedder = recording();
+    const original = Retrieval.prototype.sync;
+    let pass = 0;
+    const spy = vi.spyOn(Retrieval.prototype, "sync").mockImplementation(async function(this: Retrieval) {
+      const result = await original.call(this);
+      if (++pass === 1) write(root, { "notes.md": document("NEW") });
+      return result;
+    });
+    cleanups.push(() => spy.mockRestore());
+    const retrieval = await open(store, embedder);
+    const hits = await retrieval.search("unique", { kinds: ["file_section"], workspaceIds: [workspaceId], limit: 650 });
+    const expected = new Set(fileSections("notes.md", document("NEW")).map((s) => sectionHash("notes.md", s)));
+    expect(hits).toHaveLength(600);
+    expect(hits.every((h) => expected.has(h.hash!))).toBe(true);
+    expect(embedder.documents.filter((t) => t.startsWith("notes.md") && t.includes("NEW"))).toHaveLength(600);
+  });
+
+  it("excluded files do not consume the walk limit; a real cap is reported", async () => {
+    const root = dir();
+    write(root, Object.fromEntries(Array.from({ length: 5001 }, (_, i) => [`a/${i}.log`, "noise"])));
+    write(root, { "z/source.ts": "valid" });
+    expect(await workspaceFiles(root)).toEqual({ files: ["z/source.ts"], capped: false });
+    write(root, Object.fromEntries(Array.from({ length: 5001 }, (_, i) => [`b/${i}.txt`, "text"])));
+    const capped = await workspaceFiles(root);
+    expect(capped.files).toHaveLength(5000);
+    expect(capped.capped).toBe(true);
+  }, 15000);
 });

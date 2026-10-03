@@ -1,5 +1,7 @@
+import { renameSync, symlinkSync } from "node:fs";
+import path from "node:path";
 import { HashEmbedder } from "@socrates/providers";
-import { Retrieval, type SemanticHit, fileSections, sectionHash } from "@socrates/retrieval";
+import { Retrieval, type SemanticHit, type SemanticIndex, fileSections, sectionHash } from "@socrates/retrieval";
 import { countTokens } from "@socrates/shared";
 import { WorkspaceRoot } from "@socrates/tools";
 import { describe, expect, it } from "vitest";
@@ -93,5 +95,34 @@ describe("<PROJECT_CONTEXT>", () => {
     const text = contextText(model.requests[0]!);
     expect(text).toContain("--- src/cart.ts (lines 1–2) — related file\n// Shopping basket rules.");
     expect(text).not.toContain("src/server.ts");
+  });
+});
+
+
+describe("E2 context boundaries", () => {
+  it("does not reveal an anchor replaced by a secret-file symlink", async () => {
+    const { w, workspace } = await anchored({ "plan.md": "original", ".env": "SECRET_CANARY" }, [{ path: "plan.md", role: "plan" }]);
+    renameSync(path.join(w.root, "plan.md"), path.join(w.root, "old-plan.md"));
+    symlinkSync(".env", path.join(w.root, "plan.md"));
+    const text = projectContext({ store: w.store, goalId: w.goalId, workspace, query: "plan", maxTokens: 3000 });
+    expect(text).not.toContain("SECRET_CANARY");
+    expect(text).not.toContain("whole file");
+  });
+
+  it("uses task context for anchors but only the current request to qualify other files", async () => {
+    const w = await world({ files: { "plan.md": "# Plan\nShip checkout." } });
+    w.store.upsertAnchor({ goalId: w.goalId, path: "plan.md", role: "plan", summary: "", status: "active" });
+    w.store.reviseTask(w.taskId, { continuationNote: "Checkout failed in src/cart.js." });
+    const queries: { query: string; anchors: boolean }[] = [];
+    const semantic: SemanticIndex = { async search(query, filter) {
+      if (filter.kinds.includes("file_section")) queries.push({ query, anchors: !!filter.paths });
+      return [];
+    }, scheduleSync() {}, async close() {} };
+    const { socrates } = w.socrates([continueTask()], [final()], { semantic });
+    const request = "Draft a welcome sentence.";
+    await socrates.handle(request);
+    expect(queries.find((q) => q.anchors)!.query).toContain("Checkout failed");
+    expect(queries.find((q) => !q.anchors)!.query).toBe(request);
+    await socrates.close();
   });
 });

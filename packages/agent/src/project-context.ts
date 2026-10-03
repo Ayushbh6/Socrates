@@ -1,5 +1,4 @@
-import { lstatSync, readFileSync } from "node:fs";
-import { type FileSection, MAX_INDEXED_FILE_BYTES, SECRET_PATH, type SemanticHit, fileSections, fuse, sectionHash, sectionText } from "@socrates/retrieval";
+import { type FileSection, readIndexableSync, SECRET_PATH, type SemanticHit, fileSections, fuse, sectionHash, sectionText } from "@socrates/retrieval";
 import { countTokens } from "@socrates/shared";
 import { type LedgerStore, significantTerms } from "@socrates/store";
 import { type WorkspaceRoot, head } from "@socrates/tools";
@@ -54,7 +53,7 @@ export function projectContext(input: ProjectContextInput): string | null {
     }
     const { text: file, problem } = readText(workspace, anchor.path);
     if (file === undefined) {
-      entries.push(`${label}: ${problem === "missing" ? "not found in the workspace" : "too large or not text; read the parts you need"}`);
+      entries.push(`${label}: ${problem === "missing" ? "not found in the workspace or excluded by the automatic-context read policy" : "too large or not text; read the parts you need"}`);
       continue;
     }
     const tokens = countTokens(file);
@@ -99,16 +98,8 @@ export function projectContext(input: ProjectContextInput): string | null {
 
 /** A file's text as it is now, or why it cannot be shown. */
 function readText(workspace: WorkspaceRoot, rel: string): { text?: string; problem?: "missing" | "unreadable" } {
-  try {
-    const { abs } = workspace.resolve(rel);
-    const st = lstatSync(abs);
-    if (!st.isFile()) return { problem: "missing" };
-    if (st.size > MAX_INDEXED_FILE_BYTES) return { problem: "unreadable" };
-    const bytes = readFileSync(abs);
-    return bytes.subarray(0, 8_000).includes(0) ? { problem: "unreadable" } : { text: bytes.toString("utf8") };
-  } catch {
-    return { problem: "missing" };
-  }
+  const file = readIndexableSync(workspace.root, rel);
+  return file ? { text: file.text } : { problem: "missing" };
 }
 
 function outline(label: string, file: string, sections: FileSection[]): string {

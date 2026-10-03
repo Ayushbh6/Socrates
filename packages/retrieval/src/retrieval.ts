@@ -1,10 +1,9 @@
-import { lstat } from "node:fs/promises";
 import path from "node:path";
 import type { EmbeddingClient } from "@socrates/contracts";
 import { abortable } from "@socrates/shared";
 import type { LedgerStore } from "@socrates/store";
 import { type DocumentKind, type SourceDocument, capabilityDocument, changedDocuments, contentHash } from "./documents";
-import { fileDocuments, readIndexable, workspaceFiles } from "./files";
+import { fileDocuments, indexableFile, readIndexable, workspaceFiles } from "./files";
 import { type IndexFilter, VectorIndex } from "./vector-index";
 
 /**
@@ -100,8 +99,10 @@ export class Retrieval implements SemanticIndex {
   private readonly lifetime = new AbortController();
   private unavailableUntil = 0;
   private readonly queries = new Map<string, number[]>();
-  /** Per workspace: each scanned file's size and modification time, and its section ids. */
+  /** Per workspace: each scanned file's identity/change stamp and its section ids. */
   private readonly files = new Map<string, Map<string, { stamp: string; ids: string[] }>>();
+  /** Resume only sections already persisted successfully; edits invalidate the offset. */
+  private readonly partialFiles = new Map<string, Map<string, { stamp: string; offset: number }>>();
   private readonly capped = new Set<string>();
 
   private constructor(
@@ -267,35 +268,49 @@ export class Retrieval implements SemanticIndex {
       this.capped.add(workspaceId);
       this.options.log?.(`workspace ${workspaceId} has more indexable files than the limit; only the first are indexed`);
     }
+    const partial = this.partialFiles.get(workspaceId) ?? new Map<string, { stamp: string; offset: number }>();
+    this.partialFiles.set(workspaceId, partial);
     let embedded = 0;
+    let scheduled = 0;
     let docs: SourceDocument[] = [];
-    let read = new Map<string, { stamp: string; ids: string[] }>();
+    const read = new Map<string, { stamp: string; ids: string[]; offset: number; complete: boolean }>();
     const flush = async () => {
       embedded += await this.write(docs, signal);
-      for (const [rel, entry] of read) seen.set(rel, entry);
+      for (const [rel, entry] of read) {
+        if (entry.complete) { seen.set(rel, entry); partial.delete(rel); }
+        else partial.set(rel, { stamp: entry.stamp, offset: entry.offset });
+      }
       docs = [];
-      read = new Map();
+      read.clear();
     };
     for (const rel of files) {
       signal.throwIfAborted();
-      const abs = path.join(root, rel);
-      const st = await lstat(abs).catch(() => null);
-      const stamp = st?.isFile() ? `${st.size}:${st.mtimeMs}` : "not a regular file";
+      const checked = indexableFile(root, rel);
+      const st = checked?.stat;
+      const stamp = st ? `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}` : "not indexable";
       if (seen.get(rel)?.stamp === stamp) continue;
-      const file = st?.isFile() ? await readIndexable(abs) : null;
+      const file = checked ? await readIndexable(path.join(root, rel), root) : null;
       const fileDocs = file ? fileDocuments(workspaceId, rel, file.text, file.mtime.toISOString()) : [];
-      docs.push(...fileDocs);
-      read.set(rel, { stamp, ids: fileDocs.map((d) => d.id) });
-      if (docs.length >= FILE_FLUSH_DOCS) await flush();
-      if (embedded >= budget) {
-        this.pending = true;
-        return embedded;
-      }
+      const ids = fileDocs.map((d) => d.id);
+      let offset = file && partial.get(rel)?.stamp === stamp ? partial.get(rel)!.offset : 0;
+      do {
+        const count = Math.min(fileDocs.length - offset, FILE_FLUSH_DOCS - docs.length, budget - scheduled);
+        docs.push(...fileDocs.slice(offset, offset + count));
+        offset += count;
+        scheduled += count;
+        read.set(rel, { stamp, ids, offset, complete: offset === fileDocs.length });
+        if (docs.length >= FILE_FLUSH_DOCS || scheduled >= budget) await flush();
+        if (scheduled >= budget) {
+          this.pending = true;
+          return embedded;
+        }
+      } while (offset < fileDocs.length);
     }
     await flush();
     // Every file was visited: drop the sections of deleted, ignored, or changed files.
     const listed = new Set(files);
     for (const rel of seen.keys()) if (!listed.has(rel)) seen.delete(rel);
+    for (const rel of partial.keys()) if (!listed.has(rel)) partial.delete(rel);
     const keep = new Set([...seen.values()].flatMap((e) => e.ids));
     await this.index.delete((await this.index.ids("file_section", workspaceId)).filter((id) => !keep.has(id)));
     return embedded;

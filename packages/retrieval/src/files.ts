@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { lstat, open, readdir } from "node:fs/promises";
+import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, realpathSync, type Stats } from "node:fs";
+import { open, readdir } from "node:fs/promises";
 import path from "node:path";
 import { CHUNK_CHARS, type SourceDocument, contentHash } from "./documents";
 
@@ -64,25 +65,85 @@ async function walk(root: string, signal?: AbortSignal): Promise<string[]> {
       if (entry.name.startsWith(".") || out.length > MAX_INDEXED_FILES) continue;
       const rel = dir ? `${dir}/${entry.name}` : entry.name;
       if (entry.isDirectory() && !GENERATED_PATH.test(`${rel}/`)) await visit(rel);
-      else if (entry.isFile()) out.push(rel);
+      else if (entry.isFile() && indexablePath(rel)) out.push(rel);
     }
   };
   await visit("");
   return out;
 }
 
-/** A regular file's text, or null when it is a symlink, too large, or binary. */
-export async function readIndexable(abs: string): Promise<{ text: string; mtime: Date; size: number } | null> {
-  const st = await lstat(abs).catch(() => null);
-  if (!st?.isFile() || st.size > MAX_INDEXED_FILE_BYTES) return null;
-  const handle = await open(abs, "r");
+/** Validate the original path, every component, and the canonical target before using a file. */
+export function indexableFile(root: string, rel: string): { abs: string; stat: Stats } | null {
   try {
-    const bytes = await handle.readFile();
-    if (bytes.subarray(0, 8_000).includes(0)) return null;
-    return { text: bytes.toString("utf8"), mtime: st.mtime, size: st.size };
-  } finally {
-    await handle.close();
-  }
+    const base = realpathSync(root);
+    const abs = path.resolve(base, rel);
+    const relative = path.relative(base, abs);
+    if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) || !indexablePath(relative.split(path.sep).join("/"))) return null;
+    let current = base;
+    for (const part of relative.split(path.sep)) {
+      current = path.join(current, part);
+      if (lstatSync(current).isSymbolicLink()) return null;
+    }
+    if (realpathSync(abs) !== abs) return null;
+    const stat = lstatSync(abs);
+    return stat.isFile() && stat.size <= MAX_INDEXED_FILE_BYTES ? { abs, stat } : null;
+  } catch { return null; }
+}
+
+function sameFile(a: Stats, b: Stats): boolean {
+  return a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
+}
+
+function decoded(bytes: Buffer, stat: Stats) {
+  if (bytes.length > MAX_INDEXED_FILE_BYTES || bytes.includes(0)) return null;
+  return { text: bytes.toString("utf8"), mtime: stat.mtime, size: stat.size };
+}
+
+/** Read at most the file limit; reject replaced paths and symlinked parents as well as leaf links. */
+export async function readIndexable(abs: string, root: string): Promise<{ text: string; mtime: Date; size: number } | null> {
+  const rel = path.relative(path.resolve(root), path.resolve(abs));
+  const checked = indexableFile(root, rel);
+  if (!checked) return null;
+  try {
+    const handle = await open(checked.abs, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const stat = await handle.stat();
+      if (!sameFile(checked.stat, stat) || !stat.isFile()) return null;
+      const buffer = Buffer.alloc(MAX_INDEXED_FILE_BYTES + 1);
+      let size = 0;
+      while (size < buffer.length) {
+        const { bytesRead } = await handle.read(buffer, size, buffer.length - size, null);
+        if (!bytesRead) break;
+        size += bytesRead;
+      }
+      const after = indexableFile(root, rel);
+      if (!after || !sameFile(stat, after.stat) || !sameFile(stat, await handle.stat())) return null;
+      return decoded(buffer.subarray(0, size), stat);
+    } finally { await handle.close(); }
+  } catch { return null; }
+}
+
+/** The same read policy for synchronous context assembly. */
+export function readIndexableSync(root: string, rel: string): { text: string; mtime: Date; size: number } | null {
+  const checked = indexableFile(root, rel);
+  if (!checked) return null;
+  try {
+    const fd = openSync(checked.abs, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const stat = fstatSync(fd);
+      if (!sameFile(checked.stat, stat) || !stat.isFile()) return null;
+      const buffer = Buffer.alloc(MAX_INDEXED_FILE_BYTES + 1);
+      let size = 0;
+      while (size < buffer.length) {
+        const n = readSync(fd, buffer, size, buffer.length - size, null);
+        if (!n) break;
+        size += n;
+      }
+      const after = indexableFile(root, rel);
+      if (!after || !sameFile(stat, after.stat) || !sameFile(stat, fstatSync(fd))) return null;
+      return decoded(buffer.subarray(0, size), stat);
+    } finally { closeSync(fd); }
+  } catch { return null; }
 }
 
 export interface FileSection {
@@ -126,6 +187,15 @@ function windows(lines: string[], start: number, end: number, heading: string | 
   const out: FileSection[] = [];
   let s = start;
   while (s < end) {
+    if (lines[s]!.length > CHUNK_CHARS) {
+      for (let offset = 0; offset < lines[s]!.length; offset += CHUNK_CHARS - 600) {
+        const text = lines[s]!.slice(offset, offset + CHUNK_CHARS);
+        if (text.trim()) out.push({ heading, startLine: s + 1, endLine: s + 1, text });
+        if (offset + CHUNK_CHARS >= lines[s]!.length) break;
+      }
+      s++;
+      continue;
+    }
     let e = s;
     let chars = 0;
     while (e < end && e - s < maxLines && (e === s || chars + lines[e]!.length + 1 <= CHUNK_CHARS)) chars += lines[e++]!.length + 1;
