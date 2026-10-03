@@ -589,7 +589,13 @@ note: New task. Day 9 completed dative prepositions.
 </CURRENT_TASK>
 
 <PROJECT_CONTEXT>
-30-day-plan.md — plan outline and the Day 10 section.
+anchor 30-day-plan.md — goal_plan (124 lines; outline, relevant sections below)
+- 30-day plan (line 1)
+- Day 1 (line 4)
+- … one line per day …
+--- 30-day-plan.md › Day 10 (lines 40–43)
+## Day 10
+Dative prepositions in context: …
 </PROJECT_CONTEXT>
 
 <CURRENT_USER_MESSAGE>
@@ -792,7 +798,7 @@ This section combines two source classes without confusing them:
 
 An anchor does not mean that the entire file is injected on every turn. The context builder always sees a small anchor manifest containing the path, role, status, and summary, then loads only the relevant sections. For Day 10, it may load the plan outline and Day 10 section rather than all of `30-day-plan.md`.
 
-Dynamic sources are discovered through scoped file, keyword, semantic, and evidence retrieval. They are included only when relevant to the current request. Until the embeddings segment lands, this section is omitted: the anchor manifest appears in `<GOAL>` and the agent reads anchors with its filesystem tools.
+Dynamic sources are sections of other workspace files, found by meaning in the workspace file index and included only on a strong match with the current request; earlier exchanges and tool evidence arrive through `<RETRIEVED_HISTORY>` instead. Sections are always read from disk as they are now. The exact selection rules and limits are in `agent-harness.md` ("Working-agent context" and "Project files").
 
 ## Anchor lifecycle
 

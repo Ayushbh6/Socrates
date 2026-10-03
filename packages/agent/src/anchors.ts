@@ -2,10 +2,10 @@ import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { AnchorProposal, type EventPayloads, type EventRefs } from "@socrates/contracts";
 import type { Anchor, Goal, LedgerStore, Turn } from "@socrates/store";
+import { GENERATED_PATH } from "@socrates/retrieval";
 import type { WorkspaceRoot } from "@socrates/tools";
 
 export const MAX_GOAL_ANCHORS = 8;
-const TEMPORARY_PATH = /(^|\/)(node_modules|dist|build|out|coverage|tmp|temp|\.git|\.socrates|\.cache|\.next|target|__pycache__)(\/|$)|\.(log|tmp|lock|map)$/i;
 
 /** Trusted application input from an explicit user selection; never model output. */
 export interface AnchorDecision {
@@ -34,7 +34,7 @@ export function applyAnchors(input: {
       const resolved = workspace.resolve(p.path);
       const stat = statSync(resolved.abs);
       if (!stat.isFile()) throw new Error("not a file");
-      if (TEMPORARY_PATH.test(resolved.rel)) { warn(p, "temporary or generated files are not anchors"); return null; }
+      if (GENERATED_PATH.test(resolved.rel)) { warn(p, "temporary or generated files are not anchors"); return null; }
       if (stat.size > 20 * 1024 * 1024) { warn(p, "file is too large for an anchor"); return null; }
       return { path: resolved.rel, hash: createHash("sha256").update(readFileSync(resolved.abs)).digest("hex").slice(0, 32) };
     } catch { warn(p, "not an existing file of the workspace"); return null; }

@@ -31,6 +31,11 @@ const STOPWORDS = new Set(
  * Each term is quoted, so user text can never inject FTS syntax.
  */
 export function toFtsQuery(text: string, maxTerms = 24): string {
+  return significantTerms(text, maxTerms).map((t) => `"${t.replace(/"/g, '""')}"`).join(" OR ");
+}
+
+/** The distinct significant words of free text, lowercased, stopwords removed. */
+export function significantTerms(text: string, maxTerms = 24): string[] {
   const terms: string[] = [];
   for (const raw of text.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}_-]*/gu) ?? []) {
     const term = raw.replace(/^[-_]+|[-_]+$/g, "");
@@ -38,7 +43,7 @@ export function toFtsQuery(text: string, maxTerms = 24): string {
     terms.push(term);
     if (terms.length >= maxTerms) break;
   }
-  return terms.map((t) => `"${t.replace(/"/g, '""')}"`).join(" OR ");
+  return terms;
 }
 
 /** A ledger row as the router and the working agent see it. Metadata only, never message bodies. */

@@ -950,8 +950,12 @@ exchange of another task in this goal, oldest first with their dates.
 </RETRIEVED_HISTORY>
 
 <PROJECT_CONTEXT>
-Relevant sections from goal anchors and dynamically retrieved project sources
-(arrives with the embeddings segment; omitted until then).
+anchor architecture/agent-harness.md — harness architecture and compaction design (1509 lines; outline, relevant sections below)
+- Context and compaction (line 1032)
+- …
+--- architecture/agent-harness.md › Context and compaction (lines 1032–1060)
+The current text of the sections that matter for this message, and at most
+two strongly related sections of other workspace files.
 </PROJECT_CONTEXT>
 
 <CAPABILITY_CANDIDATES>
@@ -977,7 +981,7 @@ Rules:
 - Everything up to `<CURRENT_USER_MESSAGE>` is one user message made of parts: the goal-stable blocks, one part per completed turn, and the turn-volatile blocks. Part boundaries are where cache breakpoints may fall (see "Prompt caching").
 - The general task receives `<RECENT_ACTIVITY>` instead of `<GOAL_STATE>` and `<CURRENT_TASK>`; it has no durable goal state and is never completed, so its `goal_note` and `task_complete` are ignored.
 - `<CURRENT_USER_MESSAGE>` holds the user's original message exactly. When the router asked a clarification first, one line after it records the question and the user's answer. In a compound part it still holds the whole message, and `<CURRENT_TASK>` names the part this run handles (`this_turn: part 2 of 2 …`).
-- Until the embeddings segment lands, `<PROJECT_CONTEXT>` is empty and therefore omitted.
+- `<PROJECT_CONTEXT>` (at most `3,000` tokens) shows every active and provisional anchor of the goal: one under `1,500` tokens whole, a larger one as an outline of its headings with their line numbers, followed by at most `3` of its sections. Sections are chosen by fusing a keyword ranking with a meaning ranking; both read the message together with the current task's title and continuation note, because a request such as "let's start today's lesson" names no day while the note "Day 9 completed" does. At most `2` sections of other workspace files follow, on a `strong` meaning match only, labelled `related file`. Text is always read from disk when the context is assembled; the index only picks sections, and a vector of content that has changed since it was indexed selects nothing. A missing anchor is reported in one line, and an anchor that may hold credentials (the same patterns the index skips) is named but never shown. Without a workspace, or with nothing to show, the block is omitted.
 
 ## Compound tasks
 
@@ -1436,11 +1440,14 @@ Every "hybrid" search in this document and in `Goal-router.md` uses one embeddin
 - each task: title, objective, completion criteria, continuation note, and derived facts;
 - each exchange: the user's request and the final answer of a turn, in overlapping chunks of `4,000` characters (`600` overlapping) so a long exchange fits the model's input;
 - each tool call: one line naming the tool and its input, such as `terminal: npm run migrate` or `edit src/cart.js`. Outputs are not embedded; a match leads to the exchange, and the call's evidence handle opens the output;
-- each installed Skill and MCP tool: its name and description.
+- each installed Skill and MCP tool: its name and description;
+- each section of a workspace file (see "Project files").
 
 Compaction summaries are not embedded: every turn they cover is embedded as its exact exchange, and a summary never replaces its source.
 
-**Background indexing.** After every message, Socrates schedules one sync: the documents touched by events since the last sync's watermark are re-derived, the changed ones embedded in batches, and the watermark advanced. A reply never waits for indexing; a record not yet indexed is ranked by keywords alone until it is. The only embedding on the reply path is the query itself: it is cached, and the complete semantic lookup (embedding plus vector search) is bounded to `3` seconds and caller cancellation, and after a failure meaning search is skipped for `30` seconds, so an unreachable Ollama costs nothing.
+**Background indexing.** After every message, Socrates schedules one sync: the documents touched by events since the last sync's watermark are re-derived, the changed ones embedded in batches, and the watermark advanced; then the bound workspaces are scanned. A pass embeds at most `256` file sections and continues in another pass, so a large workspace's first index never holds up the ledger's for long, and the table is compacted after every `20` writes. A reply never waits for indexing; a record not yet indexed is ranked by keywords alone until it is. The only embeddings on the reply path are the queries themselves (the message, and for project files the message read with the task's note): each is cached, and the complete semantic lookup (embedding plus vector search) is bounded to `3` seconds and caller cancellation, and after a failure meaning search is skipped for `30` seconds, so an unreachable Ollama costs nothing.
+
+**Project files.** The files of every workspace bound to a goal are indexed too, for `<PROJECT_CONTEXT>`. In a git repository the files are git's own list (tracked and untracked, ignored files excluded); elsewhere, including a folder that its enclosing repository ignores, a walk that skips hidden entries. Never indexed: the dependency, build, cache and temporary paths that anchors also reject; files that may hold credentials (`.env*`, `.npmrc`, `.netrc`, `credentials`, `secrets.*`, `id_rsa` and other SSH keys, `*.pem`, `*.key`, and similar); lockfiles and minified bundles; symbolic links, binary files, and files over `256 KB`. A workspace contributes at most `5,000` files, and the cap is logged. Markdown splits at its headings, outside code fences; other files split into windows of `80` lines overlapping by `10`; anything longer than one embedding input is split again. Each section is embedded with its path and heading and keyed by its content, so an edit re-embeds only the sections it changed, and a deleted file's sections are removed. A file whose size and modification time are unchanged is not read again. With the default local model, file contents never leave the machine; with a hosted embedding provider they are sent to it, as chat context is sent to the chat model.
 
 **Similarity floors.** Measured for embeddinggemma on Socrates-shaped text and configurable per deployment:
 
@@ -1448,7 +1455,7 @@ Compaction summaries are not embedded: every turn they cover is embedded as its 
 | --- | --- | --- |
 | `related` | `0.20` | A meaning match may join a fused ranking: router goal candidates, `context_retrieve`, this task's `<RETRIEVED_HISTORY>`. Keywords and the router still decide. |
 | `suggest` | `0.35` | A capability may be suggested on meaning alone. |
-| `strong` | `0.45` | Another task's exchange may be added to `<RETRIEVED_HISTORY>` on meaning alone. |
+| `strong` | `0.45` | Another task's exchange may be added to `<RETRIEVED_HISTORY>`, or another workspace file's section to `<PROJECT_CONTEXT>`, on meaning alone (the right code file scored 0.52–0.53 against a plain-language question, other files at most 0.32). |
 
 **Scoring.** Keyword and meaning rankings are merged by reciprocal rank fusion (`K = 10`), in units where first place in one ranking is worth `1` and place `r` is worth `(K + 1) / (K + r)`; raw BM25 and cosine values are never compared directly. A recency boost of at most `0.05`, halving every `30` days, settles near-ties in favour of newer evidence; it is about half the gap between first and second place, so it never buries a clearly more relevant old record. Router candidates add a `0.05` boost for open goals.
 
@@ -1499,4 +1506,4 @@ The working agent is built in this order; each stage is one reviewed change:
 **Embeddings** follow as their own segment after these four, in two changes:
 
 - **E1, the retrieval core:** the embedding clients, the LanceDB index with background indexing, and the one hybrid scoring path, used by router goal candidates, `context_retrieve` search, `<RETRIEVED_HISTORY>` (including one strongly related exchange from another task of the goal), and capability candidates. See "Embeddings and hybrid retrieval".
-- **E2, `<PROJECT_CONTEXT>`:** relevant sections of goal anchors and workspace files. Until it lands, goal anchors reach the agent as the manifest in `<GOAL>`, read on demand with the filesystem tools.
+- **E2, `<PROJECT_CONTEXT>`:** the workspace file index and the anchor and related-file sections of `<PROJECT_CONTEXT>`. See "Project files" and "Working-agent context".

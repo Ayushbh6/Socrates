@@ -12,6 +12,8 @@ export interface IndexRow {
   task_id: string | null;
   turn_id: string | null;
   project_turn: number | null;
+  workspace_id: string | null;
+  path: string | null;
   at: string;
   hash: string;
   vector: number[];
@@ -24,11 +26,15 @@ export interface IndexFilter {
   sourceIds?: string[];
   excludeTurnIds?: string[];
   excludeTaskIds?: string[];
+  workspaceIds?: string[];
+  paths?: string[];
+  excludePaths?: string[];
   throughTurn?: number;
   fromIso?: string;
   beforeIso?: string;
 }
 
+const COMPACT_AFTER_WRITES = 20;
 const quote = (s: string) => `'${s.replace(/'/g, "''")}'`;
 const list = (values: string[]) => `(${values.map(quote).join(", ")})`;
 
@@ -40,6 +46,9 @@ export function wherePredicate(f: IndexFilter): string {
   if (f.excludeTurnIds?.length) parts.push(`(turn_id IS NULL OR turn_id NOT IN ${list(f.excludeTurnIds)})`);
   if (f.taskIds) parts.push(f.taskIds.length ? `task_id IN ${list(f.taskIds)}` : "false");
   if (f.excludeTaskIds?.length) parts.push(`(task_id IS NULL OR task_id NOT IN ${list(f.excludeTaskIds)})`);
+  if (f.workspaceIds) parts.push(f.workspaceIds.length ? `workspace_id IN ${list(f.workspaceIds)}` : "false");
+  if (f.paths) parts.push(f.paths.length ? `path IN ${list(f.paths)}` : "false");
+  if (f.excludePaths?.length) parts.push(`(path IS NULL OR path NOT IN ${list(f.excludePaths)})`);
   if (f.throughTurn !== undefined) parts.push(`project_turn <= ${Math.floor(f.throughTurn)}`);
   if (f.fromIso) parts.push(`at >= ${quote(f.fromIso)}`);
   if (f.beforeIso) parts.push(`at < ${quote(f.beforeIso)}`);
@@ -53,6 +62,7 @@ export function wherePredicate(f: IndexFilter): string {
  */
 export class VectorIndex {
   private table: Table | null = null;
+  private writes = 0;
 
   private constructor(
     private readonly db: Connection,
@@ -64,7 +74,7 @@ export class VectorIndex {
     const lancedb = await import("@lancedb/lancedb");
     const db = await lancedb.connect(uri);
     // Versioned namespace rebuilds legacy indexes whose identity or metadata may be stale.
-    const slug = `v2_${createHash("sha256").update(embedderId).digest("hex")}`;
+    const slug = `v3_${createHash("sha256").update(embedderId).digest("hex")}`;
     const names = await db.tableNames();
     const stateName = `state_${slug}`;
     const state = names.includes(stateName)
@@ -106,12 +116,14 @@ export class VectorIndex {
   /** Refresh metadata without rewriting or regenerating an unchanged vector. */
   async updateTimestamp(id: string, at: string): Promise<void> {
     await this.table?.update({ where: `id = ${quote(id)}`, values: { at } });
+    this.writes++;
   }
 
-  /** Ids of every stored document of one kind. */
-  async ids(kind: DocumentKind): Promise<string[]> {
+  /** Ids of every stored document of one kind, optionally of one workspace. */
+  async ids(kind: DocumentKind, workspaceId?: string): Promise<string[]> {
     if (!this.table) return [];
-    return (await this.table.query().where(`kind = ${quote(kind)}`).select(["id"]).toArray()).map((r) => String(r.id));
+    const where = `kind = ${quote(kind)}${workspaceId ? ` AND workspace_id = ${quote(workspaceId)}` : ""}`;
+    return (await this.table.query().where(where).select(["id"]).toArray()).map((r) => String(r.id));
   }
 
   async upsert(rows: IndexRow[]): Promise<void> {
@@ -126,6 +138,8 @@ export class VectorIndex {
         new Field("task_id", new Utf8(), true),
         new Field("turn_id", new Utf8(), true),
         new Field("project_turn", new Int32(), true),
+        new Field("workspace_id", new Utf8(), true),
+        new Field("path", new Utf8(), true),
         new Field("at", new Utf8(), false),
         new Field("hash", new Utf8(), false),
         new Field("vector", new FixedSizeList(dims, new Field("item", new Float32(), true)), false),
@@ -133,11 +147,20 @@ export class VectorIndex {
       this.table = await this.db.createEmptyTable(this.name, schema, { existOk: true });
     }
     await this.table.mergeInsert("id").whenMatchedUpdateAll().whenNotMatchedInsertAll().execute(rows as unknown as Record<string, unknown>[]);
+    this.writes++;
   }
 
   async delete(ids: string[]): Promise<void> {
     if (!this.table || !ids.length) return;
     for (let i = 0; i < ids.length; i += 200) await this.table.delete(`id IN ${list(ids.slice(i, i + 200))}`);
+    this.writes++;
+  }
+
+  /** Compact the table after many small writes and drop superseded versions (LanceDB's rule of thumb: every 20 writes). */
+  async compact(): Promise<void> {
+    if (!this.table || this.writes < COMPACT_AFTER_WRITES) return;
+    this.writes = 0;
+    await this.table.optimize({ cleanupOlderThan: new Date() });
   }
 
   async count(): Promise<number> {
@@ -147,7 +170,7 @@ export class VectorIndex {
   /** The nearest stored documents matching the filter, with cosine similarity. */
   async search(vector: number[], filter: IndexFilter, limit: number): Promise<(Omit<IndexRow, "vector"> & { similarity: number })[]> {
     if (!this.table) return [];
-    const rows = await this.table.vectorSearch(vector).distanceType("cosine").where(wherePredicate(filter)).select(["id", "kind", "source_id", "goal_id", "task_id", "turn_id", "project_turn", "at", "hash", "_distance"]).limit(limit).toArray();
+    const rows = await this.table.vectorSearch(vector).distanceType("cosine").where(wherePredicate(filter)).select(["id", "kind", "source_id", "goal_id", "task_id", "turn_id", "project_turn", "workspace_id", "path", "at", "hash", "_distance"]).limit(limit).toArray();
     return rows.map((r) => ({
       id: String(r.id),
       kind: r.kind as DocumentKind,
@@ -156,6 +179,8 @@ export class VectorIndex {
       task_id: r.task_id ?? null,
       turn_id: r.turn_id ?? null,
       project_turn: r.project_turn ?? null,
+      workspace_id: r.workspace_id ?? null,
+      path: r.path ?? null,
       at: String(r.at),
       hash: String(r.hash),
       similarity: 1 - Number(r._distance),

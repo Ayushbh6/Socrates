@@ -23,6 +23,8 @@ export interface ContextBudgets {
   summaryMax: number;
   /** `<RETRIEVED_HISTORY>` in total. */
   retrievedMax: number;
+  /** `<PROJECT_CONTEXT>` in total. */
+  projectContextMax: number;
   /** A chat holds at most this many compactions; the next trigger rolls it over. */
   maxCompactionsPerChat: number;
 }
@@ -36,5 +38,6 @@ export const DEFAULT_BUDGETS: ContextBudgets = {
   previousTurn: 20_000,
   summaryMax: SUMMARY_MAX_TOKENS,
   retrievedMax: 8_000,
+  projectContextMax: 3_000,
   maxCompactionsPerChat: 5,
 };

@@ -1,10 +1,11 @@
 import type { EventPayloads, ModelMessage, TextPart } from "@socrates/contracts";
 import type { SemanticHit } from "@socrates/retrieval";
-import type { ActiveCapabilities } from "@socrates/tools";
+import type { ActiveCapabilities, WorkspaceRoot } from "@socrates/tools";
 import { renderActivity } from "@socrates/router";
 import type { Goal, LedgerStore, Task, Turn } from "@socrates/store";
 import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
 import { clarificationLine, historyParts, taskHistory } from "./history";
+import { projectContext } from "./project-context";
 import { retrievedHistory } from "./retrieval";
 
 /** At most this many open tasks are listed in `<GOAL_STATE>`. */
@@ -22,15 +23,17 @@ export interface ContextInput {
   shelf?: string | null;
   /** This turn's `<CAPABILITY_CANDIDATES>` block, or null. */
   candidates?: string | null;
-  /** Meaning matches for `<RETRIEVED_HISTORY>`, searched once per turn. */
-  semantic?: { task: SemanticHit[]; siblings: SemanticHit[] };
+  /** Meaning matches for `<RETRIEVED_HISTORY>` and `<PROJECT_CONTEXT>`, searched once per turn. */
+  semantic?: { task: SemanticHit[]; siblings: SemanticHit[]; anchors?: SemanticHit[]; related?: SemanticHit[] };
+  /** The goal's workspace, whose anchors and files fill `<PROJECT_CONTEXT>`. */
+  workspace?: WorkspaceRoot | null;
   /** Dependent compound parts: the finalized turns of the parts this one depends on. */
   dependsOn: { order: number; turn: Turn }[];
   /** Compound position of this part, or null for a single-task message. */
   part: { order: number; count: number } | null;
   now: Date;
   timeZone: string;
-  budgets?: Pick<ContextBudgets, "previousTurn" | "retrievedMax">;
+  budgets?: Pick<ContextBudgets, "previousTurn" | "retrievedMax"> & Partial<Pick<ContextBudgets, "projectContextMax">>;
 }
 
 /**
@@ -67,11 +70,24 @@ export function assembleContext(input: ContextInput): TextPart[] {
       now: input.now,
       timeZone: input.timeZone,
     }),
+    projectContext({
+      store,
+      goalId: goal.id,
+      workspace: input.workspace ?? null,
+      query: projectQuery(task, store.requestForTurn(turn.id).request),
+      semantic: { anchors: input.semantic?.anchors ?? [], related: input.semantic?.related ?? [] },
+      maxTokens: input.budgets?.projectContextMax ?? DEFAULT_BUDGETS.projectContextMax,
+    }),
     input.candidates ?? null,
     `<CURRENT_USER_MESSAGE>\n${message}\n</CURRENT_USER_MESSAGE>`,
   ].filter((b): b is string => b !== null);
   parts.push({ text: volatile.join("\n\n") });
   return parts;
+}
+
+/** What `<PROJECT_CONTEXT>` serves: the request, read with the task it continues ("today's lesson" after "Day 9 completed"). */
+export function projectQuery(task: Task, request: string): string {
+  return [request, task.general ? null : task.title, task.general ? null : task.continuationNote].filter(Boolean).join("\n");
 }
 
 function block(name: string, body: string, attributes = ""): string {

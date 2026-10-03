@@ -1,7 +1,10 @@
+import { lstat } from "node:fs/promises";
+import path from "node:path";
 import type { EmbeddingClient } from "@socrates/contracts";
 import { abortable } from "@socrates/shared";
 import type { LedgerStore } from "@socrates/store";
 import { type DocumentKind, type SourceDocument, capabilityDocument, changedDocuments, contentHash } from "./documents";
+import { fileDocuments, readIndexable, workspaceFiles } from "./files";
 import { type IndexFilter, VectorIndex } from "./vector-index";
 
 /**
@@ -23,6 +26,10 @@ export const QUERY_TIMEOUT_MS = 3_000;
 /** After an embedding failure, meaning search is skipped for this long. */
 export const RETRY_AFTER_MS = 30_000;
 const QUERY_CACHE_SIZE = 64;
+/** Workspace sections embedded per sync pass, so a large first index never delays the ledger's for long. */
+export const FILE_EMBEDS_PER_PASS = 256;
+/** Files read before their sections are written together. */
+const FILE_FLUSH_DOCS = 64;
 
 export interface SemanticHit {
   kind: DocumentKind;
@@ -31,6 +38,10 @@ export interface SemanticHit {
   taskId: string | null;
   turnId: string | null;
   projectTurn: number | null;
+  /** A file section's workspace, path, and content hash. */
+  workspaceId?: string | null;
+  path?: string | null;
+  hash?: string;
   at: string;
   /** Cosine similarity of the best matching chunk. */
   similarity: number;
@@ -65,6 +76,8 @@ export interface RetrievalOptions {
   uri: string;
   /** Installed Skills and MCP tools to index for capability candidates. */
   capabilities?: () => { kind: "skill" | "mcp"; name: string; description: string }[];
+  /** Index the files of every workspace bound to a goal, for `<PROJECT_CONTEXT>`. On by default. */
+  workspaceFiles?: boolean;
   thresholds?: Partial<Thresholds>;
   queryTimeoutMs?: number;
   now?: () => number;
@@ -87,6 +100,9 @@ export class Retrieval implements SemanticIndex {
   private readonly lifetime = new AbortController();
   private unavailableUntil = 0;
   private readonly queries = new Map<string, number[]>();
+  /** Per workspace: each scanned file's size and modification time, and its section ids. */
+  private readonly files = new Map<string, Map<string, { stamp: string; ids: string[] }>>();
+  private readonly capped = new Set<string>();
 
   private constructor(
     private readonly options: RetrievalOptions,
@@ -139,6 +155,7 @@ export class Retrieval implements SemanticIndex {
     const watermark = await this.index.watermark();
     const docs = watermark !== null && watermark >= target ? [] : changedDocuments(store, watermark);
     let embedded = await this.write(docs, signal);
+    if (watermark === null || target > watermark) await this.index.setWatermark(target);
     // Capabilities come from the catalog, not the event log: compare all of them each pass.
     if (this.options.capabilities) {
       const at = new Date((this.options.now ?? Date.now)()).toISOString();
@@ -147,7 +164,8 @@ export class Retrieval implements SemanticIndex {
       const keep = new Set(current.map((d) => d.id));
       await this.index.delete((await this.index.ids("capability")).filter((id) => !keep.has(id)));
     }
-    if (watermark === null || target > watermark) await this.index.setWatermark(target);
+    if (this.options.workspaceFiles !== false) embedded += await this.syncWorkspaces(signal);
+    await this.index.compact();
     return { embedded };
   }
 
@@ -186,9 +204,14 @@ export class Retrieval implements SemanticIndex {
     const best = new Map<string, SemanticHit>();
     for (const r of rows) {
       if (r.similarity < floor) continue;
-      const key = `${r.kind}:${r.source_id}`;
+      // A file's sections are separate results; chunks of one exchange are not.
+      const key = r.kind === "file_section" ? r.id : `${r.kind}:${r.source_id}`;
       if (best.has(key) && best.get(key)!.similarity >= r.similarity) continue;
-      best.set(key, { kind: r.kind, sourceId: r.source_id, goalId: r.goal_id, taskId: r.task_id, turnId: r.turn_id, projectTurn: r.project_turn, at: r.at, similarity: r.similarity });
+      best.set(key, {
+        kind: r.kind, sourceId: r.source_id, goalId: r.goal_id, taskId: r.task_id, turnId: r.turn_id, projectTurn: r.project_turn,
+        ...(r.kind === "file_section" ? { workspaceId: r.workspace_id, path: r.path, hash: r.hash } : {}),
+        at: r.at, similarity: r.similarity,
+      });
     }
     return [...best.values()].sort((a, b) => b.similarity - a.similarity).slice(0, filter.limit);
   }
@@ -204,6 +227,78 @@ export class Retrieval implements SemanticIndex {
     this.lifetime.abort();
     await this.syncing?.catch(() => {});
     this.index.close();
+  }
+
+  /**
+   * Index the files of every workspace bound to a goal. A file whose size and
+   * modification time are unchanged since the last scan is skipped; the
+   * sections of a changed file are compared by content, so only edited
+   * sections are embedded. At most FILE_EMBEDS_PER_PASS sections are embedded
+   * per pass; the rest continue in the next pass.
+   */
+  private async syncWorkspaces(signal: AbortSignal): Promise<number> {
+    const { store } = this.options;
+    const roots = new Map<string, string>();
+    for (const goal of store.listGoals()) {
+      const workspace = goal.workspaceId ? store.getWorkspace(goal.workspaceId) : null;
+      if (workspace?.rootPath) roots.set(workspace.id, workspace.rootPath);
+    }
+    let embedded = 0;
+    for (const [id, root] of roots) {
+      if (embedded >= FILE_EMBEDS_PER_PASS) {
+        this.pending = true;
+        break;
+      }
+      try {
+        embedded += await this.syncWorkspace(id, root, FILE_EMBEDS_PER_PASS - embedded, signal);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        this.options.log?.(`indexing workspace ${id} failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    return embedded;
+  }
+
+  private async syncWorkspace(workspaceId: string, root: string, budget: number, signal: AbortSignal): Promise<number> {
+    const seen = this.files.get(workspaceId) ?? new Map<string, { stamp: string; ids: string[] }>();
+    this.files.set(workspaceId, seen);
+    const { files, capped } = await workspaceFiles(root, signal);
+    if (capped && !this.capped.has(workspaceId)) {
+      this.capped.add(workspaceId);
+      this.options.log?.(`workspace ${workspaceId} has more indexable files than the limit; only the first are indexed`);
+    }
+    let embedded = 0;
+    let docs: SourceDocument[] = [];
+    let read = new Map<string, { stamp: string; ids: string[] }>();
+    const flush = async () => {
+      embedded += await this.write(docs, signal);
+      for (const [rel, entry] of read) seen.set(rel, entry);
+      docs = [];
+      read = new Map();
+    };
+    for (const rel of files) {
+      signal.throwIfAborted();
+      const abs = path.join(root, rel);
+      const st = await lstat(abs).catch(() => null);
+      const stamp = st?.isFile() ? `${st.size}:${st.mtimeMs}` : "not a regular file";
+      if (seen.get(rel)?.stamp === stamp) continue;
+      const file = st?.isFile() ? await readIndexable(abs) : null;
+      const fileDocs = file ? fileDocuments(workspaceId, rel, file.text, file.mtime.toISOString()) : [];
+      docs.push(...fileDocs);
+      read.set(rel, { stamp, ids: fileDocs.map((d) => d.id) });
+      if (docs.length >= FILE_FLUSH_DOCS) await flush();
+      if (embedded >= budget) {
+        this.pending = true;
+        return embedded;
+      }
+    }
+    await flush();
+    // Every file was visited: drop the sections of deleted, ignored, or changed files.
+    const listed = new Set(files);
+    for (const rel of seen.keys()) if (!listed.has(rel)) seen.delete(rel);
+    const keep = new Set([...seen.values()].flatMap((e) => e.ids));
+    await this.index.delete((await this.index.ids("file_section", workspaceId)).filter((id) => !keep.has(id)));
+    return embedded;
   }
 
   /** Embed and store the documents whose content changed. */
@@ -224,7 +319,8 @@ export class Retrieval implements SemanticIndex {
       const vectors = await abortable(this.options.embedder.embed(batch.map((d) => d.text), "document", signal), signal);
       signal.throwIfAborted();
       await this.index.upsert(batch.map((d, j) => ({
-        id: d.id, kind: d.kind, source_id: d.sourceId, goal_id: d.goalId, task_id: d.taskId, turn_id: d.turnId, project_turn: d.projectTurn, at: d.at, hash: contentHash(d.text), vector: vectors[j]!,
+        id: d.id, kind: d.kind, source_id: d.sourceId, goal_id: d.goalId, task_id: d.taskId, turn_id: d.turnId, project_turn: d.projectTurn,
+        workspace_id: d.workspaceId ?? null, path: d.path ?? null, at: d.at, hash: contentHash(d.text), vector: vectors[j]!,
       })));
     }
     return changed.length;

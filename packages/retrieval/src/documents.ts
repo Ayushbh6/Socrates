@@ -11,19 +11,23 @@ import type { LedgerStore } from "@socrates/store";
  * - exchange: the user's request and the final answer of one turn, in overlapping chunks;
  * - tool_call: one line per call naming the tool and its input; outputs are not
  *   embedded, the call's evidence handle opens them;
- * - capability: an installed Skill's or MCP tool's name and description.
+ * - capability: an installed Skill's or MCP tool's name and description;
+ * - file_section: one section of a workspace file (see files.ts).
  */
-export type DocumentKind = "goal" | "task" | "exchange" | "tool_call" | "capability";
+export type DocumentKind = "goal" | "task" | "exchange" | "tool_call" | "capability" | "file_section";
 
 export interface SourceDocument {
   id: string;
   kind: DocumentKind;
-  /** The source record: a goal, task, or turn id, or a capability's catalog name. */
+  /** The source record: a goal, task, or turn id, a capability's catalog name, or `<workspace id>:<path>`. */
   sourceId: string;
   goalId: string | null;
   taskId: string | null;
   turnId: string | null;
   projectTurn: number | null;
+  /** A file section's workspace and relative path. */
+  workspaceId?: string | null;
+  path?: string | null;
   /** When the source last changed; recency and date filters use it. */
   at: string;
   text: string;

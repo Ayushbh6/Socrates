@@ -6,7 +6,8 @@ import type { Goal, LedgerStore, Task, Turn } from "@socrates/store";
 import type { SemanticHit, SemanticIndex } from "@socrates/retrieval";
 import { type Approve, type CapabilityCatalog, RunState, type ShelfOptions, type SupervisorOptions, ToolRunner, WorkspaceRoot, capabilityCandidates, skillShelf } from "@socrates/tools";
 import { taskHistory } from "./history";
-import { assembleContext } from "./context";
+import { assembleContext, projectQuery } from "./context";
+import { RELATED_MAX_SECTIONS } from "./project-context";
 import { fallbackAnswer, mechanicalNote } from "./final";
 import { type AgentLimits, DEFAULT_LIMITS, type RunOutcome, runAgent } from "./loop";
 import { AGENT_SYSTEM_PROMPT } from "./prompt";
@@ -187,7 +188,7 @@ export class Socrates {
     const setupTimer = setTimeout(() => setupDeadline.abort(), Math.max(0, this.limits.maxWallMs - ((this.options.now ?? Date.now)() - startedAt)));
     let initialTools = this.runner.definitions;
     const request = store.requestForTurn(turn.id).request;
-    const semantic = { task: [] as SemanticHit[], siblings: [] as SemanticHit[], capabilities: [] as SemanticHit[] };
+    const semantic = { task: [] as SemanticHit[], siblings: [] as SemanticHit[], capabilities: [] as SemanticHit[], anchors: [] as SemanticHit[], related: [] as SemanticHit[] };
     const historyBoundary = () => {
       const history = taskHistory(store, turn.id);
       return Math.max(history.summary?.to ?? 0, history.omitted?.to ?? 0);
@@ -197,12 +198,18 @@ export class Socrates {
     }, signal);
     try {
       if (this.options.semantic) {
-        // One query embedding (cached) serves all three searches; failures return nothing and keywords carry on.
+        // One query embedding (cached) serves the history and capability searches, and one more the
+        // project files, read with the task it continues; failures return nothing and keywords carry on.
         const search = this.options.semantic;
-        [semantic.task, semantic.siblings, semantic.capabilities] = await Promise.all([
+        const workspaceId = workspace ? store.requireGoal(goal.id).workspaceId : null;
+        const anchorPaths = store.listAnchors(goal.id).filter((a) => a.status !== "superseded").map((a) => a.path);
+        const files = workspaceId ? projectQuery(store.requireTask(turn.taskId!), request) : "";
+        [semantic.task, semantic.siblings, semantic.capabilities, semantic.anchors, semantic.related] = await Promise.all([
           ownHistory(setupSignal),
           search.search(request, { kinds: ["exchange", "tool_call"], goalIds: [goal.id], excludeTaskIds: [turn.taskId!], excludeTurnIds: parts.map((p) => p.turn.id), limit: 3, min: "strong" }, setupSignal),
           search.search(request, { kinds: ["capability"], limit: 5, min: "suggest" }, setupSignal),
+          workspaceId && anchorPaths.length ? search.search(files, { kinds: ["file_section"], workspaceIds: [workspaceId], paths: anchorPaths, limit: 10 }, setupSignal) : [],
+          workspaceId ? search.search(files, { kinds: ["file_section"], workspaceIds: [workspaceId], excludePaths: anchorPaths, limit: RELATED_MAX_SECTIONS, min: "strong" }, setupSignal) : [],
         ]);
       }
       if (capabilities.catalog.refresh) {
@@ -230,11 +237,12 @@ export class Socrates {
         shelf,
         candidates,
         semantic,
+        workspace,
         dependsOn: part.dependsOn.map((order) => ({ order, turn: parts.find((p) => p.order === order)!.turn })),
         part: parts.length > 1 ? { order: part.order, count: parts.length } : null,
         now: store.clock.now(),
         timeZone: this.options.timeZone,
-        budgets: { retrievedMax: this.budgets.retrievedMax, previousTurn: previousTurn ?? this.budgets.previousTurn },
+        budgets: { retrievedMax: this.budgets.retrievedMax, projectContextMax: this.budgets.projectContextMax, previousTurn: previousTurn ?? this.budgets.previousTurn },
       });
     const context = assemble();
     const compact = createCompactor({

@@ -1,12 +1,14 @@
-/** Live acceptance run of the embeddings segment (E1): a real router and
- * agent model work through Socrates.handle while the default local embedder
- * (Ollama, embeddinggemma) indexes the conversation into LanceDB in the
- * background. It checks background indexing, goal routing by meaning alone,
- * context_retrieve search by meaning, another task's history in
- * <RETRIEVED_HISTORY> on a strong match only, a capability suggestion by
- * meaning, keyword fallback when the embedder is unreachable, and restart and
- * rebuild of the derived index. Only synthetic fixture content reaches the
- * providers; embeddings never leave the machine. */
+/** Live acceptance run of the embeddings segment (E1 and E2): a real router
+ * and agent model work through Socrates.handle while the default local
+ * embedder (Ollama, embeddinggemma) indexes the conversation and the
+ * workspaces into LanceDB in the background. It checks background indexing,
+ * goal routing by meaning alone, context_retrieve search by meaning, another
+ * task's history in <RETRIEVED_HISTORY> on a strong match only, a capability
+ * suggestion by meaning, <PROJECT_CONTEXT> (anchor sections chosen through the
+ * task's note, an anchor edited on disk, a related code file by meaning, a
+ * secret file never indexed), keyword fallback when the embedder is
+ * unreachable, and restart and rebuild of the derived index. Only synthetic
+ * fixture content reaches the providers; embeddings never leave the machine. */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -34,12 +36,34 @@ const dir = realpathSync(mkdtempSync(path.join(base, `embeddings-${provider}-`))
 const shop = path.join(dir, "shop");
 mkdirSync(path.join(shop, "src"), { recursive: true });
 writeFileSync(path.join(shop, "src/cart.js"), "export const CART_LIMIT = 50;\nexport function canCheckout(items) {\n  return items.length > CART_LIMIT ? false : true;\n}\n");
+writeFileSync(path.join(shop, "src/shipping.js"), "// Delivery fees: parcels are charged by weight band.\nexport function deliveryFee(weightKg) {\n  if (weightKg <= 2) return 4.9;\n  if (weightKg <= 10) return 8.9;\n  return 14.9;\n}\n");
+const CANARY = "sk_live_eval_canary_4417";
+writeFileSync(path.join(shop, ".env"), `STRIPE_SECRET=${CANARY}\n`);
+const german = path.join(dir, "german");
+mkdirSync(path.join(german, "learning"), { recursive: true });
+const TOPICS = [
+  "greetings and introductions: Hallo, Guten Tag, Ich heiße", "numbers from one to twenty: eins bis zwanzig", "articles der, die, das and noun genders",
+  "telling the time: Wie spät ist es? Es ist halb drei", "the accusative case with einen, eine, ein", "family members and possessive pronouns mein and dein",
+  "food and drink: ordering in a restaurant", "modal verbs können, müssen, wollen", "the dative case with mit, nach, bei", "days of the week and making appointments",
+  "separable verbs: aufstehen, einkaufen, anrufen", "the perfect tense with haben", "the perfect tense with sein", "directions: links, rechts, geradeaus",
+  "describing your home and furniture", "weather and seasons", "clothes and shopping", "adjective endings after the definite article", "hobbies and free time",
+  "comparatives and superlatives", "the body and visiting a doctor", "travel by train: tickets and timetables", "subordinate clauses with weil and dass",
+  "the past tense of sein and haben", "jobs and the workplace", "reflexive verbs: sich freuen, sich waschen", "writing an informal letter", "two-way prepositions in, an, auf",
+  "review of all cases", "final test and B1 study plan",
+];
+const PLAN = `# 30-day German plan\nGoal: reach B1 through one structured lesson a day.\n\n${TOPICS.map((t, i) => `## Day ${i + 1}\nTopic: ${t}.\nWarm-up: review the previous day's vocabulary for five minutes. Then work through the topic with ten example sentences, a short dialogue read aloud, and eight practice exercises. Finish with a two-sentence summary in German.\n`).join("\n")}`;
+writeFileSync(path.join(german, "learning/30-day-plan.md"), PLAN);
 const dbPath = path.join(dir, "ledger.db");
 const lance = `${dbPath}.lance`;
 
 /** The default embedder, counted so the eval can see what was (re)embedded. */
 let embedCalls = 0;
-const counted = (inner: EmbeddingClient): EmbeddingClient => ({ id: inner.id, async embed(texts, purpose, signal) { embedCalls++; return inner.embed(texts, purpose, signal); } });
+let secretEmbedded = false;
+const counted = (inner: EmbeddingClient): EmbeddingClient => ({ id: inner.id, async embed(texts, purpose, signal) {
+  embedCalls++;
+  if (texts.some((t) => t.includes(CANARY))) secretEmbedded = true;
+  return inner.embed(texts, purpose, signal);
+} });
 const embedder = counted(makeEmbedder({}));
 assert.match(embedder.id, /^ollama:embeddinggemma:[a-f0-9]{64}$/, "the default embedder must be local Ollama embeddinggemma");
 
@@ -76,7 +100,7 @@ async function open(index: Retrieval) {
     routerModel: measured(routerModel, false),
     timeZone: "UTC",
     approve: async () => true,
-    resolveWorkspace: (goal) => (/shop|checkout|cart|release/i.test(goal.title) ? { name: "shop", rootPath: shop } : null),
+    resolveWorkspace: (goal) => (/shop|checkout|cart|release/i.test(goal.title) ? { name: "shop", rootPath: shop } : /german|deutsch/i.test(goal.title) ? { name: "german", rootPath: german } : null),
     catalog,
     semantic: retrieval,
     log,
@@ -91,6 +115,7 @@ const passed = (name: string, details?: string) => {
 };
 const short = (text: string) => text.replace(/\s+/g, " ").slice(0, 150);
 const context = (r: ModelRequest) => userText(r.messages[0]!.content);
+const projectBlock = (r: ModelRequest) => /<PROJECT_CONTEXT>[\s\S]*?<\/PROJECT_CONTEXT>/.exec(context(r))?.[0] ?? "";
 
 async function ask(message: string): Promise<{ result: Extract<HandleResult, { kind: "answered" }>; made: ModelRequest[]; ms: number }> {
   const start = requests.length;
@@ -109,7 +134,9 @@ async function run() {
   console.log(`Live embeddings acceptance: ${main.id} (router ${routerModel.id}); embedder ${embedder.id}; LanceDB at ${lance}`);
 
   // 1. A conversation across three goals; the index catches up in the background.
-  const german = await ask("I'm learning German. Let's set up a 30-day plan; today is Day 1: greetings and introductions.");
+  const germanStart = await ask("I'm learning German with the 30-day plan in learning/30-day-plan.md. Today is Day 1: greetings and introductions.");
+  // The user makes the plan the goal's anchor.
+  store.upsertAnchor({ goalId: goalOf(germanStart).id, path: "learning/30-day-plan.md", role: "goal_plan", summary: "curriculum and lesson sequence", status: "active" });
   clock.advance(day);
   await ask("Day 2 of German: numbers from one to twenty.");
   clock.advance(12 * day);
@@ -117,7 +144,7 @@ async function run() {
   await ask("For the record, the code word for this checkout fix is lantern-7. Please confirm you noted it.");
   clock.advance(10 * day);
   const garden = await ask("Something else entirely: help me plan four raised vegetable beds for my garden.");
-  const germanGoal = goalOf(german), shopGoal = goalOf(cart), gardenGoal = goalOf(garden);
+  const germanGoal = goalOf(germanStart), shopGoal = goalOf(cart), gardenGoal = goalOf(garden);
   assert.equal(new Set([germanGoal.id, shopGoal.id, gardenGoal.id]).size, 3, "the three subjects must be three goals");
   await retrieval.idle();
   const status = await retrieval.status();
@@ -171,7 +198,40 @@ async function run() {
   assert(!/retrieved from task/.test(context(unrelated.made[0]!)), "an unrelated message must not pull in another task's history");
   passed("another task's history appears on a strong match only, labelled with its task", `related: ${short(related.result.text)}`);
 
-  // 6. Offline: with the embedder unreachable, Socrates answers with keyword search, without waiting.
+  // 6. <PROJECT_CONTEXT>: "today's lesson" names no day; the task's note does, and selects that day's section of the anchor.
+  const today = await ask("Okay, let's start today's lesson.");
+  assert.equal(goalOf(today).id, germanGoal.id, `routed to ${goalOf(today).title}`);
+  const todayBlock = projectBlock(today.made[0]!);
+  const shown = [...todayBlock.matchAll(/--- learning\/30-day-plan\.md › Day (\d+)/g)].map((m) => Number(m[1]));
+  const noted = [...context(today.made[0]!).matchAll(/<CURRENT_TASK>[\s\S]*?<\/CURRENT_TASK>/g)].map((m) => m[0]).join("\n");
+  const days = [...noted.matchAll(/Day (\d+)/gi)].map((m) => Number(m[1]));
+  assert.match(todayBlock, /anchor learning\/30-day-plan\.md — goal_plan \(\d+ lines; outline/, `block: ${short(todayBlock)}`);
+  assert(shown.some((d) => days.includes(d)), `sections: Day ${shown.join(", ")}; the task mentions Day ${days.join(", ")}`);
+  passed("anchor sections are chosen through the task's note when the message names no day", `task mentions Day ${[...new Set(days)].join(", ")}; sections: Day ${shown.join(", ")}; ${short(today.result.text)}`);
+
+  // 7. The anchor is edited on disk: the next turn shows the current text, never the old one.
+  const EDITED = "Topic: ordering coffee and cake in a Konditorei (replaces the earlier topic).";
+  writeFileSync(path.join(german, "learning/30-day-plan.md"), PLAN.replace(/^Topic: .*$/gm, EDITED));
+  const edited = await ask("Remind me what the plan says for today's lesson.");
+  assert.equal(goalOf(edited).id, germanGoal.id);
+  const editedBlock = projectBlock(edited.made[0]!);
+  assert(editedBlock.includes("Konditorei"), `block: ${short(editedBlock)}`);
+  assert(!TOPICS.some((t) => editedBlock.includes(`Topic: ${t}.`)), "an old section text must never be shown");
+  assert.match(edited.result.text, /Konditorei|coffee|cake|Kaffee|Kuchen/i);
+  passed("an anchor edited on disk is shown as it is now", short(edited.result.text));
+
+  // 8. A workspace file found by meaning alone, only when it matches strongly; a secret file is never indexed or shown.
+  const fees = await ask("Back to the shop: how do we work out what customers pay to have their parcels delivered?");
+  assert.equal(goalOf(fees).id, shopGoal.id, `routed to ${goalOf(fees).title}`);
+  const feesBlock = projectBlock(fees.made[0]!);
+  assert.match(feesBlock, /--- src\/shipping\.js \(lines \d+–\d+\) — related file/, `block: ${short(feesBlock)}`);
+  assert(!/related file/.test(projectBlock(unrelated.made[0]!)), "an unrelated message must not pull in workspace files");
+  assert(!secretEmbedded, "the .env file must never be embedded");
+  assert(!requests.some((r) => projectBlock(r).includes(CANARY)), "the .env file must never appear in PROJECT_CONTEXT");
+  passed("a related workspace file appears on a strong meaning match only; secrets are never indexed", `fees: ${short(fees.result.text)}`);
+
+  // 9. Offline: with the embedder unreachable, Socrates answers with keyword search, without waiting.
+  await retrieval.idle();
   await socrates.close();
   const offline = new OllamaEmbedder({ model: "embeddinggemma", baseURL: "http://127.0.0.1:9" });
   const offlineIndex = await Retrieval.open({ store, embedder: offline, uri: path.join(dir, "offline.lance"), log });
@@ -188,7 +248,7 @@ async function run() {
   passed("an unreachable embedder falls back to keyword search and still answers", `failed query embedding ${searchMs} ms; whole turn ${fallback.ms} ms; ${short(fallback.result.text)}`);
   await socrates.close();
 
-  // 7. Restart catches up only on what changed while the index was closed (the offline turn), then re-embeds nothing.
+  // 10. Restart catches up only on what changed while the index was closed (the offline turn), then re-embeds nothing.
   embedCalls = 0;
   const caughtUp = await openIndex();
   await caughtUp.idle();

@@ -45,12 +45,14 @@ describe("<RETRIEVED_HISTORY> with meaning search", () => {
     const text = contextText(model.requests[0]!);
     expect(text).toContain(`<RETRIEVED_HISTORY>\n[TURN ${fact.projectTurn} — 2026-09-01] (retrieved from task g1/t2 "Fix cart limit")\nUSER:\nWhy does checkout fail with 51 items?`);
     expect(text).toContain("lantern-7");
-    // One search per use: routing, this task at the related floor, sibling tasks at the strong floor, capabilities.
+    // One search per use: routing, this task at the related floor, sibling tasks at the strong floor, capabilities,
+    // and other workspace files at the strong floor (the goal has no anchors, so none are searched).
     expect(semantic.queries).toEqual([
       { kinds: ["goal", "task"], limit: 30 },
       { kinds: ["exchange", "tool_call"], taskIds: [w.taskId], throughTurn: 0, limit: 20 },
       { kinds: ["exchange", "tool_call"], goalIds: [w.goalId], excludeTaskIds: [w.taskId], excludeTurnIds: [w.store.turnsForTask(w.taskId).at(-1)!.id], limit: 3, min: "strong" },
       { kinds: ["capability"], limit: 5, min: "suggest" },
+      { kinds: ["file_section"], workspaceIds: [w.store.requireGoal(w.goalId).workspaceId], excludePaths: [], limit: 2, min: "strong" },
     ]);
     // The index is refreshed after the message, in the background, and closed with Socrates.
     expect(semantic.syncs).toBe(1);
