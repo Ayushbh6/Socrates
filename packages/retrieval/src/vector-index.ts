@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Connection, Table } from "@lancedb/lancedb";
 import { Field, FixedSizeList, Float32, Int32, Schema, Utf8 } from "apache-arrow";
 import type { DocumentKind } from "./documents";
@@ -20,6 +21,8 @@ export interface IndexFilter {
   kinds: DocumentKind[];
   goalIds?: string[];
   taskIds?: string[];
+  sourceIds?: string[];
+  excludeTurnIds?: string[];
   excludeTaskIds?: string[];
   throughTurn?: number;
   fromIso?: string;
@@ -33,6 +36,8 @@ const list = (values: string[]) => `(${values.map(quote).join(", ")})`;
 export function wherePredicate(f: IndexFilter): string {
   const parts = [`kind IN ${list(f.kinds)}`];
   if (f.goalIds) parts.push(f.goalIds.length ? `goal_id IN ${list(f.goalIds)}` : "false");
+  if (f.sourceIds) parts.push(f.sourceIds.length ? `source_id IN ${list(f.sourceIds)}` : "false");
+  if (f.excludeTurnIds?.length) parts.push(`(turn_id IS NULL OR turn_id NOT IN ${list(f.excludeTurnIds)})`);
   if (f.taskIds) parts.push(f.taskIds.length ? `task_id IN ${list(f.taskIds)}` : "false");
   if (f.excludeTaskIds?.length) parts.push(`(task_id IS NULL OR task_id NOT IN ${list(f.excludeTaskIds)})`);
   if (f.throughTurn !== undefined) parts.push(`project_turn <= ${Math.floor(f.throughTurn)}`);
@@ -58,12 +63,20 @@ export class VectorIndex {
   static async open(uri: string, embedderId: string): Promise<VectorIndex> {
     const lancedb = await import("@lancedb/lancedb");
     const db = await lancedb.connect(uri);
-    const slug = embedderId.replace(/[^A-Za-z0-9]+/g, "_").toLowerCase();
+    // Versioned namespace rebuilds legacy indexes whose identity or metadata may be stale.
+    const slug = `v2_${createHash("sha256").update(embedderId).digest("hex")}`;
     const names = await db.tableNames();
     const stateName = `state_${slug}`;
     const state = names.includes(stateName)
       ? await db.openTable(stateName)
       : await db.createEmptyTable(stateName, new Schema([new Field("key", new Utf8(), false), new Field("value", new Utf8(), false)]));
+    const identity = await state.query().where("key = 'identity'").toArray();
+    if (identity.length && identity[0].value !== embedderId) {
+      state.close();
+      db.close();
+      throw new Error("Embedding index identity mismatch");
+    }
+    if (!identity.length) await state.mergeInsert("key").whenNotMatchedInsertAll().execute([{ key: "identity", value: embedderId }]);
     const index = new VectorIndex(db, `documents_${slug}`, state);
     if (names.includes(index.name)) index.table = await db.openTable(index.name);
     return index;
@@ -79,15 +92,20 @@ export class VectorIndex {
     await this.state.mergeInsert("key").whenMatchedUpdateAll().whenNotMatchedInsertAll().execute([{ key: "seq", value: String(seq) }]);
   }
 
-  /** Stored content hashes of the given document ids. */
-  async hashes(ids: string[]): Promise<Map<string, string>> {
-    const out = new Map<string, string>();
+  /** Stored content hashes and timestamps of the given document ids. */
+  async hashes(ids: string[]): Promise<Map<string, { hash: string; at: string }>> {
+    const out = new Map<string, { hash: string; at: string }>();
     if (!this.table) return out;
     for (let i = 0; i < ids.length; i += 200) {
-      const rows = await this.table.query().where(`id IN ${list(ids.slice(i, i + 200))}`).select(["id", "hash"]).toArray();
-      for (const r of rows) out.set(String(r.id), String(r.hash));
+      const rows = await this.table.query().where(`id IN ${list(ids.slice(i, i + 200))}`).select(["id", "hash", "at"]).toArray();
+      for (const r of rows) out.set(String(r.id), { hash: String(r.hash), at: String(r.at) });
     }
     return out;
+  }
+
+  /** Refresh metadata without rewriting or regenerating an unchanged vector. */
+  async updateTimestamp(id: string, at: string): Promise<void> {
+    await this.table?.update({ where: `id = ${quote(id)}`, values: { at } });
   }
 
   /** Ids of every stored document of one kind. */
@@ -129,7 +147,7 @@ export class VectorIndex {
   /** The nearest stored documents matching the filter, with cosine similarity. */
   async search(vector: number[], filter: IndexFilter, limit: number): Promise<(Omit<IndexRow, "vector"> & { similarity: number })[]> {
     if (!this.table) return [];
-    const rows = await this.table.vectorSearch(vector).distanceType("cosine").where(wherePredicate(filter)).select(["id", "kind", "source_id", "goal_id", "task_id", "turn_id", "project_turn", "at", "hash"]).limit(limit).toArray();
+    const rows = await this.table.vectorSearch(vector).distanceType("cosine").where(wherePredicate(filter)).select(["id", "kind", "source_id", "goal_id", "task_id", "turn_id", "project_turn", "at", "hash", "_distance"]).limit(limit).toArray();
     return rows.map((r) => ({
       id: String(r.id),
       kind: r.kind as DocumentKind,

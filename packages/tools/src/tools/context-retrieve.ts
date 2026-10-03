@@ -127,7 +127,11 @@ async function ledgerSearch(input: Query, ctx: HandlerContext) {
       }
       // Meaning matches join the keyword matches in one fused ranking.
       const lexical = collected.splice(0);
-      const semantic = await ctx.semantic?.search(input.query, { kinds: entity === "goals" ? ["goal"] : entity === "tasks" ? ["task"] : ["goal", "task"], goalIds: [...goalIds], limit: 50 }, ctx.signal) ?? [];
+      const eligibleIds = goals.flatMap((goal) => [
+        { kind: "goal" as const, goal, task: null, updatedAt: goal.updatedAt },
+        ...store.listTasks(goal.id).map((task) => ({ kind: "task" as const, goal, task, updatedAt: task.updatedAt })),
+      ]).filter(keep).map((item) => (item.task ?? item.goal).id);
+      const semantic = await ctx.semantic?.search(input.query, { kinds: entity === "goals" ? ["goal"] : entity === "tasks" ? ["task"] : ["goal", "task"], goalIds: [...goalIds], sourceIds: eligibleIds, limit: 50 }, ctx.signal) ?? [];
       const meaning: LedgerItem[] = [];
       for (const h of semantic) {
         const task = h.kind === "task" ? store.getTask(h.sourceId) : null;
@@ -246,7 +250,7 @@ async function search(input: Search, ctx: HandlerContext) {
     });
     if (fts && ctx.semantic) {
       // A meaning match on an exchange or on one of its tool calls finds the exchange.
-      const semantic = await ctx.semantic.search(input.query!, { kinds: ["exchange", "tool_call"], ...filter, limit: 50 }, ctx.signal);
+      const semantic = await ctx.semantic.search(input.query!, { kinds: ["exchange", "tool_call"], ...filter, ...dates, limit: 50 }, ctx.signal);
       const meaning = [...new Set(semantic.map((h) => h.turnId!))]
         .map((id) => ctx.store.exchangeForTurn(id))
         .filter((h): h is Hit => !!h && (!dates.fromIso || h.at >= dates.fromIso) && (!dates.beforeIso || h.at < dates.beforeIso));

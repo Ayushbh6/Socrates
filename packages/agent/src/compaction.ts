@@ -38,6 +38,8 @@ export interface CompactorOptions {
   budgets: ContextBudgets;
   /** Assemble this turn's working context from the store, optionally with a smaller N−1 budget. */
   assemble: (previousTurn?: number) => TextPart[];
+  /** Re-query eligible older history after the summary or omission boundary changes. */
+  refreshHistory?: (signal: AbortSignal) => Promise<void>;
   retryDelaysMs?: number[];
   /** Shown to the user while a long task's context is refreshed by rollover. */
   onStatus?: (text: string) => void;
@@ -107,6 +109,8 @@ export function createCompactor(options: CompactorOptions): Compact {
       for (const step of steps.slice(0, keep)) for (const m of step) if (m.role === "tool") linearized.add(m.toolCallId);
       steps = steps.slice(keep);
     };
+    await options.refreshHistory?.(signal);
+    signal.throwIfAborted();
     let current = build();
     if (measure(current) > budgets.target && steps.length) {
       layers.push("linearize");

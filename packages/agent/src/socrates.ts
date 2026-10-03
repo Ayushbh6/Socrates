@@ -5,6 +5,7 @@ import { GoalRouter, type RoutedPart } from "@socrates/router";
 import type { Goal, LedgerStore, Task, Turn } from "@socrates/store";
 import type { SemanticHit, SemanticIndex } from "@socrates/retrieval";
 import { type Approve, type CapabilityCatalog, RunState, type ShelfOptions, type SupervisorOptions, ToolRunner, WorkspaceRoot, capabilityCandidates, skillShelf } from "@socrates/tools";
+import { taskHistory } from "./history";
 import { assembleContext } from "./context";
 import { fallbackAnswer, mechanicalNote } from "./final";
 import { type AgentLimits, DEFAULT_LIMITS, type RunOutcome, runAgent } from "./loop";
@@ -187,13 +188,20 @@ export class Socrates {
     let initialTools = this.runner.definitions;
     const request = store.requestForTurn(turn.id).request;
     const semantic = { task: [] as SemanticHit[], siblings: [] as SemanticHit[], capabilities: [] as SemanticHit[] };
+    const historyBoundary = () => {
+      const history = taskHistory(store, turn.id);
+      return Math.max(history.summary?.to ?? 0, history.omitted?.to ?? 0);
+    };
+    const ownHistory = (signal: AbortSignal) => this.options.semantic!.search(request, {
+      kinds: ["exchange", "tool_call"], taskIds: [turn.taskId!], throughTurn: historyBoundary(), limit: 20,
+    }, signal);
     try {
       if (this.options.semantic) {
         // One query embedding (cached) serves all three searches; failures return nothing and keywords carry on.
         const search = this.options.semantic;
         [semantic.task, semantic.siblings, semantic.capabilities] = await Promise.all([
-          search.search(request, { kinds: ["exchange", "tool_call"], taskIds: [turn.taskId!], limit: 20 }, setupSignal),
-          search.search(request, { kinds: ["exchange", "tool_call"], goalIds: [goal.id], excludeTaskIds: [turn.taskId!], limit: 3, min: "strong" }, setupSignal),
+          ownHistory(setupSignal),
+          search.search(request, { kinds: ["exchange", "tool_call"], goalIds: [goal.id], excludeTaskIds: [turn.taskId!], excludeTurnIds: parts.map((p) => p.turn.id), limit: 3, min: "strong" }, setupSignal),
           search.search(request, { kinds: ["capability"], limit: 5, min: "suggest" }, setupSignal),
         ]);
       }
@@ -235,6 +243,7 @@ export class Socrates {
       turn,
       budgets: this.budgets,
       assemble,
+      refreshHistory: this.options.semantic ? async (signal) => { semantic.task = await ownHistory(signal); } : undefined,
       ...(this.options.retryDelaysMs ? { retryDelaysMs: this.options.retryDelaysMs } : {}),
       ...(options.onStatus ? { onStatus: options.onStatus } : {}),
       ...(this.options.log ? { log: this.options.log } : {}),

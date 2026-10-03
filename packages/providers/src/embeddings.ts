@@ -41,7 +41,7 @@ async function post(url: string, body: unknown, headers: Record<string, string>,
 export class OllamaEmbedder implements EmbeddingClient {
   readonly id: string;
   constructor(private readonly options: { model: string; baseURL?: string }) {
-    this.id = `ollama:${options.model}`;
+    this.id = `ollama:${options.model}:${endpointKey(options.baseURL ?? EMBEDDING_DEFAULTS.ollamaURL)}`;
   }
 
   async embed(texts: string[], purpose: "query" | "document", signal?: AbortSignal): Promise<number[][]> {
@@ -60,7 +60,7 @@ export class OllamaEmbedder implements EmbeddingClient {
 export class OpenAICompatibleEmbedder implements EmbeddingClient {
   readonly id: string;
   constructor(private readonly options: { provider: string; model: string; baseURL: string; apiKey?: string }) {
-    this.id = `${options.provider}:${options.model}`;
+    this.id = `${options.provider}:${options.model}:${endpointKey(options.baseURL)}`;
   }
 
   async embed(texts: string[], purpose: "query" | "document", signal?: AbortSignal): Promise<number[][]> {
@@ -138,4 +138,9 @@ export class HashEmbedder implements EmbeddingClient {
       return v.map((x) => x / norm);
     });
   }
+}
+
+// Hash endpoint identity so URLs containing credentials are never exposed in diagnostics.
+function endpointKey(url: string): string {
+  return createHash("sha256").update(url.replace(/\/$/, "")).digest("hex");
 }

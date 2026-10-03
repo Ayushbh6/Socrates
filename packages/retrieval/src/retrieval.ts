@@ -153,12 +153,12 @@ export class Retrieval implements SemanticIndex {
 
   async search(query: string, filter: SemanticQuery, signal?: AbortSignal): Promise<SemanticHit[]> {
     const now = (this.options.now ?? Date.now)();
-    if (this.closed || !query.trim() || now < this.unavailableUntil) return [];
+    if (this.closed || signal?.aborted || !query.trim() || now < this.unavailableUntil) return [];
+    const timeout = AbortSignal.timeout(this.options.queryTimeoutMs ?? QUERY_TIMEOUT_MS);
+    const limit = AbortSignal.any([this.lifetime.signal, timeout, ...(signal ? [signal] : [])]);
     let vector = this.queries.get(query);
     if (!vector) {
-      const timeout = AbortSignal.timeout(this.options.queryTimeoutMs ?? QUERY_TIMEOUT_MS);
       try {
-        const limit = signal ? AbortSignal.any([signal, timeout]) : timeout;
         // Raced as well as passed down, so an embedder that ignores the signal cannot hold up the reply.
         [vector] = await abortable(this.options.embedder.embed([query], "query", limit), limit);
       } catch (error) {
@@ -176,7 +176,9 @@ export class Retrieval implements SemanticIndex {
     let rows;
     try {
       // Several chunks may belong to one source; over-fetch, then keep each source's best.
-      rows = await this.index.search(vector, filter, filter.limit * 4);
+      limit.throwIfAborted();
+      rows = await abortable(this.index.search(vector, filter, filter.limit * 4), limit);
+      limit.throwIfAborted();
     } catch (error) {
       this.options.log?.(`vector search failed: ${error instanceof Error ? error.message : String(error)}`);
       return [];
@@ -208,11 +210,18 @@ export class Retrieval implements SemanticIndex {
   private async write(docs: SourceDocument[], signal: AbortSignal): Promise<number> {
     if (!docs.length) return 0;
     const stored = await this.index.hashes(docs.map((d) => d.id));
-    const changed = docs.filter((d) => stored.get(d.id) !== contentHash(d.text));
+    const changed = docs.filter((d) => stored.get(d.id)?.hash !== contentHash(d.text));
+    for (const d of docs) {
+      const previous = stored.get(d.id);
+      if (previous?.hash === contentHash(d.text) && previous.at !== d.at) {
+        signal.throwIfAborted();
+        await this.index.updateTimestamp(d.id, d.at);
+      }
+    }
     for (let i = 0; i < changed.length; i += 16) {
       signal.throwIfAborted();
       const batch = changed.slice(i, i + 16);
-      const vectors = await this.options.embedder.embed(batch.map((d) => d.text), "document", signal);
+      const vectors = await abortable(this.options.embedder.embed(batch.map((d) => d.text), "document", signal), signal);
       signal.throwIfAborted();
       await this.index.upsert(batch.map((d, j) => ({
         id: d.id, kind: d.kind, source_id: d.sourceId, goal_id: d.goalId, task_id: d.taskId, turn_id: d.turnId, project_turn: d.projectTurn, at: d.at, hash: contentHash(d.text), vector: vectors[j]!,

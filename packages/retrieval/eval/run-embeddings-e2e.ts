@@ -41,7 +41,7 @@ const lance = `${dbPath}.lance`;
 let embedCalls = 0;
 const counted = (inner: EmbeddingClient): EmbeddingClient => ({ id: inner.id, async embed(texts, purpose, signal) { embedCalls++; return inner.embed(texts, purpose, signal); } });
 const embedder = counted(makeEmbedder({}));
-assert.equal(embedder.id, "ollama:embeddinggemma", "the default embedder must be local Ollama embeddinggemma");
+assert.match(embedder.id, /^ollama:embeddinggemma:[a-f0-9]{64}$/, "the default embedder must be local Ollama embeddinggemma");
 
 const usage = { requests: 0, promptTokens: 0, outputTokens: 0 };
 const requests: ModelRequest[] = [];

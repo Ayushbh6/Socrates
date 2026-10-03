@@ -1,4 +1,5 @@
 import { type EventPayloads, type ModelRequest, userText } from "@socrates/contracts";
+import type { SemanticIndex, SemanticQuery } from "@socrates/retrieval";
 import { countTokens } from "@socrates/shared";
 import { LedgerStore } from "@socrates/store";
 import { ToolRunner } from "@socrates/tools";
@@ -85,8 +86,11 @@ describe("layer 1: history checkpoint", () => {
   it("summarizes turns older than the verbatim window and keeps owed requests visible", async () => {
     const w = await world();
     await seed(w, 8);
-    const { socrates, model, compactor } = w.socrates([continueTask()], [final({ full_answer: "Here is the lexer answer." })], { budgets: budgets(), compactor: [checkpoint()] });
+    const queries: SemanticQuery[] = [];
+    const semantic: SemanticIndex = { async search(_q, filter) { queries.push(filter); return []; }, scheduleSync() {}, async close() {} };
+    const { socrates, model, compactor } = w.socrates([continueTask()], [final({ full_answer: "Here is the lexer answer." })], { budgets: budgets(), compactor: [checkpoint()], semantic });
     await socrates.handle("Continue with the parser work.");
+    expect(queries.filter((q) => q.throughTurn !== undefined).map((q) => q.throughTurn)).toEqual([0, w.store.latestHistoryRecord(w.taskId)!.to]);
 
     const input = userText(compactor.requests[0]!.messages[0]!.content);
     const range = spanRange(compactor.requests[0]!);

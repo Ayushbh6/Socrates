@@ -1,4 +1,4 @@
-import type { SemanticHit, SemanticQuery, SemanticSearch } from "@socrates/retrieval";
+import { turnDocuments, type SemanticHit, type SemanticQuery, type SemanticSearch } from "@socrates/retrieval";
 import { describe, expect, it } from "vitest";
 import { type CatalogEntry, RunState, StaticCatalog, capabilityCandidates } from "../src";
 import { type Harness, harness } from "./helpers";
@@ -10,7 +10,7 @@ function fake(hits: () => SemanticHit[]): SemanticSearch & { queries: { query: s
     queries,
     async search(query, filter) {
       queries.push({ query, filter });
-      return hits().filter((h) => filter.kinds.includes(h.kind) && (!filter.goalIds || filter.goalIds.includes(h.goalId!)) && (!filter.taskIds || filter.taskIds.includes(h.taskId!))).slice(0, filter.limit);
+      return hits().filter((h) => filter.kinds.includes(h.kind) && (!filter.goalIds || filter.goalIds.includes(h.goalId!)) && (!filter.taskIds || filter.taskIds.includes(h.taskId!)) && (!filter.sourceIds || filter.sourceIds.includes(h.sourceId)) && (!filter.fromIso || h.at >= filter.fromIso) && (!filter.beforeIso || h.at < filter.beforeIso)).slice(0, filter.limit);
     },
   };
 }
@@ -61,6 +61,41 @@ describe("meaning-based context_retrieve", () => {
     expect(local.json.results).toEqual([]);
     const all = await h.call("context_retrieve", { action: "ledger_search", query: "today's lesson", scope: "all_goals" });
     expect(all.json.results.map((r: { selector: string }) => r.selector)).toEqual(["g2"]);
+  });
+
+  it("applies date eligibility before the semantic limit", async () => {
+    let hits: SemanticHit[] = [];
+    const h = harness({ semantic: fake(() => hits) });
+    const old = finish(h, "Amber.");
+    h.clock.advance(86400000);
+    const recent = finish(h, "Other.");
+    hits = [...Array.from({ length: 51 }, () => hit(h, recent.id)), hit(h, old.id)];
+    const result = await h.call("context_retrieve", { action: "search", query: "violet", from: "2026-09-01", to: "2026-09-01" });
+    expect(result.json.results.map((r: { project_turn: number }) => r.project_turn)).toEqual([old.projectTurn]);
+  });
+
+  it("applies ledger status eligibility before limiting semantic candidates", async () => {
+    let hits: SemanticHit[] = [];
+    const h = harness({ semantic: fake(() => hits) });
+    const completed = h.store.createTask(h.binding.goalId, { title: "Amber", objective: "Remember." });
+    h.store.reviseTask(completed.id, { status: "completed" });
+    const taskHit = (id: string): SemanticHit => ({ kind: "task", sourceId: id, taskId: id, goalId: h.binding.goalId, turnId: null, projectTurn: null, at: h.clock.now().toISOString(), similarity: 0.8 });
+    hits = [...Array.from({ length: 51 }, () => taskHit(h.binding.taskId)), taskHit(completed.id)];
+    const result = await h.call("context_retrieve", { action: "ledger_search", query: "violet", entity: "tasks", status: "completed" });
+    expect(result.json.results).toHaveLength(1);
+    expect(result.json.results[0].title).toBe("Amber");
+  });
+
+  it("dates tool-call documents by exchange completion across midnight", async () => {
+    const h = harness({ files: { "a.txt": "amber" } });
+    h.clock.set("2026-09-01T23:59:00Z");
+    await h.call("read", { path: "a.txt" });
+    h.clock.advance(120000);
+    const turn = finish(h, "Done.");
+    const calls = turnDocuments(h.store, turn.id).filter((d) => d.kind === "tool_call");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.at).toBe(turn.completedAt);
+    expect(calls[0]!.at).toMatch(/^2026-09-02/);
   });
 
   it("works unchanged without a semantic index", async () => {

@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { HashEmbedder } from "@socrates/providers";
 import type { LedgerStore } from "@socrates/store";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { continueTask, createGoal, createTask, exchange, setup } from "../../router/test/helpers";
-import { Retrieval, callLine, chunkText, fuse, rankScore, recencyBoost, wherePredicate } from "../src";
+import { Retrieval, VectorIndex, callLine, chunkText, fuse, rankScore, recencyBoost, wherePredicate } from "../src";
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -174,5 +174,104 @@ describe("Retrieval", () => {
     await retrieval.close();
     await retrieval.idle();
     expect(await retrieval.search("german", { kinds: ["goal"], limit: 3 })).toEqual([]);
+  });
+});
+
+describe("E1 review regressions", () => {
+  it("rebuilds rather than trusting a legacy watermark", async () => {
+    const { store } = setup();
+    await seed(store);
+    const uri = dir();
+    const db = await (await import("@lancedb/lancedb")).connect(uri);
+    const legacy = await db.createTable("state_test_hash", [{ key: "seq", value: String(store.latestEventSeq()) }]);
+    legacy.close();
+    db.close();
+    const { retrieval, embedder } = await open(store, { uri, embedder: new HashEmbedder({ id: "test:hash" }) });
+    expect(embedder.calls).toBeGreaterThan(0);
+    expect((await retrieval.status()).documents).toBeGreaterThan(0);
+  });
+
+  it("rebuilds for model ids that previously collided", async () => {
+    const { store } = setup();
+    await seed(store);
+    const uri = dir();
+    const first = await open(store, { uri, embedder: new HashEmbedder({ id: "test:model-a", dims: 8 }) });
+    await first.retrieval.close();
+    const next = await open(store, { uri, embedder: new HashEmbedder({ id: "test:model_a", dims: 16 }) });
+    expect(next.embedder.calls).toBeGreaterThan(0);
+    expect((await next.retrieval.search("checkout", { kinds: ["exchange"], limit: 3 })).length).toBeGreaterThan(0);
+  });
+
+  it("refreshes timestamps without embedding unchanged metadata text", async () => {
+    const { store, clock } = setup();
+    await exchange(store, "amber", createGoal("Review", "History"), "ok");
+    const task = store.allTasks().find((x) => x.task.title === "History")!.task;
+    const { retrieval, embedder } = await open(store);
+    clock.advance(86400000);
+    await exchange(store, "another", continueTask(), "ok");
+    expect((await retrieval.sync()).embedded).toBe(1); // Only the new exchange needs a vector.
+    const found = await retrieval.search("History", { kinds: ["task"], taskIds: [task.id], fromIso: clock.now().toISOString(), limit: 1 });
+    expect(found[0]?.at).toBe(store.requireTask(task.id).updatedAt);
+    const calls = embedder.calls;
+    await retrieval.sync();
+    expect(embedder.calls).toBe(calls);
+  });
+
+  it("refreshes existing task vectors when their goal acquires a workspace", async () => {
+    const { store } = setup();
+    await exchange(store, "amber", createGoal("Review", "History"), "ok");
+    const task = store.allTasks().find((x) => x.task.title === "History")!.task;
+    const { retrieval } = await open(store);
+    const workspace = store.createWorkspace("Quasar operations");
+    store.bindGoalWorkspace(task.goalId, workspace.id);
+    expect((await retrieval.sync()).embedded).toBe(2);
+    expect((await retrieval.search("Quasar", { kinds: ["task"], limit: 5 })).some((h) => h.sourceId === task.id)).toBe(true);
+  });
+
+  it("prefilters dates and history boundaries before ranking a crowded index", async () => {
+    const { store, clock } = setup();
+    await exchange(store, "ancient amber", createGoal("Review", "History"), "old");
+    const task = store.allTasks().find((x) => x.task.title === "History")!.task;
+    clock.advance(86400000);
+    for (let i = 0; i < 51; i++) await exchange(store, `recent ${i}`, continueTask(), "new");
+    const { retrieval } = await open(store, { embedder: { id: "test:rank", async embed(texts, purpose) {
+      return texts.map((t) => purpose === "document" && t.includes("ancient amber") ? [0.9, 0.1] : [1, 0]);
+    } } });
+    const base = { kinds: ["exchange" as const], taskIds: [task.id], limit: 20 };
+    expect((await retrieval.search("violet", base)).every((h) => h.projectTurn! > 1)).toBe(true);
+    expect((await retrieval.search("violet", { ...base, throughTurn: 1 })).map((h) => h.projectTurn)).toEqual([1]);
+    expect((await retrieval.search("violet", { ...base, beforeIso: "2026-09-02T00:00:00Z" })).map((h) => h.projectTurn)).toEqual([1]);
+  });
+});
+
+
+describe("semantic cancellation", () => {
+  it("abandons a cached query's pending index read on cancellation or timeout", async () => {
+    const { store } = setup();
+    await seed(store);
+    const { retrieval } = await open(store, { queryTimeoutMs: 40 });
+    await retrieval.search("checkout", { kinds: ["exchange"], limit: 3 });
+    const spy = vi.spyOn(VectorIndex.prototype, "search").mockImplementation(() => new Promise(() => {}));
+    try {
+      const controller = new AbortController();
+      const pending = retrieval.search("checkout", { kinds: ["exchange"], limit: 3 }, controller.signal);
+      controller.abort();
+      expect(await pending).toEqual([]);
+      expect(await retrieval.search("checkout", { kinds: ["exchange"], limit: 3 })).toEqual([]);
+      spy.mockClear();
+      expect(await retrieval.search("checkout", { kinds: ["exchange"], limit: 3 }, controller.signal)).toEqual([]);
+      expect(spy).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
+  });
+
+  it("closes even when a document embedder ignores cancellation", async () => {
+    const { store } = setup();
+    await seed(store);
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    const retrieval = await Retrieval.open({ store, uri: dir(), embedder: { id: "stuck", embed() { started(); return new Promise(() => {}); } } });
+    await ready;
+    await retrieval.close();
+    await retrieval.idle();
   });
 });

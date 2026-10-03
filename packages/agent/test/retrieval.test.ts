@@ -23,7 +23,7 @@ function fake(hits: () => SemanticHit[]): SemanticIndex & { queries: SemanticQue
     closed: 0,
     async search(_query: string, filter: SemanticQuery) {
       index.queries.push(filter);
-      return hits().filter((h) => filter.kinds.includes(h.kind) && (!filter.taskIds || filter.taskIds.includes(h.taskId!)) && !filter.excludeTaskIds?.includes(h.taskId!));
+      return hits().filter((h) => filter.kinds.includes(h.kind) && (!filter.taskIds || filter.taskIds.includes(h.taskId!)) && !filter.excludeTaskIds?.includes(h.taskId!) && (filter.throughTurn === undefined || h.projectTurn! <= filter.throughTurn)).slice(0, filter.limit);
     },
     scheduleSync() { index.syncs++; },
     async close() { index.closed++; },
@@ -48,8 +48,8 @@ describe("<RETRIEVED_HISTORY> with meaning search", () => {
     // One search per use: routing, this task at the related floor, sibling tasks at the strong floor, capabilities.
     expect(semantic.queries).toEqual([
       { kinds: ["goal", "task"], limit: 30 },
-      { kinds: ["exchange", "tool_call"], taskIds: [w.taskId], limit: 20 },
-      { kinds: ["exchange", "tool_call"], goalIds: [w.goalId], excludeTaskIds: [w.taskId], limit: 3, min: "strong" },
+      { kinds: ["exchange", "tool_call"], taskIds: [w.taskId], throughTurn: 0, limit: 20 },
+      { kinds: ["exchange", "tool_call"], goalIds: [w.goalId], excludeTaskIds: [w.taskId], excludeTurnIds: [w.store.turnsForTask(w.taskId).at(-1)!.id], limit: 3, min: "strong" },
       { kinds: ["capability"], limit: 5, min: "suggest" },
     ]);
     // The index is refreshed after the message, in the background, and closed with Socrates.
@@ -93,6 +93,20 @@ describe("<RETRIEVED_HISTORY> with meaning search", () => {
     // A sibling hit is never mistaken for this task's history, and this task's turns after the boundary never appear.
     const bounded = retrievedHistory(w.store, { taskId: w.taskId, message: "which port", boundary: early.projectTurn, maxTokens: 900, semantic: [hitFor(later, 0.9)] })!;
     expect(bounded).not.toContain("9090");
+  });
+
+  it("recovers an omitted exchange despite twenty stronger recent matches", async () => {
+    const w = await world();
+    const old = end(w.store, w.taskId, "Amber", "Older decision: lantern-7.");
+    const recent = Array.from({ length: 21 }, (_, i) => end(w.store, w.taskId, `Recent ${i}`, "Unrelated."));
+    w.store.recordOmission({ goal_id: w.goalId, task_id: w.taskId, chat_id: old.chatId! }, { from: old.projectTurn, to: old.projectTurn });
+    const semantic = fake(() => [...recent.map((t) => hitFor(t, 0.9)), hitFor(old, 0.8)]);
+    const { socrates, model } = w.socrates([continueTask()], [final()], { semantic });
+    await socrates.handle("violet");
+    const text = contextText(model.requests[0]!);
+    expect(text).toContain(`<RETRIEVED_HISTORY>\n[TURN ${old.projectTurn}`);
+    expect(text).toContain("lantern-7");
+    await socrates.close();
   });
 
   it("indexes each message in the background with a real index and finds it next time by meaning", async () => {

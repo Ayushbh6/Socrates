@@ -77,7 +77,7 @@ export function turnDocuments(store: LedgerStore, turnId: string): SourceDocumen
     ...base, id: `exchange:${turnId}:${i}`, kind: "exchange", sourceId: turnId, at: exchange.at, text,
   }));
   for (const ev of store.evidenceForTurn(turnId)) {
-    docs.push({ ...base, id: `tool_call:${exchange.taskId}:${ev.handle}`, kind: "tool_call", sourceId: turnId, at: ev.createdAt, text: callLine(ev.tool, ev.input) });
+    docs.push({ ...base, id: `tool_call:${exchange.taskId}:${ev.handle}`, kind: "tool_call", sourceId: turnId, at: exchange.at, text: callLine(ev.tool, ev.input) });
   }
   return docs;
 }
@@ -117,6 +117,9 @@ export function changedDocuments(store: LedgerStore, afterSeq: number | null): S
   } else {
     for (const e of store.listEvents({ afterSeq })) {
       if (e.goal_id) goals.add(e.goal_id);
+      if (e.type === "goal_workspace_bound" && e.goal_id) {
+        for (const task of store.listTasks(e.goal_id)) tasks.add(task.id);
+      }
       if (e.task_id) tasks.add(e.task_id);
       if (e.turn_id) turns.add(e.turn_id);
     }

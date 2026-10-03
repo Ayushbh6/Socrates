@@ -30,7 +30,7 @@ describe("embedding clients", () => {
   it("Ollama: embeddinggemma's query and document prefixes, batches of 32, truncation on", async () => {
     const { url, seen } = await serve((_, body) => ({ json: { embeddings: body.input.map((_: string, i: number) => [i, 1]) } }));
     const e = new OllamaEmbedder({ model: "embeddinggemma", baseURL: url });
-    expect(e.id).toBe("ollama:embeddinggemma");
+    expect(e.id).toMatch(/^ollama:embeddinggemma:[a-f0-9]{64}$/);
     expect(await e.embed(["where is the cart bug"], "query")).toEqual([[0, 1]]);
     expect(seen[0]).toMatchObject({ path: "/api/embed", body: { model: "embeddinggemma", input: ["task: search result | query: where is the cart bug"], truncate: true } });
     const docs = Array.from({ length: 40 }, (_, i) => `doc ${i}`);
@@ -61,14 +61,21 @@ describe("embedding clients", () => {
   });
 
   it("defaults to local Ollama embeddinggemma and is configured like the chat models", () => {
-    expect(makeEmbedder({}).id).toBe("ollama:embeddinggemma");
-    expect(makeEmbedder({ SOCRATES_EMBEDDINGS_MODEL: "nomic-embed-text" }).id).toBe("ollama:nomic-embed-text");
-    expect(makeEmbedder({ SOCRATES_EMBEDDINGS_PROVIDER: "openrouter", SOCRATES_EMBEDDINGS_MODEL: "openai/text-embedding-3-small", OPENROUTER_API_KEY: "k" }).id).toBe("openrouter:openai/text-embedding-3-small");
-    expect(makeEmbedder({ SOCRATES_EMBEDDINGS_PROVIDER: "custom", SOCRATES_EMBEDDINGS_MODEL: "m", SOCRATES_EMBEDDINGS_URL: "http://localhost:1234/v1" }).id).toBe("custom:m");
+    expect(makeEmbedder({}).id).toMatch(/^ollama:embeddinggemma:[a-f0-9]{64}$/);
+    expect(makeEmbedder({ SOCRATES_EMBEDDINGS_MODEL: "nomic-embed-text" }).id).toMatch(/^ollama:nomic-embed-text:[a-f0-9]{64}$/);
+    expect(makeEmbedder({ SOCRATES_EMBEDDINGS_PROVIDER: "openrouter", SOCRATES_EMBEDDINGS_MODEL: "openai/text-embedding-3-small", OPENROUTER_API_KEY: "k" }).id).toMatch(/^openrouter:openai\/text-embedding-3-small:[a-f0-9]{64}$/);
+    expect(makeEmbedder({ SOCRATES_EMBEDDINGS_PROVIDER: "custom", SOCRATES_EMBEDDINGS_MODEL: "m", SOCRATES_EMBEDDINGS_URL: "http://localhost:1234/v1" }).id).toMatch(/^custom:m:[a-f0-9]{64}$/);
     expect(() => makeEmbedder({ SOCRATES_EMBEDDINGS_PROVIDER: "openrouter", SOCRATES_EMBEDDINGS_MODEL: "m" })).toThrow("Missing OPENROUTER_API_KEY");
     expect(() => makeEmbedder({ SOCRATES_EMBEDDINGS_PROVIDER: "openai" })).toThrow("SOCRATES_EMBEDDINGS_MODEL is required");
     expect(() => makeEmbedder({ SOCRATES_EMBEDDINGS_PROVIDER: "custom", SOCRATES_EMBEDDINGS_MODEL: "m" })).toThrow("SOCRATES_EMBEDDINGS_URL is required");
     expect(() => makeEmbedder({ SOCRATES_EMBEDDINGS_PROVIDER: "elsewhere" })).toThrow("Unknown embeddings provider");
+  });
+
+  it("isolates endpoints while keeping equivalent trailing slashes stable", () => {
+    const make = (baseURL: string) => new OpenAICompatibleEmbedder({ provider: "custom", model: "same", baseURL });
+    expect(make("http://localhost:1/v1").id).not.toBe(make("http://localhost:2/v1").id);
+    expect(make("http://localhost:1/v1/").id).toBe(make("http://localhost:1/v1").id);
+    expect(new OllamaEmbedder({ model: "same", baseURL: "http://localhost:1" }).id).not.toBe(new OllamaEmbedder({ model: "same", baseURL: "http://localhost:2" }).id);
   });
 
   it("the test embedder is deterministic, normalised, and treats a concept group as one meaning", async () => {
