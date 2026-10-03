@@ -571,7 +571,8 @@ export class LedgerStore {
         }
         break;
       }
-      case "file_changed": case "terminal_started": case "approval_decided": case "history_omitted": case "agent_warning": case "agent_message": case "anchor_question": case "anchor_decided": break;
+      case "file_changed": case "terminal_started": case "approval_decided": case "history_omitted": case "agent_warning": case "agent_message": case "anchor_question": case "anchor_decided":
+      case "mcp_tools_listed": case "skill_shelf_frozen": break;
       default: throw new StoreError(`Unsupported event type: ${e.type}`);
     }
   }
@@ -1426,6 +1427,51 @@ export class LedgerStore {
       this.projectEvent(event);
       return true;
     });
+  }
+
+  /** Whether the user approved this MCP tool for the goal; approval is asked once per tool per goal. */
+  mcpToolApproved(goalId: string, name: string): boolean {
+    return this.all("SELECT payload FROM events WHERE goal_id = ? AND type = 'approval_decided'", goalId).some((r) => {
+      const p = JSON.parse(str(r.payload)) as EventPayloads["approval_decided"];
+      return p.kind === "mcp_tool" && p.subject === name && p.granted;
+    });
+  }
+
+  /** How often each Skill was activated, across all goals, for the Skill shelf. */
+  skillActivationCounts(): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const r of this.all("SELECT payload FROM events WHERE type = 'capability_activated'")) {
+      const p = JSON.parse(str(r.payload)) as EventPayloads["capability_activated"];
+      if (p.kind === "skill") counts.set(p.name, (counts.get(p.name) ?? 0) + 1);
+    }
+    return counts;
+  }
+
+  /** The goal's frozen Skill shelf, or null when none has been resolved yet. */
+  skillShelf(goalId: string): EventPayloads["skill_shelf_frozen"]["skills"] | null {
+    const event = this.listEvents({ goalId, type: "skill_shelf_frozen" }).at(-1);
+    return event ? (event.payload as EventPayloads["skill_shelf_frozen"]).skills : null;
+  }
+
+  freezeSkillShelf(goalId: string, skills: EventPayloads["skill_shelf_frozen"]["skills"]): void {
+    this.appendEvent("skill_shelf_frozen", { skills }, { goal_id: goalId });
+  }
+
+  /** The latest tools/list snapshot of each MCP server. */
+  mcpToolSnapshots(): Map<string, EventPayloads["mcp_tools_listed"]> {
+    const latest = new Map<string, EventPayloads["mcp_tools_listed"]>();
+    for (const e of this.listEvents({ type: "mcp_tools_listed" })) {
+      const p = e.payload as EventPayloads["mcp_tools_listed"];
+      latest.set(p.server, p);
+    }
+    return latest;
+  }
+
+  /** Record a server's tools/list when it differs from its latest snapshot. */
+  recordMcpToolSnapshot(payload: EventPayloads["mcp_tools_listed"]): boolean {
+    if (this.mcpToolSnapshots().get(payload.server)?.digest === payload.digest) return false;
+    this.appendEvent("mcp_tools_listed", payload);
+    return true;
   }
 
   listActiveCapabilities(goalId: string): ActiveCapability[] {

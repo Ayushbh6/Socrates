@@ -1,0 +1,22 @@
+{
+  "name": "@socrates/capabilities",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.0",
+    "@socrates/contracts": "workspace:*",
+    "@socrates/shared": "workspace:*",
+    "@socrates/store": "workspace:*",
+    "@socrates/tools": "workspace:*",
+    "yaml": "^2.9.1",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@socrates/agent": "workspace:*",
+    "@socrates/providers": "workspace:*"
+  }
+}

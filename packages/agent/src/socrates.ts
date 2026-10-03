@@ -2,7 +2,7 @@ import type { EventRefs, ModelClient, TurnStop } from "@socrates/contracts";
 import { TokenCalibration } from "@socrates/providers";
 import { GoalRouter, type RoutedPart } from "@socrates/router";
 import type { Goal, LedgerStore, Task, Turn } from "@socrates/store";
-import { type Approve, type CapabilityCatalog, RunState, type SupervisorOptions, ToolRunner, WorkspaceRoot } from "@socrates/tools";
+import { type Approve, type CapabilityCatalog, RunState, type ShelfOptions, type SupervisorOptions, ToolRunner, WorkspaceRoot, capabilityCandidates, skillShelf } from "@socrates/tools";
 import { assembleContext } from "./context";
 import { fallbackAnswer, mechanicalNote } from "./final";
 import { type AgentLimits, DEFAULT_LIMITS, type RunOutcome, runAgent } from "./loop";
@@ -29,7 +29,10 @@ export interface SocratesOptions {
    * the agent asks where the work belongs.
    */
   resolveWorkspace?: (goal: Goal) => { name: string; rootPath: string } | null;
+  /** Installed Skills and MCP servers; the application opens and closes it. */
   catalog?: CapabilityCatalog;
+  /** The user's pinned and the deployment's default Skills, first on a new goal's shelf. */
+  shelf?: ShelfOptions;
   limits?: Partial<AgentLimits>;
   /** Context budgets; production uses the defaults. */
   budgets?: Partial<ContextBudgets>;
@@ -111,6 +114,7 @@ export class Socrates {
       this.approveCurrent = options.approve ?? this.options.approve;
       const routed = await this.router.route(message, signal);
       if (routed.kind === "clarify") return { kind: "clarify", text: routed.text };
+      await this.runner.capabilities.catalog.refresh?.().catch((error) => this.options.log?.(`capability refresh failed: ${error instanceof Error ? error.message : String(error)}`));
       let setupError: { error: unknown } | null = null;
       try { if (routed.acknowledgment) options.onAcknowledgment?.(routed.acknowledgment); }
       catch (error) { setupError = { error }; }
@@ -155,13 +159,21 @@ export class Socrates {
     const turn = part.turn;
     const goal = store.requireGoal(turn.goalId!);
     const workspace = this.workspaceFor(goal);
-    const mcp = (await this.runner.mcpDefinitions(goal.id)).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    const skills = (await this.runner.capabilities.activeSkills(goal.id)).skills;
+    const capabilities = this.runner.capabilities;
+    const tools = async () => [...this.runner.definitions, ...(await this.runner.mcpDefinitions(goal.id))];
+    const initialTools = await tools();
+    await capabilities.activeSkills(goal.id);
+    const run = new RunState();
+    const shelf = skillShelf(store, capabilities.catalog, goal.id, this.options.shelf);
+    const candidates = capabilityCandidates({ store, catalog: capabilities.catalog, goalId: goal.id, message: store.requestForTurn(turn.id).request, run });
+    // Rebuilt from the current active set each time, so compaction mid-turn keeps a Skill activated earlier in the turn.
     const assemble = (previousTurn?: number) =>
       assembleContext({
         store,
         turn,
-        capabilities: { skills, mcpTools: mcp.map((d) => d.name) },
+        capabilities: capabilities.current(goal.id),
+        shelf,
+        candidates,
         dependsOn: part.dependsOn.map((order) => ({ order, turn: parts.find((p) => p.order === order)!.turn })),
         part: parts.length > 1 ? { order: part.order, count: parts.length } : null,
         now: store.clock.now(),
@@ -184,9 +196,10 @@ export class Socrates {
       runner: this.runner,
       calibration: this.calibration,
       system: AGENT_SYSTEM_PROMPT,
-      tools: [...this.runner.definitions, ...mcp],
+      tools: initialTools,
+      refreshTools: tools,
       context,
-      scope: { binding: { goalId: goal.id, taskId: turn.taskId!, chatId: turn.chatId, turnId: turn.id }, workspace, run: new RunState(), signal },
+      scope: { binding: { goalId: goal.id, taskId: turn.taskId!, chatId: turn.chatId, turnId: turn.id }, workspace, run, signal },
       limits: this.limits,
       budgets: this.budgets,
       compact,

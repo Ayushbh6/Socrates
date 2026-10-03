@@ -585,26 +585,40 @@ At most five compact Skill summaries appear in the dynamic context before the cu
 </AVAILABLE_SKILLS>
 ```
 
-Each entry contains only the exact name and one bounded description. Full instructions, paths, dependencies, and resources remain unloaded. Explicit user pins are selected first, followed by deployment defaults and then the most frequently activated Skills for this user and project. The resolved shelf is frozen for the goal so ordinary turns remain cache-stable; usage changes affect a future goal, not every request. If five or fewer model-invocable Skills exist, all may appear.
+Each entry contains only the exact name and one description bounded to `200` characters. Full instructions, paths, dependencies, and resources remain unloaded. Explicit user pins are selected first, followed by deployment defaults (both supplied by the application), then the Skills this user has activated most often across all goals, then by name. The resolved shelf is frozen for the goal as a `skill_shelf_frozen` event so ordinary turns remain cache-stable; usage changes affect a future goal, not every request. An empty shelf is not frozen, so Skills installed later still reach the goal, and a frozen Skill that is uninstalled drops out of the rendering. If five or fewer Skills are installed, all appear. To use a shelf Skill, the agent searches its exact name and activates the returned ref.
 
 MCP tools never enter this shelf. Even small MCP descriptions multiply quickly, and a description without its live schema does not make the tool callable.
 
 #### Automatic likely candidates
 
-Before the first working-agent call for each new user task, deterministic retrieval may suggest at most one inactive Skill and one inactive MCP tool. Candidates are hints, not activations:
+Before the first working-agent call of every user turn (each compound part separately, from that part's request), deterministic retrieval may suggest at most one inactive, available Skill and one inactive, available MCP tool. Candidates are hints, not activations; each carries a run-scoped ref that `capability_control` activates directly:
 
 ```text
 <CAPABILITY_CANDIDATES>
-- skill c1: pdf — matched attached application/pdf document
-- mcp c2: playwright.browser_navigate — matched browser verification request
+- skill c1: pdf — Read, render, inspect, and create PDF files. (named in the message)
+- mcp c2: playwright.browser_navigate — Navigate the browser to a URL. (matched: browser, navigate)
 </CAPABILITY_CANDIDATES>
 ```
 
-The retriever ranks exact names, explicit mentions, attachment MIME types and extensions, URLs, catalog tags, descriptions, and declared use cases. It combines lexical and semantic scores but performs no second LLM call. Each kind has its own threshold and may return no candidate; an MCP result cannot crowd out a stronger Skill result or vice versa.
+The retriever uses the same ranking as `capability_search`: exact names, aliases, name words, tags, and description words, with common stop words ignored. It is lexical only until the embeddings segment adds a semantic score, and performs no LLM call. Each kind has its own threshold (`40` for a Skill, `60` for an MCP tool, so an MCP server's name alone never qualifies a tool) and may return no candidate; an MCP result cannot crowd out a stronger Skill result or vice versa. Attachment types join the signals when attachments exist.
 
-Long prompts are not embedded as one undifferentiated 10,000-character query. The retriever preserves the exact prompt for the agent but searches bounded overlapping chunks, explicit request/acceptance sections, attachment metadata, and high-signal entities independently. It merges the best score per capability and deduplicates the result. This allows a relevant sentence buried in a long specification to match while reducing the chance that one incidental word such as "PDF" dominates the whole request.
+Long prompts are not scored as one undifferentiated query. The retriever preserves the exact prompt for the agent but scores overlapping windows of `48` words (stride `24`) independently and keeps each capability's best window. This allows a relevant sentence buried in a long specification to match, while words scattered across the whole request cannot add up to a false match.
 
-The Main Coding Agent decides whether to activate a candidate. A false-positive suggestion costs only a short metadata line. Explicitly naming a Skill or MCP tool creates an exact high-priority candidate when available, but still does not bypass activation, authentication, permissions, or policy.
+The Main Coding Agent decides whether to activate a candidate. A false-positive suggestion costs only a short metadata line. Explicitly naming a Skill, an MCP catalog name (`server.tool`), a public name, or a distinctive tool name (one containing `_` or `-`) creates an exact candidate that always qualifies when available, but still does not bypass activation, authentication, permissions, or policy.
+
+#### Capability sources
+
+Skills and MCP servers are global: they come from the user's Socrates folder (`$SOCRATES_HOME`, default `~/.socrates`), never from a workspace, because a goal need not have a project folder (a learning journal has none). The application opens the installed catalog once and passes it to Socrates.
+
+- **Skills** live in `skills/<name>/SKILL.md`. YAML frontmatter holds `name` (letters, digits, `-` and `_`, at most 64, equal to the folder name), `description` (required, at most `1,024` characters), and optional `tags`, `aliases`, and `dependencies` (catalog names). The body after the frontmatter is the instructions. The version is a short hash of the whole file, and the file is read again on every load, so an edited Skill is detected by its digest. Invalid folders are skipped with an internal diagnostic. The folder is rescanned at the start of every message.
+- **MCP servers** are listed in `mcp.json` in the common `mcpServers` format. It is the user's own file, so its servers are trusted and starting them needs no approval. An entry with `command` (plus optional `args`, `env`, `cwd`) runs over stdio; an entry with `url` (plus optional static `headers`) uses streamable HTTP; `disabled: true` keeps an entry without starting it. `${NAME}` in any value is replaced by that environment variable, which keeps secrets out of the file. A server whose referenced variables are unset, or that answers `401`/`403`, is `authentication_required`; OAuth sign-in is a later addition. Each server is validated on its own; an invalid one is skipped with a diagnostic. Changes to `mcp.json` take effect when the catalog is opened again.
+- Opening the catalog connects every enabled server through the official MCP SDK and reads its complete `tools/list`. Every listing that differs from the server's previous one is recorded as an `mcp_tools_listed` event, so a server's tools stay searchable before it is reached in a new process, and a resumed task sees exactly what was advertised. A `tools/list_changed` notification refreshes the listing the same way. Activation requests `tools/list` again; later steps read the live connection's listing.
+- A server that fails to connect is `offline` for `30` seconds and is then retried on first use; a dropped connection is reconnected on next use. Connection timeout is `15` seconds; a tool call may run `10` minutes, extended by progress notifications. A protocol error or timeout is the tool's error result; only an unreachable server fails the call as `capability_unavailable`. Server stderr is kept as bounded internal diagnostics.
+- An MCP tool result is rendered as text: text blocks verbatim, images, audio, and resources as one descriptive line, and structured content when nothing else was returned.
+
+#### MCP approvals
+
+A tool whose server marks it `readOnlyHint` runs freely. Any other MCP tool asks the user through the application's `approve` callback before its first call in each goal; a granted approval is recorded with the tool's catalog name and remembered for that goal, while a denial is a corrective `approval_denied` error and the next call asks again. Approval is separate from activation, and a non-read-only tool also counts as a mutation for the first-mutation gate.
 
 #### On-demand search
 
@@ -654,7 +668,7 @@ Successful output:
       "name": "github_issue_workflow",
       "kind": "skill",
       "description": "Investigate an issue and compare it with a repository",
-      "provider": "workspace",
+      "provider": "user",
       "availability": "available",
       "active": false
     }
@@ -700,10 +714,10 @@ Skill activation output:
   "name": "github_issue_workflow",
   "status": "activated",
   "version": "v3",
-  "instructions": "Complete SKILL.md content...",
+  "instructions": "The SKILL.md body after its frontmatter...",
   "resource_base": {
     "kind": "directory",
-    "path": "/workspace/.socrates/skills/github_issue_workflow"
+    "path": "/Users/me/.socrates/skills/github_issue_workflow"
   },
   "dependencies": [
     {
@@ -737,7 +751,7 @@ MCP activation output:
 
 For an MCP tool, the harness connects or reconnects to the configured server when necessary, performs a fresh MCP `tools/list`, resolves the exact advertised tool selected by `ref`, validates and bounds its real JSON Schema, assigns a collision-safe public name (`mcp__server__tool`, with a short hash of the exact identity whenever a name had to be rewritten or shortened), and appends only that one tool schema to the next model request. Calls to that public name go through the same tool runner as the permanent tools: input validation, corrective errors (the server's complete error output stays in the event log), bounded results with evidence handles, and derived capability facts. A new process restores the goal's active tools by fetching their schemas again; a changed schema is recorded as a replacement, and a tool that cannot be reached is left out and fails closed when called. Active Skills are revalidated by content digest before their instructions are used again. Activation does not invoke the MCP tool and does not count as approval for a later mutating call.
 
-Authentication-required activation returns a structured non-success state and the existing user-facing authentication route; it never asks the model to handle credentials. Offline or failed servers retain bounded internal diagnostics, while the model receives a corrective operational error without secrets or raw stack traces.
+Authentication-required activation returns a structured non-success state telling the agent to have the user configure the server's credentials; it never asks the model to handle credentials. Offline or failed servers retain bounded internal diagnostics, while the model receives a corrective operational error without secrets or raw stack traces.
 
 Activated capabilities are scoped to the current goal:
 
@@ -954,7 +968,8 @@ Can you fix the information-loss problem?
 Rules:
 
 - The current user message appears exactly once and is the final block before the in-flight turn. There is no separate `latest exchange` field because it would duplicate the newest entry in history.
-- Goal-stable blocks contain only content that changes rarely: the goal title, objective, workspace, and anchor manifest; the frozen Skill shelf; and the active capability set. A Skill activated mid-turn arrives first as the activation tool result; from the next user turn it is carried in `<ACTIVE_CAPABILITIES>`, and history renders the earlier activation call with its one-line linear form so the instructions are never present twice.
+- Goal-stable blocks contain only content that changes rarely: the goal title, objective, workspace, and anchor manifest; the frozen Skill shelf; and the active capability set. A Skill activated mid-turn arrives first as the activation tool result; from the next user turn it is carried in `<ACTIVE_CAPABILITIES>`, and history always renders the activation call in its one-line linear form so the instructions are never present twice. When compaction rebuilds the context mid-turn, `<ACTIVE_CAPABILITIES>` is rebuilt from the current active set, so a Skill activated earlier in the turn keeps its instructions after its activation step is linearized.
+- The tool list is read again after every step: an MCP tool activated mid-turn is callable on the next step, and a deactivated one disappears.
 - Chat history follows the three-tier attachment policy in "Context and compaction." It contains at most one active checkpoint—or, in a continuation chat, the handover capsule in the same position—followed by `[TURN k]`-labelled completed turns. Within a turn's tool loop, nothing before the in-flight turn changes, so every step after the first is a cache hit up to the newest tool result.
 - Turn-volatile blocks hold everything that is rewritten between user turns: the goal note and open-task index, the task's continuation note, and per-turn retrieval. Each optional block is omitted entirely when empty.
 - `<RECENT_ACTIVITY>` appears only when the turn is bound to the `general` task. It lets Socrates answer an opening "Hi, how's it going?" with a short recap of recent work and an offer to continue it.
@@ -962,7 +977,7 @@ Rules:
 - Everything up to `<CURRENT_USER_MESSAGE>` is one user message made of parts: the goal-stable blocks, one part per completed turn, and the turn-volatile blocks. Part boundaries are where cache breakpoints may fall (see "Prompt caching").
 - The general task receives `<RECENT_ACTIVITY>` instead of `<GOAL_STATE>` and `<CURRENT_TASK>`; it has no durable goal state and is never completed, so its `goal_note` and `task_complete` are ignored.
 - `<CURRENT_USER_MESSAGE>` holds the user's original message exactly. When the router asked a clarification first, one line after it records the question and the user's answer. In a compound part it still holds the whole message, and `<CURRENT_TASK>` names the part this run handles (`this_turn: part 2 of 2 …`).
-- Until their stages land, `<AVAILABLE_SKILLS>`, `<CAPABILITY_CANDIDATES>` (capabilities stage), `<RETRIEVED_HISTORY>` (compaction stage), and `<PROJECT_CONTEXT>` (embeddings) are empty and therefore omitted.
+- Until the embeddings segment lands, `<PROJECT_CONTEXT>` is empty and therefore omitted.
 
 ## Compound tasks
 
@@ -1412,7 +1427,7 @@ Further rules:
 - Filesystem tools resolve every path to its real target before applying the access policy, so a symbolic link cannot escape the workspace, cannot reach protected repository metadata through an alias, and cannot split one file's stale-edit record into two.
 - File mutations take one lock per workspace, shared by every run in the process, and recheck the file's content immediately before writing.
 - Terminal commands use the same workspace and approval policy.
-- Approval is one injected `approve` callback owned by the application. It is consulted for the first-mutation gate (`Goal-router.md`, "Workspace resolution"), `SIGKILL`, and `timeout_ms: 0`. A denial is a corrective tool error, never a crash.
+- Approval is one injected `approve` callback owned by the application. It is consulted for the first-mutation gate (`Goal-router.md`, "Workspace resolution"), `SIGKILL`, `timeout_ms: 0`, and the first call of a non-read-only MCP tool in each goal (see "MCP approvals"). A denial is a corrective tool error, never a crash.
 - A turn without a workspace (general conversation, or a new goal before a workspace is chosen) can still answer and use `context_retrieve` and capability tools; filesystem and terminal tools fail with `no_workspace`, and the agent asks the user where the work belongs.
 - Every mutating tool records its effect before the next model step.
 - Terminal sessions persist independently of one HTTP request and can be rediscovered, read, awaited, or stopped in later turns.

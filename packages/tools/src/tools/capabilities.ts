@@ -5,6 +5,7 @@ import { z } from "zod";
 import { RESULT_CEILING_TOKENS, head } from "../bounds";
 import { type CapabilityCatalog, type CatalogEntry, type LoadedMcpTool, type McpCallResult, type McpToolEntry, mcpPublicName } from "../catalog";
 import { type HandlerContext, throwIfCancelled } from "../context";
+import { scoreCapability } from "../discovery";
 import { ToolError } from "../errors";
 import { hashBytes } from "../files";
 import { compileToolSchema } from "../schema";
@@ -26,6 +27,8 @@ export const MAX_ACTIVE_MCP_SCHEMA_TOKENS = 16_000;
  */
 export class CapabilityRuntime {
   private readonly byGoal = new Map<string, Map<string, { publicName: string; tool: LoadedMcpTool }>>();
+  /** Validated instructions of active Skills, by goal and name, so context can be rebuilt mid-turn without loading again. */
+  private readonly skillText = new Map<string, Map<string, { digest: string; instructions: string }>>();
 
   constructor(
     private readonly store: LedgerStore,
@@ -43,6 +46,32 @@ export class CapabilityRuntime {
 
   get(goalId: string, name: string) {
     return this.byGoal.get(goalId)?.get(name);
+  }
+
+  rememberSkill(goalId: string, name: string, digest: string, instructions: string): void {
+    if (!this.skillText.has(goalId)) this.skillText.set(goalId, new Map());
+    this.skillText.get(goalId)!.set(name, { digest, instructions });
+  }
+
+  /**
+   * The goal's active Skills and MCP public names as they are now, for
+   * `<ACTIVE_CAPABILITIES>`. Synchronous: Skills come from the instructions
+   * validated by activeSkills or by activation, so a Skill activated earlier
+   * in this turn is present when compaction rebuilds the context.
+   */
+  current(goalId: string): { skills: { name: string; instructions: string }[]; mcpTools: string[] } {
+    const skills: { name: string; instructions: string }[] = [];
+    const mcpTools: string[] = [];
+    for (const c of this.store.listActiveCapabilities(goalId)) {
+      if (c.kind === "skill") {
+        const text = this.skillText.get(goalId)?.get(c.name);
+        if (text && text.digest === c.digest) skills.push({ name: c.name, instructions: text.instructions });
+      } else {
+        const loaded = this.get(goalId, c.name);
+        if (loaded) mcpTools.push(loaded.publicName);
+      }
+    }
+    return { skills, mcpTools: mcpTools.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)) };
   }
 
   /** Refresh the goal's active schemas for the next model request. */
@@ -122,8 +151,10 @@ export class CapabilityRuntime {
       if (!entry || entry.availability !== "available") { stale.push(active.name); continue; }
       try {
         const skill = await this.catalog.loadSkill(active.name);
-        if (skill.version === active.version && countTokens(skill.instructions) <= MAX_SKILL_TOKENS && hashBytes(skill.instructions) === active.digest) skills.push({ name: active.name, version: skill.version, instructions: skill.instructions });
-        else stale.push(active.name);
+        if (skill.version === active.version && countTokens(skill.instructions) <= MAX_SKILL_TOKENS && hashBytes(skill.instructions) === active.digest) {
+          skills.push({ name: active.name, version: skill.version, instructions: skill.instructions });
+          this.rememberSkill(goalId, active.name, active.digest, skill.instructions);
+        } else stale.push(active.name);
       } catch {
         stale.push(active.name);
       }
@@ -143,8 +174,12 @@ export class CapabilityRuntime {
         }
       }),
       concurrency: "serial",
-      mutating: true,
+      mutating: !tool.readOnly,
       execute: async (input, ctx) => {
+        // A tool the server does not mark read-only asks the user once per goal; the answer is remembered.
+        if (!tool.readOnly && !ctx.store.mcpToolApproved(goalId, name)) {
+          await ctx.requireApproval({ kind: "mcp_tool", tool: publicName, subject: name, detail: `Allow the MCP tool ${name} for this goal? It may change things outside Socrates. First call: ${head(JSON.stringify(input), 60).text}` });
+        }
         let result: McpCallResult;
         try {
           result = await this.catalog.callMcpTool(name, input, ctx.signal);
@@ -179,30 +214,6 @@ function validateSchema(name: string, tool: LoadedMcpTool): ToolError | null {
   return null;
 }
 
-function terms(text: string): string[] {
-  return [...new Set(text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])].filter((t) => t.length > 1);
-}
-
-/** Deterministic catalog ranking: exact names, then aliases, tags, and description words. */
-function score(entry: CatalogEntry, query: string): number {
-  const q = query.trim().toLowerCase();
-  const name = entry.name.toLowerCase();
-  if (name === q || (entry.kind === "mcp" && entry.tool.toLowerCase() === q)) return 1000;
-  if (entry.aliases.some((a) => a.toLowerCase() === q)) return 800;
-  const words = terms(q);
-  let s = name.includes(q) ? 300 : 0;
-  const nameTerms = terms(entry.name.replace(/[._-]/g, " "));
-  const tagTerms = entry.tags.flatMap((t) => terms(t));
-  const descTerms = terms(entry.description);
-  for (const w of words) {
-    if (nameTerms.includes(w)) s += 40;
-    if (entry.aliases.some((a) => terms(a).includes(w))) s += 30;
-    if (tagTerms.includes(w)) s += 15;
-    if (descTerms.includes(w)) s += 5;
-  }
-  return s;
-}
-
 function activeNames(ctx: HandlerContext): Set<string> {
   return new Set(ctx.store.listActiveCapabilities(ctx.binding.goalId).map((c) => c.name));
 }
@@ -223,7 +234,7 @@ export const capabilitySearchTool: ToolHandler<CapabilitySearchInput> = {
     const ranked = ctx.catalog
       .entries()
       .filter((e) => kind === "any" || e.kind === kind)
-      .map((entry) => ({ entry, score: score(entry, input.query) }))
+      .map((entry) => ({ entry, score: scoreCapability(entry, input.query) }))
       .filter((r) => r.score > 0)
       .sort((a, b) => b.score - a.score || a.entry.name.localeCompare(b.entry.name));
     // With kind any, the best result of each kind is reserved so one large catalog cannot starve the other.
@@ -291,7 +302,7 @@ export function capabilityControlTool(loaded: CapabilityRuntime): ToolHandler<Ca
       const entry = ctx.catalog.entries().find((e) => e.kind === ref.entryKind && e.name === ref.name);
       if (!entry) throw new ToolError("capability_unavailable", `${ref.name} is no longer in the catalog.`, "Search again with capability_search.");
       if (entry.availability === "authentication_required") {
-        throw new ToolError("authentication_required", `${entry.name} needs the user to sign in before it can be used.`, "Tell the user to connect it in Socrates settings; do not ask for credentials.", false);
+        throw new ToolError("authentication_required", `${entry.name} needs credentials before it can be used.`, "Tell the user this server needs its credentials configured in ~/.socrates/mcp.json; do not ask for credentials.", false);
       }
       if (entry.availability !== "available") {
         throw new ToolError("capability_unavailable", `${entry.name} is ${entry.availability}.`, "Continue without it, or search for an alternative.", false);
@@ -318,10 +329,13 @@ export function capabilityControlTool(loaded: CapabilityRuntime): ToolHandler<Ca
         if (countTokens(json(result)) > RESULT_CEILING_TOKENS) throw new ToolError("skill_too_large", `${entry.name} and its metadata exceed the result ceiling.`, "Shorten the Skill or continue without it.", false);
         throwIfCancelled(ctx.signal);
         ctx.store.activateCapability(goalId, { kind: "skill", name: entry.name, version: skill.version, digest: hashBytes(skill.instructions) }, refs);
+        loaded.rememberSkill(goalId, entry.name, hashBytes(skill.instructions), skill.instructions);
         return { content: json(result), result, facts: [{ kind: "capability", value: `skill ${entry.name}` }] };
       }
 
-      const tool = await ctx.catalog.loadMcpTool(entry.name);
+      let tool: LoadedMcpTool;
+      try { tool = await ctx.catalog.loadMcpTool(entry.name, { fresh: true }); }
+      catch { throw new ToolError("capability_unavailable", `${entry.name} could not be reached.`, "Continue without it, or search for an alternative.", false); }
       const publicName = mcpPublicName(entry.server, entry.tool);
       const invalid = validateSchema(entry.name, tool);
       if (invalid) throw invalid;

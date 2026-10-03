@@ -1,4 +1,4 @@
-import type { ModelResponse } from "./model";
+import type { JsonSchema, ModelResponse } from "./model";
 
 /**
  * Event log payloads. The event log is append-only and is the source of
@@ -110,12 +110,26 @@ export interface EventPayloads {
   terminal_started: { session_id: string; name: string | null; command: string; cwd: string; background: boolean };
   /** A session's exit, with the facts derived from it (a test run's outcome) for the launching task. */
   terminal_exited: { session_id: string; exit_code: number | null; signal: string | null; reason: "exited" | "terminated" | "timeout" | "failed"; facts?: { kind: "test"; value: string }[] };
-  approval_decided: { kind: "first_mutation" | "sigkill" | "no_deadline"; granted: boolean; detail: string };
+  /** One approval decision. An MCP tool approval names the tool's catalog name as its subject. */
+  approval_decided: { kind: "first_mutation" | "sigkill" | "no_deadline" | "mcp_tool"; granted: boolean; detail: string; subject?: string };
   capability_activated: { kind: "skill" | "mcp"; name: string; version: string; digest: string };
   capability_deactivated: { kind: "skill" | "mcp"; name: string };
+  /** A configured MCP server's tools/list, recorded whenever it differs from the server's previous snapshot. */
+  mcp_tools_listed: { server: string; digest: string; tools: McpToolSnapshot[] };
+  /** The goal's Skill shelf, resolved once and frozen so ordinary turns stay cache-stable. */
+  skill_shelf_frozen: { skills: { name: string; description: string }[] };
 }
 
 export type EventType = keyof EventPayloads;
+
+/** One tool as its MCP server advertised it. */
+export interface McpToolSnapshot {
+  name: string;
+  description: string;
+  /** The server's readOnlyHint annotation; servers are user-configured and trusted. */
+  read_only: boolean;
+  input_schema: JsonSchema;
+}
 
 export type TurnStop = "final" | "steps" | "time" | "tokens" | "context";
 

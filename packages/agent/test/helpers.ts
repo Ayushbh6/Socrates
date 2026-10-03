@@ -5,7 +5,7 @@ import type { FinalAnswer, ModelRequest, TextPart } from "@socrates/contracts";
 import { ScriptedModel, type ScriptedStep } from "@socrates/providers";
 import { fixedClock } from "@socrates/shared";
 import { LedgerStore } from "@socrates/store";
-import type { ApprovalRequest } from "@socrates/tools";
+import type { ApprovalRequest, CapabilityCatalog, ShelfOptions } from "@socrates/tools";
 import { afterEach } from "vitest";
 import { type AgentLimits, type ContextBudgets, Socrates, type SocratesOptions } from "../src";
 import { createGoal, exchange } from "../../router/test/helpers";
@@ -46,7 +46,7 @@ export interface World {
   socrates(
     router: ScriptedStep[],
     agent: ScriptedStep[],
-    options?: { limits?: Partial<AgentLimits>; approve?: boolean; now?: () => number; resolveWorkspace?: SocratesOptions["resolveWorkspace"]; budgets?: Partial<ContextBudgets>; compactor?: ScriptedStep[] },
+    options?: { limits?: Partial<AgentLimits>; approve?: boolean; now?: () => number; resolveWorkspace?: SocratesOptions["resolveWorkspace"]; budgets?: Partial<ContextBudgets>; compactor?: ScriptedStep[]; catalog?: CapabilityCatalog; shelf?: ShelfOptions },
   ): { socrates: Socrates; routerModel: ScriptedModel; model: ScriptedModel; compactor: ScriptedModel };
 }
 
@@ -90,6 +90,8 @@ export async function world(options: { files?: Record<string, string>; workspace
         ...(o.now ? { now: o.now } : {}),
         ...(o.resolveWorkspace ? { resolveWorkspace: o.resolveWorkspace } : {}),
         ...(o.budgets ? { budgets: o.budgets } : {}),
+        ...(o.catalog ? { catalog: o.catalog } : {}),
+        ...(o.shelf ? { shelf: o.shelf } : {}),
         compactorModel: compactor,
       });
       cleanups.push(() => socrates.close());

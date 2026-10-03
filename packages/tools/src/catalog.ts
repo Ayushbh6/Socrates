@@ -30,6 +30,8 @@ export interface McpToolEntry {
   tags: string[];
   aliases: string[];
   availability: Availability;
+  /** The server's readOnlyHint: such a tool never asks for approval. */
+  readOnly?: boolean;
 }
 
 export type CatalogEntry = SkillEntry | McpToolEntry;
@@ -49,6 +51,8 @@ export interface LoadedMcpTool {
   description: string;
   inputSchema: JsonSchema;
   connection: "connected";
+  /** The server's readOnlyHint. Any other tool asks the user once per goal before its first call. */
+  readOnly?: boolean;
 }
 
 /** One MCP tool call's result as the server returned it. */
@@ -60,10 +64,16 @@ export interface McpCallResult {
 export interface CapabilityCatalog {
   entries(): CatalogEntry[];
   loadSkill(name: string): Promise<LoadedSkill>;
-  /** Connect when needed and resolve the exact advertised tool. */
-  loadMcpTool(name: string): Promise<LoadedMcpTool>;
+  /**
+   * Connect when needed and resolve the exact advertised tool. With fresh,
+   * the server's tools/list is requested again instead of read from the
+   * live connection's current listing (activation does this).
+   */
+  loadMcpTool(name: string, options?: { fresh?: boolean }): Promise<LoadedMcpTool>;
   /** Invoke one MCP tool on its server. Throws when the server cannot be reached. */
   callMcpTool(name: string, input: Record<string, unknown>, signal: AbortSignal): Promise<McpCallResult>;
+  /** Pick up sources that changed since the catalog was opened, such as newly installed Skills. */
+  refresh?(): Promise<void>;
 }
 
 /** A fixed in-memory catalog: the empty default, and the source used by tests. */

@@ -16,6 +16,10 @@ export interface ContextInput {
   turn: Turn;
   /** Active Skill instructions and active MCP public names of the goal. */
   capabilities: { skills: { name: string; instructions: string }[]; mcpTools: string[] };
+  /** The goal's frozen `<AVAILABLE_SKILLS>` block, or null. */
+  shelf?: string | null;
+  /** This turn's `<CAPABILITY_CANDIDATES>` block, or null. */
+  candidates?: string | null;
   /** Dependent compound parts: the finalized turns of the parts this one depends on. */
   dependsOn: { order: number; turn: Turn }[];
   /** Compound position of this part, or null for a single-task message. */
@@ -36,7 +40,7 @@ export function assembleContext(input: ContextInput): TextPart[] {
   const goal = store.requireGoal(turn.goalId!);
   const task = store.requireTask(turn.taskId!);
 
-  const parts: TextPart[] = [{ text: `${[goalBlock(store, goal), activeCapabilities(input.capabilities)].filter(Boolean).join("\n\n")}\n\n` }];
+  const parts: TextPart[] = [{ text: `${[goalBlock(store, goal), input.shelf ?? null, activeCapabilities(input.capabilities)].filter(Boolean).join("\n\n")}\n\n` }];
   const budgets = input.budgets ?? DEFAULT_BUDGETS;
   const history = taskHistory(store, turn.id);
   parts.push(...historyParts(store, history, budgets.previousTurn));
@@ -49,6 +53,7 @@ export function assembleContext(input: ContextInput): TextPart[] {
     task.general ? block("RECENT_ACTIVITY", renderActivity(store, input.now, input.timeZone)) : null,
     ...input.dependsOn.map((d) => evidenceFromPart(store, d.order, d.turn)),
     retrievedHistory(store, { taskId: task.id, message, boundary, maxTokens: budgets.retrievedMax }),
+    input.candidates ?? null,
     `<CURRENT_USER_MESSAGE>\n${message}\n</CURRENT_USER_MESSAGE>`,
   ].filter((b): b is string => b !== null);
   parts.push({ text: volatile.join("\n\n") });

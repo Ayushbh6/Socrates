@@ -3,6 +3,7 @@ export * from "./context";
 export * from "./errors";
 export * from "./workspace";
 export * from "./catalog";
+export * from "./discovery";
 export * from "./bounds";
 export * from "./definitions";
 export type { ToolHandler, ToolOutput, FileMutation } from "./handler";

@@ -16,7 +16,8 @@ The design lives in [`architecture/`](architecture):
 | `@socrates/store` | SQLite event log (append-only) and ledger: goals, tasks, revisions, chats, turns, anchors, FTS index, `ledger_query` |
 | `@socrates/providers` | Anthropic, DeepSeek, OpenRouter, OpenAI-compatible and Gemini Interactions model adapters, a scripted test model, token calibration |
 | `@socrates/router` | The Goal Router: input assembly, candidate retrieval, validation, repair, escalation, fallback, binding |
-| `@socrates/tools` | The working agent's ten permanent tools behind one tool runner: corrective errors, workspace access and approval policy, bounded results, persisted evidence (`eN`), the terminal supervisor, and the capability catalog interface |
+| `@socrates/tools` | The working agent's ten permanent tools behind one tool runner: corrective errors, workspace access and approval policy, bounded results, persisted evidence (`eN`), the terminal supervisor, the capability catalog interface, the frozen Skill shelf, per-turn capability candidates, and MCP approvals |
+| `@socrates/capabilities` | The installed capability sources behind the catalog interface: global Skills in `~/.socrates/skills/` and global MCP servers in `~/.socrates/mcp.json` (stdio and streamable HTTP through the official SDK), with recorded tool-list snapshots |
 | `@socrates/agent` | The working agent: `Socrates.handle` runs one message end to end (route, bind, agent loop per part, `FinalAnswer` validation and persistence), context assembly in the canonical layout, three-tier history with N−1 fitting, per-turn limits, cancellation, and prompt-cache breakpoints, and compaction: history checkpoints, in-turn linearization, the failsafe, automatic rollover with handover capsules, and `<RETRIEVED_HISTORY>` |
 
 ## Development
@@ -46,9 +47,12 @@ pnpm eval:tools                                          # all ten tools, persis
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:tools --live # also verify a provider-selected tool call
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:agent  # real router and working agent on a disposable project
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:compaction # compaction and rollover with shrunken budgets
+SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:capabilities # installed Skills and a real stdio MCP server
 ```
 
 `eval:compaction` shrinks the context budgets so a few real turns cross the compaction trigger: it checks that a history checkpoint carries an unanswered question verbatim and that the agent answers it afterwards, that rollover continues a turn in a linked chat, that a restart keeps the work, that no request reaches the ceiling, and that every projection replays from events. Ceiling checks cover calibrated worker and compactor requests, including native replay content. The [compaction-stage closure report](docs/reviews/compaction-stage-closure.md) records the six review fixes and their regression coverage.
+
+`eval:capabilities` gives the agent a disposable Socrates home under `.socrates/evals/capabilities-*` with two global Skills and an `mcp.json` that starts the SDK-built tracker fixture over stdio. It checks that a per-turn candidate is activated and its MCP tool called in the same turn, that the Skill pinned on the frozen shelf is activated and followed, that a mutating MCP tool asks for approval once per goal, that an active Skill's instructions appear exactly once in later requests, that a restart with a fresh server process restores the active tool, and that every projection, the shelf and the tool snapshots replay from events.
 
 `eval:agent` runs the working agent through `Socrates.handle` on a disposable calculator project under `.socrates/evals/agent-*`: a multi-step fix with real edits and test runs, continuation, a restart that rebuilds history from the event log, a compound message, cancellation and recovery, a step-limit wrap-up, explicit anchor approval, cancellation concurrent with a final response, and event-only replay. Only the synthetic fixture reaches the provider. The [Agent-stage closure report](docs/reviews/agent-stage-closure.md) records the reviewed safeguards and their regression coverage.
 

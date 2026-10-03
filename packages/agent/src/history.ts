@@ -138,13 +138,19 @@ function toCall(ev: Evidence): Call {
     headerTokens: countTokens(header) + 1,
     result,
     resultTokens: countTokens(result),
-    state: { kind: "full" },
+    // A Skill's instructions live in ACTIVE_CAPABILITIES; history never repeats them.
+    state: skillActivation(ev) ? { kind: "collapsed", reason: null } : { kind: "full" },
     tokens() {
       if (this.state.kind === "collapsed") return (collapsedTokens ??= countTokens(collapsedLine(this)) + 1);
       // A trimmed result also carries its omission marker.
       return this.headerTokens + (this.state.kind === "trimmed" ? Math.min(this.resultTokens, this.state.cap) : this.resultTokens);
     },
   };
+}
+
+function skillActivation(ev: Evidence): boolean {
+  const r = (ev.result?.result ?? null) as Record<string, unknown> | null;
+  return ev.tool === "capability_control" && ev.status === "ok" && r?.kind === "skill" && r.status === "activated";
 }
 
 function renderCall(c: Call): string {
@@ -192,8 +198,11 @@ export function collapsedLine(c: { ev: Evidence; state: Call["state"] }): string
       return `${prefix} ${String(input.action ?? "")} → ok`;
     case "capability_search":
       return `${prefix} ${JSON.stringify(input.query ?? "")} → ${String(r?.returned ?? 0)} match${r?.returned === 1 ? "" : "es"}`;
-    case "capability_control":
-      return `${prefix} ${String(input.action ?? "")} ${String(input.name ?? input.ref ?? "")} → ok`;
+    case "capability_control": {
+      const outcome = typeof r?.name === "string" ? `${String(r.kind)} ${r.name} ${String(r.status ?? "")}`.trimEnd() : "ok";
+      const skill = r?.kind === "skill" && r.status === "activated" ? " (its instructions are in ACTIVE_CAPABILITIES while it stays active)" : "";
+      return `${prefix} ${String(input.action ?? "")} ${String(input.name ?? input.ref ?? "")} → ${outcome}${skill}`;
+    }
     default:
       return `${prefix} → ok`;
   }

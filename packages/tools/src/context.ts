@@ -12,13 +12,15 @@ export interface ToolBinding {
   turnId: string | null;
 }
 
-export type ApprovalKind = "first_mutation" | "sigkill" | "no_deadline";
+export type ApprovalKind = "first_mutation" | "sigkill" | "no_deadline" | "mcp_tool";
 
 export interface ApprovalRequest {
   kind: ApprovalKind;
   tool: string;
   /** One line shown to the user, such as the command or file about to change. */
   detail: string;
+  /** What a remembered approval covers: an MCP tool's catalog name. */
+  subject?: string;
 }
 
 /** Application-owned approval (agent-harness.md, "Safety and long-running work"). */

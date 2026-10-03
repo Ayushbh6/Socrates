@@ -27,6 +27,11 @@ export interface RunInput {
   calibration: TokenCalibration;
   system: string;
   tools: ToolDefinition[];
+  /**
+   * The current tool list, read again after every step so an MCP tool
+   * activated mid-turn is callable on the next step.
+   */
+  refreshTools?: () => Promise<ToolDefinition[]>;
   /** The assembled working context: the first user message. */
   context: TextPart[];
   scope: CallScope;
@@ -63,7 +68,8 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
   const started = now();
   const { model, limits, scope } = input;
   const messages: ModelMessage[] = [{ role: "user", content: input.context }];
-  const baseTokens = requestTokens(input.system, [], input.tools);
+  let tools = input.tools;
+  let baseTokens = requestTokens(input.system, [], tools);
   const sizes: number[] = [messageTokens(messages[0]!)];
   const budgets = input.budgets ?? DEFAULT_BUDGETS;
   const measure: Measure = (list) => input.calibration.measure(model.id, baseTokens + list.reduce((n, m) => n + messageTokens(m), 0));
@@ -109,7 +115,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
       if (input.calibration.measure(model.id, harnessCount) >= budgets.ceiling) return { kind: "context" };
       try {
         const response = await abortable(model.complete({
-          system: input.system, messages: withRollingBreakpoint(messages), tools: input.tools,
+          system: input.system, messages: withRollingBreakpoint(messages), tools,
           toolChoice: phase === "work" ? "auto" : "none", maxOutputTokens: input.maxOutputTokens ?? 16_000, signal,
         }), signal);
         input.onResponse?.(response, phase);
@@ -210,6 +216,14 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
       }
       if (response.toolCalls.length === 0) return await finish(response, "final");
       await appendResponse(response, workSignal);
+      if (input.refreshTools) {
+        // A failed refresh keeps the previous list; dispatch still revalidates every MCP call.
+        const next = await input.refreshTools().catch(() => tools);
+        if (JSON.stringify(next) !== JSON.stringify(tools)) {
+          tools = next;
+          baseTokens = requestTokens(input.system, [], tools);
+        }
+      }
     }
   } finally {
     clearTimeout(workTimer);

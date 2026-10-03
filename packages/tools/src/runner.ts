@@ -205,7 +205,7 @@ export class ToolRunner {
           throw error;
         });
         throwIfCancelled(scope.signal);
-        store.recordApproval(refs, { kind: request.kind, granted, detail: request.detail });
+        store.recordApproval(refs, { kind: request.kind, granted, detail: request.detail, ...(request.subject ? { subject: request.subject } : {}) });
         throwIfCancelled(scope.signal);
         if (!granted) {
           throw new ToolError("approval_denied", `The user declined: ${request.detail}`, "Do not retry this action. Continue another way, or ask the user how to proceed.", false);
