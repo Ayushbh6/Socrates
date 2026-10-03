@@ -74,5 +74,7 @@ export const TaskHandover = z.strictObject({
   blockers: z.array(z.string()),
   next_action: z.string().min(1),
   key_evidence: z.array(KeyEvidence),
+  /** Harness notice with recovery pointers when mechanical metadata is reduced. */
+  omitted_details: z.string().optional(),
 });
 export type TaskHandover = z.infer<typeof TaskHandover>;

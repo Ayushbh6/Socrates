@@ -1,11 +1,13 @@
-import { type FinalAnswer, type ModelClient, ModelError, type ModelMessage, type ModelResponse, type TextPart, type ToolCall, type ToolDefinition, type TurnStop, userText } from "@socrates/contracts";
+import { type FinalAnswer, type ModelClient, ModelError, type ModelMessage, type ModelResponse, type TextPart, type ToolCall, type ToolDefinition, type TurnStop } from "@socrates/contracts";
 import type { TokenCalibration } from "@socrates/providers";
-import { abortable, countTokens } from "@socrates/shared";
+import { abortable } from "@socrates/shared";
 import type { CallScope, ToolRunner } from "@socrates/tools";
 import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
 import type { Compact, Measure } from "./compaction";
 import { mechanicalNote, validateFinalAnswer } from "./final";
+import { messageTokens, requestTokens } from "./model-budget";
 import { repairRequest, wrapUpRequest } from "./prompt";
+export { messageTokens, requestTokens } from "./model-budget";
 
 /** Per-turn safeguards (agent-harness.md, "Safety and long-running work"). All configurable. */
 export interface AgentLimits {
@@ -61,7 +63,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
   const started = now();
   const { model, limits, scope } = input;
   const messages: ModelMessage[] = [{ role: "user", content: input.context }];
-  const baseTokens = countTokens(input.system) + countTokens(JSON.stringify(input.tools)) + 32;
+  const baseTokens = requestTokens(input.system, [], input.tools);
   const sizes: number[] = [messageTokens(messages[0]!)];
   const budgets = input.budgets ?? DEFAULT_BUDGETS;
   const measure: Measure = (list) => input.calibration.measure(model.id, baseTokens + list.reduce((n, m) => n + messageTokens(m), 0));
@@ -185,7 +187,11 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
       if (limit) return await wrapUp(limit);
       if (size >= budgets.trigger && input.compact && (compactedAt === null || size >= compactedAt + budgets.trigger - budgets.target)) {
         // Compaction is synchronous and mid-turn; the turn continues after it.
-        const compacted = await input.compact(messages, measure, workSignal);
+        const compacted = await input.compact(messages, measure, workSignal, {
+          calibration: input.calibration,
+          recordUsage: (usage) => { spent += usage.promptTokens + usage.outputTokens; },
+          tokensExhausted: () => spent >= limits.maxTokens,
+        });
         if (scope.signal.aborted) return interrupted("cancelled");
         if (compacted === null) return await wrapUp("time");
         messages.splice(0, messages.length, ...compacted);
@@ -245,16 +251,6 @@ function withRollingBreakpoint(messages: ModelMessage[]): ModelMessage[] {
     out.push({ role: "user", content: parts.map((p, i) => (i === parts.length - 1 ? { ...p, cache: true } : p)) });
   } else out.push(last);
   return out;
-}
-
-/** Harness-standard size of one message, counting native replay content conservatively. */
-export function messageTokens(m: ModelMessage): number {
-  if (m.role === "user") return countTokens(userText(m.content)) + 16;
-  if (m.role === "tool") return countTokens(m.content) + countTokens(m.toolName) + 16;
-  const normalized = countTokens(m.content) + (m.toolCalls?.length ? countTokens(JSON.stringify(m.toolCalls)) : 0);
-  // Native replay may include substantial reasoning/signature blocks absent
-  // from normalized text. Count them conservatively before calibration.
-  return Math.max(normalized, m.raw ? countTokens(JSON.stringify(m.raw.content)) : 0) + 16;
 }
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {

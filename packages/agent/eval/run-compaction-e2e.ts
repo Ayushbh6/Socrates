@@ -8,13 +8,13 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { type EventPayloads, type HistoryCheckpoint, type ModelClient, type ModelRequest, userText } from "@socrates/contracts";
+import { type EventPayloads, type HistoryCheckpoint, type ModelClient, type ModelRequest } from "@socrates/contracts";
 import { makeModel, PROVIDER_DEFAULTS, type Provider } from "@socrates/providers";
 import { countTokens } from "@socrates/shared";
 import { LedgerStore } from "@socrates/store";
 import { ToolRunner } from "@socrates/tools";
 import { loadEvaluationEnvironment } from "../../router/eval/environment";
-import { AGENT_SYSTEM_PROMPT, type ContextBudgets, type HandleResult, Socrates } from "../src";
+import { AGENT_SYSTEM_PROMPT, type ContextBudgets, type HandleResult, Socrates, requestTokens } from "../src";
 
 loadEvaluationEnvironment();
 const provider = process.env.SOCRATES_PROVIDER ?? "gemini";
@@ -56,15 +56,20 @@ const budgets: Partial<ContextBudgets> = {
   maxCompactionsPerChat: 2,
 };
 
-const usage = { requests: 0, promptTokens: 0, outputTokens: 0, cacheReadTokens: 0, largestAgentRequest: 0 };
+const usage = { requests: 0, promptTokens: 0, outputTokens: 0, cacheReadTokens: 0, largestAgentRequest: 0, largestCompactorRequest: 0, largestCalibratedRequest: 0 };
 const agentRequests: ModelRequest[] = [];
-const measured = (model: ModelClient, record: boolean): ModelClient => ({
+const measured = (model: ModelClient, kind: "agent" | "compactor" | "router"): ModelClient => ({
   id: model.id,
   async complete(request) {
-    if (record) {
-      agentRequests.push({ ...request, signal: undefined });
-      const size = countTokens(request.system) + countTokens(JSON.stringify(request.tools ?? [])) + request.messages.reduce((n, m) => n + countTokens(m.role === "user" ? userText(m.content) : m.content), 0);
-      usage.largestAgentRequest = Math.max(usage.largestAgentRequest, size);
+    if (kind !== "router") {
+      const size = requestTokens(request.system, request.messages, request.tools);
+      const calibrated = socrates.calibration.measure(model.id, size);
+      assert(calibrated < budgets.ceiling!, `${kind} request reached ${calibrated} calibrated tokens.`);
+      usage.largestCalibratedRequest = Math.max(usage.largestCalibratedRequest, calibrated);
+      if (kind === "agent") {
+        agentRequests.push({ ...request, signal: undefined });
+        usage.largestAgentRequest = Math.max(usage.largestAgentRequest, size);
+      } else usage.largestCompactorRequest = Math.max(usage.largestCompactorRequest, size);
     }
     const response = await model.complete(request);
     usage.requests++;
@@ -80,9 +85,9 @@ const statuses: string[] = [];
 const open = (extra: Partial<ContextBudgets> = {}) =>
   new Socrates({
     store,
-    model: measured(main, true),
-    routerModel: measured(routerModel, false),
-    compactorModel: measured(main, false),
+    model: measured(main, "agent"),
+    routerModel: measured(routerModel, "router"),
+    compactorModel: measured(main, "compactor"),
     timeZone: "UTC",
     approve: async () => true,
     resolveWorkspace: () => ({ name: "calculator", rootPath: root }),
@@ -153,7 +158,7 @@ async function run() {
   passed("restart in the continuation chat keeps the work", after.text.slice(0, 120).replace(/\s+/g, " "));
   await socrates.close();
 
-  assert(usage.largestAgentRequest < budgets.ceiling!, `An agent request reached ${usage.largestAgentRequest} tokens.`);
+  assert(usage.largestCalibratedRequest < budgets.ceiling!, `A request reached ${usage.largestCalibratedRequest} calibrated tokens.`);
   const recovered = LedgerStore.open({ path: ":memory:" });
   recovered.restoreEvents(store.listEvents());
   for (const table of ["chats", "history_records", "turns", "tasks", "task_revisions", "evidence"]) {
@@ -161,7 +166,7 @@ async function run() {
   }
   recovered.close();
   const warnings = store.listEvents({ type: "agent_warning" }).map((e) => e.payload as EventPayloads["agent_warning"]);
-  passed("ceiling respected and event-only replay of every projection", `largest agent request ${usage.largestAgentRequest} of ceiling ${budgets.ceiling}; ${warnings.length} warning(s)`);
+  passed("ceiling respected and event-only replay of every projection", `largest calibrated worker/compactor request ${usage.largestCalibratedRequest} of ceiling ${budgets.ceiling}; ${warnings.length} warning(s)`);
 
   const report = { provider, main: main.id, router: routerModel.id, dir, base: BASE, budgets, usage, compactions: compactions(), records: store.historyRecordCount(taskId), warnings, assertions: rows };
   writeFileSync(path.join(dir, "results.json"), JSON.stringify(report, null, 2));

@@ -56,6 +56,7 @@ export function renderRecord(record: HistoryRecord): string {
   list("files_and_tests", h.files_and_tests);
   list("blockers", h.blockers);
   lines.push(`next_action: ${h.next_action}`);
+  if (h.omitted_details) lines.push(`omitted_details: ${h.omitted_details}`);
   list("key_evidence", h.key_evidence.map((e) => `${e.ref}: ${e.note}`));
   return `<HANDOVER_CAPSULE ref="${record.handle}" turns="${range}">\n${lines.join("\n")}\n</HANDOVER_CAPSULE>`;
 }
@@ -93,7 +94,7 @@ export type SummaryValidation<T> = { ok: true; value: T } | { ok: false; errors:
 export function validateSummary<K extends "checkpoint" | "handover">(
   kind: K,
   text: string,
-  ctx: { store: LedgerStore; taskId: string; range: { from: number; to: number }; latestTurn: number; maxTokens: number; render: (content: K extends "checkpoint" ? HistoryCheckpoint : TaskHandover) => string },
+  ctx: { store: LedgerStore; taskId: string; range: { from: number; to: number }; latestTurn: number; carried?: Pick<HistoryCheckpoint, "outstanding_requests" | "more_outstanding_turns">; maxTokens: number; render: (content: K extends "checkpoint" ? HistoryCheckpoint : TaskHandover) => string },
 ): SummaryValidation<K extends "checkpoint" ? HistoryCheckpoint : TaskHandover> {
   let raw: unknown;
   try {
@@ -114,16 +115,17 @@ export function validateSummary<K extends "checkpoint" | "handover">(
   // Outstanding requests may come from the covered turns, or, in a capsule, from any turn of the task up to the current one.
   const lowest = range.from > 0 ? range.from : 1;
   const highest = kind === "checkpoint" ? range.to : ctx.latestTurn;
-  const turnText = (n: number): string | null => {
+  const turnText = (n: number, carried = false): string | null => {
     const turn = store.getTurnByNumber(n);
-    if (!turn || turn.taskId !== taskId || n < lowest || n > highest) return null;
+    if (!turn || turn.taskId !== taskId || n > ctx.latestTurn || (!carried && (n < lowest || n > highest))) return null;
     return userSection(store, turn);
   };
   const requests = value.outstanding_requests;
   if (requests.length > MAX_OUTSTANDING_REQUESTS) errors.push(`outstanding_requests has ${requests.length} entries; keep the ${MAX_OUTSTANDING_REQUESTS} earliest and list the turns of the rest in more_outstanding_turns.`);
   let total = 0;
   for (const r of requests) {
-    const source = turnText(r.turn);
+    const carried = ctx.carried?.outstanding_requests.some(old => old.turn === r.turn && fold(old.quote) === fold(r.quote)) ?? false;
+    const source = turnText(r.turn, carried);
     const tokens = countTokens(r.quote);
     total += tokens;
     if (source === null) errors.push(`outstanding_requests turn ${r.turn} is not a turn of this task between ${lowest} and ${highest}.`);
@@ -132,7 +134,19 @@ export function validateSummary<K extends "checkpoint" | "handover">(
   }
   if (total > OUTSTANDING_TOTAL_MAX_TOKENS) errors.push(`outstanding_requests total ${total} tokens; at most ${OUTSTANDING_TOTAL_MAX_TOKENS}.`);
   for (const n of value.more_outstanding_turns ?? []) {
-    if (turnText(n) === null) errors.push(`more_outstanding_turns ${n} is not a turn of this task between ${lowest} and ${highest}.`);
+    if (turnText(n, ctx.carried?.more_outstanding_turns?.includes(n) || ctx.carried?.outstanding_requests.some(r => r.turn === n)) === null) errors.push(`more_outstanding_turns ${n} is not a turn of this task between ${lowest} and ${highest}.`);
+  }
+  // Newer carried obligations are not described by the compacted span. They
+  // cannot be declared resolved just because this checkpoint covers less.
+  if (kind === "checkpoint" && ctx.carried) {
+    for (const old of ctx.carried.outstanding_requests) {
+      if (old.turn > range.to && !requests.some(r => r.turn === old.turn && fold(r.quote) === fold(old.quote)) && !value.more_outstanding_turns?.includes(old.turn)) {
+        errors.push(`Retain the carried outstanding request from turn ${old.turn}; it is outside this span and has not been resolved here.`);
+      }
+    }
+    for (const n of ctx.carried.more_outstanding_turns ?? []) {
+      if (n > range.to && !value.more_outstanding_turns?.includes(n)) errors.push(`Retain carried more_outstanding_turns ${n}; it is outside this span.`);
+    }
   }
   for (const e of value.key_evidence) {
     if (!resolves(store, taskId, e.ref)) errors.push(`key_evidence ref ${e.ref} does not exist; use only evidence handles shown in the input, such as e12.`);

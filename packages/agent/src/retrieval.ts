@@ -16,7 +16,7 @@ export function retrievedHistory(store: LedgerStore, input: { taskId: string; me
   if (input.boundary <= 0) return null;
   const fts = toFtsQuery(input.message);
   if (!fts) return null;
-  const hits = store.searchExchanges({ fts, taskIds: [input.taskId], limit: 20 }).filter((h) => h.projectTurn <= input.boundary);
+  const hits = store.searchExchanges({ fts, taskIds: [input.taskId], throughTurn: input.boundary, limit: RETRIEVED_MAX_EXCHANGES });
   const blocks: string[] = [];
   let used = countTokens("<RETRIEVED_HISTORY>\n</RETRIEVED_HISTORY>");
   const each = Math.floor(input.maxTokens / RETRIEVED_MAX_EXCHANGES);

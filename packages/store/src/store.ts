@@ -1476,6 +1476,8 @@ export class LedgerStore {
     goalIds?: string[];
     fromIso?: string;
     beforeIso?: string;
+    /** Exclude exchanges still attached to history before ranking and limiting. */
+    throughTurn?: number;
     limit: number;
   }): ExchangeHit[] {
     const where: string[] = [];
@@ -1485,6 +1487,7 @@ export class LedgerStore {
     if (input.goalIds) (where.push(`x.goal_id IN (${input.goalIds.map(() => "?").join(", ") || "NULL"})`), params.push(...input.goalIds));
     if (input.fromIso) (where.push("t.completed_at >= ?"), params.push(input.fromIso));
     if (input.beforeIso) (where.push("t.completed_at < ?"), params.push(input.beforeIso));
+    if (input.throughTurn !== undefined) (where.push("t.project_turn <= ?"), params.push(input.throughTurn));
     const order = input.fts ? "bm25(exchange_fts, 0.0, 0.0, 0.0, 1.0, 1.0), t.completed_at DESC" : "t.completed_at DESC";
     const sql = `SELECT x.turn_id, x.task_id, x.goal_id, x.user_text, x.response_text, t.project_turn, t.completed_at
          FROM exchange_fts x JOIN turns t ON t.id = x.turn_id

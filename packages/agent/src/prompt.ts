@@ -63,7 +63,7 @@ export function repairRequest(errors: string[]): string {
 const SUMMARY_RULES = `Rules that the harness checks:
 - outstanding_requests carries what the user still has owed to them. A request is outstanding if no later turn fully answered it. For a message with several requests (for example "here are 10 questions"), each unanswered one is its own entry. Copy the quote VERBATIM from the user's words in the cited turn: the exact words of that one request, never a paraphrase, at most ${OUTSTANDING_QUOTE_MAX_TOKENS} tokens each. Carry forward entries of a prior checkpoint or capsule that are still unanswered, with their original turn and quote; drop those the newer turns answered.
 - At most ${MAX_OUTSTANDING_REQUESTS} outstanding_requests, earliest first. If more remain, list the turn numbers of the rest in more_outstanding_turns.
-- Cite only turn numbers shown in the input as [TURN k]. Never invent numbers.
+- Cite only turn numbers shown in the input or carried by the prior checkpoint/capsule. Never invent numbers. A carried outstanding request can be newer than turns_covered: preserve its original citation without widening the covered range. If its turn is outside this span, it cannot be declared resolved here; keep its quote, or its turn in more_outstanding_turns when the quote limit is reached.
 - key_evidence refs are only evidence handles shown in the input, such as e12, each with one line saying what that evidence shows.
 - Keep exact identifiers verbatim inside the text: file paths, function and test names, commands, error messages.
 - The whole result must stay under ${SUMMARY_MAX_TOKENS} tokens. Prefer short, factual entries.
