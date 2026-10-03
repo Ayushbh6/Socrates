@@ -940,6 +940,13 @@ note: Reviewed compaction. The remaining concern is preserving large tool result
 Only for the general task: the same ledger-derived notepad the router sees.
 </RECENT_ACTIVITY>
 
+<LANES>
+Only in the main conversation, when lanes run or recently finished:
+lane 2 · working since 14:02 · g3/t1 "Fix flaky tests" in goal "Server" · workspace server
+  latest step: terminal: npm test
+  note: Two flaky tests isolated; rerunning the suite.
+</LANES>
+
 <EVIDENCE_FROM_PART_1>
 Only for a dependent compound part (see "Compound tasks").
 </EVIDENCE_FROM_PART_1>
@@ -976,6 +983,7 @@ Rules:
 - The tool list is read again after every step: an MCP tool activated mid-turn is callable on the next step, and a deactivated one disappears.
 - Chat history follows the three-tier attachment policy in "Context and compaction." It contains at most one active checkpoint—or, in a continuation chat, the handover capsule in the same position—followed by `[TURN k]`-labelled completed turns. Within a turn's tool loop, ordinary steps leave everything before the in-flight turn unchanged. A capability state change updates only the capability block. Deactivated or superseded Skill bodies are removed from in-flight activation rendering as well; exact stored evidence remains retrievable. An intact current activation result carries its body once, and context reconstruction excludes a duplicate body from the prefix.
 - Turn-volatile blocks hold everything that is rewritten between user turns: the goal note and open-task index, the task's continuation note, and per-turn retrieval. Each optional block is omitted entirely when empty.
+- `<LANES>` appears only in the main conversation, when an open lane is working, waiting, or finished or stopped within the last `24` hours (see "Lanes"). It is a snapshot taken when the turn starts, at most `1,500` tokens.
 - `<RECENT_ACTIVITY>` appears only when the turn is bound to the `general` task. It lets Socrates answer an opening "Hi, how's it going?" with a short recap of recent work and an offer to continue it.
 - Completed turns are sent as harness-formatted text, so the frozen N−1 rendering stays byte-stable for caching and no provider-specific reasoning content has to be replayed across turns. Only the in-flight turn uses native tool-call and tool-result messages. The block order above is binding either way.
 - Everything up to `<CURRENT_USER_MESSAGE>` is one user message made of parts: the goal-stable blocks, one part per completed turn, and the turn-volatile blocks. Part boundaries are where cache breakpoints may fall (see "Prompt caching").
@@ -993,6 +1001,8 @@ Socrates is one assistant with one main conversation. Work that should run along
 - **One run per task.** A task is worked by one run at a time. A message for a task that is already running waits for that run to finish its turn. A main-conversation message whose task is queued or running in a lane is handed to that lane: its turn moves to the lane (`turn_moved_to_lane`), it runs there next, and a single-part main message frees the main conversation immediately. A compound main message keeps its main reservation until all of its ordered parts finish, including parts that stay in main. A message handed to a running lane is picked up after the lane's current turn, not in the middle of it.
 - **Approvals and cancellation per run.** Each approval request carries its goal, task, turn and lane, so the application shows it in the panel that asked. Anchor confirmations belong to the conversation that asked; unrelated lane activity neither approves nor expires them. Each message has its own cancellation; stopping one lane leaves the main conversation and the other lanes running. Runs of the same goal share its active capabilities; only the first concurrent run resets the goal's capability cache.
 - **Shared services.** Runs share the event log, the ledger, the embedding index, the terminal supervisor, MCP connections, and the per-workspace mutation lock; two lanes working in one repository take turns writing, and the stale-edit check stops silent overwrites.
+- **The main conversation sees its lanes.** Each main-conversation turn gets `<LANES>`: per lane, its status (working since a time, waiting for the user's approval, waiting for the user's answer to its question, finished or stopped at a time), its task with its `gN/tN` selector, goal and workspace, its latest tool call as one line while it works, its continuation note (labelled as from before this run while the lane works), and the start of its answer when it finished. The main conversation answers questions about a lane from it and opens a lane's exact work with `context_retrieve`; a lane's task is worked in that lane. The Goal Router sees the lanes too (`Goal-router.md`, "LANES"), so an instruction for a lane given in the main conversation routes to the lane's task and is handed to it, while a question about a lane's progress goes to the `general` task, which sees `<LANES>` too, and never disturbs the lane. A lane does not see the lanes; its `<CURRENT_TASK>` says which lane it is and, for a message handed over from the main conversation, that the user wrote it there, so "tell the lane to …" is understood as addressed to it.
+- **Notices.** A message whose work ran in a lane (sent there, or handed to it) returns a one-line notice for the main conversation: "Lane 2 finished: Fix flaky tests — …", "Lane 2 stopped: …", or "Lane 1 needs an answer: …".
 - **Lifecycle.** Lanes are numbered for good (`lane_opened`, `lane_closed`); an idle lane can be closed and its history stays in the ledger. After a restart, open lanes return as idle panels with their history.
 
 ## Compound tasks
@@ -1523,4 +1533,4 @@ The working agent is built in this order; each stage is one reviewed change:
 **Lanes** follow, in two changes:
 
 - **L1, parallel runs:** lanes in the event log, concurrent runs in one Socrates with one run per task, handing main-conversation messages to a busy lane, per-run approvals and cancellation, and a main-conversation "current" that lanes never change. See "Lanes".
-- **L2, main's awareness of lanes:** a `<LANES>` block in the main conversation's context, lane finish notices, and routing that understands lanes.
+- **L2, main's awareness of lanes:** the `<LANES>` block in the main conversation's context, lane notices, and the router's `LANES` section with selectors and its lane rules. See "Lanes".

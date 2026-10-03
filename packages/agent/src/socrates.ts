@@ -1,12 +1,13 @@
 import type { EventRefs, ModelClient, TurnStop } from "@socrates/contracts";
 import { abortable } from "@socrates/shared";
 import { TokenCalibration } from "@socrates/providers";
-import { GoalRouter, type RoutedPart } from "@socrates/router";
+import { GoalRouter, type RoutedPart, laneSummaries } from "@socrates/router";
 import type { Goal, Lane, LedgerStore, Task, Turn } from "@socrates/store";
 import type { SemanticHit, SemanticIndex } from "@socrates/retrieval";
 import { type Approve, type CapabilityCatalog, RunState, type ShelfOptions, type SupervisorOptions, ToolRunner, WorkspaceRoot, capabilityCandidates, skillShelf } from "@socrates/tools";
 import { taskHistory } from "./history";
 import { assembleContext, projectQuery } from "./context";
+import { type LaneView, laneNotice, lanesBlock } from "./lanes";
 import { RELATED_MAX_SECTIONS } from "./project-context";
 import { fallbackAnswer, mechanicalNote } from "./final";
 import { type AgentLimits, DEFAULT_LIMITS, type RunOutcome, runAgent } from "./loop";
@@ -97,9 +98,14 @@ export interface PartResult {
   anchorChanges?: AnchorChange[];
 }
 
+/**
+ * `notice` is the one line the main conversation shows when the message's
+ * work ran in a lane (sent there, or handed to it): finished, stopped, or
+ * waiting for an answer. Null for work done in the main conversation.
+ */
 export type HandleResult =
-  | { kind: "clarify"; text: string; laneId: string | null }
-  | { kind: "answered"; text: string; acknowledgment: string | null; parts: PartResult[]; laneId: string | null };
+  | { kind: "clarify"; text: string; laneId: string | null; notice: string | null }
+  | { kind: "answered"; text: string; acknowledgment: string | null; parts: PartResult[]; laneId: string | null; notice: string | null };
 
 /** At most this many lanes run at once (agent-harness.md, "Lanes"). */
 export const MAX_RUNNING_LANES = 4;
@@ -115,6 +121,8 @@ export class SocratesBusyError extends Error {
 /** A lane as the application shows it: its record, and whether work is running in it now. */
 export interface LaneState extends Lane {
   running: boolean;
+  /** A run in this lane is waiting for the user's approval. */
+  waitingForApproval: boolean;
 }
 
 interface TaskLock {
@@ -152,6 +160,8 @@ export class Socrates {
   private readonly laneQueues = new Map<string, Promise<void>>();
   /** Runs in progress per goal; only the first resets the goal's capability cache. */
   private readonly goalRuns = new Map<string, number>();
+  /** Approval requests each lane is waiting on now. */
+  private readonly approvalsWaiting = new Map<string, number>();
   /** Each running turn's approval callback and lane. */
   private readonly approvers = new Map<string, { approve: Approve; laneId: string | null }>();
 
@@ -163,9 +173,19 @@ export class Socrates {
     this.runner = new ToolRunner({
       store: options.store,
       timeZone: options.timeZone,
-      approve: (request, origin) => {
+      approve: async (request, origin) => {
         const run = origin?.turnId ? this.approvers.get(origin.turnId) : undefined;
-        return (run?.approve ?? this.options.approve)(request, origin ? { ...origin, laneId: run?.laneId ?? null } : undefined);
+        const lane = run?.laneId ?? null;
+        if (lane) this.approvalsWaiting.set(lane, (this.approvalsWaiting.get(lane) ?? 0) + 1);
+        try {
+          return await (run?.approve ?? this.options.approve)(request, origin ? { ...origin, laneId: lane } : undefined);
+        } finally {
+          if (lane) {
+            const n = (this.approvalsWaiting.get(lane) ?? 1) - 1;
+            if (n > 0) this.approvalsWaiting.set(lane, n);
+            else this.approvalsWaiting.delete(lane);
+          }
+        }
       },
       ...(options.catalog ? { catalog: options.catalog } : {}),
       ...(options.semantic ? { semantic: options.semantic } : {}),
@@ -181,7 +201,12 @@ export class Socrates {
 
   /** Open lanes, oldest first, and whether each is running. */
   lanes(): LaneState[] {
-    return this.store.listLanes().map((lane) => ({ ...lane, running: this.laneRuns.has(lane.id) }));
+    return this.store.listLanes().map((lane) => ({ ...lane, running: this.laneRuns.has(lane.id), waitingForApproval: (this.approvalsWaiting.get(lane.id) ?? 0) > 0 }));
+  }
+
+  /** What every lane beside the main conversation is doing, for `<LANES>`. */
+  private laneViews(): LaneView[] {
+    return laneSummaries(this.store, this.store.clock.now()).map((s) => ({ ...s, waitingForApproval: (this.approvalsWaiting.get(s.lane.id) ?? 0) > 0 }));
   }
 
   /** Close an idle lane; its history stays in the ledger. */
@@ -303,7 +328,10 @@ export class Socrates {
         parts = [{ order: 1, request: message, dependsOn: [], turn, goal: target.goal, task: target.task, chat: this.store.currentChat(target.task.id), clarification: null, created: { goal: false, task: false } }];
       } else {
         const routed = await this.router.route(message, signal, { laneId, userEventId });
-        if (routed.kind === "clarify") return { kind: "clarify", text: routed.text, laneId };
+        if (routed.kind === "clarify") {
+          const notice = laneId ? laneNotice(this.store.requireLane(laneId).number, { kind: "clarify", question: routed.text }) : null;
+          return { kind: "clarify", text: routed.text, laneId, notice };
+        }
         parts = routed.parts;
         acknowledgment = routed.acknowledgment;
         try { if (acknowledgment) options.onAcknowledgment?.(acknowledgment); }
@@ -337,7 +365,11 @@ export class Socrates {
         results.length === 1
           ? results[0]!.answer
           : [acknowledgment, ...results.map((r) => `**${r.order}. ${r.task.title}**\n\n${r.answer}`)].filter(Boolean).join("\n\n");
-      return { kind: "answered", text, acknowledgment, parts: results, laneId };
+      const inLane = results.find((r) => r.turn.laneId);
+      const notice = inLane
+        ? laneNotice(this.store.requireLane(inLane.turn.laneId!).number, { kind: "done", status: results.some((r) => r.status === "interrupted") ? "interrupted" : "completed", title: inLane.task.title, answer: inLane.answer })
+        : null;
+      return { kind: "answered", text, acknowledgment, parts: results, laneId, notice };
     } finally {
       releaseMain();
       // Index what this message added, in the background; replies never wait for it.
@@ -458,6 +490,8 @@ export class Socrates {
     const shelf = skillShelf(store, capabilities.catalog, goal.id, this.options.shelf);
     const candidates = capabilityCandidates({ store, catalog: capabilities.catalog, goalId: goal.id, message: request, run, semantic: semantic.capabilities });
     // Rebuilt from the current active set each time, so compaction mid-turn keeps a Skill activated earlier in the turn.
+    // The main conversation sees what its lanes are doing, as of the start of this turn.
+    const lanes = turn.laneId ? null : lanesBlock(store, this.laneViews(), store.clock.now(), this.options.timeZone);
     const assemble = (previousTurn?: number) =>
       assembleContext({
         store,
@@ -469,6 +503,7 @@ export class Socrates {
         workspace,
         dependsOn: part.dependsOn.map((order) => ({ order, turn: parts.find((p) => p.order === order)!.turn })),
         part: parts.length > 1 ? { order: part.order, count: parts.length } : null,
+        lanes,
         now: store.clock.now(),
         timeZone: this.options.timeZone,
         budgets: { retrievedMax: this.budgets.retrievedMax, projectContextMax: this.budgets.projectContextMax, previousTurn: previousTurn ?? this.budgets.previousTurn },

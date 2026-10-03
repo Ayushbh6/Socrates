@@ -1238,6 +1238,12 @@ export class LedgerStore {
     return this.all(`SELECT * FROM lanes ${options.includeClosed ? "" : "WHERE closed_at IS NULL"} ORDER BY lane_number`).map(toLane);
   }
 
+  /** The newest turn that ran, or waits to run, in a lane. */
+  latestLaneTurn(laneId: string): Turn | null {
+    const r = this.get("SELECT * FROM turns WHERE lane_id = ? ORDER BY project_turn DESC LIMIT 1", laneId);
+    return r ? toTurn(r) : null;
+  }
+
   /** Hand a main-conversation turn to the lane whose run holds its task. */
   moveTurnToLane(turnId: string, laneId: string): Turn {
     return this.transaction(() => {

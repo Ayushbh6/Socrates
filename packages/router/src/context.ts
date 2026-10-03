@@ -11,6 +11,7 @@ import {
 } from "@socrates/store";
 import { type SemanticHit, fuse, recencyBoost } from "@socrates/retrieval";
 import { countTokens, truncateToTokens, zonedParts } from "@socrates/shared";
+import { laneSummaries, renderLanesForRouter } from "./lanes";
 
 /**
  * Builds everything the Goal Router sees (Goal-router.md, "Exact router input"):
@@ -52,6 +53,8 @@ export interface RoutingContext {
   /** True when the previous exchange was a routing clarification this message answers. */
   answeringClarification: boolean;
   pending: { turn: Turn; request: string; question: string } | null;
+  /** Goal and task selectors shown in LANES, usable as labels without a ledger query. */
+  laneSelectors: { goals: number[]; tasks: string[] };
   /** The rendered turn-specific router input. */
   input: string;
 }
@@ -122,6 +125,13 @@ export function buildRoutingContext(store: LedgerStore, message: string, options
     section("RECENT_EXACT_HISTORY", exchanges.text || "None"),
     section("KNOWN_GOALS", renderKnownGoals(store, goals, current)),
   ];
+  // Work running or recently finished in parallel lanes, other than the lane being routed.
+  const lanes = laneSummaries(store, now, laneId);
+  if (lanes.length) sections.push(section("LANES", renderLanesForRouter(store, lanes, now, options.timeZone)));
+  const laneSelectors = {
+    goals: lanes.flatMap((l) => (l.goal ? [l.goal.number] : [])),
+    tasks: lanes.flatMap((l) => (l.goal && l.task ? [`g${l.goal.number}/t${l.task.number}`] : [])),
+  };
   if (answeringClarification) {
     sections.push(
       section(
@@ -144,6 +154,7 @@ export function buildRoutingContext(store: LedgerStore, message: string, options
     zeroHistory,
     answeringClarification,
     pending,
+    laneSelectors,
     input: sections.join("\n\n"),
   };
 }

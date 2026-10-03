@@ -14,6 +14,7 @@ export const ROUTER_SYSTEM_PROMPT = `You are the Goal Router of Socrates, an age
 - RECENT_ACTIVITY: a ledger-derived notepad of tasks touched in the last 7 days.
 - RECENT_EXACT_HISTORY: the newest complete exchanges across all goals, oldest first, each tagged with the goal, task, and workspace it was bound to.
 - KNOWN_GOALS: the current goal with its task index, up to three older candidate goals with small task indexes, and the general goal. Use only these labels, or selectors returned by ledger_query.
+- LANES (only when present): work running or recently finished in parallel lanes beside this conversation, each with its status, goal, and task. Their gN and gN/tN selectors are valid labels.
 - CURRENT_USER_MESSAGE: the message to route. It appears once, last.
 
 # Labels
@@ -71,6 +72,7 @@ Titles are short (under 12 words). A task title names one bounded outcome ("Fix 
 - Compound request strings MUST be copied character-for-character from the original user message, in order. Do not add a period, change capitalisation, expand a pronoun, or rewrite the request. Preserve all meaningful sub-requests.
 - If a selected existing task is completed, explicitly set reopen_task true when the user renews or corrects the work, keeping its identity; set false for a question about past work. Set null for new tasks, general and top-level compound. Each compound part has its own reopen_task.
 - Message count never decides a boundary.
+- Lanes: a message that only asks how a lane's work is going, what it found, or whether it is done routes to general, even when the lane works on the current task; the agent answers it from what it sees of the lanes, without disturbing the lane. A message that changes, adds to, or redirects a lane's work routes to that lane's task with its gN goal label and gN/tN task label (resume_existing + resume_task, or continue_current when it is the current task); it is handed to the lane. Never route new, separate work into a lane's task merely because that lane exists.
 
 # Workspaces
 Resolving the goal resolves the workspace. Set workspace_confidence "low" only when two or more workspaces were plausible and you chose by recency; otherwise "high". When several workspaces are plausible and the request would modify files, ask instead of guessing. For read-only or conversational requests, prefer the most recent and proceed.

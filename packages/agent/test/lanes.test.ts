@@ -121,6 +121,10 @@ describe("lanes", () => {
     // It ran after the lane's turn, with that turn in its history.
     const request = agent.requests.find((r) => messageOf(r) === "Also update the README.")!;
     expect(contextText(request)).toContain("Refactor the server.");
+    // The lane's agent knows it is that lane, and that this message came from main.
+    expect(contextText(request)).toContain(`lane: you are lane 1, working this task beside the main conversation. The user wrote this message in the main conversation; it was handed to you because you work this task.`);
+    expect(contextText(agent.requests.find((r) => messageOf(r) === "Refactor the server.")!)).toMatch(/lane: you are lane 1, working this task beside the main conversation\.\n/);
+    expect(contextText(agent.requests.find((r) => messageOf(r) === "Hello there.")!)).not.toContain("lane: you are");
     expect(w.store.listEvents({ type: "turn_moved_to_lane" })).toHaveLength(1);
     await s.close();
   });
@@ -449,5 +453,104 @@ it("retains main's reservation while a compound message still has main work", as
   const result = await main;
   expect(result.kind === "answered" && result.parts.map((p) => p.status)).toEqual(["completed", "completed"]);
   expect(s.busy).toBe(false);
+  await s.close();
+});
+
+describe("the main conversation sees its lanes", () => {
+  it("<LANES> shows each lane's status, task, latest step, note and answer, in main only", async () => {
+    const w = await world({ files: { "a.txt": "alpha\n" } });
+    const reading = gate();
+    const approving = gate();
+    const router = new Responder("test:router", (m) => (m.startsWith("Read") ? createGoal("Reading", "Read a.txt") : m.startsWith("Run") ? createGoal("Runner", "Run forever") : m.startsWith("Note") ? createGoal("Notes", "Write notes") : continueTask()));
+    const steps = new Map<string, number>();
+    const agent = new Responder("test:agent", async (m) => {
+      const n = steps.get(m) ?? 0;
+      steps.set(m, n + 1);
+      if (m.startsWith("Read")) {
+        if (n === 0) return { toolCalls: [call("read", { path: "a.txt" })] };
+        await reading.opened;
+      }
+      if (m.startsWith("Run") && n === 0) return { toolCalls: [call("terminal", { command: "echo hi", timeout_ms: 0 })] };
+      return final({ full_answer: `Done with ${m} All good.`, continuation_note: `Finished ${m}` });
+    });
+    const s = socrates(w.store, router, agent, { resolveWorkspace: () => ({ name: "project", rootPath: w.root }) });
+    const notes = await s.handle("Note the plan.", { lane: "new" });
+    const read = s.handle("Read the file.", { lane: "new" });
+    const run = s.handle("Run the command.", { lane: "new", approve: async () => (await approving.opened, true) });
+    // Wait until lane 2 has read the file and lane 3 is asking for approval.
+    for (let i = 0; i < 200 && !(s.lanes()[2]?.waitingForApproval && w.store.listEvents({ type: "tool_completed" }).length); i++) await new Promise((done) => setTimeout(done, 10));
+    expect(s.lanes().map((l) => [l.number, l.running, l.waitingForApproval])).toEqual([[1, false, false], [2, true, false], [3, true, true]]);
+
+    await s.handle("How are the lanes doing?");
+    const mainContext = contextText(agent.requests.at(-1)!);
+    const block = /<LANES>\n([\s\S]*?)\n<\/LANES>/.exec(mainContext)![1]!;
+    expect(block).toBe([
+      `lane 1 · finished at 10:00 · g2/t1 "Write notes" in goal "Notes" · workspace project`,
+      `  note: Finished Note the plan.`,
+      `  answer: Done with Note the plan. All good.`,
+      `lane 2 · working since 10:00 · g3/t1 "Read a.txt" in goal "Reading" · workspace project`,
+      `  latest step: read a.txt`,
+      `lane 3 · waiting for the user's approval · g4/t1 "Run forever" in goal "Runner" · workspace project`,
+      `  latest step: terminal: echo hi`,
+    ].join("\n"));
+    expect(mainContext.indexOf("<LANES>")).toBeGreaterThan(mainContext.indexOf("<CURRENT_TASK>"));
+    expect(mainContext.indexOf("<LANES>")).toBeLessThan(mainContext.indexOf("<CURRENT_USER_MESSAGE>"));
+    // A lane's own context does not list the lanes.
+    expect(contextText(agent.requests.find((r) => messageOf(r) === "Note the plan.")!)).not.toContain("<LANES>");
+    expect(notes.notice).toBe("Lane 1 finished: Write notes — Done with Note the plan.");
+
+    reading.open();
+    approving.open();
+    await Promise.all([read, run]);
+    await s.close();
+  });
+
+  it("lane results carry a one-line notice for main: finished, stopped, a question, or handed-off work", async () => {
+    const w = await world();
+    const hold = gate();
+    const router = new Responder("test:router", (m) => {
+      if (m === "Open the other project.") return { toolCalls: [{ name: "ask_user", input: { question: "Which project do you mean? The server or the docs.", candidates: [{ label: "Project work", detail: "The server work", goal_label: "current" }], allow_new: true } }] };
+      return continueTask();
+    });
+    const agent = new Responder("test:agent", async (m) => {
+      if (m === "Refactor the server.") await hold.opened;
+      return final({ full_answer: `Done: ${m}` });
+    });
+    const s = socrates(w.store, router, agent);
+    const asked = await s.handle("Open the other project.", { lane: "new" });
+    expect(asked.notice).toBe("Lane 1 needs an answer: Which project do you mean?");
+
+    const stop = new AbortController();
+    const lane = s.handle("Refactor the server.", { lane: "new", signal: stop.signal });
+    await new Promise((done) => setTimeout(done, 10));
+    const handed = s.handle("Also rename the config.");
+    await new Promise((done) => setTimeout(done, 10));
+    stop.abort();
+    expect((await lane).notice).toMatch(/^Lane 2 stopped: Fix the server — Stopped after 0 tool calls\.$/);
+    expect((await handed).notice).toBe("Lane 2 finished: Fix the server — Done: Also rename the config.");
+    expect((await s.handle("Back to main.")).notice).toBeNull();
+    hold.open();
+    await s.close();
+  });
+});
+
+it("<LANES> marks a working lane's note as being from before its current run", async () => {
+  const w = await world();
+  const hold = gate();
+  // A question about a lane goes to the general task, as the router is told to.
+  const router = new Responder("test:router", (m) => (m === "How is it going?" ? { text: decision({ decision: "resume_existing", goal_label: "general", workspace_confidence: null }) } : continueTask()));
+  const agent = new Responder("test:agent", async (m) => {
+    if (m === "Run it again.") await hold.opened;
+    return final({ full_answer: "ok" });
+  });
+  const s = socrates(w.store, router, agent);
+  // The world's task already has a note from an earlier turn; the lane re-runs that task.
+  const lane = s.handle("Run it again.", { lane: "new" });
+  await new Promise((done) => setTimeout(done, 20));
+  await s.handle("How is it going?");
+  const block = /<LANES>\n([\s\S]*?)\n<\/LANES>/.exec(contextText(agent.requests.at(-1)!))![1]!;
+  expect(block).toContain(`  note from before this run: ${w.store.requireTask(w.taskId).continuationNote}`);
+  hold.open();
+  await lane;
   await s.close();
 });

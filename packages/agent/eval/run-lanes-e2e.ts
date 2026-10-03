@@ -1,15 +1,17 @@
-/** Live acceptance run of lanes (L1): a real router and agent work through
- * one Socrates while lanes run alongside the main conversation. It checks a
- * lane working while main runs a slow test suite, a lane's follow-up
- * continuing its task without routing, a main message handed to the lane
- * busy with its task while main answers something else, stopping one lane
- * while another finishes, and lanes surviving a restart and an event-only
- * rebuild. Only synthetic fixture content reaches the provider. */
+/** Live acceptance run of lanes (L1 and L2): a real router and agent work
+ * through one Socrates while lanes run alongside the main conversation. It
+ * checks a lane working while main runs a slow test suite, a lane's
+ * follow-up continuing its task without routing, main answering a question
+ * about a lane from <LANES> without disturbing it, an instruction for a lane
+ * given in main being routed to the lane's task and handed to that lane while
+ * main answers something else, finish notices, stopping one lane while
+ * another finishes, and lanes surviving a restart and an event-only rebuild.
+ * Only synthetic fixture content reaches the provider. */
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ModelClient } from "@socrates/contracts";
+import { type ModelClient, type ModelRequest, userText } from "@socrates/contracts";
 import { makeModel, PROVIDER_DEFAULTS, type Provider } from "@socrates/providers";
 import { LedgerStore } from "@socrates/store";
 import { loadEvaluationEnvironment } from "../../router/eval/environment";
@@ -25,7 +27,7 @@ const routerModel = makeModel(provider, process.env.SOCRATES_ROUTER_MODEL ?? def
 const base = fileURLToPath(new URL("../../../.socrates/evals/", import.meta.url));
 mkdirSync(base, { recursive: true });
 const dir = realpathSync(mkdtempSync(path.join(base, `lanes-${provider}-`)));
-const SLOW_MS = 15_000;
+const SLOW_MS = 25_000;
 const server = path.join(dir, "server");
 mkdirSync(path.join(server, "test"), { recursive: true });
 writeFileSync(path.join(server, "package.json"), JSON.stringify({ name: "server", private: true, type: "module", scripts: { test: "node --test" } }, null, 2));
@@ -37,9 +39,11 @@ writeFileSync(path.join(notes, "wait.js"), "setTimeout(() => console.log('done w
 const dbPath = path.join(dir, "ledger.db");
 
 const usage = { requests: 0, routerRequests: 0 };
+const agentRequests: ModelRequest[] = [];
 const measured = (model: ModelClient, router: boolean): ModelClient => ({
   id: model.id,
   async complete(request) {
+    if (!router) agentRequests.push({ ...request, signal: undefined });
     const response = await model.complete(request);
     usage.requests++;
     if (router) usage.routerRequests++;
@@ -65,6 +69,11 @@ const passed = (name: string, details?: string) => {
   console.log(`PASS ${name}${details ? ` — ${details}` : ""}`);
 };
 const short = (text: string) => text.replace(/\s+/g, " ").slice(0, 140);
+/** The working context of the first agent request for a message. */
+const contextFor = (message: string) => {
+  const request = agentRequests.find((r) => userText(r.messages[0]!.content).includes(`<CURRENT_USER_MESSAGE>\n${message}`));
+  return request ? userText(request.messages[0]!.content) : "";
+};
 const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
 function answered(result: HandleResult) {
   assert.equal(result.kind, "answered", result.kind === "clarify" ? `Unexpected clarification: ${result.text}` : "");
@@ -106,6 +115,7 @@ async function run() {
   const serverTask = mainResult.parts[0]!.task;
   assert.equal(store.currentBinding()!.task.id, serverTask.id, "the lane must not change main's current task");
   assert.equal(laneResult.parts[0]!.turn.laneId, laneId);
+  assert.match(laneResult.notice ?? "", /^Lane 1 finished: .+ — /, `notice: ${laneResult.notice}`);
   passed("a lane works while main runs a slow test suite, and main's current task stays main's", `lane done at ${(lane.at / 1000).toFixed(1)} s, main at ${(first.at / 1000).toFixed(1)} s; lane: ${short(laneResult.text)}`);
 
   // 2. A follow-up in the lane continues its task without routing.
@@ -116,13 +126,28 @@ async function run() {
   assert(readFileSync(path.join(notes, "CHANGELOG.md"), "utf8").includes("0.2"), "CHANGELOG.md must gain 0.2");
   passed("a lane's follow-up continues its task directly", short(followUp.text));
 
-  // 3. A main message for the task a lane is busy with is handed to that lane; main answers something else meanwhile.
+  // 3. While lane 2 runs the suite again, main answers a question about it from <LANES> without disturbing it.
   let lane2: string | null = null;
   const rerun = timed(socrates.handle("In the server project, run `npm test` once more and report the result.", { lane: "new", onLane: (id) => (lane2 = id) }));
-  await wait(2_000);
+  // Wait until lane 2 has started the suite.
+  await until(() => {
+    const turn = lane2 ? store.latestLaneTurn(lane2) : null;
+    return !!turn && store.evidenceForTurn(turn.id).length > 0;
+  }, 20_000);
+  let statusHanded: string | null = null;
+  const statusQuestion = "How is the lane running the server tests doing?";
+  const status = answered(await socrates.handle(statusQuestion, { onHandoff: (id) => (statusHanded = id) }));
+  assert.equal(statusHanded, null, "a question about a lane must not be handed to it");
+  assert.equal(status.parts[0]!.turn.laneId, null);
+  const statusContext = contextFor(statusQuestion);
+  assert.match(statusContext, /<LANES>[\s\S]*lane 2 · working since/, "main must see lane 2 working in <LANES>");
+  assert.match(status.text, /running|in progress|still|currently|underway|working/i, "the answer must say the lane is still working");
+  assert.doesNotMatch(status.text, /\b(has|have) (finished|completed)\b/i, "the lane has not finished yet");
+  passed("main answers a question about a lane from <LANES>, without disturbing it", short(status.text));
+
+  // 4. An instruction for the lane given in main is routed to the lane's task and handed to it; main answers something else meanwhile.
   let handedTo: string | null = null;
-  // Part of the same test-run task, so it belongs to the run lane 2 is busy with.
-  const readme = timed(socrates.handle("For that same `npm test` run on the server, also tell me how many seconds the suite took.", { onHandoff: (id) => (handedTo = id) }));
+  const readme = timed(socrates.handle("Tell the lane running the server tests to also report how many seconds the suite took.", { onHandoff: (id) => (handedTo = id) }));
   // The handoff happens once the message is routed.
   await until(() => handedTo !== null, 20_000);
   assert(handedTo === lane2, `the follow-up must be handed to lane ${lane2}, went to ${handedTo ?? "main"}`);
@@ -135,9 +160,11 @@ async function run() {
   const followUp2 = answered(readmeDone.value);
   assert.equal(followUp2.parts[0]!.turn.laneId, lane2);
   assert.match(followUp2.text, /\d+(\.\d+)?\s*(s|sec|second)/i);
+  assert.doesNotMatch(followUp2.text, /no (background |other )?lane|not (running )?in a lane/i, "the lane must understand the message was addressed to it");
+  assert.match(followUp2.notice ?? "", /^Lane 2 finished: /, `notice: ${followUp2.notice}`);
   passed("a main message for a task busy in a lane is handed to that lane while main keeps answering", `quick answer at ${(quick.at / 1000).toFixed(1)} s, handed-off answer at ${(readmeDone.at / 1000).toFixed(1)} s: ${short(followUp2.text)}`);
 
-  // 4. Stopping one lane leaves another to finish.
+  // 5. Stopping one lane leaves another to finish.
   const stop = new AbortController();
   const slow = timed(socrates.handle("In the notes project, run `node wait.js` (it takes 20 seconds) and tell me what it prints.", { lane: "new", signal: stop.signal }));
   const todo = timed(socrates.handle("In the notes project, create TODO.md listing three items for next week.", { lane: "new" }));
@@ -145,12 +172,13 @@ async function run() {
   stop.abort();
   const stopped = answered((await slow).value);
   assert.equal(stopped.parts[0]!.status, "interrupted");
+  assert.match(stopped.notice ?? "", /^Lane \d stopped: /, `notice: ${stopped.notice}`);
   const finished = answered((await todo).value);
   assert.equal(finished.parts[0]!.status, "completed");
   assert(existsSync(path.join(notes, "TODO.md")), "TODO.md must exist");
   passed("stopping one lane leaves another to finish", short(finished.text));
 
-  // 5. Lanes survive a restart and an event-only rebuild.
+  // 6. Lanes survive a restart and an event-only rebuild.
   const before = socrates.lanes();
   assert.equal(before.length, 4);
   await socrates.close();

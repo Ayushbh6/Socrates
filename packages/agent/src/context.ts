@@ -25,6 +25,8 @@ export interface ContextInput {
   candidates?: string | null;
   /** Meaning matches for `<RETRIEVED_HISTORY>` and `<PROJECT_CONTEXT>`, searched once per turn. */
   semantic?: { task: SemanticHit[]; siblings: SemanticHit[]; anchors?: SemanticHit[]; related?: SemanticHit[] };
+  /** The main conversation's `<LANES>` block, or null (in a lane, or with no lanes to show). */
+  lanes?: string | null;
   /** The goal's workspace, whose anchors and files fill `<PROJECT_CONTEXT>`. */
   workspace?: WorkspaceRoot | null;
   /** Dependent compound parts: the finalized turns of the parts this one depends on. */
@@ -56,8 +58,9 @@ export function assembleContext(input: ContextInput): TextPart[] {
 
   const volatile = [
     goal.general ? null : goalState(store, goal, task),
-    task.general ? null : currentTask(task, input.part, store.requestForTurn(turn.id).request),
+    task.general ? null : currentTask(task, input.part, store.requestForTurn(turn.id).request, laneOf(store, turn)),
     task.general ? block("RECENT_ACTIVITY", renderActivity(store, input.now, input.timeZone)) : null,
+    input.lanes ?? null,
     ...input.dependsOn.map((d) => evidenceFromPart(store, d.order, d.turn)),
     retrievedHistory(store, {
       taskId: task.id,
@@ -129,7 +132,13 @@ function goalState(store: LedgerStore, goal: Goal, current: Task): string {
   return block("GOAL_STATE", lines.join("\n"));
 }
 
-function currentTask(task: Task, part: ContextInput["part"], partRequest: string): string {
+/** The lane a turn runs in, and whether its message was handed over from the main conversation. */
+function laneOf(store: LedgerStore, turn: Turn): { number: number; handedOff: boolean } | null {
+  if (!turn.laneId) return null;
+  return { number: store.requireLane(turn.laneId).number, handedOff: store.listEvents({ turnId: turn.id, type: "turn_moved_to_lane" }).length > 0 };
+}
+
+function currentTask(task: Task, part: ContextInput["part"], partRequest: string, lane: { number: number; handedOff: boolean } | null): string {
   const lines = [
     `title: ${task.title}`,
     `objective: ${task.objective}`,
@@ -139,6 +148,9 @@ function currentTask(task: Task, part: ContextInput["part"], partRequest: string
   ];
   if (part) {
     lines.push(`this_turn: part ${part.order} of ${part.count} of the user's message — ${JSON.stringify(partRequest)}. Do only this part; the other parts run separately.`);
+  }
+  if (lane) {
+    lines.push(`lane: you are lane ${lane.number}, working this task beside the main conversation.${lane.handedOff ? ` The user wrote this message in the main conversation; it was handed to you because you work this task. "The lane" in it means you.` : ""}`);
   }
   return block("CURRENT_TASK", lines.join("\n"));
 }

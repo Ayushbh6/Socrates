@@ -299,7 +299,13 @@ Retrieval only creates a shortlist. The Goal Routerâ€”not the retrieval systemâ€
 
 The labels `older_1`, `older_2`, and `older_3` are temporary ranks for this request. A goal created 23 goals ago may still be labelled `older_1`; there is no `older_23` label. Task labels follow the same rule and are interpreted within the selected goal: in the current goal, `current` is the current task and `task_1`, `task_2`, ... are its other listed tasks; in an older goal, `latest` is its most recently updated task and `task_1`, `task_2`, ... are its other listed tasks.
 
-#### 4. `CURRENT_USER_MESSAGE`
+#### 4. `LANES`
+
+Present only when work runs or recently finished in parallel lanes beside the conversation (`agent-harness.md`, "Lanes"); a lane being routed does not see itself. One line per open lane: its number, status (working, waiting for the user's answer, finished or stopped with the time), and its goal and task with `gN` and `gN/tN` selectors. A lane that finished or stopped more than `24` hours ago is left out. The selectors are valid labels without a `ledger_query`.
+
+A message that only asks how a lane's work is going routes to `general`, even when the lane works on the current task, and is answered from `<LANES>` without disturbing the lane. A message that changes or adds to a lane's work routes to that lane's task by its selectors and is handed to the lane. New, separate work is never routed into a lane's task merely because the lane exists.
+
+#### 5. `CURRENT_USER_MESSAGE`
 
 This is the exact current query. It appears once, after both context sections, and is always the final block read by the router.
 
@@ -559,7 +565,7 @@ The router reasons about the outcome, not keyword overlap alone.
 
 Router context and working-agent context are separate. The Goal Router receives project-wide evidence to select the owning goal and task. Only after the backend binds the turn to that goal and task does it build the Main Coding Agent's focused context.
 
-The working-agent request has exactly one layout, defined in `agent-harness.md` ("Working-agent context"). It orders blocks from most stable to most volatile for prompt caching: the stable prefix, then goal-stable blocks (`<GOAL>`, `<AVAILABLE_SKILLS>`, `<ACTIVE_CAPABILITIES>`), then chat history, then turn-volatile blocks (`<GOAL_STATE>`, `<CURRENT_TASK>`, optional `<RECENT_ACTIVITY>`, `<RETRIEVED_HISTORY>`, `<PROJECT_CONTEXT>`, `<CAPABILITY_CANDIDATES>`), and finally `<CURRENT_USER_MESSAGE>`. This section describes how the goal- and task-specific blocks are filled.
+The working-agent request has exactly one layout, defined in `agent-harness.md` ("Working-agent context"). It orders blocks from most stable to most volatile for prompt caching: the stable prefix, then goal-stable blocks (`<GOAL>`, `<AVAILABLE_SKILLS>`, `<ACTIVE_CAPABILITIES>`), then chat history, then turn-volatile blocks (`<GOAL_STATE>`, `<CURRENT_TASK>`, optional `<RECENT_ACTIVITY>`, optional `<LANES>`, `<RETRIEVED_HISTORY>`, `<PROJECT_CONTEXT>`, `<CAPABILITY_CANDIDATES>`), and finally `<CURRENT_USER_MESSAGE>`. This section describes how the goal- and task-specific blocks are filled.
 
 For the German example, the selected sections contain:
 

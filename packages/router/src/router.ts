@@ -121,6 +121,9 @@ export class GoalRouter {
       ...(this.historyBudgetTokens !== undefined ? { historyBudgetTokens: this.historyBudgetTokens } : {}),
     });
     const seen = emptySeen();
+    // Lanes are shown with their selectors, so routing to a lane's task needs no ledger query.
+    for (const n of ctx.laneSelectors.goals) seen.goals.add(n);
+    for (const t of ctx.laneSelectors.tasks) seen.tasks.add(t);
     const budget: Budget = { ledgerQueries: 0, errors: [], messages: [{ role: "user", content: ctx.input }] };
 
     let attempts = 1;
