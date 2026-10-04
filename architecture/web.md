@@ -23,11 +23,21 @@ The name, the motto, and one button: **Chat with Socrates**. Before Socrates can
 
 One question and its answer at a time, on an open canvas.
 
-- **The orb.** Socrates' presence: a slow, drifting planet in the middle of the canvas. A new question floats above it, cut off after six lines with **Show more**, while the orb breathes ("Thinking"). When work starts (the first narration line or tool call), the orb shrinks and glides to where the answer begins, and stays there: teal while working, amber while an approval waits, faded when stopped. A slight parallax moves the planet and the dots against the pointer. Answers arrive whole and fade in; the harness does not stream tokens yet.
-- **The answer.** The goal and task it was routed to, the agent's narration, each tool call as one line (open it for the live preview, or the complete recorded output), approval decisions, and the answer in Markdown.
+- **The orb.** Socrates' presence: a slow, drifting planet in the middle of the canvas. A new question floats above it, cut off after six lines with **Show more**, while the orb breathes ("Thinking"). When work starts (the first draft of the reply, narration line or tool call), the orb shrinks and glides to where the answer begins, and stays there: teal while working, amber while an approval waits, faded when stopped. A slight parallax moves the planet and the dots against the pointer.
+- **The answer.** The goal and task it was routed to, the agent's narration, each tool call as one line (open it for the live preview, or the complete recorded output), approval decisions, and the answer in Markdown. It is written as it is generated ("Streaming").
 - **Notes.** Two sticky notes beside the conversation: the current task (its title, status and continuation note) and its goal (objective, note, open and done tasks). They follow the question on the canvas. Drag them anywhere, or move them with the arrow keys; their places are remembered in this browser. On a phone they step aside.
 - **Sidebar.** The ☰ opens it over the canvas: the conversations (main and each lane, with what it is doing; an idle lane can be closed) and the questions of the conversation on the canvas, newest first by day. Choosing an earlier question shows it; **Return to the latest** comes back.
 - **Header.** On the right, the switch between Flow and Standard and the way to settings. On the left, the ☰ and the access chip: **My folders: …** or **Full access** (orange). Its menu sets the project folder new work starts in (which also joins the folders), adds or removes folders, and chooses the scope (`server.md`, "Access"). The folder picker browses this Mac's folders or takes a typed path (`~` is the home folder).
+
+## Streaming
+
+Text appears while the model writes it. The server sends the readable part of the reply so far as a `draft` (`server.md`, "Live drafts"): the line before tool calls, or the answer, which comes from the final message's `full_answer` so none of its hidden fields shows. Both modes use the same pieces:
+
+- **One draft per turn.** A draft is kept on its question's exchange and replaced by each newer one; one from an earlier request than the one showing is ignored (a retry or repair is a later request). The saved narration, answer or question, or the end of the turn, replaces it, and a stopped turn leaves nothing behind. The first draft moves the orb out of the middle, so the answer grows from where the orb lands. A draft never changes where the page resumes the live connection, because it is not an event.
+- **One element for the draft and its answer.** The draft and the saved answer that replaces it are the same piece of text on the page, so nothing flickers or jumps at the swap.
+- **Even flow.** Models send text in bursts, so each frame shows a share of the text still waiting (at least one character, about a fifth of a second to catch up), never splitting a character, and carries on after the saved answer replaces the draft. A soft point marks the end of text still being written. Text already finished when the page loads is shown whole; with reduced motion, text is shown as it arrives.
+- **Following.** The area stays at the end of the text while the reader is there and leaves a reader who scrolled up alone; a new question brings it back to the end. Flow follows the canvas, and every thread and lane panel of standard mode follows its own.
+- **Joining late.** A page that opens or reloads mid-reply is sent the current drafts after its state and replay, and carries on from there.
 
 ## Standard mode
 

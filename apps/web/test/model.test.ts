@@ -135,3 +135,67 @@ describe("standard mode helpers", () => {
     expect(workLine("done", null)).toBeNull();
   });
 });
+
+describe("drafts of a reply that is arriving", () => {
+  const draft = (turnId: string, call: number, kind: "narration" | "answer", text: string, conversation = "main"): ServerMessage => ({ type: "draft", conversation, turnId, call, kind, text });
+  const working = () => run(emptyModel(),
+    act("main", { kind: "message", text: "Why does login fail?" }),
+    act("main", { kind: "routed", turnId: "t1", projectTurn: 4, ...route, lane: null }),
+  );
+  const exchange = (m: Model, conversation = "main") => m.conversations[conversation]!.at(-1)!;
+
+  it("shows the draft on the exchange of its turn, moves the orb, and never moves the page's place in the log", () => {
+    const before = working();
+    expect(orbState(exchange(before), [])).toBe("thinking");
+    const m = run(before, draft("t1", 1, "answer", "The refresh"));
+    expect(exchange(m).draft).toEqual({ turnId: "t1", call: 1, kind: "answer", text: "The refresh" });
+    expect(orbState(exchange(m), [])).toBe("working");
+    expect(orbDocked(orbState(exchange(m), []))).toBe(true);
+    expect(m.seq).toBe(before.seq);
+    expect(run(m, draft("t1", 1, "answer", "The refresh path")).conversations.main![0]!.draft!.text).toBe("The refresh path");
+  });
+
+  it("lets a later request's draft replace an earlier one, and ignores a stale one", () => {
+    let m = run(working(), draft("t1", 2, "answer", "Second request"));
+    m = run(m, draft("t1", 1, "narration", "Late and stale"));
+    expect(exchange(m).draft).toMatchObject({ call: 2, text: "Second request" });
+    m = run(m, draft("t1", 3, "answer", "Third"));
+    expect(exchange(m).draft).toMatchObject({ call: 3, text: "Third" });
+  });
+
+  it("is replaced by the saved narration, answer or end of its turn, and only for its own turn", () => {
+    const base = run(working(), draft("t1", 1, "narration", "Checking the refresh handler"));
+    const saved = run(base, act("main", { kind: "step", turnId: "t1", text: "Checking the refresh handler." }));
+    expect(exchange(saved).draft).toBeNull();
+    expect(exchange(saved).steps).toEqual([{ kind: "step", text: "Checking the refresh handler." }]);
+    const answered = run(saved, draft("t1", 2, "answer", "The refresh path"), act("main", { kind: "answer", turnId: "t1", text: "The refresh path drops the token." }));
+    expect(exchange(answered).draft).toBeNull();
+    expect(exchange(answered).answers).toEqual(["The refresh path drops the token."]);
+    // The end of a turn clears a draft whose answer never came, such as a stopped one.
+    const stopped = run(base, act("main", { kind: "finished", turnId: "t1", status: "interrupted", reason: "cancelled" }));
+    expect(exchange(stopped)).toMatchObject({ draft: null, state: "stopped" });
+    // Another turn's activity leaves it alone.
+    const other = run(base, act("main", { kind: "answer", turnId: "t0", text: "Something else" }));
+    expect(exchange(other).draft).toMatchObject({ turnId: "t1" });
+  });
+
+  it("puts a lane's draft in the lane and rebuilds a replayed message without one", () => {
+    let m = run(emptyModel(),
+      act("lane1", { kind: "lane", laneId: "lane1", number: 1, state: "opened" }),
+      act("lane1", { kind: "message", text: "Write the docs." }),
+      act("lane1", { kind: "routed", turnId: "t9", projectTurn: 1, ...route, lane: 1 }),
+      draft("t9", 1, "answer", "The docs", "lane1"),
+    );
+    expect(exchange(m, "lane1").draft).toMatchObject({ turnId: "t9", text: "The docs" });
+    expect(m.conversations.main).toEqual([]);
+    const messageSeq = exchange(m, "lane1").seq!;
+    m = reduce(m, { type: "server", message: { type: "activity", seq: messageSeq, at, conversation: "lane1", kind: "message", text: "Write the docs." } });
+    expect(exchange(m, "lane1")).toMatchObject({ draft: null, steps: [], answers: [] });
+  });
+
+  it("does not count a draft that arrives for a finished exchange as work", () => {
+    const done = run(working(), act("main", { kind: "answer", turnId: "t1", text: "Done." }), act("main", { kind: "finished", turnId: "t1", status: "completed", reason: null }));
+    expect(exchange(done).state).toBe("done");
+    expect(orbState(exchange(run(done, draft("t1", 1, "answer", "late"))), [])).toBe("done");
+  });
+});

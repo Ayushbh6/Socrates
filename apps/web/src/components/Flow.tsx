@@ -2,6 +2,7 @@ import { Menu, X } from "lucide-react";
 import { LayoutGroup } from "motion/react";
 import { type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { currentRoute, orbDocked, orbState } from "../lib/model";
+import { useFollow } from "../lib/follow";
 import { type AppState, store } from "../lib/store";
 import { AccessMenu } from "./AccessMenu";
 import { AnswerView } from "./AnswerView";
@@ -56,16 +57,13 @@ export function Flow({ app, mode, onMode, onSettings }: { app: AppState; mode: M
   const route = exchange?.route ?? currentRoute(list);
   const goal = useMemo(() => (route ? app.goals.find((g) => g.number === route.goal.number) ?? null : null), [route, app.goals]);
 
-  // Keep the newest work in view while it grows.
-  const size = `${exchange?.key}:${exchange?.steps.length}:${exchange?.answers.length}:${approvals.length}`;
-  useEffect(() => {
-    const el = stage.current;
-    if (!el || selected) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, [size, selected]);
+  // The newest work stays in view while it grows, unless the reader scrolls up or looks at an earlier question.
+  const column = useRef<HTMLDivElement>(null);
+  const pinned = useFollow(stage, column, !selected);
   // Braces matter: scrollTo returns a promise in newer browsers, and an effect may only return its cleanup.
   useEffect(() => {
-    stage.current?.scrollTo({ top: 0 });
+    pinned.current = true;
+    stage.current?.scrollTo({ top: 0, behavior: "instant" });
   }, [exchange?.key]);
 
   // A slight parallax: the planet and the dots drift against the pointer.
@@ -102,7 +100,7 @@ export function Flow({ app, mode, onMode, onSettings }: { app: AppState; mode: M
         <StickyNotes goal={goal} taskNumber={route?.task.number ?? null} />
 
         <main className="flow-stage" ref={stage}>
-          <div className="flow-column">
+          <div className="flow-column" ref={column}>
             {exchange && selected && (
               <p className="history-notice">
                 An earlier question <button type="button" onClick={() => setSelected(null)}>Return to the latest</button>

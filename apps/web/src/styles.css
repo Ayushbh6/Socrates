@@ -166,6 +166,10 @@ svg { width: 1rem; height: 1rem; flex: none; }
 .prose table { border-collapse: collapse; margin: 0 0 1rem; font-size: 0.9rem; }
 .prose th, .prose td { padding: 0.35rem 0.7rem; background: rgba(45, 55, 72, 0.03); text-align: left; }
 .prose th { background: rgba(45, 55, 72, 0.06); }
+/* A soft point at the end of text that is still being written. */
+.prose[data-live="true"] > :last-child::after, .step-text[data-live="true"]::after { content: ""; display: inline-block; width: 0.45rem; height: 0.45rem; margin-left: 0.3rem; border-radius: 50%; background: var(--accent); animation: writing 1.3s ease-in-out infinite; }
+@keyframes writing { 0%, 100% { opacity: 0.25; transform: scale(0.8); } 50% { opacity: 0.95; transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .prose[data-live="true"] > :last-child::after, .step-text[data-live="true"]::after { animation: none; } }
 
 /* Notes */
 

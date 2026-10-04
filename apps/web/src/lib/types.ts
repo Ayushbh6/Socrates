@@ -162,6 +162,7 @@ export interface LiveState {
 export type ServerMessage =
   | ({ type: "state" } & LiveState)
   | ({ type: "activity" } & Activity)
+  | { type: "draft"; conversation: string; turnId: string; call: number; kind: "narration" | "answer"; text: string }
   | { type: "accepted"; id: string; conversation: string }
   | ({ type: "approval" } & PendingApproval)
   | { type: "handed_off"; id: string; conversation: string; lane: number; mainReleased: boolean }
