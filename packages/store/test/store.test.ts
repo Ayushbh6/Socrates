@@ -521,6 +521,17 @@ describe("handoff history boundaries", () => {
 });
 
 describe("event listeners", () => {
+  it("keeps each listener in sequence order when another listener writes during a committed batch", () => {
+    const { store } = openStore();
+    const seen: number[] = [];
+    store.onEvent((e) => {
+      if ((e.payload as { text?: string }).text === "one") store.recordUserMessage("three");
+    });
+    store.onEvent((e) => seen.push(e.seq));
+    store.transaction(() => { store.recordUserMessage("one"); store.recordUserMessage("two"); });
+    expect(seen).toEqual(store.listEvents().map((e) => e.seq));
+    store.close();
+  });
   it("announce events once durable: at once, or when their transaction commits; never rolled-back ones", () => {
     const { store } = openStore();
     const seen: string[] = [];

@@ -311,6 +311,8 @@ export class LedgerStore {
   private readonly listeners = new Set<(event: StoredEvent) => void>();
   /** Events written inside the open transaction, announced only once it commits. */
   private uncommitted: StoredEvent[] = [];
+  private announcing = false;
+  private readonly announcements: StoredEvent[] = [];
 
   private constructor(db: DatabaseSync, clock: Clock) {
     this.db = db;
@@ -392,12 +394,20 @@ export class LedgerStore {
   }
 
   private announce(events: StoredEvent[]): void {
-    for (const event of events) {
-      for (const listener of this.listeners) {
-        try {
-          listener(event);
-        } catch {}
+    for (const event of events) this.announcements.push(event);
+    if (this.announcing) return;
+    this.announcing = true;
+    try {
+      // A listener may write another event. Deliver the committed batch first,
+      // preserving sequence order for every listener and reconnect cursor.
+      for (let i = 0; i < this.announcements.length; i++) {
+        for (const listener of this.listeners) {
+          try { listener(this.announcements[i]!); } catch {}
+        }
       }
+    } finally {
+      this.announcements.length = 0;
+      this.announcing = false;
     }
   }
 

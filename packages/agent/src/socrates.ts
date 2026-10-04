@@ -82,7 +82,7 @@ export interface HandleOptions {
    * handed to that lane; it runs there next, and the main conversation is
    * free for the next message.
    */
-  onHandoff?: (laneId: string) => void;
+  onHandoff?: (laneId: string, turnId: string) => void;
 }
 
 export interface PartResult {
@@ -422,7 +422,7 @@ export class Socrates {
       this.enterLane(destination);
       releaseMain();
       try {
-        options.onHandoff?.(destination);
+        options.onHandoff?.(destination, part.turn.id);
         // Do not reserve the task before the lane is available: its earlier
         // queued messages may themselves need that task.
         return await this.enqueueLane(destination, () => this.runLocked(part, parts, signal, options, destination, () => {}), signal);

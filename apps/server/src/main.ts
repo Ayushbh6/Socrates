@@ -11,10 +11,8 @@ async function main(): Promise<void> {
   let app: FastifyInstance | undefined;
   let stopping: Promise<void> | undefined;
   const close = () => stopping ??= (async () => {
-    // Cancel work while the listener drains, closing both even on failure.
-    const results = await Promise.allSettled([runtime?.close(), app?.close()]);
-    const failure = results.find((r) => r.status === "rejected");
-    if (failure?.status === "rejected") throw failure.reason;
+    // The live hub drains cancellation persistence before the ledger closes.
+    try { await app?.close(); } finally { await runtime?.close(); }
   })();
   const stop = () => {
     lifetime.abort();

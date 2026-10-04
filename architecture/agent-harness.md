@@ -856,6 +856,8 @@ A transient provider failure (rate limit, server, or network) is retried twice, 
 
 There is no separate planner agent, answer-writing agent, state-writing agent, or tool-selection agent in the initial architecture. The same Main Coding Agent returns its visible answer and a short hidden continuation note in one final result.
 
+Tool submission order is scoped to each turn. Independent lane turns execute independently, including approvals and foreground terminal calls; a long command or pending approval in one turn cannot block another turn's tools. File mutations still share the workspace lock around their freshness check and write.
+
 ## Exact per-turn lifecycle
 
 1. Receive the user message.

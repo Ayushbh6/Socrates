@@ -64,7 +64,8 @@ export class ToolRunner {
   /** Goal-scoped capability state: active MCP schemas, Skill revalidation, and MCP dispatch. */
   readonly capabilities: CapabilityRuntime;
   private readonly catalog: CapabilityCatalog;
-  private serial: Promise<unknown> = Promise.resolve();
+  /** Emitted order belongs to a turn; one lane's tool or approval cannot block another. */
+  private readonly serial = new Map<string | null, Promise<unknown>>();
 
   constructor(private readonly options: ToolRunnerOptions) {
     this.catalog = options.catalog ?? new StaticCatalog();
@@ -109,10 +110,15 @@ export class ToolRunner {
     const handler = this.handlers.get(call.name);
     const execute = () => this.execute(call, scope, handler);
     if (handler?.concurrency === "parallel") return execute();
-    // Serial calls run one at a time, in the order they were submitted.
-    const next = this.serial.then(execute, execute);
-    this.serial = next.catch(() => {});
-    return next;
+    // Keep each turn's serial calls ordered while independent lanes work.
+    // File mutation freshness/write sections still share the workspace lock.
+    const key = scope.binding.turnId;
+    const previous = this.serial.get(key) ?? Promise.resolve();
+    const next = previous.then(execute, execute);
+    const tail = next.catch(() => {});
+    this.serial.set(key, tail);
+    try { return await next; }
+    finally { if (this.serial.get(key) === tail) this.serial.delete(key); }
   }
 
   async close(): Promise<void> {

@@ -158,12 +158,16 @@ export async function liveServer(router: Responder, agent: Responder, options: {
           return Promise.resolve(already);
         }
         return new Promise((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error(`no matching message; received ${JSON.stringify(received.map((m) => m.type))}`)), timeoutMs);
-          waiters.push({ match, from: received.length, resolve: (m) => {
+          const waiter = { match, from: received.length, resolve: (m: Record<string, any>) => {
             clearTimeout(timer);
             received.splice(received.indexOf(m), 1);
             resolve(m);
-          } });
+          } };
+          const timer = setTimeout(() => {
+            waiters.splice(waiters.indexOf(waiter), 1);
+            reject(new Error(`no matching message; received ${JSON.stringify(received.map((m) => ({ type: m.type, kind: m.kind, id: m.id, conversation: m.conversation, approvals: m.approvals, busy: m.busy, task: m.task })))}`));
+          }, timeoutMs);
+          waiters.push(waiter);
         });
       },
       close,

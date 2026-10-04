@@ -53,8 +53,10 @@ export async function buildServer({ runtime, token, replayMax }: ServerOptions):
 
   // The live connection: one hub per server, closed (cancelling its runs) before the server stops.
   const hub = new LiveHub(runtime, replayMax ? { replayMax } : {});
+  app.addHook("preClose", () => hub.close());
   app.addHook("onClose", () => hub.close());
-  await app.register(websocket, { options: { maxPayload: 1024 * 1024 } });
+  const socketOptions = { maxPayload: 1024 * 1024, closeTimeout: 1_000 };
+  await app.register(websocket, { options: socketOptions });
   app.get("/api/live", { websocket: true }, (socket) => hub.attach(socket));
 
   app.get("/api/health", async () => ({ ok: true }));
@@ -74,7 +76,7 @@ export async function buildServer({ runtime, token, replayMax }: ServerOptions):
     const folder = runtime.workingFolder();
     return {
       home: runtime.config.home,
-      ready: runtime.socrates !== null,
+      ready: runtime.socrates !== null && runtime.acceptingMessages,
       setup: runtime.setup,
       models: runtime.models,
       embeddings: { ...runtime.settings.embeddings, ...runtime.embeddings, index },
@@ -126,13 +128,25 @@ export async function buildServer({ runtime, token, replayMax }: ServerOptions):
 
   // A tool call's complete recorded output, beyond the live preview.
   app.get("/api/evidence", async (request, reply) => {
-    const query = z.object({ task: z.string().regex(/^g\d+\/t\d+$/), handle: z.string().regex(/^e\d+$/) }).strict().parse(request.query);
+    const ordinal = (n: string) => Number.isSafeInteger(Number(n)) && Number(n) > 0;
+    const query = z.object({
+      task: z.string().regex(/^g\d+\/t\d+$/).refine((s) => s.slice(1).split("/t").every(ordinal), "Use positive, safe goal and task numbers."),
+      handle: z.string().regex(/^e\d+$/).refine((s) => ordinal(s.slice(1)), "Use a positive, safe evidence number."),
+    }).strict().parse(request.query);
     const [goalNumber, taskNumber] = query.task.slice(1).split("/t").map(Number) as [number, number];
     const goal = runtime.store.getGoalByNumber(goalNumber);
     const task = goal ? runtime.store.getTaskByNumber(goal.id, taskNumber) : null;
     const evidence = task ? runtime.store.getEvidence(task.id, Number(query.handle.slice(1))) : null;
     if (!evidence) return reply.code(404).send(problem("not_found", "There is no such tool call."));
-    const content = evidence.result?.content ?? null;
+    const recorded = evidence.result;
+    const output = recorded?.result as { output_full?: unknown; content?: unknown; output_lost?: unknown } | null;
+    // `content` is shortened for the model; the structured result keeps the
+    // complete retained terminal/MCP recording and complete failure details.
+    const content = !recorded ? null
+      : recorded.status === "error" ? JSON.stringify({ error: recorded.error, failure_detail: recorded.failure_detail ?? null })
+      : typeof output?.output_full === "string" ? output.output_full
+      : typeof output?.content === "string" ? output.content
+      : recorded.result == null ? recorded.content : JSON.stringify(recorded.result);
     return {
       task: query.task,
       handle: evidence.handle,
@@ -141,6 +155,7 @@ export async function buildServer({ runtime, token, replayMax }: ServerOptions):
       status: evidence.status,
       content: content === null ? null : content.slice(0, EVIDENCE_MAX_CHARS),
       truncated: content !== null && content.length > EVIDENCE_MAX_CHARS,
+      outputLost: output?.output_lost === true,
     };
   });
 

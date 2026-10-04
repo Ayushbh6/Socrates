@@ -15,7 +15,7 @@ const TEXT_MAX_CHARS = 100_000;
 const SEND_BUFFER_MAX_BYTES = 8 * 1024 * 1024;
 
 const Id = z.string().regex(/^[A-Za-z0-9_-]{1,100}$/);
-const Text = z.string().trim().min(1).max(TEXT_MAX_CHARS);
+const Text = z.string().min(1).max(TEXT_MAX_CHARS).refine((text) => text.trim().length > 0, "Write a message.");
 const Decision = z.object({ goalId: z.string(), path: z.string(), role: z.string(), decision: z.enum(["approve", "reject", "supersede"]) }).strict();
 
 /** What a page may send (architecture/server.md, "Live connection"). */
@@ -46,8 +46,10 @@ export interface PendingApproval {
 
 interface Run {
   id: string;
-  /** "main" or the lane it runs in; a handed-off main message moves to its lane. */
+  /** The message's panel; compound main messages retain main until all parts finish. */
   conversation: string;
+  /** The current handed-off part; compound messages retain their main reservation. */
+  handedTurnId?: string;
   controller: AbortController;
   /** Settles once the message's work is recorded, however it ended. */
   settled?: Promise<unknown>;
@@ -63,12 +65,18 @@ interface Run {
  */
 export class LiveHub {
   private readonly clients = new Set<WebSocket>();
+  /** Subscribe at hello, so events saved between upgrade and replay arrive once. */
+  private readonly subscribed = new Set<WebSocket>();
   private readonly queue: { id: string; text: string }[] = [];
   private readonly approvals = new Map<string, { view: PendingApproval; runId: string; resolve: (granted: boolean) => void }>();
   private readonly runs = new Map<string, Run>();
+  /** Accepted IDs remain reserved across reconnects for this server launch. */
+  private readonly acceptedIds = new Set<string>();
   private readonly unsubscribe: () => void;
+  private readonly unsubscribeRuntime: () => void;
   private stateTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
+  private closing: Promise<void> | null = null;
 
   private readonly replayMax: number;
 
@@ -80,6 +88,10 @@ export class LiveHub {
       // Turns and lanes change what is running; coalesce the state that follows.
       if (event.turn_id || event.type.startsWith("lane_")) this.scheduleState();
     });
+    this.unsubscribeRuntime = runtime.onChange(() => {
+      this.publishState();
+      this.drain();
+    });
   }
 
   attach(socket: WebSocket): void {
@@ -89,23 +101,27 @@ export class LiveHub {
     }
     this.clients.add(socket);
     socket.on("message", (raw) => this.command(socket, raw.toString()));
-    socket.on("close", () => this.clients.delete(socket));
-    socket.on("error", () => this.clients.delete(socket));
+    const detach = () => { this.clients.delete(socket); this.subscribed.delete(socket); };
+    socket.on("close", detach);
+    socket.on("error", detach);
   }
 
   /** Cancel every run and wait until each is recorded, refuse pending approvals, and disconnect every page. */
-  async close(): Promise<void> {
-    if (this.closed) return;
+  close(): Promise<void> {
+    if (this.closing) return this.closing;
     this.closed = true;
     const settling = [...this.runs.values()].map((r) => r.settled);
     this.unsubscribe();
+    this.unsubscribeRuntime();
     if (this.stateTimer) clearTimeout(this.stateTimer);
     for (const run of this.runs.values()) run.controller.abort();
     for (const approval of this.approvals.values()) approval.resolve(false);
     this.approvals.clear();
     for (const socket of this.clients) socket.close(1001, "Socrates is stopping.");
     this.clients.clear();
-    await Promise.allSettled(settling);
+    this.subscribed.clear();
+    this.closing = Promise.allSettled(settling).then(() => {});
+    return this.closing;
   }
 
   state() {
@@ -113,7 +129,7 @@ export class LiveHub {
     return {
       type: "state" as const,
       seq: this.runtime.store.latestEventSeq(),
-      ready: socrates !== null,
+      ready: socrates !== null && this.runtime.acceptingMessages,
       setup: this.runtime.setup,
       busy: socrates?.busy ?? false,
       lanes: this.runtime.lanes(),
@@ -123,6 +139,7 @@ export class LiveHub {
   }
 
   private command(socket: WebSocket, raw: string): void {
+    if (this.closed) return;
     let command: Command;
     try {
       command = Command.parse(JSON.parse(raw));
@@ -132,6 +149,8 @@ export class LiveHub {
       return;
     }
     try {
+      // A command without hello opts into fresh updates without history replay.
+      if (command.type !== "hello") this.subscribed.add(socket);
       this.run(socket, command);
     } catch (error) {
       this.send(socket, { type: "error", ...("id" in command ? { id: command.id } : {}), ...problemOf(error) });
@@ -145,8 +164,9 @@ export class LiveHub {
       case "send":
         return this.start(command.id, command.text, command.to, command.anchorDecisions);
       case "queue":
-        if (this.queue.some((q) => q.id === command.id) || this.runs.has(command.id)) throw new LiveError("duplicate", "A message with this id was already sent.");
+        this.assertNewId(command.id);
         if (this.queue.length >= QUEUE_MAX) throw new LiveError("queue_full", `At most ${QUEUE_MAX} messages can wait for the main conversation.`);
+        this.acceptedIds.add(command.id);
         this.queue.push({ id: command.id, text: command.text });
         this.publishState();
         return this.drain();
@@ -158,12 +178,16 @@ export class LiveHub {
         return this.publishState();
       case "queue_to_lane": {
         const item = this.queued(command.id);
-        this.start(item.id, item.text, "new_lane");
+        this.start(item.id, item.text, "new_lane", undefined, true);
         this.queue.splice(this.queue.indexOf(item), 1);
         return this.publishState();
       }
       case "cancel": {
-        const runs = [...this.runs.values()].filter((r) => r.conversation === command.conversation);
+        const runs = [...this.runs.values()].filter((r) => {
+          if (r.conversation === command.conversation) return true;
+          const handed = r.handedTurnId ? this.runtime.store.getTurn(r.handedTurnId) : null;
+          return handed?.status === "in_progress" && handed.laneId === command.conversation;
+        });
         if (!runs.length) throw new LiveError("not_running", "Nothing is running there.");
         for (const r of runs) r.controller.abort();
         return;
@@ -176,6 +200,7 @@ export class LiveHub {
         return this.publishState();
       }
       case "close_lane":
+        if (!this.runtime.store.getLane(command.lane)) throw new LiveError("not_found", "There is no such lane.");
         this.socrates().closeLane(command.lane);
         return this.publishState();
     }
@@ -183,11 +208,12 @@ export class LiveHub {
 
   /** The current state, then every activity after `after` (or a reset when too far behind). */
   private hello(socket: WebSocket, after: number | undefined): void {
+    this.subscribed.add(socket);
     const store = this.runtime.store;
     this.send(socket, this.state());
     if (after === undefined) return;
     const latest = store.latestEventSeq();
-    if (latest - after > this.replayMax) {
+    if (after > latest || latest - after > this.replayMax) {
       this.send(socket, { type: "reset", seq: latest });
       return;
     }
@@ -198,15 +224,20 @@ export class LiveHub {
   }
 
   /** Start one message: in main (refused while main is busy; queue it instead), a new lane, or an open lane. */
-  private start(id: string, text: string, to: string, anchorDecisions?: AnchorDecision[]): void {
+  private start(id: string, text: string, to: string, anchorDecisions?: AnchorDecision[], fromQueue = false): void {
     const socrates = this.socrates();
-    if (this.runs.has(id)) throw new LiveError("duplicate", "A message with this id was already sent.");
+    if (!fromQueue) this.assertNewId(id);
+    if (to !== "main" && to !== "new_lane") {
+      const lane = this.runtime.store.getLane(to);
+      if (!lane || lane.closedAt) throw new LiveError("lane_closed", "That lane is closed.");
+    }
     if (to === "main" && socrates.busy) throw new LiveError("main_busy", "Socrates is working in the main conversation; queue this message or send it in a lane.");
     const running = socrates.lanes().filter((l) => l.running);
     if (to !== "main" && !running.some((l) => l.id === to) && running.length >= MAX_RUNNING_LANES) {
       throw new LiveError("lane_limit", `${MAX_RUNNING_LANES} lanes are already working; wait for one to finish or stop one.`);
     }
     const run: Run = { id, conversation: to === "new_lane" ? "starting" : to, controller: new AbortController() };
+    this.acceptedIds.add(id);
     this.runs.set(id, run);
     const work = socrates.handle(text, {
       signal: run.controller.signal,
@@ -217,14 +248,20 @@ export class LiveHub {
         run.conversation = laneId;
         this.broadcast({ type: "accepted", id, conversation: laneId });
       },
-      onHandoff: (laneId) => {
-        run.conversation = laneId;
-        this.broadcast({ type: "handed_off", id, conversation: laneId, lane: this.runtime.store.requireLane(laneId).number });
+      onHandoff: (laneId, turnId) => {
+        run.handedTurnId = turnId;
+        // Single-part handoffs free main. A compound message still owns it.
+        if (!socrates.busy) run.conversation = laneId;
+        this.broadcast({ type: "handed_off", id, conversation: laneId, lane: this.runtime.store.requireLane(laneId).number, mainReleased: !socrates.busy });
         this.publishState();
         this.drain();
       },
       onAcknowledgment: (line) => this.broadcast({ type: "status", id, conversation: run.conversation, text: line }),
-      onStatus: (line) => this.broadcast({ type: "status", id, conversation: run.conversation, text: line }),
+      onStatus: (line) => {
+        const handed = run.handedTurnId ? this.runtime.store.getTurn(run.handedTurnId) : null;
+        const conversation = handed?.status === "in_progress" ? handed.laneId ?? run.conversation : run.conversation;
+        this.broadcast({ type: "status", id, conversation, text: line });
+      },
     });
     if (to !== "new_lane") this.broadcast({ type: "accepted", id, conversation: to });
     this.publishState();
@@ -249,10 +286,10 @@ export class LiveHub {
   /** The next queued message, as soon as the main conversation is free. */
   private drain(): void {
     const socrates = this.runtime.socrates;
-    if (this.closed || !socrates || socrates.busy || !this.queue.length) return;
+    if (this.closed || !this.runtime.acceptingMessages || !socrates || socrates.busy || !this.queue.length) return;
     const next = this.queue.shift()!;
     try {
-      this.start(next.id, next.text, "main");
+      this.start(next.id, next.text, "main", undefined, true);
     } catch (error) {
       this.broadcast({ type: "error", id: next.id, conversation: "main", ...problemOf(error) });
     }
@@ -274,14 +311,19 @@ export class LiveHub {
       detail: request.detail,
     };
     return new Promise((resolve) => {
-      this.approvals.set(view.id, { view, runId: run.id, resolve });
+      const finish = (granted: boolean) => {
+        run.controller.signal.removeEventListener("abort", abort);
+        resolve(granted);
+      };
       // Stopping the run counts as a refusal.
-      run.controller.signal.addEventListener("abort", () => {
+      const abort = () => {
         if (this.approvals.delete(view.id)) {
-          resolve(false);
+          finish(false);
           this.publishState();
         }
-      }, { once: true });
+      };
+      this.approvals.set(view.id, { view, runId: run.id, resolve: finish });
+      run.controller.signal.addEventListener("abort", abort, { once: true });
       this.broadcast({ type: "approval", ...view });
       this.publishState();
     });
@@ -294,9 +336,14 @@ export class LiveHub {
   }
 
   private socrates() {
+    if (!this.runtime.acceptingMessages) throw new LiveError("busy", "Socrates is rebuilding or stopping; wait until it is ready.");
     const socrates = this.runtime.socrates;
     if (!socrates) throw new LiveError("setup_needed", this.runtime.setup.join(" ") || "Socrates is not ready.");
     return socrates;
+  }
+
+  private assertNewId(id: string): void {
+    if (this.acceptedIds.has(id)) throw new LiveError("duplicate", "A message with this id was already sent.");
   }
 
   private scheduleState(): void {
@@ -312,8 +359,9 @@ export class LiveHub {
   }
 
   private broadcast(message: object): void {
+    if (this.closed) return;
     const data = JSON.stringify(message);
-    for (const socket of this.clients) this.write(socket, data);
+    for (const socket of this.subscribed) this.write(socket, data);
   }
 
   private send(socket: WebSocket, message: object): void {

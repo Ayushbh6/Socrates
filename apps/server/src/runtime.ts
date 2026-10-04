@@ -61,6 +61,7 @@ export class Runtime {
   private changing = false;
   private changePending: Promise<unknown> | null = null;
   private closing: Promise<void> | null = null;
+  private readonly changeListeners = new Set<() => void>();
 
   private constructor(
     readonly config: ServerConfig,
@@ -119,6 +120,23 @@ export class Runtime {
   /** True while work, a configuration rebuild, or shutdown owns the runtime. */
   busy(): boolean {
     return this.changing || this.closing !== null || !!this.socrates && (this.socrates.busy || this.socrates.lanes().some((l) => l.running));
+  }
+
+  /** Work may start only after a rebuild finishes and before shutdown begins. */
+  get acceptingMessages(): boolean {
+    return !this.changing && this.closing === null;
+  }
+
+  /** Settings and keys change outside the ledger; live pages must see those changes too. */
+  onChange(listener: () => void): () => void {
+    this.changeListeners.add(listener);
+    return () => this.changeListeners.delete(listener);
+  }
+
+  private announceChange(): void {
+    for (const listener of this.changeListeners) {
+      try { listener(); } catch (error) { this.log(`runtime listener failed: ${message(error)}`); }
+    }
   }
 
   lanes(): LaneState[] {
@@ -182,7 +200,8 @@ export class Runtime {
   }
 
   close(): Promise<void> {
-    return this.closing ??= (async () => {
+    if (this.closing) return this.closing;
+    this.closing = (async () => {
       await this.changePending?.catch(() => {});
       try {
         await this.stop();
@@ -190,6 +209,8 @@ export class Runtime {
         try { this.store.close(); } finally { this.unlock(); }
       }
     })();
+    this.announceChange();
+    return this.closing;
   }
 
   private assertIdle(): void {
@@ -200,6 +221,7 @@ export class Runtime {
   private async change<T>(work: () => Promise<T>): Promise<T> {
     this.assertIdle();
     this.changing = true;
+    this.announceChange();
     try {
       const pending = work();
       this.changePending = pending;
@@ -207,6 +229,7 @@ export class Runtime {
     } finally {
       this.changePending = null;
       this.changing = false;
+      this.announceChange();
     }
   }
 

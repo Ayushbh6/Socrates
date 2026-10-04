@@ -82,6 +82,7 @@ API responses are JSON. A failure, including an unknown route, is `{ "error": { 
 | `GET /api/goals` | every goal, most recently updated first, with its tasks, notes and workspace |
 | `GET /api/history` | one conversation's messages (see "History") |
 | `GET /api/lanes` | open lanes with whether each is running or waiting for approval |
+| `GET /api/evidence?task=gN/tN&handle=eN` | the complete retained tool recording, bounded to 200,000 characters, with truncation and output-loss flags |
 | `GET`, `POST /api/workspaces` | the workspaces; `POST { path }` adds one |
 | `GET /api/folders?path=` | a folder's visible subfolders (default: the home folder), for choosing a workspace |
 
@@ -95,7 +96,9 @@ Each item holds the exact message, `unrouted` when no part has been bound yet, t
 
 `GET /api/live` upgrades to a WebSocket, under the same Host, Origin and session rules as every request; a refused upgrade is answered and its connection closed. It carries JSON messages. All live state is held by the server, so a reload or a second tab sees exactly the same thing.
 
-A page loads the status (which carries `seq`, the event it reflects) and the history, then sends `hello` with `after: seq`. The server answers with the current state and every activity after that event; a page more than `5,000` events behind gets `reset` and reloads its history instead.
+A page loads the status (which carries `seq`, the event it reflects) and the history, then sends `hello` with `after: seq`. Subscription begins with `hello`, so an event saved between upgrading and catching up arrives once. The server answers with the current state and every activity after that event; a page more than `5,000` events behind, or with a cursor ahead of this ledger, gets `reset` and reloads its history instead. A command sent without `hello` subscribes to fresh updates without replay.
+
+Changes to settings or keys also broadcast state to every subscribed page. `ready` is false during a rebuild; sends receive `busy`, and the main queue resumes when the new runtime is ready. Queue entries and pending approvals survive page disconnections but are held in memory for this server launch. A restart clears the main queue; messages already accepted by the harness remain in history and follow normal interruption recovery.
 
 **From a page:**
 
@@ -109,7 +112,7 @@ A page loads the status (which carries `seq`, the event it reflects) and the his
 | `approve { approval, granted }` | answer a pending approval |
 | `close_lane { lane }` | close an idle lane |
 
-`id` is the page's own name for a message (letters, digits, `_` and `-`), echoed in every reply about it. Text is at most `100,000` characters.
+`id` is the page's own name for a message (letters, digits, `_` and `-`, at most 100), echoed in every reply about it. Use unique IDs across tabs, such as UUIDs. Accepted IDs, including queued, removed and completed messages, remain reserved until the server restarts; resending one receives `duplicate` and never starts a second run. Text is at most `100,000` characters, preserved exactly; empty or whitespace-only messages are refused. Unknown and closed lanes are refused before acceptance.
 
 **From the server:**
 
@@ -119,7 +122,7 @@ A page loads the status (which carries `seq`, the event it reflects) and the his
 | `accepted { id, conversation }` | the message started; for `new_lane`, `conversation` is the new lane's id |
 | `activity` | one saved event (see "Live activity") |
 | `approval` | a new pending approval: its id, conversation and lane, task, kind, tool, and the one line the user approves |
-| `handed_off { id, conversation, lane }` | a main message went to the lane busy with its task; main is free |
+| `handed_off { id, conversation, lane, mainReleased }` | a part went to the lane busy with its task. A single-part message frees main; a compound message keeps main until all parts finish, and its aggregate result stays in main |
 | `status { id, conversation, text }` | the plan of a split message, or a quiet status line during long work |
 | `result { id, conversation, result }` | the message is done: its text, lane, per-part outcome, notices, and anchor changes |
 | `error { id?, code, message }` | a refusal or failure, with a message meant for the user |
@@ -131,12 +134,16 @@ Every event is shown to the pages once it is saved (after its transaction commit
 
 `message` (the exact text), `routed` (goal, task, lane), `question` (the router's clarification), `step` (the agent's narration before tool calls), `tool_started` (the call as one line, with its task and evidence handle), `tool_finished` (status and the first `2,000` characters of output), `answer`, `finished` (completed or interrupted, and why), `handed_off`, `lane` (opened or closed), `approval_decided`, `warning`, and `ledger` (goals or tasks changed: reload them).
 
-`GET /api/evidence?task=gN/tN&handle=eN` returns one tool call's recorded output, up to `200,000` characters.
+`GET /api/evidence?task=gN/tN&handle=eN` returns one tool call's complete retained recording, up to `200,000` characters. Terminal output uses its full recording, MCP output uses its recorded content, other results use their structured JSON, and failed calls include their public error and recorded failure detail. Internal diagnostics are excluded. `truncated` says the route shortened the recording; `outputLost` says a terminal's retention limit already discarded some output. Interrupted calls without a result return `content: null`. Selectors must be positive safe integers.
+
+After-commit listeners preserve sequence order even when a listener records another event. Activities and state never announce rolled-back events.
 
 ## Approvals
 
-Every approval belongs to the message that asked (`agent-harness.md`, "Lanes"). It is shown to every page in the panel of the conversation that asked, and waits for an answer. Stopping that run, or the server, refuses it, and so does a run that ends while it waits. Work that nothing has asked approval for never waits.
+Every approval belongs to the message that asked (`agent-harness.md`, "Lanes"). It is shown to every subscribed page in the panel of the conversation that asked, and waits for an answer. Stopping that run, or the server, refuses it, and so does a run that ends while it waits. Settled approvals remove their cancellation listener; late answers receive `not_found`. Independent turns execute their tools independently, so one turn's approval or long command cannot block a different lane.
+
+Cancelling main also cancels its compound message while a part waits in a lane. Cancelling that lane cancels the handed-off part and the remaining compound message; it cannot cancel later main work after that part has finished.
 
 ## Stopping
 
-Ctrl-C (or `SIGTERM`) cancels every running message and waits until each is recorded as interrupted, refuses pending approvals, disconnects every page, then closes terminals, MCP servers, and the index.
+Ctrl-C (or `SIGTERM`) closes the live hub before draining the listener, cancels every running message and waits until each is recorded as interrupted, refuses pending approvals, disconnects every page, then closes terminals, MCP servers, the index and ledger. Repeated close calls share the same drain. A page that never answers its WebSocket close frame is disconnected after one second.
