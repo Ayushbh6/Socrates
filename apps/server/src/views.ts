@@ -82,6 +82,7 @@ export function conversationHistory(store: LedgerStore, laneId: string | null, b
 }
 
 function part(store: LedgerStore, t: Turn, laneId: string | null): HistoryPart {
+  const interruption = store.interruption(t.id);
   const goal = store.requireGoal(t.goalId!);
   const task = store.requireTask(t.taskId!);
   return {
@@ -92,8 +93,9 @@ function part(store: LedgerStore, t: Turn, laneId: string | null): HistoryPart {
     task: { number: task.number, title: task.title },
     lane: t.laneId ? store.requireLane(t.laneId).number : null,
     handedOff: laneId === null && t.laneId !== null,
-    answer: responseText(store, t),
-    interrupted: store.interruption(t.id)?.reason ?? null,
+    // A stopped part shows its answer as far as it was written.
+    answer: responseText(store, t) ?? interruption?.partial_answer ?? null,
+    interrupted: interruption?.reason ?? null,
     toolCalls: store.evidenceForTurn(t.id).map((e) => ({ handle: e.handle, line: callLine(e.tool, e.input), status: e.status })),
   };
 }

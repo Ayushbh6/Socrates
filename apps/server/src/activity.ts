@@ -15,7 +15,7 @@ export type ActivityBody =
   | { kind: "tool_started"; turnId: string; task: string; handle: string; line: string }
   | { kind: "tool_finished"; turnId: string; task: string; handle: string; status: "ok" | "error"; preview: string; truncated: boolean }
   | { kind: "answer"; turnId: string; text: string }
-  | { kind: "finished"; turnId: string; status: "completed" | "interrupted"; reason: EventPayloads["turn_interrupted"]["reason"] | null }
+  | { kind: "finished"; turnId: string; status: "completed" | "interrupted"; reason: EventPayloads["turn_interrupted"]["reason"] | null; partial?: string | null }
   | { kind: "handed_off"; turnId: string; lane: number; laneId: string; goal: { number: number; title: string }; task: { number: number; title: string } }
   | { kind: "lane"; laneId: string; number: number; state: "opened" | "closed" }
   | { kind: "approval_decided"; turnId: string | null; granted: boolean; detail: string }
@@ -74,8 +74,11 @@ export function activityOf(store: LedgerStore, event: StoredEvent): Activity | n
     }
     case "turn_completed":
       return turn?.kind === "task" ? { ...base, kind: "finished", turnId: turn.id, status: "completed", reason: null } : null;
-    case "turn_interrupted":
-      return turn ? { ...base, kind: "finished", turnId: turn.id, status: "interrupted", reason: (event.payload as EventPayloads["turn_interrupted"]).reason } : null;
+    case "turn_interrupted": {
+      // A stopped answer keeps what had been written.
+      const p = event.payload as EventPayloads["turn_interrupted"];
+      return turn ? { ...base, kind: "finished", turnId: turn.id, status: "interrupted", reason: p.reason, partial: p.partial_answer ?? null } : null;
+    }
     case "turn_moved_to_lane": {
       const p = event.payload as EventPayloads["turn_moved_to_lane"];
       const goal = store.requireGoal(turn!.goalId!);

@@ -235,4 +235,12 @@ describe("drafts of a reply that is arriving", () => {
     const replay = run(model, {type:"activity",seq:10,at,conversation:"main",kind:"message",text:page.message}, {type:"activity",seq:15,at,conversation:"main",kind:"answer",turnId:"old",text:"Duplicate answer"});
     expect(replay.conversations.main).toEqual(model.conversations.main);
   });
+
+  it("keeps the answer written before a stop, in the place its draft had, and marks the question stopped", () => {
+    const m = run(working(), draft("t1", 2, "answer", "The refresh path"), act("main", { kind: "finished", turnId: "t1", status: "interrupted", reason: "cancelled", partial: "The refresh path drops" }));
+    expect(exchange(m)).toMatchObject({ draft: null, answers: ["The refresh path drops"], state: "stopped", note: "Stopped." });
+    const plain = run(working(), act("main", { kind: "finished", turnId: "t1", status: "interrupted", reason: "cancelled" }));
+    expect(exchange(plain).answers).toEqual([]);
+  });
 });
+

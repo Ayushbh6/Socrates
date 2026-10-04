@@ -131,7 +131,7 @@ export type ActivityBody =
   | { kind: "tool_started"; turnId: string; task: string; handle: string; line: string }
   | { kind: "tool_finished"; turnId: string; task: string; handle: string; status: "ok" | "error"; preview: string; truncated: boolean }
   | { kind: "answer"; turnId: string; text: string }
-  | { kind: "finished"; turnId: string; status: "completed" | "interrupted"; reason: string | null }
+  | { kind: "finished"; turnId: string; status: "completed" | "interrupted"; reason: string | null; partial?: string | null }
   | { kind: "handed_off"; turnId: string; lane: number; laneId?: string; goal?: { number: number; title: string }; task?: { number: number; title: string } }
   | { kind: "lane"; laneId: string; number: number; state: "opened" | "closed" }
   | { kind: "approval_decided"; turnId: string | null; granted: boolean; detail: string }

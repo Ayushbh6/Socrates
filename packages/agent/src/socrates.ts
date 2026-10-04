@@ -591,7 +591,9 @@ export class Socrates {
       ...(this.options.retryDelaysMs ? { retryDelaysMs: this.options.retryDelaysMs } : {}),
       ...(this.options.now ? { now: this.options.now } : {}),
     });
-    return this.persist(part, goal, workspace, signal.aborted ? { kind: "interrupted", reason: "cancelled", detail: null, toolCalls: outcome.toolCalls, steps: outcome.steps } : outcome, options.anchorDecisions ?? []);
+    // A stop that lands after the answer was written keeps what was written.
+    const written = outcome.kind === "interrupted" ? outcome.partial : outcome.kind === "answer" ? outcome.answer.full_answer : null;
+    return this.persist(part, goal, workspace, signal.aborted ? { kind: "interrupted", reason: "cancelled", detail: null, toolCalls: outcome.toolCalls, steps: outcome.steps, partial: written } : outcome, options.anchorDecisions ?? []);
   }
 
   /**
@@ -620,8 +622,10 @@ export class Socrates {
 
     if (outcome.kind === "interrupted") {
       if (outcome.reason === "failed") store.recordWarning(refs, { kind: "model_error", detail: outcome.detail ?? "The model request failed." });
-      const what = outcome.reason === "cancelled" ? "Interrupted by the user" : "Stopped by a model failure";
-      store.interruptTurn(turn.id, { reason: outcome.reason, toolCalls: outcome.toolCalls, continuationNote: mechanicalNote(what, outcome.toolCalls) });
+      // Stopping keeps the answer as far as it was written; it is not a final answer and changes nothing else.
+      const partial = outcome.partial?.trim() || null;
+      const what = outcome.reason === "cancelled" ? (partial ? "Interrupted by the user while the answer was being written" : "Interrupted by the user") : "Stopped by a model failure";
+      store.interruptTurn(turn.id, { reason: outcome.reason, toolCalls: outcome.toolCalls, continuationNote: mechanicalNote(what, outcome.toolCalls), ...(partial ? { partialAnswer: partial } : {}) });
       const answer = outcome.reason === "cancelled" ? `Stopped after ${outcome.toolCalls} tool call${outcome.toolCalls === 1 ? "" : "s"}.` : "I could not finish this because the model request failed. Ask me to continue and I will pick up from here.";
       return result("interrupted", null, answer);
     }

@@ -308,6 +308,23 @@ describe("drafts of a reply that is arriving", () => {
     expect(drafts(after)).toEqual([]);
   });
 
+  it("keeps the answer written before Stop, live and in history, without saving it as an answer", async () => {
+    const hold = gate();
+    const { page, rt, app, token, port } = await liveServer(new Responder("r", () => createGoal("Shop", "Fix checkout")), slowAgent(hold, "Checkout fixed."));
+    const p = await page();
+    p.send({ type: "hello" });
+    p.send({ type: "send", id: "m1", text: "Fix the checkout.", to: "main" });
+    await p.next((m) => m.type === "draft");
+    p.send({ type: "cancel", conversation: "main" });
+    await p.next(isResult("m1"));
+    const finished = await p.next((m) => m.type === "activity" && m.kind === "finished");
+    expect(finished).toMatchObject({ status: "interrupted", reason: "cancelled", partial: "Checkout" });
+    expect(rt.store.listEvents({ type: "assistant_response" })).toEqual([]);
+    const history = await app.inject({ method: "GET", url: "/api/history", headers: { authorization: `Bearer ${token}`, host: `127.0.0.1:${port}` } });
+    expect(history.json().items[0].parts[0]).toMatchObject({ status: "interrupted", interrupted: "cancelled", answer: "Checkout" });
+    hold.open();
+  });
+
   it("sends a lane's draft under the lane and keeps drafts of simultaneous turns apart", async () => {
     const hold = gate();
     const { page } = await liveServer(new Responder("r", (m) => createGoal(m.slice(0, 12), m.slice(0, 12))), new Responder("a", async (m, request) => {

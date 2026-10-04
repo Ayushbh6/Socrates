@@ -153,7 +153,7 @@ While a turn's model writes its reply, the pages see it as it arrives. A `draft`
 
 Drafts are temporary and are never saved: the event log, history and replay contain only what is saved, and the saved `step`, `answer` or `question` activity (or `finished`, when the turn ends without one) replaces the turn's draft, so no draft follows it. A page that connects while a reply is arriving receives the current drafts after its state and replay, and a reply that was saved before the next interval is never sent as a draft at all.
 
-The agent suppresses callbacks from cancelled, failed or finished model requests. The hub accepts drafts only for an active run and an in-progress turn. The page retains the request watermark after saving a draft and ignores late callbacks, older requests and shorter copies. Stop retains the existing interrupted-turn contract: no partial answer is saved (retaining it is the separate T4 proposal).
+The agent suppresses callbacks from cancelled, failed or finished model requests. The hub accepts drafts only for an active run and an in-progress turn. The page retains the request watermark after saving a draft and ignores late callbacks, older requests and shorter copies. Stopping a turn while its answer is streaming keeps the answer as far as it was written, on the turn's interruption record (`agent-harness.md`, "Safety and long-running work"); it is never saved as a response. The `finished` activity of that turn carries it as `partial`, and its history part shows it as the part's `answer` with `interrupted: "cancelled"`.
 
 ## Live activity
 

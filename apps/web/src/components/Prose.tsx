@@ -2,7 +2,7 @@ import { useReducedMotion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { cut, nextShown } from "../lib/reveal";
+import { FRAME_MS, cut, nextShown } from "../lib/reveal";
 
 /**
  * Markdown text. One that is written while the page watches (`animate` at
@@ -23,8 +23,10 @@ export function Prose({ text, animate, writing }: { text: string; animate: boole
       return;
     }
     let frame = 0;
-    const tick = () => {
-      at.current = nextShown(Math.min(at.current, text.length), text.length);
+    let last: number | null = null;
+    const tick = (now: number) => {
+      at.current = nextShown(Math.min(at.current, text.length), text.length, last === null ? FRAME_MS : now - last);
+      last = now;
       setShown(at.current);
       if (at.current < text.length) frame = requestAnimationFrame(tick);
     };

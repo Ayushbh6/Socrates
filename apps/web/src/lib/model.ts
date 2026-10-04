@@ -240,7 +240,9 @@ function applyOne(e: Exchange, a: Activity | DraftArrived): Exchange {
       return { ...x, steps: [...x.steps, { kind: "decision", granted: a.granted, detail: a.detail }] };
     case "finished": {
       const open = x.open.filter((t) => t !== a.turnId);
-      if (a.status === "interrupted") return { ...x, open, state: open.length ? x.state : "stopped", note: stopReason(a.reason) };
+      // A stopped answer keeps what had been written, in the place its draft had.
+      const answers = a.status === "interrupted" && a.partial ? [...x.answers, a.partial] : x.answers;
+      if (a.status === "interrupted") return { ...x, answers, open, state: open.length ? x.state : "stopped", note: stopReason(a.reason) };
       return { ...x, open, state: open.length || x.state === "stopped" ? x.state : "done" };
     }
     default:

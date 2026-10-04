@@ -65,7 +65,8 @@ export type RunOutcome =
   | { kind: "answer"; answer: FinalAnswer; stop: TurnStop; toolCalls: number; steps: number }
   | { kind: "limited"; text: string; note: string; stop: TurnStop; toolCalls: number; steps: number }
   | { kind: "invalid"; text: string; errors: string[]; stop: TurnStop; toolCalls: number; steps: number }
-  | { kind: "interrupted"; reason: "cancelled" | "failed"; detail: string | null; toolCalls: number; steps: number };
+  /** `partial`: on a stop, the answer as far as it had streamed, or null. */
+  | { kind: "interrupted"; reason: "cancelled" | "failed"; detail: string | null; toolCalls: number; steps: number; partial: string | null };
 
 const TRANSIENT = new Set<ModelError["kind"]>(["rate_limit", "server", "network"]);
 
@@ -90,6 +91,8 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
    */
   let compactedAt: number | null = null;
   let steps = 0, spent = 0, toolCalls = 0, requests = 0;
+  /** The newest answer draft of the turn, kept for a stop that lands while it is being written. */
+  let partial: string | null = null;
   const deadline = new AbortController();
   const workSignal = AbortSignal.any([scope.signal, deadline.signal]);
   const workTimer = setTimeout(() => deadline.abort(), Math.max(0, limits.maxWallMs - (now() - started)));
@@ -107,7 +110,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
     if (now() - started >= limits.maxWallMs) deadline.abort();
     return deadline.signal.aborted;
   };
-  const interrupted = (reason: "cancelled" | "failed", detail: string | null = null): RunOutcome => ({ kind: "interrupted", reason, detail, toolCalls, steps });
+  const interrupted = (reason: "cancelled" | "failed", detail: string | null = null): RunOutcome => ({ kind: "interrupted", reason, detail, toolCalls, steps, partial: reason === "cancelled" ? partial : null });
   const push = (message: ModelMessage) => { messages.push(message); sizes.push(messageTokens(message)); };
   const contextFallback = (stop: TurnStop): RunOutcome => ({
     kind: "limited", stop, toolCalls, steps,
@@ -134,7 +137,11 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
       if (input.calibration.measure(model.id, harnessCount) >= budgets.ceiling) return { kind: "context" };
       let streaming = true;
       const request = ++requests;
-      const onText = input.onDraft ? streamDrafts(input.onDraft, request) : undefined;
+      const onDraft = input.onDraft;
+      const onText = onDraft ? streamDrafts((draft) => {
+        if (draft.kind === "answer") partial = draft.text;
+        onDraft(draft);
+      }, request) : undefined;
       try {
         const response = await abortable(model.complete({
           system: input.system, messages: withRollingBreakpoint(messages), tools,

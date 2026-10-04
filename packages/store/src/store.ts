@@ -1220,13 +1220,13 @@ export class LedgerStore {
    * and long-running work"): record why, and keep the task's ledger entry
    * truthful with a mechanical continuation note.
    */
-  interruptTurn(turnId: string, input: { reason: "cancelled" | "failed" | "restarted"; toolCalls: number; continuationNote: string }): Turn {
+  interruptTurn(turnId: string, input: { reason: "cancelled" | "failed" | "restarted"; toolCalls: number; continuationNote: string; partialAnswer?: string }): Turn {
     return this.transaction(() => {
       const turn = this.requireInProgressTurn(turnId);
       const task = this.reviseTask(turn.taskId!, { continuationNote: input.continuationNote });
       const event = this.appendEvent(
         "turn_interrupted",
-        { project_turn: turn.projectTurn, reason: input.reason, tool_calls: input.toolCalls, continuation_note: task.continuationNote ?? input.continuationNote },
+        { project_turn: turn.projectTurn, reason: input.reason, tool_calls: input.toolCalls, continuation_note: task.continuationNote ?? input.continuationNote, ...(input.partialAnswer ? { partial_answer: input.partialAnswer } : {}) },
         { goal_id: turn.goalId, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id },
       );
       this.run("UPDATE turns SET status = 'interrupted', completed_at = ? WHERE id = ?", event.at, turnId);

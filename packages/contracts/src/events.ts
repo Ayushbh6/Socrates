@@ -82,7 +82,12 @@ export interface EventPayloads {
   chat_closed: { reason: "rollover"; handover: string };
   /** A turn that ended without a final answer: cancelled by the user, or failed. */
   /** `restarted`: the process stopped while the turn ran; found unfinished at the next start. */
-  turn_interrupted: { project_turn: number; reason: "cancelled" | "failed" | "restarted"; tool_calls: number; continuation_note: string };
+  /**
+   * `partial_answer`: the visible answer as far as it had been written when the
+   * user stopped the turn. It is kept as written and never treated as a final
+   * answer: the turn stays interrupted, with no response and no ledger changes.
+   */
+  turn_interrupted: { project_turn: number; reason: "cancelled" | "failed" | "restarted"; tool_calls: number; continuation_note: string; partial_answer?: string };
   /** An operational warning about one turn, such as a rejected final answer or anchor proposal. */
   agent_warning: { kind: "final_answer_invalid" | "anchor_rejected" | "model_error" | "agent_error" | "context_limit" | "compactor_failed" | "compaction_failsafe"; detail: string };
   /**

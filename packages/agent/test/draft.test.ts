@@ -2,7 +2,7 @@ import { ModelError } from "@socrates/contracts";
 import { describe, expect, it } from "vitest";
 import { type Draft, draftOf } from "../src";
 import { continueTask } from "../../router/test/helpers";
-import { call, final, world } from "./helpers";
+import { call, contextText, final, world } from "./helpers";
 
 describe("draftOf", () => {
   const object = (full_answer: string) => JSON.stringify({ full_answer, continuation_note: "Note.", goal_note: null, task_complete: null, anchors: [] });
@@ -140,5 +140,51 @@ describe("drafts from the agent loop", () => {
     expect(seen.map(d => d.text)).toEqual(["Partial"]);
     expect(result.kind === "answered" && result.parts[0]!.status).toBe("interrupted");
     expect(w.store.listEvents({ type: "assistant_response" }).some(e => (e.payload as { text: string }).text.includes("Should not"))).toBe(false);
+  });
+
+  it("keeps the answer written before a stop on the interrupted turn, and shows it to the next turn as incomplete", async () => {
+    const w = await world();
+    w.store.reviseGoalNote(w.goalId, "Original goal note.");
+    const controller = new AbortController();
+    const { socrates, model } = w.socrates([continueTask(), continueTask()], [
+      (request) => {
+        request.onText?.('{"full_answer":"The first half of the plan');
+        controller.abort();
+        return final({ full_answer: "Never saved.", goal_note: "Never saved.", task_complete: { reason: "Never." } });
+      },
+      final({ full_answer: "Continued." }),
+    ]);
+    const stopped = await socrates.handle("Plan it.", { signal: controller.signal, onDraft: () => {} });
+    const turn = stopped.kind === "answered" ? stopped.parts[0]!.turn : null;
+    expect(turn).toMatchObject({ status: "interrupted", responseEventId: null });
+    expect(w.store.interruption(turn!.id)).toMatchObject({ reason: "cancelled", partial_answer: "The first half of the plan" });
+    // Kept as written, never as a final answer: nothing else changes.
+    expect(w.store.listEvents({ type: "assistant_response" }).some((e) => (e.payload as { text: string }).text.includes("Never"))).toBe(false);
+    expect(w.store.requireGoal(w.goalId).note).toBe("Original goal note.");
+    expect(w.store.requireTask(w.taskId)).toMatchObject({ status: "open", continuationNote: "Interrupted by the user while the answer was being written after 0 tool calls." });
+
+    await socrates.handle("Go on.");
+    expect(contextText(model.requests[1]!)).toContain("The first half of the plan\n\n(The user stopped this turn after 0 tool calls, while this answer was being written; it is incomplete.)");
+  });
+
+  it("keeps nothing when the stop lands before any answer text, or when the reply was not streamed", async () => {
+    const w = await world();
+    const controller = new AbortController();
+    const narrating = w.socrates([continueTask()], [(request) => {
+      request.onText?.("Looking at the files first.");
+      controller.abort();
+      return { toolCalls: [call("glob", { pattern: "*" })] };
+    }]);
+    const first = await narrating.socrates.handle("Look.", { signal: controller.signal, onDraft: () => {} });
+    expect(w.store.interruption(first.kind === "answered" ? first.parts[0]!.turn.id : "")!.partial_answer).toBeUndefined();
+
+    const quiet = new AbortController();
+    const plain = w.socrates([continueTask()], [(request) => {
+      request.onText?.('{"full_answer":"Not streamed');
+      quiet.abort();
+      return final();
+    }]);
+    const second = await plain.socrates.handle("Again.", { signal: quiet.signal });
+    expect(w.store.interruption(second.kind === "answered" ? second.parts[0]!.turn.id : "")!.partial_answer).toBeUndefined();
   });
 });

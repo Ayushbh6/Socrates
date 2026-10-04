@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cut, nextShown } from "../src/lib/reveal";
+import { FRAME_MS, cut, nextShown } from "../src/lib/reveal";
 
 describe("letting text out", () => {
   it("shows a burst progressively and keeps pace with a trickle", () => {
@@ -19,6 +19,21 @@ describe("letting text out", () => {
     expect(nextShown(10, 11)).toBe(11);
     expect(nextShown(11, 11)).toBe(11);
     expect(nextShown(20, 11)).toBe(11);
+  });
+
+  it("follows time, not frames, so slow frames never leave the text behind", () => {
+    const after = (frameMs: number, ms: number) => {
+      let shown = 0;
+      for (let t = 0; t < ms; t += frameMs) shown = nextShown(shown, 4_000, frameMs);
+      return shown;
+    };
+    // Half a second at 60 frames a second or at 3 frames a second shows about the same amount.
+    const smooth = after(FRAME_MS, 500);
+    const slow = after(300, 500);
+    expect(smooth).toBeGreaterThan(3_500);
+    expect(slow).toBeGreaterThan(3_000);
+    // A pause, such as a hidden tab, catches up at once rather than crawling.
+    expect(nextShown(0, 4_000, 5_000)).toBeGreaterThan(3_900);
   });
 
   it("never cuts a character in two", () => {
