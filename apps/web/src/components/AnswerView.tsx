@@ -3,9 +3,9 @@ import { motion } from "motion/react";
 import { useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { api } from "../lib/api";
 import type { Exchange, Step } from "../lib/model";
 import { store } from "../lib/store";
+import { EvidenceViewer } from "./EvidenceViewer";
 import type { PendingApproval } from "../lib/types";
 
 /** Everything Socrates did for one question: its steps, tool calls, approvals and answer. */
@@ -56,18 +56,7 @@ function StepRow({ step }: { step: Step }) {
 
 function ToolRow({ step }: { step: Extract<Step, { kind: "tool" }> }) {
   const [open, setOpen] = useState(false);
-  const [full, setFull] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const showFull = async () => {
-    setLoading(true);
-    try {
-      setFull((await api.evidence(step.task, step.handle)).content ?? "");
-    } catch (e) {
-      setFull(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  };
+  const [viewing, setViewing] = useState(false);
   return (
     <li className="tool" data-status={step.status} data-open={open}>
       <button type="button" className="tool-line" onClick={() => setOpen(!open)} aria-expanded={open}>
@@ -77,12 +66,13 @@ function ToolRow({ step }: { step: Extract<Step, { kind: "tool" }> }) {
       </button>
       {open && (
         <div className="tool-output">
-          <pre>{full ?? step.preview ?? (step.status === "running" ? "Running…" : "")}</pre>
-          {full === null && (step.truncated || step.preview === null) && step.status !== "running" && (
-            <button type="button" className="quiet-button" onClick={showFull} disabled={loading}>{loading ? "Loading…" : "Show the full output"}</button>
+          {step.preview !== null && <pre>{step.preview}{step.truncated ? "\n…" : ""}</pre>}
+          {step.status === "running" ? <p className="tool-running">Running…</p> : (
+            <button type="button" className="quiet-button" onClick={() => setViewing(true)}>Open the full output</button>
           )}
         </div>
       )}
+      {viewing && <EvidenceViewer task={step.task} handle={step.handle} onClose={() => setViewing(false)} />}
     </li>
   );
 }

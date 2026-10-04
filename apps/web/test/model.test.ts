@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type Model, emptyModel, orbDocked, orbState, reduce, replayFrom, sendTarget } from "../src/lib/model";
+import { type Model, currentRoute, emptyModel, orbDocked, orbState, reduce, replayFrom, sendTarget, workLine } from "../src/lib/model";
 import type { Activity, ActivityBody, HistoryItem, ServerMessage } from "../src/lib/types";
 
 let seq = 100;
@@ -121,5 +121,17 @@ describe("the conversation model", () => {
     expect(m.notices.map((n) => n.text)).toEqual(["Lane 1 finished: Create NOTES.md"]);
     m = reduce(m, { type: "dismiss", id: m.notices[0]!.id });
     expect(m.notices).toEqual([]);
+  });
+});
+
+describe("standard mode helpers", () => {
+  it("finds the newest routed question and describes work in progress", () => {
+    let m = run(emptyModel(), act("main", { kind: "message", text: "One" }), act("main", { kind: "routed", turnId: "a", projectTurn: 1, ...route, lane: null }), act("main", { kind: "message", text: "Two" }));
+    expect(currentRoute(m.conversations.main!)).toEqual(route);
+    const latest = m.conversations.main!.at(-1)!;
+    expect(workLine(orbState(latest, []), latest)).toBe("Thinking…");
+    m = run(m, act("main", { kind: "step", turnId: "b", text: "Looking." }));
+    expect(workLine(orbState(m.conversations.main!.at(-1)!, []), null)).toBe("Working…");
+    expect(workLine("done", null)).toBeNull();
   });
 });

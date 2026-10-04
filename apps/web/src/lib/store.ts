@@ -97,6 +97,19 @@ export class Store {
     this.dispatch({ type: "dismiss", id });
   }
 
+  /** A change that restarts Socrates (models, memory search, time zone); refused while it works. */
+  async saveSettings(patch: Partial<Omit<Settings, "access" | "workingFolder">>): Promise<void> {
+    this.set({ settings: await api.setSettings(patch) });
+    await this.refreshStatus();
+  }
+
+  /** Set or, with null, remove a key; Socrates restarts with it. */
+  async saveKey(name: string, value: string | null): Promise<void> {
+    if (value === null) await api.removeKey(name);
+    else await api.setKey(name, value);
+    await this.refreshStatus();
+  }
+
   async setAccess(access: Partial<Access>): Promise<void> {
     this.set({ settings: await api.setAccess(access) });
   }

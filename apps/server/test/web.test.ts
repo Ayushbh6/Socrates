@@ -39,6 +39,13 @@ describe("the web app", () => {
     expect(script.json().error.code).toBe("unauthorized");
   });
 
+  it("lists the providers with their default models and keys, for the settings screen", async () => {
+    const { request } = await server(home({ settings: SCRIPTED }));
+    const providers = (await request("GET", "/api/providers")).json();
+    expect(providers.map((p: { name: string }) => p.name)).toEqual(["anthropic", "openai", "deepseek", "openrouter", "gemini"]);
+    expect(providers.find((p: { name: string }) => p.name === "gemini")).toEqual({ name: "gemini", main: "gemini-3.8-flash", router: "gemini-3.8-flash", keys: ["GEMINI_API_KEY", "GOOGLE_API_KEY"] });
+  });
+
   it("says how to start it when it is not built", async () => {
     const { request } = await server(home({ settings: SCRIPTED }));
     expect((await request("GET", "/")).body).toContain("pnpm socrates");

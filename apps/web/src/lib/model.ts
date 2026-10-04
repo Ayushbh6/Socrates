@@ -253,6 +253,19 @@ export function orbState(exchange: Exchange | null, approvals: PendingApproval[]
 /** The orb sits in the middle until the answer starts, then docks where the answer begins. */
 export const orbDocked = (state: OrbState) => state !== "idle" && state !== "thinking";
 
+/** The goal and task of the newest routed question of a conversation, for its notes and panels. */
+export function currentRoute(list: Exchange[]): Exchange["route"] {
+  return [...list].reverse().find((e) => e.route)?.route ?? null;
+}
+
+/** One line for work in progress, where there is no orb to show it. */
+export function workLine(state: OrbState, exchange: Exchange | null): string | null {
+  if (state === "thinking") return "Thinking…";
+  if (state === "working") return "Working…";
+  if (state === "waiting") return "Waiting for your approval";
+  return exchange?.state === "sending" ? "Sending…" : null;
+}
+
 /** Whether a conversation is working now. */
 export function conversationBusy(live: LiveState | null, conversation: string): boolean {
   if (!live) return false;

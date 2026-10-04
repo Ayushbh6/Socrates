@@ -1,11 +1,13 @@
 import { Menu, X } from "lucide-react";
-import { AnimatePresence, LayoutGroup, motion } from "motion/react";
+import { LayoutGroup } from "motion/react";
 import { type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
-import { orbDocked, orbState } from "../lib/model";
+import { currentRoute, orbDocked, orbState } from "../lib/model";
 import { type AppState, store } from "../lib/store";
 import { AccessMenu } from "./AccessMenu";
 import { AnswerView } from "./AnswerView";
 import { Composer } from "./Composer";
+import { type Mode, ModeSwitch } from "./ModeSwitch";
+import { Notices } from "./Notices";
 import { Orb } from "./Orb";
 import { QuestionCard } from "./QuestionCard";
 import { Sidebar } from "./Sidebar";
@@ -16,7 +18,7 @@ import { StickyNotes } from "./StickyNotes";
  * an open canvas, the orb in the middle until the answer starts, the task and
  * goal notes beside it, and earlier questions in the sidebar.
  */
-export function Flow({ app }: { app: AppState }) {
+export function Flow({ app, mode, onMode, onSettings }: { app: AppState; mode: Mode; onMode: (mode: Mode) => void; onSettings: () => void }) {
   const [conversation, setConversation] = useState("main");
   const [selected, setSelected] = useState<string | null>(null);
   const [sidebar, setSidebar] = useState(false);
@@ -51,7 +53,7 @@ export function Flow({ app }: { app: AppState }) {
   const docked = orbDocked(state);
 
   // The notes follow the question on the canvas, or the newest routed one.
-  const route = exchange?.route ?? [...list].reverse().find((e) => e.route)?.route ?? null;
+  const route = exchange?.route ?? currentRoute(list);
   const goal = useMemo(() => (route ? app.goals.find((g) => g.number === route.goal.number) ?? null : null), [route, app.goals]);
 
   // Keep the newest work in view while it grows.
@@ -65,14 +67,6 @@ export function Flow({ app }: { app: AppState }) {
   useEffect(() => {
     stage.current?.scrollTo({ top: 0 });
   }, [exchange?.key]);
-
-  // Notices fade after a while.
-  const notices = app.model.notices.map((n) => n.id).join(",");
-  useEffect(() => {
-    if (!notices) return;
-    const timers = app.model.notices.map((n) => setTimeout(() => store.dismiss(n.id), 8_000));
-    return () => timers.forEach(clearTimeout);
-  }, [notices]);
 
   // A slight parallax: the planet and the dots drift against the pointer.
   const parallax = (e: PointerEvent<HTMLDivElement>) => {
@@ -101,6 +95,8 @@ export function Flow({ app }: { app: AppState }) {
             </button>
           )}
           {!app.connected ? <span className="chip reconnecting">Reconnecting…</span> : app.model.live && !app.model.live.ready && <span className="chip reconnecting">Socrates is restarting…</span>}
+          <span className="composer-space" />
+          <ModeSwitch mode={mode} onMode={onMode} onSettings={onSettings} />
         </header>
 
         <StickyNotes goal={goal} taskNumber={route?.task.number ?? null} />
@@ -129,6 +125,7 @@ export function Flow({ app }: { app: AppState }) {
         app={app}
         conversation={conversation}
         laneNumber={lane?.number ?? null}
+        onModel={onSettings}
         onNewLane={(text) => {
           const id = store.sendToNewLane(text);
           if (id) setFollowing(id);
@@ -152,16 +149,7 @@ export function Flow({ app }: { app: AppState }) {
         }}
       />
 
-      <div className="toasts" aria-live="polite">
-        <AnimatePresence>
-          {app.model.notices.map((n) => (
-            <motion.div key={n.id} className="toast" initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
-              <span>{n.text}</span>
-              <button type="button" className="icon-button" onClick={() => store.dismiss(n.id)} aria-label="Dismiss"><X aria-hidden /></button>
-            </motion.div>
-          ))}
-        </AnimatePresence>
-      </div>
+      <Notices app={app} />
     </div>
   );
 }

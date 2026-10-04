@@ -93,6 +93,7 @@ API responses are JSON. A failure, including an unknown route, is `{ "error": { 
 | `GET /api/status` | readiness and setup needed, the models in use and why, embedding state and index size, time zone, whether main is busy, the lanes, the working folder, and how many turns startup interrupted |
 | `GET`, `PUT /api/settings` | the settings; `PUT` takes any subset and returns the result |
 | `GET /api/keys` | each known key name with whether it is set |
+| `GET /api/providers` | each model provider with its default chat and router models and the keys it reads, for the settings screen |
 | `PUT`, `DELETE /api/keys/:name` | set (`{ value }`) or remove a key |
 | `GET /api/goals` | every goal, most recently updated first, with its tasks, notes and workspace |
 | `GET /api/history` | one conversation's messages (see "History") |

@@ -1,4 +1,4 @@
-import type { Access, Folders, GoalView, History, Settings, Status } from "./types";
+import type { Access, Evidence, Folders, GoalView, History, Provider, Settings, Status } from "./types";
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -24,11 +24,14 @@ export const api = {
   settings: () => call<Settings>("GET", "/api/settings"),
   setAccess: (access: Partial<Access>) => call<Settings>("PUT", "/api/settings", { access }),
   setWorkingFolder: (id: string) => call<Settings>("PUT", "/api/settings", { workingFolder: id }),
+  setSettings: (patch: Partial<Omit<Settings, "access" | "workingFolder">>) => call<Settings>("PUT", "/api/settings", patch),
+  providers: () => call<Provider[]>("GET", "/api/providers"),
+  removeKey: (name: string) => call<null>("DELETE", `/api/keys/${encodeURIComponent(name)}`),
   keys: () => call<Record<string, boolean>>("GET", "/api/keys"),
   setKey: (name: string, value: string) => call<null>("PUT", `/api/keys/${encodeURIComponent(name)}`, { value }),
   goals: () => call<GoalView[]>("GET", "/api/goals"),
   history: (conversation: string, before?: number) => call<History>("GET", `/api/history?conversation=${encodeURIComponent(conversation)}${before ? `&before=${before}` : ""}`),
   folders: (path?: string) => call<Folders>("GET", `/api/folders${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   addWorkspace: (path: string) => call<{ id: string; name: string; path: string }>("POST", "/api/workspaces", { path }),
-  evidence: (task: string, handle: string) => call<{ content: string | null; truncated: boolean }>("GET", `/api/evidence?task=${encodeURIComponent(task)}&handle=${encodeURIComponent(handle)}`),
+  evidence: (task: string, handle: string) => call<Evidence>("GET", `/api/evidence?task=${encodeURIComponent(task)}&handle=${encodeURIComponent(handle)}`),
 };

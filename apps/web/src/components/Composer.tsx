@@ -6,7 +6,19 @@ import { MAX_RUNNING_LANES } from "../lib/types";
 import { Popover } from "./Popover";
 
 /** The message box: Send, Queue while main works, or Send in a new lane (architecture/web.md, "Composer"). */
-export function Composer({ app, conversation, laneNumber, onNewLane }: { app: AppState; conversation: string; laneNumber: number | null; onNewLane: (text: string) => void }) {
+export function Composer({ app, conversation, laneNumber, onNewLane, onModel, variant = "float", compact = false, autoFocus = true }: {
+  app: AppState;
+  conversation: string;
+  laneNumber: number | null;
+  onNewLane: (text: string) => void;
+  /** The model label opens the settings. */
+  onModel?: () => void;
+  /** Floating over the flow canvas, or inside a standard-mode panel. */
+  variant?: "float" | "panel";
+  /** A lane panel's composer: no approvals chip or model label. */
+  compact?: boolean;
+  autoFocus?: boolean;
+}) {
   const [text, setText] = useState("");
   const [menu, setMenu] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
@@ -23,8 +35,8 @@ export function Composer({ app, conversation, laneNumber, onNewLane }: { app: Ap
     el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
   }, [text]);
   useEffect(() => {
-    area.current?.focus();
-  }, [conversation]);
+    if (autoFocus) area.current?.focus();
+  }, [conversation, autoFocus]);
 
   const submit = (how: "send" | "queue" | "lane" = target) => {
     if (empty) return;
@@ -42,7 +54,7 @@ export function Composer({ app, conversation, laneNumber, onNewLane }: { app: Ap
   };
 
   return (
-    <div className="composer-dock">
+    <div className="composer-dock" data-variant={variant} data-compact={compact}>
       {conversation === "main" && live && live.queue.length > 0 && (
         <ul className="queue" aria-label="Queued messages">
           {live.queue.map((q) => (
@@ -65,9 +77,11 @@ export function Composer({ app, conversation, laneNumber, onNewLane }: { app: Ap
           aria-label="Message"
         />
         <div className="composer-row">
-          <ApprovalsChip app={app} />
+          {!compact && <ApprovalsChip app={app} />}
           <span className="composer-space" />
-          {app.status?.models.chat && <span className="composer-model" title="The chat model">{app.status.models.chat.model}</span>}
+          {!compact && app.status?.models.chat && (
+            <button type="button" className="composer-model" title="The chat model: change it in settings" onClick={onModel}>{app.status.models.chat.model}</button>
+          )}
           {busy && (
             <button type="button" className="stop-button" onClick={() => store.cancel(conversation)} aria-label="Stop">
               <Square aria-hidden />

@@ -5,7 +5,7 @@ The web app is Socrates' face: a page served by the local server (`server.md`) a
 It is built in two changes:
 
 - **W1, flow mode:** the welcome page and first-run setup, the flow canvas (the orb, the question and its answer, the task and goal notes), the question sidebar with lanes, the composer (Send, Queue, Send in a new lane, stop, approvals mode), the access menu, approval cards, and `pnpm socrates`.
-- **W2, standard mode:** the familiar harness layout (goals on the left, the full scrolling conversation, lane panels beside it), the complete tool-output viewer, and the settings screens.
+- **W2, standard mode:** the familiar harness layout (goals on the left, the full scrolling conversation, lane panels beside it), the switch between the two modes, the complete tool-output viewer, and settings.
 
 ## Running it
 
@@ -27,7 +27,32 @@ One question and its answer at a time, on an open canvas.
 - **The answer.** The goal and task it was routed to, the agent's narration, each tool call as one line (open it for the live preview, or the complete recorded output), approval decisions, and the answer in Markdown.
 - **Notes.** Two sticky notes beside the conversation: the current task (its title, status and continuation note) and its goal (objective, note, open and done tasks). They follow the question on the canvas. Drag them anywhere, or move them with the arrow keys; their places are remembered in this browser. On a phone they step aside.
 - **Sidebar.** The ☰ opens it over the canvas: the conversations (main and each lane, with what it is doing; an idle lane can be closed) and the questions of the conversation on the canvas, newest first by day. Choosing an earlier question shows it; **Return to the latest** comes back.
-- **Header.** The ☰ and the access chip: **My folders: …** or **Full access** (orange). Its menu sets the project folder new work starts in (which also joins the folders), adds or removes folders, and chooses the scope (`server.md`, "Access"). The folder picker browses this Mac's folders or takes a typed path (`~` is the home folder).
+- **Header.** On the right, the switch between Flow and Standard and the way to settings. On the left, the ☰ and the access chip: **My folders: …** or **Full access** (orange). Its menu sets the project folder new work starts in (which also joins the folders), adds or removes folders, and chooses the scope (`server.md`, "Access"). The folder picker browses this Mac's folders or takes a typed path (`~` is the home folder).
+
+## Standard mode
+
+The familiar harness layout, for following everything at once. The switch in either header changes mode; the choice is remembered in this browser, and both modes show the same live conversations.
+
+- **Goals** on the left: every goal with its tasks (open, completed or superseded) and how many are done. The goal of the main conversation's newest routed question is open, with its objective and note, and its current task shows its continuation note. The general conversation is not a goal and is not listed.
+- **Main** in the middle: every question with its answer, oldest first, with **Load earlier questions** at the top. It follows new work while the reader is at the bottom, and a new question always brings it to the end. A line under the newest question says when Socrates is thinking, working or waiting for an approval; **Stop** in the panel's head cancels. Its composer is the same as flow mode's.
+- **Lanes** on the right, one panel each, stacked: the lane's task and state (working, waiting for you, idle), its whole conversation, and its own small composer that sends to that lane. Stop a working lane or close an idle one from its head. A message sent to a new lane shows in a "New lane" panel until the server names its lane.
+- On narrower screens the panels stack and the page scrolls.
+
+## Tool output
+
+Every tool row opens to its live preview; **Open the full output** shows the complete recorded output (`GET /api/evidence`) in a dialog: a file change as its diff with additions and removals coloured, a structured result as tidy JSON, and anything else as recorded, with long lines wrapped or not. It says when the output was cut at 200,000 characters or when a command printed more than Socrates keeps.
+
+## Settings
+
+The gear in either header, or the model name in the composer, opens settings:
+
+- **Models:** the chat and routing models: automatic (the first provider with a key, and the chat provider's router model) or a provider with its default model filled in (`GET /api/providers`), which can be edited. It says which models are in use and whether they were picked from the keys.
+- **API keys:** each key Socrates knows, whether it is set, and a field to set or replace it, or remove it. Keys are never shown.
+- **Memory search:** the embedding provider (Ollama on this Mac by default), model and address, and whether memory search is ready and how much it holds.
+- **Time zone:** a time zone, or follow the Mac.
+- **Where Socrates works:** the project folder, my folders or full access, and ask first or work freely: the same controls as the header and composer.
+
+Model, key, memory and time-zone changes restart Socrates, so they wait until it is idle and say so otherwise; the page stays where it is during the restart. Access changes apply at once.
 
 ## Composer
 

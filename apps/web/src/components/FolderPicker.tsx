@@ -1,5 +1,6 @@
 import { ChevronLeft, Folder, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../lib/api";
 import type { Folders } from "../lib/types";
 
@@ -43,7 +44,8 @@ export function FolderPicker({ title, onChoose, onCancel }: { title: string; onC
     }
   };
 
-  return (
+  // At the page level, so no panel's blur or clipping can trap the dialog.
+  return createPortal(
     <div className="modal-scrim" onPointerDown={(e) => e.target === e.currentTarget && onCancel()}>
       <div className="modal picker" role="dialog" aria-modal="true" aria-label={title}>
         <div className="modal-head">
@@ -68,6 +70,7 @@ export function FolderPicker({ title, onChoose, onCancel }: { title: string; onC
           <button type="button" className="solid-button" disabled={!listing || busy} onClick={choose}>Choose this folder</button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

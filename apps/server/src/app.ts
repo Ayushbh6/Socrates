@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
+import { PROVIDER_DEFAULTS } from "@socrates/providers";
 import { callLine } from "@socrates/retrieval";
 import { z } from "zod";
 import { KEY_NAMES, KeyError } from "./keys";
@@ -106,6 +107,8 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
   });
 
   app.get("/api/settings", async () => runtime.settings);
+  // What the settings screen offers: each provider's default models and the keys it reads.
+  app.get("/api/providers", async () => Object.entries(PROVIDER_DEFAULTS).map(([name, d]) => ({ name, main: d.main, router: d.router, keys: [...d.keys] })));
   app.put("/api/settings", async (request) => runtime.updateSettings(request.body ?? {}));
 
   // Keys are write-only: the API says which are set, never what they are.

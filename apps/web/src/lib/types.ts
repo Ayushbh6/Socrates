@@ -15,12 +15,20 @@ export interface Lane {
   waitingForApproval: boolean;
 }
 
+export interface Embeddings {
+  provider: "ollama" | "openrouter" | "openai" | "custom";
+  model: string | null;
+  url: string | null;
+}
+
 export interface Status {
   home: string;
   ready: boolean;
   setup: string[];
   access: Access;
   models: { chat: ModelInUse | null; router: ModelInUse | null };
+  embeddings: Embeddings & { state: "ready" | "unavailable"; detail: string | null; index: { documents: number } | null };
+  timeZone: string;
   busy: boolean;
   lanes: Lane[];
   workingFolder: { id: string; name: string; path: string } | null;
@@ -33,9 +41,37 @@ export interface Access {
   approvals: "ask" | "auto";
 }
 
+export interface ModelChoice {
+  provider: string;
+  model: string;
+}
+
 export interface Settings {
+  chat: ModelChoice | null;
+  router: ModelChoice | null;
+  embeddings: Embeddings;
+  timeZone: string | null;
   workingFolder: string | null;
   access: Access;
+}
+
+/** A model provider, its default models and the keys it reads. */
+export interface Provider {
+  name: string;
+  main: string;
+  router: string;
+  keys: string[];
+}
+
+export interface Evidence {
+  task: string;
+  handle: string;
+  tool: string;
+  line: string;
+  status: "ok" | "error" | null;
+  content: string | null;
+  truncated: boolean;
+  outputLost: boolean;
 }
 
 export interface GoalView {
