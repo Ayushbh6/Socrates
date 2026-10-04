@@ -10,6 +10,7 @@ import { assembleContext, projectQuery } from "./context";
 import { type LaneView, laneNotice, lanesBlock } from "./lanes";
 import { RELATED_MAX_SECTIONS } from "./project-context";
 import { fallbackAnswer, mechanicalNote } from "./final";
+import type { Draft } from "./draft";
 import { type AgentLimits, DEFAULT_LIMITS, type RunOutcome, runAgent } from "./loop";
 import { AGENT_SYSTEM_PROMPT } from "./prompt";
 import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
@@ -89,6 +90,12 @@ export interface HandleOptions {
    * free for the next message.
    */
   onHandoff?: (laneId: string, turnId: string) => void;
+  /**
+   * The readable part of a reply while it arrives, for the turn that is
+   * working. Temporary: nothing is saved, and the saved narration or answer
+   * replaces it.
+   */
+  onDraft?: (turnId: string, draft: Draft) => void;
 }
 
 export interface PartResult {
@@ -578,6 +585,7 @@ export class Socrates {
       limits: this.limits,
       budgets: this.budgets,
       compact,
+      ...(options.onDraft ? { onDraft: (draft: Draft) => options.onDraft!(turn.id, draft) } : {}),
       onResponse: (response, phase) => store.appendEvent("agent_message", { response, phase }, { goal_id: goal.id, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id }),
       ...(this.options.maxOutputTokens ? { maxOutputTokens: this.options.maxOutputTokens } : {}),
       ...(this.options.retryDelaysMs ? { retryDelaysMs: this.options.retryDelaysMs } : {}),

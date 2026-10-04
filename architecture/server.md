@@ -137,12 +137,19 @@ Changes to settings or keys also broadcast state to every subscribed page. `read
 | `state` | `seq`, readiness and setup needed, whether main is busy, the lanes, the main queue, and pending approvals; sent on every change |
 | `accepted { id, conversation }` | the message started; for `new_lane`, `conversation` is the new lane's id |
 | `activity` | one saved event (see "Live activity") |
+| `draft { conversation, turnId, call, kind, text }` | the reply a turn is writing now (see "Live drafts") |
 | `approval` | a new pending approval: its id, conversation and lane, task, kind (`action` or `outside_folder` under an access policy), tool, the one line the user approves, and a `preview` of what will change (an edit's texts, a patch, typed input) or null |
 | `handed_off { id, conversation, lane, mainReleased }` | a part went to the lane busy with its task. A single-part message frees main; a compound message keeps main until all parts finish, and its aggregate result stays in main |
 | `status { id, conversation, text }` | the plan of a split message, or a quiet status line during long work |
 | `result { id, conversation, result }` | the message is done: its text, lane, per-part outcome, notices, and anchor changes |
 | `error { id?, code, message }` | a refusal or failure, with a message meant for the user |
 | `reset { seq }` | too far behind; reload the history |
+
+## Live drafts
+
+While a turn's model writes its reply, the pages see it as it arrives. A `draft` carries the turn and its conversation, the model request it belongs to (`call`, counted from 1 within the turn; a retried or repaired request is a new one), and the readable text so far: `kind: "narration"` is the line before tool calls, `kind: "answer"` is the final message's `full_answer`, decoded as far as it has arrived (the rest of the final JSON object is never sent). Each draft holds everything readable so far, not only the newest piece, so a missed one costs nothing. They are combined to at most one per turn every `50` ms.
+
+Drafts are temporary and are never saved: the event log, history and replay contain only what is saved, and the saved `step`, `answer` or `question` activity (or `finished`, when the turn ends without one) replaces the turn's draft, so no draft follows it. A page that connects while a reply is arriving receives the current drafts after its state and replay, and a reply that was saved before the next interval is never sent as a draft at all.
 
 ## Live activity
 

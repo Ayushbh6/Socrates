@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { type AnchorDecision, type HandleResult, MAX_RUNNING_LANES, SocratesBusyError } from "@socrates/agent";
+import { type AnchorDecision, type Draft, type HandleResult, MAX_RUNNING_LANES, SocratesBusyError } from "@socrates/agent";
 import type { ApprovalOrigin, ApprovalRequest } from "@socrates/tools";
 import type { WebSocket } from "ws";
 import { z } from "zod";
@@ -11,6 +11,10 @@ export const REPLAY_MAX_EVENTS = 5_000;
 /** The main conversation's queue holds at most this many messages. */
 export const QUEUE_MAX = 20;
 const TEXT_MAX_CHARS = 100_000;
+/** Drafts of a reply that is arriving go out at most this often per page. */
+const DRAFT_INTERVAL_MS = 50;
+/** What replaces a draft: the saved narration, answer or question, or the end of the turn. */
+const SETTLES_DRAFT = new Set(["step", "answer", "question", "finished"]);
 /** A page this far behind on reading is disconnected; it reconnects and catches up. */
 const SEND_BUFFER_MAX_BYTES = 8 * 1024 * 1024;
 
@@ -31,6 +35,13 @@ const Command = z.discriminatedUnion("type", [
   z.object({ type: z.literal("close_lane"), lane: Id }).strict(),
 ]);
 type Command = z.infer<typeof Command>;
+
+/** The reply a turn is writing, as the live connection sends it: everything readable so far. */
+interface DraftMessage extends Draft {
+  type: "draft";
+  conversation: string;
+  turnId: string;
+}
 
 /** An approval waiting for the user, shown in the panel of the conversation that asked. */
 export interface PendingApproval {
@@ -77,6 +88,10 @@ export class LiveHub {
   private readonly unsubscribe: () => void;
   private readonly unsubscribeRuntime: () => void;
   private stateTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The reply each working turn is writing now: temporary, never saved, sent to a page that joins late. */
+  private readonly drafts = new Map<string, { runId: string; message: DraftMessage }>();
+  private readonly draftsUnsent = new Set<string>();
+  private draftTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
   private closing: Promise<void> | null = null;
 
@@ -86,6 +101,7 @@ export class LiveHub {
     this.replayMax = options.replayMax ?? REPLAY_MAX_EVENTS;
     this.unsubscribe = runtime.store.onEvent((event) => {
       const activity = activityOf(runtime.store, event);
+      if (activity && SETTLES_DRAFT.has(activity.kind) && "turnId" in activity && activity.turnId) this.settleDraft(activity.turnId);
       if (activity) this.broadcast({ type: "activity", ...activity });
       // Turns and lanes change what is running; coalesce the state that follows.
       if (event.turn_id || event.type.startsWith("lane_")) this.scheduleState();
@@ -116,6 +132,9 @@ export class LiveHub {
     this.unsubscribe();
     this.unsubscribeRuntime();
     if (this.stateTimer) clearTimeout(this.stateTimer);
+    if (this.draftTimer) clearTimeout(this.draftTimer);
+    this.drafts.clear();
+    this.draftsUnsent.clear();
     for (const run of this.runs.values()) run.controller.abort();
     for (const approval of this.approvals.values()) approval.resolve(false);
     this.approvals.clear();
@@ -214,16 +233,40 @@ export class LiveHub {
     this.subscribed.add(socket);
     const store = this.runtime.store;
     this.send(socket, this.state());
-    if (after === undefined) return;
-    const latest = store.latestEventSeq();
-    if (after > latest || latest - after > this.replayMax) {
-      this.send(socket, { type: "reset", seq: latest });
-      return;
+    if (after !== undefined) {
+      const latest = store.latestEventSeq();
+      if (after > latest || latest - after > this.replayMax) this.send(socket, { type: "reset", seq: latest });
+      else {
+        for (const event of store.listEvents({ afterSeq: after })) {
+          const activity = activityOf(store, event);
+          if (activity) this.send(socket, { type: "activity", ...activity });
+        }
+      }
     }
-    for (const event of store.listEvents({ afterSeq: after })) {
-      const activity = activityOf(store, event);
-      if (activity) this.send(socket, { type: "activity", ...activity });
-    }
+    // The replies being written now, after the saved activity they follow.
+    for (const { message } of this.drafts.values()) this.send(socket, message);
+  }
+
+  /** Keep the newest draft of a turn and send it with the next interval's. */
+  private draft(runId: string, turnId: string, draft: Draft): void {
+    if (this.closed) return;
+    const turn = this.runtime.store.getTurn(turnId);
+    this.drafts.set(turnId, { runId, message: { type: "draft", conversation: turn?.laneId ?? "main", turnId, ...draft } });
+    this.draftsUnsent.add(turnId);
+    this.draftTimer ??= setTimeout(() => {
+      this.draftTimer = null;
+      for (const id of this.draftsUnsent) {
+        const entry = this.drafts.get(id);
+        if (entry) this.broadcast(entry.message);
+      }
+      this.draftsUnsent.clear();
+    }, DRAFT_INTERVAL_MS);
+  }
+
+  /** The saved reply replaces a turn's draft; a draft not yet sent is dropped with it. */
+  private settleDraft(turnId: string): void {
+    this.drafts.delete(turnId);
+    this.draftsUnsent.delete(turnId);
   }
 
   /** Start one message: in main (refused while main is busy; queue it instead), a new lane, or an open lane. */
@@ -259,6 +302,7 @@ export class LiveHub {
         this.publishState();
         this.drain();
       },
+      onDraft: (turnId, draft) => this.draft(id, turnId, draft),
       onAcknowledgment: (line) => this.broadcast({ type: "status", id, conversation: run.conversation, text: line }),
       onStatus: (line) => {
         const handed = run.handedTurnId ? this.runtime.store.getTurn(run.handedTurnId) : null;
@@ -276,6 +320,7 @@ export class LiveHub {
       })
       .finally(() => {
         this.runs.delete(id);
+        for (const [turnId, entry] of this.drafts) if (entry.runId === id) this.settleDraft(turnId);
         // An approval the run never got an answer for is refused.
         for (const [key, approval] of this.approvals) if (approval.runId === id) {
           this.approvals.delete(key);

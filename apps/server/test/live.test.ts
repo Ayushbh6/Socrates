@@ -240,6 +240,74 @@ describe("the live connection", () => {
   });
 });
 
+describe("drafts of a reply that is arriving", () => {
+  /** An agent that streams the first part of its answer, waits, then finishes. */
+  function slowAgent(hold: ReturnType<typeof gate>, answer: string) {
+    return new Responder("a", async (_m, request) => {
+      const text = final({ full_answer: answer }).text;
+      const cut = text.indexOf(answer) + 8;
+      request.onText?.(text.slice(0, cut));
+      await hold.opened;
+      request.onText?.(text.slice(cut));
+      return { text };
+    });
+  }
+  const drafts = (p: { received: Record<string, any>[] }) => p.received.filter((m) => m.type === "draft");
+
+  it("sends the readable part of a reply as it arrives, to a page that joins late too, and never after the saved answer", async () => {
+    const hold = gate();
+    const { page, rt } = await liveServer(new Responder("r", () => createGoal("Shop", "Fix checkout")), slowAgent(hold, "Checkout fixed."));
+    const p = await page();
+    p.send({ type: "hello" });
+    p.send({ type: "send", id: "m1", text: "Fix the checkout.", to: "main" });
+    const draft = await p.next((m) => m.type === "draft");
+    expect(draft).toMatchObject({ conversation: "main", call: 1, kind: "answer", text: "Checkout" });
+    const routed = p.received.find((m) => m.type === "activity" && m.kind === "routed")!;
+    expect(draft.turnId).toBe(routed.turnId);
+
+    // A page that opens mid-reply is brought up to date with the draft, after the state.
+    const late = await page();
+    late.send({ type: "hello" });
+    await late.next((m) => m.type === "state");
+    expect(await late.next((m) => m.type === "draft")).toEqual(draft);
+
+    hold.open();
+    await p.next(isResult("m1"));
+    const sequence = p.received.map((m) => (m.type === "draft" ? "draft" : m.type === "activity" ? m.kind : m.type));
+    expect(sequence.lastIndexOf("draft")).toBeLessThan(sequence.indexOf("answer"));
+    // Only the saved answer is in the record, and a page joining afterwards sees no draft.
+    expect(rt.store.listEvents({ type: "assistant_response" }).map((e) => (e.payload as { text: string }).text)).toEqual(["Checkout fixed."]);
+    const after = await page();
+    after.send({ type: "hello" });
+    await after.next((m) => m.type === "state");
+    await new Promise((r) => setTimeout(r, 120));
+    expect(drafts(after)).toEqual([]);
+  });
+
+  it("sends a lane's draft under the lane and keeps drafts of simultaneous turns apart", async () => {
+    const hold = gate();
+    const { page } = await liveServer(new Responder("r", (m) => createGoal(m.slice(0, 12), m.slice(0, 12))), new Responder("a", async (m, request) => {
+      const text = final({ full_answer: `Answer to ${m}` }).text;
+      request.onText?.(text.slice(0, 30));
+      await hold.opened;
+      return { text };
+    }));
+    const p = await page();
+    p.send({ type: "hello" });
+    p.send({ type: "send", id: "a", text: "Alpha question.", to: "main" });
+    const mainDraft = await p.next((m) => m.type === "draft" && m.conversation === "main");
+    p.send({ type: "send", id: "b", text: "Beta question.", to: "new_lane" });
+    const lane = (await p.next((m) => m.type === "accepted" && m.id === "b")).conversation as string;
+    const laneDraft = await p.next((m) => m.type === "draft" && m.conversation === lane);
+    expect(laneDraft.turnId).not.toBe(mainDraft.turnId);
+    expect(mainDraft.text).toContain("Answer to Alph");
+    expect(laneDraft.text).toContain("Answer to Beta");
+    hold.open();
+    await p.next(isResult("a"));
+    await p.next(isResult("b"));
+  });
+});
+
 describe("S2 closure regressions", () => {
   it("delivers events saved between connection and hello exactly once", async () => {
     const { page, rt } = await liveServer(new Responder("r", () => general()), new Responder("a", () => final()));

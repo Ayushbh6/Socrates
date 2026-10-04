@@ -3,6 +3,7 @@ import type { TokenCalibration } from "@socrates/providers";
 import { abortable } from "@socrates/shared";
 import type { ActiveCapabilities, CallScope, ToolRunner } from "@socrates/tools";
 import { refreshCapabilityContext } from "./context";
+import { type Draft, streamDrafts } from "./draft";
 import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
 import type { Compact, Measure } from "./compaction";
 import { mechanicalNote, validateFinalAnswer } from "./final";
@@ -53,6 +54,11 @@ export interface RunInput {
   now?: () => number;
   /** Persist every received response before executing or interpreting it. */
   onResponse?: (response: ModelResponse, phase: "work" | "wrap_up" | "repair") => void;
+  /**
+   * The readable part of each reply while it arrives. Drafts are temporary
+   * and never saved; when given, the turn's requests are streamed.
+   */
+  onDraft?: (draft: Draft) => void;
 }
 
 export type RunOutcome =
@@ -83,7 +89,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
    * between trigger and target, even when the target could not be reached.
    */
   let compactedAt: number | null = null;
-  let steps = 0, spent = 0, toolCalls = 0;
+  let steps = 0, spent = 0, toolCalls = 0, requests = 0;
   const deadline = new AbortController();
   const workSignal = AbortSignal.any([scope.signal, deadline.signal]);
   const workTimer = setTimeout(() => deadline.abort(), Math.max(0, limits.maxWallMs - (now() - started)));
@@ -130,6 +136,8 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
         const response = await abortable(model.complete({
           system: input.system, messages: withRollingBreakpoint(messages), tools,
           toolChoice: phase === "work" ? "auto" : "none", maxOutputTokens: input.maxOutputTokens ?? 16_000, signal,
+          // Every request, a retry included, is its own draft.
+          ...(input.onDraft ? { onText: streamDrafts(input.onDraft, ++requests) } : {}),
         }), signal);
         input.onResponse?.(response, phase);
         steps++;
