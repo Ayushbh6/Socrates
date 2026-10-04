@@ -12,3 +12,4 @@ export { TerminalSupervisor, type SupervisorOptions } from "./terminals";
 export { parsePatch } from "./patch";
 
 export type { ActiveCapabilities, ActiveSkill } from "./tools/capabilities";
+export * from "./images";

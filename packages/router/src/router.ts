@@ -1,6 +1,7 @@
 import { abortable } from "@socrates/shared";
 import {
   type AskUserInput,
+  type EventPayloads,
   LEDGER_QUERY_MAX_CALLS,
   type ModelClient,
   ModelError,
@@ -114,8 +115,10 @@ export class GoalRouter {
     const userEvent = options.userEventId ? this.store.getEvent(options.userEventId) : this.store.recordUserMessage(message, laneId);
     if (!userEvent || userEvent.type !== "user_message" || (userEvent.payload as { text: string }).text !== message || ((userEvent.payload as { lane_id?: string }).lane_id ?? null) !== laneId) throw new Error("The recorded message does not belong to this routing request.");
     const semantic = this.semantic ? await this.semantic.search(candidateQuery(this.store, message, laneId), { kinds: ["goal", "task"], limit: 30 }, signal) : [];
+    const attachments = ((userEvent.payload as EventPayloads["user_message"]).attachments ?? []).map((a) => a.name);
     const ctx = buildRoutingContext(this.store, message, {
       timeZone: this.timeZone,
+      ...(attachments.length ? { attachments } : {}),
       semantic,
       laneId,
       ...(options.laneActivity ? { laneActivity: options.laneActivity } : {}),

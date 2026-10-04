@@ -75,6 +75,10 @@ Model, key, memory and time-zone changes restart Socrates, so they wait until it
 
 Settings, the folder picker and full tool output contain keyboard focus, close only the topmost dialog on Escape, and restore focus on close. Choosing a typed folder validates that path directly; navigating first with Enter is optional.
 
+## Images
+
+Drop images on the composer, paste a screenshot into it, or choose them with the image button: at most `10` per message. Each is made small enough to send in the browser (at most `2,000` pixels on its longest side and under `5` MB; a PNG stays a PNG when it fits, otherwise it becomes a JPEG), stored by the server, and shown as a thumbnail that can be removed before sending. Sending waits until every image is stored, and needs a message to go with them. When the chat model cannot see images, the composer says so: Socrates will know only their names and sizes. A sent question shows its images above it, in both modes and in history; each opens full size.
+
 ## Composer
 
 - **Enter** sends to the conversation on the canvas. While main works, a message to main waits in the queue instead; a lane queues its own messages. **Shift+Enter** is a new line.

@@ -332,6 +332,7 @@ export class Runtime {
       },
       ...(this.catalog ? { catalog: this.catalog } : {}),
       ...(this.retrieval ? { semantic: this.retrieval } : {}),
+      attachments: this.config.attachmentsDir,
       log: this.log,
     });
   }

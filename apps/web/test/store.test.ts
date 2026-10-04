@@ -112,3 +112,23 @@ describe('history recovery and unsent text', () => {
     expect(store.get().settings?.timeZone).toBe('Europe/Vienna');
   });
 });
+
+describe('attached images', () => {
+  const image = { id: 'a'.repeat(32), name: 'label.png', media_type: 'image/png', width: 400, height: 400, bytes: 11499 };
+
+  it('sends their ids and names, shows them on the question at once, and gives a rejected queue its images back', async () => {
+    const store = new Store(); await store.start(); const socket = Socket.all[0]!; socket.open();
+    socket.receive(live());
+    expect(store.send('What does it say?', 'main', [image])).toBeTruthy();
+    expect(socket.sent.at(-1)).toMatchObject({ type: 'send', text: 'What does it say?', to: 'main', attachments: [{ id: image.id, name: 'label.png' }] });
+    expect(store.get().model.conversations.main!.at(-1)!.attachments).toEqual([image]);
+    // A plain message carries no attachments field at all.
+    store.send('Plain', 'main');
+    expect(socket.sent.at(-1)).not.toHaveProperty('attachments');
+
+    expect(store.queue('Later, with the label', [image])).toBe(true);
+    const id = socket.sent.at(-1)!.id;
+    socket.receive({ type: 'error', id, code: 'queue_full', message: 'The queue is full.' });
+    expect(store.get().images.main!.map((i) => [i.status, i.attachment?.id])).toEqual([['ready', image.id]]);
+  });
+});

@@ -18,6 +18,7 @@ Everything lives in one folder, `~/.socrates-v2` unless `SOCRATES_HOME` names an
 | `ledger.db` | the event log and ledger |
 | `ledger.db.lance` | the embedding index |
 | `settings.json` | the user's choices (see "Settings") |
+| `attachments/` | images the user attached to messages, named by content hash (see "Attachments") |
 | `.env` | API keys, mode `600` |
 | `skills/`, `mcp.json` | global Skills and MCP servers |
 | `logs/server.log` | diagnostics; one previous log of up to 5 MB is kept |
@@ -98,6 +99,8 @@ API responses are JSON. A failure, including an unknown route, is `{ "error": { 
 | `GET /api/goals` | every goal, most recently updated first, with its tasks, notes and workspace |
 | `GET /api/history` | one conversation's messages (see "History") |
 | `GET /api/lanes` | open lanes with whether each is running or waiting for approval |
+| `POST /api/attachments?name=…` | store one image for a message (the body is its bytes, with its image content type); answers its id, name, format and size |
+| `GET /api/attachments/:id` | one stored image, for the page to show |
 | `GET /api/evidence?task=gN/tN&handle=eN` | the complete retained tool recording, bounded to 200,000 characters, with truncation and output-loss flags |
 | `GET`, `POST /api/workspaces` | the workspaces; `POST { path }` adds one |
 | `GET /api/folders?path=` | a folder's visible subfolders (default: the home folder), for choosing a workspace |
@@ -106,9 +109,13 @@ API responses are JSON. A failure, including an unknown route, is `{ "error": { 
 
 `GET /api/history?conversation=main|<lane id>&before=<cursor>` returns a conversation's messages in send order, newest first, with a budget of `30` turns per page; a message with no bound turn counts as one. `next` is the `before` value of the following page, or `null` when no older message exists. The cursor is a stable message-event sequence; callers pass the returned value, never a project-turn number. A message's compound parts always stay on one page, even when they interleave with other messages.
 
-Each item holds the exact message and its event sequence number (a page resumes the live connection from just before an unfinished message), `unrouted` when no part has been bound yet, the router's question when it asked one instead, and one entry per part: its project turn, status, goal and task (number and title), the lane it ran in, its answer, why it was interrupted, and its tool calls as one line each with their evidence handle and status. A message saved before routing, or queued in a lane, remains visible after restart. The main conversation lists the messages sent there, including parts handed to a lane (marked `handedOff`); a lane lists messages sent there and parts handed to it.
+Each item holds the exact message, the images attached to it (without where they are stored), and its event sequence number (a page resumes the live connection from just before an unfinished message), `unrouted` when no part has been bound yet, the router's question when it asked one instead, and one entry per part: its project turn, status, goal and task (number and title), the lane it ran in, its answer, why it was interrupted, and its tool calls as one line each with their evidence handle and status. A message saved before routing, or queued in a lane, remains visible after restart. The main conversation lists the messages sent there, including parts handed to a lane (marked `handedOff`); a lane lists messages sent there and parts handed to it.
 
 The response also carries its snapshot `seq`; each item carries `throughSeq`, ordered `activities` (narration, tool starts/results, warnings and approval decisions), and each part its `turnId`. These let a page recover an unfinished turn from history without replaying beyond the event window or losing its current draft. Snapshot activities use the same public output bounds as live activities.
+
+## Attachments
+
+The composer stores each image the user attaches before the message is sent (`POST /api/attachments`): a PNG, JPEG, GIF or WebP image up to `5` MB, checked by its header, saved readable only by the user as `attachments/<hash>.<ext>`, so the same image is stored once. The message then names its images by id and the user's file name (only the name's last part, without control characters). The saved message keeps each image's id, name, stored path, format and pixel size; the working agent is shown them, or told their names when its model cannot see, and every later turn keeps their paths (`agent-harness.md`, "Images"). Pages never learn the stored path; they show an image from `GET /api/attachments/:id`. The router is told a message has images, by name, and so is its recent history.
 
 ## Live connection
 
@@ -123,8 +130,8 @@ Changes to settings or keys also broadcast state to every subscribed page. `read
 | Command | Effect |
 |---|---|
 | `hello { after? }` | the state, then the activities after `after` |
-| `send { id, text, to, anchorDecisions? }` | `to` is `main`, `new_lane`, or an open lane's id. `main` is refused with `main_busy` while main works: the composer queues instead. A fifth running lane is refused with `lane_limit`. `anchorDecisions` are the user's explicit anchor selections (`agent-harness.md`, "Final result") |
-| `queue { id, text }` | wait for the main conversation; queued messages run in order as soon as main is free (at most `20`) |
+| `send { id, text, to, anchorDecisions?, attachments? }` | `to` is `main`, `new_lane`, or an open lane's id. `attachments` names stored images (`{ id, name }`, at most `10`); one that is not stored is refused with `attachment_missing`. `main` is refused with `main_busy` while main works: the composer queues instead. A fifth running lane is refused with `lane_limit`. `anchorDecisions` are the user's explicit anchor selections (`agent-harness.md`, "Final result") |
+| `queue { id, text, attachments? }` | wait for the main conversation, with its images; queued messages run in order as soon as main is free (at most `20`) |
 | `queue_edit { id, text }`, `queue_remove { id }`, `queue_to_lane { id }` | change, drop, or send a queued message in a new lane instead |
 | `cancel { conversation }` | stop what runs in `main` or a lane, including a message handed to that lane |
 | `approve { approval, granted }` | answer a pending approval |
@@ -161,7 +168,7 @@ The agent suppresses callbacks from cancelled, failed or finished model requests
 
 Every event is shown to the pages once it is saved (after its transaction commits), as one compact activity with the event's `seq`, time, and conversation (`main` or a lane id; a turn's activities belong to the conversation it runs in now):
 
-`message` (the exact text), `routed` (goal, task, lane), `question` (the router's clarification), `step` (the agent's narration before tool calls, or `""`, and the model's readable `thinking` for that request, or null, shown up to `20,000` characters with `thinkingTruncated`), `tool_started` (the call as one line, with its task and evidence handle), `tool_finished` (status and the first `2,000` characters of output), `answer`, `finished` (completed or interrupted, and why), `handed_off`, `lane` (opened or closed), `approval_decided`, `warning`, and `ledger` (goals or tasks changed: reload them).
+`message` (the exact text, and the images attached to it, without where they are stored), `routed` (goal, task, lane), `question` (the router's clarification), `step` (the agent's narration before tool calls, or `""`, and the model's readable `thinking` for that request, or null, shown up to `20,000` characters with `thinkingTruncated`), `tool_started` (the call as one line, with its task and evidence handle), `tool_finished` (status and the first `2,000` characters of output), `answer`, `finished` (completed or interrupted, and why), `handed_off`, `lane` (opened or closed), `approval_decided`, `warning`, and `ledger` (goals or tasks changed: reload them).
 
 The `handed_off` activity carries the destination `laneId` and exact goal/task as well as the lane number. The page creates that turn's lane exchange immediately, so its first draft is placed correctly before a tool or saved answer arrives.
 

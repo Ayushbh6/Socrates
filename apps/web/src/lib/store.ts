@@ -1,8 +1,9 @@
 import { useSyncExternalStore } from "react";
 import { api } from "./api";
+import { IMAGES_MAX, prepareImage } from "./images";
 import { LiveConnection } from "./live";
 import { type Model, type ModelEvent, emptyModel, reduce, replayFrom } from "./model";
-import type { Access, Command, GoalView, ServerMessage, Settings, Status } from "./types";
+import type { Access, AttachmentView, Command, GoalView, ServerMessage, Settings, Status } from "./types";
 
 export interface AppState {
   model: Model;
@@ -17,20 +18,34 @@ export interface AppState {
   error: string | null;
   /** Unsent text belongs to its conversation and survives a mode switch or reconnect. */
   drafts: Record<string, string>;
+  /** Images waiting to go with each conversation's next message. */
+  images: Record<string, PendingImage[]>;
 }
+
+/** An image in the composer: being stored, ready to send, or refused. */
+export interface PendingImage {
+  key: string;
+  name: string;
+  status: "uploading" | "ready" | "failed";
+  attachment?: AttachmentView;
+  error?: string;
+}
+
+/** What the server needs of each attached image: its id and its name. */
+const named = (attachments: AttachmentView[]) => (attachments.length ? { attachments: attachments.map(({ id, name }) => ({ id, name })) } : {});
 
 const newId = () => `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
 /** The page's one source of truth: history, the live connection, and the server's settings. */
 export class Store {
-  private state: AppState = { model: emptyModel(), status: null, settings: null, goals: [], connected: false, older: {}, error: null, drafts: {} };
+  private state: AppState = { model: emptyModel(), status: null, settings: null, goals: [], connected: false, older: {}, error: null, drafts: {}, images: {} };
   private readonly listeners = new Set<() => void>();
   private resume: number | null = null;
   private goalsTimer: ReturnType<typeof setTimeout> | null = null;
   private recovering: Promise<void> | null = null;
   private readonly loadingOlder = new Set<string>();
   private statusRequest = 0;
-  private readonly pendingQueue = new Map<string, string>();
+  private readonly pendingQueue = new Map<string, { text: string; attachments: AttachmentView[] }>();
   private readonly live = new LiveConnection({
     message: (message) => this.receive(message),
     connected: (connected) => this.set({ connected }),
@@ -68,24 +83,56 @@ export class Store {
     if (request === this.statusRequest) this.set({ status, settings });
   }
 
-  /** Send to main or a lane; returns the message's id, or null when the connection is down. */
-  send(text: string, to: string): string | null {
+  /** Send to main or a lane, with any attached images; returns the message's id, or null when the connection is down. */
+  send(text: string, to: string, attachments: AttachmentView[] = []): string | null {
     const id = newId();
-    if (!this.command({ type: "send", id, text, to })) return null;
-    this.dispatch({ type: "sent", id, text, to, at: new Date().toISOString() });
+    if (!this.command({ type: "send", id, text, to, ...named(attachments) })) return null;
+    this.dispatch({ type: "sent", id, text, to, at: new Date().toISOString(), attachments });
     return id;
   }
 
-  sendToNewLane(text: string): string | null {
-    return this.send(text, "new_lane");
+  sendToNewLane(text: string, attachments: AttachmentView[] = []): string | null {
+    return this.send(text, "new_lane", attachments);
   }
 
-  queue(text: string): boolean {
+  queue(text: string, attachments: AttachmentView[] = []): boolean {
     const id = newId();
-    this.pendingQueue.set(id, text);
-    if (this.command({ type: "queue", id, text })) return true;
+    this.pendingQueue.set(id, { text, attachments });
+    if (this.command({ type: "queue", id, text, ...named(attachments) })) return true;
     this.pendingQueue.delete(id);
     return false;
+  }
+
+  /**
+   * Attach images to a conversation's next message (architecture/web.md,
+   * "Images"): each is made small enough to send, then stored by the server.
+   * At most ten wait at once; the rest are refused with a notice.
+   */
+  addImages(conversation: string, files: File[]): void {
+    const room = IMAGES_MAX - (this.state.images[conversation]?.length ?? 0);
+    if (files.length > room) this.notice(`At most ${IMAGES_MAX} images can go with one message.`);
+    for (const file of files.slice(0, Math.max(0, room))) {
+      const key = newId();
+      this.setImages(conversation, (list) => [...list, { key, name: file.name || "image", status: "uploading" }]);
+      void prepareImage(file)
+        .then((image) => api.upload(image, file.name || "image"))
+        .then(
+          (attachment) => this.setImages(conversation, (list) => list.map((i) => (i.key === key ? { ...i, status: "ready", attachment } : i))),
+          (error) => this.setImages(conversation, (list) => list.map((i) => (i.key === key ? { ...i, status: "failed", error: error instanceof Error ? error.message : String(error) } : i))),
+        );
+    }
+  }
+
+  removeImage(conversation: string, key: string): void {
+    this.setImages(conversation, (list) => list.filter((i) => i.key !== key));
+  }
+
+  clearImages(conversation: string): void {
+    this.setImages(conversation, () => []);
+  }
+
+  private setImages(conversation: string, change: (list: PendingImage[]) => PendingImage[]): void {
+    this.set({ images: { ...this.state.images, [conversation]: change(this.state.images[conversation] ?? []) } });
   }
 
   cancel(conversation: string): void {
@@ -192,7 +239,7 @@ export class Store {
       // Main became busy as this was sent: it waits in the queue instead.
       const sent = Object.values(this.state.model.conversations).flat().find((e) => e.sendId === message.id);
       this.dispatch({ type: "unsent", id: message.id });
-      if (sent && !this.queue(sent.message)) this.rejectedQueue(message.id, sent.message, "Socrates is reconnecting. Try again in a moment.");
+      if (sent && !this.queue(sent.message, sent.attachments)) this.rejectedQueue(message.id, sent.message, "Socrates is reconnecting. Try again in a moment.", sent.attachments);
       return;
     }
     if (message.type === "state") {
@@ -203,7 +250,7 @@ export class Store {
       const queued = message.id ? this.pendingQueue.get(message.id) : undefined;
       if (queued !== undefined && message.id) {
         this.pendingQueue.delete(message.id);
-        this.rejectedQueue(message.id, queued, message.message);
+        this.rejectedQueue(message.id, queued.text, message.message, queued.attachments);
         return;
       }
       const known = message.id && [...this.state.model.pending, ...Object.values(this.state.model.conversations).flat()].some(e => e.sendId === message.id);
@@ -238,10 +285,12 @@ export class Store {
     this.dispatch({ type: "server", message: { type: "result", id: "", conversation: "main", result: { kind: "notice", text: "", notices: [error instanceof Error ? error.message : String(error)] } } });
   }
 
-  private rejectedQueue(id: string, text: string, message: string): void {
+  private rejectedQueue(id: string, text: string, message: string, attachments: AttachmentView[] = []): void {
     if (!this.state.drafts.main) this.setDraft("main", text);
+    // Its images go back to the composer too, unless others already wait there.
+    if (attachments.length && !this.state.images.main?.length) this.setImages("main", () => attachments.map((attachment) => ({ key: newId(), name: attachment.name, status: "ready", attachment })));
     // Preserve it on the page even if the reader has already started another draft.
-    this.dispatch({ type: "sent", id, text, to: "main", at: new Date().toISOString() });
+    this.dispatch({ type: "sent", id, text, to: "main", at: new Date().toISOString(), attachments });
     this.dispatch({ type: "server", message: { type: "error", id, code: "queue_failed", message } });
   }
 

@@ -61,6 +61,8 @@ export interface RoutingContext {
 
 export interface BuildContextOptions {
   timeZone: string;
+  /** Names of the images attached to the current message. */
+  attachments?: string[];
   historyBudgetTokens?: number;
   /** Meaning matches of goals and tasks for candidateQuery(), from the semantic index. */
   semantic?: SemanticHit[];
@@ -145,6 +147,8 @@ export function buildRoutingContext(store: LedgerStore, message: string, options
       ),
     );
   }
+  // Images are named apart from the message, whose exact text request ranges index.
+  if (options.attachments?.length) sections.push(section("CURRENT_ATTACHMENTS", attachedLine(options.attachments)));
   sections.push(section("CURRENT_USER_MESSAGE", message));
 
   return {
@@ -282,8 +286,13 @@ function tagFor(exchange: Exchange, goals: Map<string, GoalEntry>, store: Ledger
   return `[${tags.join(" + ")}]`;
 }
 
-function renderExchange(tag: string, user: string, response: string): string {
-  return `${tag}\nUSER:\n${user}\n\nSOCRATES:\n${response}`;
+function renderExchange(tag: string, user: string, response: string, attachments: string[] = []): string {
+  return `${tag}\nUSER:\n${user}${attachments.length ? `\n${attachedLine(attachments)}` : ""}\n\nSOCRATES:\n${response}`;
+}
+
+/** "[The user attached 2 images: a.png, b.png]" */
+function attachedLine(names: string[]): string {
+  return `[The user attached ${names.length === 1 ? "an image" : `${names.length} images`}: ${names.join(", ")}]`;
 }
 
 /**
@@ -303,7 +312,7 @@ function collectHistory(
   for (const exchange of store.recentExchanges(lanes)) {
     newest ??= exchange;
     const tag = tagFor(exchange, goals, store);
-    const block = renderExchange(tag, exchange.userMessage, exchange.response);
+    const block = renderExchange(tag, exchange.userMessage, exchange.response, exchange.attachments);
     const tokens = countTokens(block);
     if (used + tokens <= budget) {
       blocks.push(block);

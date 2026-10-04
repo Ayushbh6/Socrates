@@ -256,3 +256,15 @@ describe("drafts of a reply that is arriving", () => {
   });
 });
 
+
+describe("attachments on questions", () => {
+  const image = { id: "b".repeat(32), name: "shot.png", media_type: "image/png", width: 10, height: 10, bytes: 99 };
+  it("keeps a message's images, from the page that sent it, a page that only sees the activity, and history", () => {
+    let m = reduce(emptyModel(), { type: "sent", id: "c9", text: "Look", to: "main", at, attachments: [image] });
+    m = run(m, act("main", { kind: "message", text: "Look", attachments: [image] }));
+    expect(m.conversations.main![0]).toMatchObject({ sendId: "c9", attachments: [image] });
+    expect(run(emptyModel(), act("main", { kind: "message", text: "Look", attachments: [image] })).conversations.main![0]!.attachments).toEqual([image]);
+    const loaded = reduce(emptyModel(), { type: "history", conversation: "main", items: [item({ attachments: [image] })] });
+    expect(loaded.conversations.main![0]!.attachments).toEqual([image]);
+  });
+});

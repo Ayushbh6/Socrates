@@ -1,4 +1,4 @@
-import type { Access, Evidence, Folders, GoalView, History, Provider, Settings, Status } from "./types";
+import type { Access, AttachmentView, Evidence, Folders, GoalView, History, Provider, Settings, Status } from "./types";
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -19,7 +19,16 @@ async function call<T>(method: string, route: string, body?: unknown): Promise<T
   return data as T;
 }
 
+/** Store one image for a message; the server answers with what it stored. */
+async function upload(image: Blob, name: string): Promise<AttachmentView> {
+  const response = await fetch(`/api/attachments?name=${encodeURIComponent(name)}`, { method: "POST", headers: { "content-type": image.type }, body: image });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) throw new ApiError(response.status, data?.error?.code ?? "failed", data?.error?.message ?? "The image could not be attached.");
+  return data as AttachmentView;
+}
+
 export const api = {
+  upload,
   status: () => call<Status>("GET", "/api/status"),
   settings: () => call<Settings>("GET", "/api/settings"),
   setAccess: (access: Partial<Access>) => call<Settings>("PUT", "/api/settings", { access }),

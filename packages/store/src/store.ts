@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import type { EventPayloads, EventRefs, EventType, StoredEvent, TurnStop } from "@socrates/contracts";
+import type { Attachment, EventPayloads, EventRefs, EventType, StoredEvent, TurnStop } from "@socrates/contracts";
 import { type Clock, newId, systemClock, truncateToTokens } from "@socrates/shared";
 import { MIGRATIONS, SCHEMA_SQL, SCHEMA_VERSION } from "./schema";
 
@@ -95,6 +95,8 @@ export interface Anchor {
 export interface Exchange {
   userEventId: string;
   userMessage: string;
+  /** Names of the images the user attached to the message. */
+  attachments: string[];
   response: string;
   at: string;
   projectTurns: number[];
@@ -497,8 +499,8 @@ export class LedgerStore {
   }
 
   /** Persist the exact user message before anything else happens to it. */
-  recordUserMessage(text: string, laneId: string | null = null): StoredEvent<"user_message"> {
-    return this.appendEvent("user_message", laneId ? { text, lane_id: laneId } : { text });
+  recordUserMessage(text: string, laneId: string | null = null, attachments: Attachment[] = []): StoredEvent<"user_message"> {
+    return this.appendEvent("user_message", { text, ...(laneId ? { lane_id: laneId } : {}), ...(attachments.length ? { attachments } : {}) });
   }
 
   /** The conversation's latest turn when it is a clarification: the main conversation's, or a lane's. */
@@ -511,7 +513,7 @@ export class LedgerStore {
   }
 
   /** Exact request and clarification records for the worker handoff. */
-  requestForTurn(turnId: string): { request: string; clarification: { requestEventId: string; questionEventId: string; answerEventId: string; question: string; answer: string } | null } {
+  requestForTurn(turnId: string): { request: string; attachments: Attachment[]; clarification: { requestEventId: string; questionEventId: string; answerEventId: string; question: string; answer: string } | null } {
     const turn = this.requireTurn(turnId);
     const bound = this.listEvents({ turnId, type: "turn_bound" })[0];
     const p = bound?.payload as EventPayloads["turn_bound"] | undefined;
@@ -519,11 +521,12 @@ export class LedgerStore {
     const request = this.getEvent(requestEventId)?.payload as EventPayloads["user_message"] | undefined;
     if (!request || typeof request.text !== "string") throw new StoreError("Request event is missing.");
     const text = p?.request_range ? request.text.slice(...p.request_range) : request.text;
-    if (!p?.clarification_turn_id) return { request: text, clarification: null };
+    const attachments = request.attachments ?? [];
+    if (!p?.clarification_turn_id) return { request: text, attachments, clarification: null };
     const clarification = this.requireTurn(p.clarification_turn_id);
     const question = this.getEvent(clarification.responseEventId!)!.payload as EventPayloads["assistant_response"];
     const answer = this.getEvent(turn.userEventId)!.payload as EventPayloads["user_message"];
-    return { request: text, clarification: { requestEventId, questionEventId: clarification.responseEventId!, answerEventId: turn.userEventId, question: question.text, answer: answer.text } };
+    return { request: text, attachments, clarification: { requestEventId, questionEventId: clarification.responseEventId!, answerEventId: turn.userEventId, question: question.text, answer: answer.text } };
   }
 
   /** Restore into an empty store using only the append-only log. No IDs or
@@ -1402,9 +1405,11 @@ export class LedgerStore {
         const response = responseIds.length > 1
           ? responseIds.map((id) => (this.getEvent(id)!.payload as EventPayloads["assistant_response"]).text).join("\n\n")
           : (JSON.parse(str(r.response_payload)) as { text: string }).text;
+        const user = JSON.parse(str(r.user_payload)) as EventPayloads["user_message"];
         yield {
           userEventId,
-          userMessage: (JSON.parse(str(r.user_payload)) as { text: string }).text,
+          userMessage: user.text,
+          attachments: (user.attachments ?? []).map((a) => a.name),
           response,
           at: str(r.user_at),
           projectTurns: turns.map((t) => t.projectTurn),
@@ -1692,7 +1697,8 @@ export class LedgerStore {
       turnId,
       turn.taskId,
       turn.goalId,
-      this.requestForTurn(turnId).request,
+      // Attached images are searchable by name, and a found exchange says where each is stored.
+      searchableRequest(this.requestForTurn(turnId)),
       response?.text ?? "",
     );
   }
@@ -1873,4 +1879,8 @@ export function handleNumber(handle: string): number {
 /** Case-insensitive comparison form that treats composed and decomposed characters alike. */
 export function foldText(text: string): string {
   return text.normalize("NFC").toLowerCase();
+}
+
+function searchableRequest({ request, attachments }: { request: string; attachments: Attachment[] }): string {
+  return attachments.length ? `${request}\n[Attached images: ${attachments.map((a) => `${a.name} (${a.path})`).join(", ")}]` : request;
 }

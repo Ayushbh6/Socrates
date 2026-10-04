@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { type AnchorDecision, type Draft, type HandleResult, MAX_RUNNING_LANES, SocratesBusyError } from "@socrates/agent";
+import type { Attachment } from "@socrates/contracts";
 import type { ApprovalOrigin, ApprovalRequest } from "@socrates/tools";
 import type { WebSocket } from "ws";
 import { z } from "zod";
 import { activityOf } from "./activity";
+import { ATTACHMENTS_MAX, findAttachment, viewOf } from "./attachments";
 import type { Runtime } from "./runtime";
 
 /** A reconnecting page catches up on at most this many events; further behind, it reloads its history. */
@@ -20,13 +22,15 @@ const SEND_BUFFER_MAX_BYTES = 8 * 1024 * 1024;
 
 const Id = z.string().regex(/^[A-Za-z0-9_-]{1,100}$/);
 const Text = z.string().min(1).max(TEXT_MAX_CHARS).refine((text) => text.trim().length > 0, "Write a message.");
+/** An attachment named in a message: a stored image's id, with the name the page gives it. */
+const Attached = z.array(z.object({ id: z.string().regex(/^[0-9a-f]{32}$/), name: z.string().max(1000) }).strict()).max(ATTACHMENTS_MAX);
 const Decision = z.object({ goalId: z.string(), path: z.string(), role: z.string(), decision: z.enum(["approve", "reject", "supersede"]) }).strict();
 
 /** What a page may send (architecture/server.md, "Live connection"). */
 const Command = z.discriminatedUnion("type", [
   z.object({ type: z.literal("hello"), after: z.number().int().nonnegative().optional() }).strict(),
-  z.object({ type: z.literal("send"), id: Id, text: Text, to: z.union([z.literal("main"), z.literal("new_lane"), Id]), anchorDecisions: z.array(Decision).max(10).optional() }).strict(),
-  z.object({ type: z.literal("queue"), id: Id, text: Text }).strict(),
+  z.object({ type: z.literal("send"), id: Id, text: Text, to: z.union([z.literal("main"), z.literal("new_lane"), Id]), anchorDecisions: z.array(Decision).max(10).optional(), attachments: Attached.optional() }).strict(),
+  z.object({ type: z.literal("queue"), id: Id, text: Text, attachments: Attached.optional() }).strict(),
   z.object({ type: z.literal("queue_edit"), id: Id, text: Text }).strict(),
   z.object({ type: z.literal("queue_remove"), id: Id }).strict(),
   z.object({ type: z.literal("queue_to_lane"), id: Id }).strict(),
@@ -82,7 +86,7 @@ export class LiveHub {
   private readonly clients = new Set<WebSocket>();
   /** Subscribe at hello, so events saved between upgrade and replay arrive once. */
   private readonly subscribed = new Set<WebSocket>();
-  private readonly queue: { id: string; text: string }[] = [];
+  private readonly queue: { id: string; text: string; attachments: Attachment[] }[] = [];
   private readonly approvals = new Map<string, { view: PendingApproval; runId: string; resolve: (granted: boolean) => void }>();
   private readonly runs = new Map<string, Run>();
   /** Accepted IDs remain reserved across reconnects for this server launch. */
@@ -160,7 +164,7 @@ export class LiveHub {
       settings: this.runtime.settings,
       busy: socrates?.busy ?? false,
       lanes: this.runtime.lanes(),
-      queue: [...this.queue],
+      queue: this.queue.map((q) => ({ id: q.id, text: q.text, ...(q.attachments.length ? { attachments: q.attachments.map(viewOf) } : {}) })),
       approvals: [...this.approvals.values()].map((a) => a.view),
     };
   }
@@ -189,14 +193,16 @@ export class LiveHub {
       case "hello":
         return this.hello(socket, command.after);
       case "send":
-        return this.start(command.id, command.text, command.to, command.anchorDecisions);
-      case "queue":
+        return this.start(command.id, command.text, command.to, command.anchorDecisions, false, this.attachments(command.attachments));
+      case "queue": {
         this.assertNewId(command.id);
         if (this.queue.length >= QUEUE_MAX) throw new LiveError("queue_full", `At most ${QUEUE_MAX} messages can wait for the main conversation.`);
+        const attachments = this.attachments(command.attachments);
         this.acceptedIds.add(command.id);
-        this.queue.push({ id: command.id, text: command.text });
+        this.queue.push({ id: command.id, text: command.text, attachments });
         this.publishState();
         return this.drain();
+      }
       case "queue_edit":
         this.queued(command.id).text = command.text;
         return this.publishState();
@@ -205,7 +211,7 @@ export class LiveHub {
         return this.publishState();
       case "queue_to_lane": {
         const item = this.queued(command.id);
-        this.start(item.id, item.text, "new_lane", undefined, true);
+        this.start(item.id, item.text, "new_lane", undefined, true, item.attachments);
         this.queue.splice(this.queue.indexOf(item), 1);
         return this.publishState();
       }
@@ -281,7 +287,16 @@ export class LiveHub {
   }
 
   /** Start one message: in main (refused while main is busy; queue it instead), a new lane, or an open lane. */
-  private start(id: string, text: string, to: string, anchorDecisions?: AnchorDecision[], fromQueue = false): void {
+  /** The stored images a message names; every one must exist. */
+  private attachments(named: { id: string; name: string }[] | undefined): Attachment[] {
+    return (named ?? []).map(({ id, name }) => {
+      const found = findAttachment(this.runtime.config.attachmentsDir, id, name);
+      if (!found) throw new LiveError("attachment_missing", `The attached image ${name} is no longer stored; attach it again.`);
+      return found;
+    });
+  }
+
+  private start(id: string, text: string, to: string, anchorDecisions?: AnchorDecision[], fromQueue = false, attachments: Attachment[] = []): void {
     const socrates = this.socrates();
     if (!fromQueue) this.assertNewId(id);
     if (to !== "main" && to !== "new_lane") {
@@ -298,6 +313,7 @@ export class LiveHub {
     this.runs.set(id, run);
     const work = socrates.handle(text, {
       signal: run.controller.signal,
+      ...(attachments.length ? { attachments } : {}),
       approve: (request, origin) => this.ask(run, request, origin),
       ...(to === "main" ? {} : { lane: to === "new_lane" ? "new" : to }),
       ...(anchorDecisions?.length ? { anchorDecisions } : {}),
@@ -348,7 +364,7 @@ export class LiveHub {
     if (this.closed || !this.runtime.acceptingMessages || !socrates || socrates.busy || !this.queue.length) return;
     const next = this.queue.shift()!;
     try {
-      this.start(next.id, next.text, "main", undefined, true);
+      this.start(next.id, next.text, "main", undefined, true, next.attachments);
     } catch (error) {
       this.broadcast({ type: "error", id: next.id, conversation: "main", ...problemOf(error) });
     }
@@ -389,7 +405,7 @@ export class LiveHub {
     });
   }
 
-  private queued(id: string): { id: string; text: string } {
+  private queued(id: string): { id: string; text: string; attachments: Attachment[] } {
     const item = this.queue.find((q) => q.id === id);
     if (!item) throw new LiveError("not_found", "That message is no longer queued.");
     return item;

@@ -1,10 +1,11 @@
-import type { EventRefs, ModelClient, TurnStop } from "@socrates/contracts";
+import type { Attachment, EventRefs, ModelClient, TurnStop } from "@socrates/contracts";
 import { abortable } from "@socrates/shared";
 import { TokenCalibration } from "@socrates/providers";
 import { GoalRouter, type RoutedPart, laneSummaries } from "@socrates/router";
 import type { Goal, Lane, LedgerStore, Task, Turn } from "@socrates/store";
 import type { SemanticHit, SemanticIndex } from "@socrates/retrieval";
 import { type AccessGrant, type AccessPolicy, type Approve, type CapabilityCatalog, RunState, type ShelfOptions, type SupervisorOptions, ToolRunner, WorkspaceRoot, canReadAutomatically, capabilityCandidates, skillShelf } from "@socrates/tools";
+import { attachmentImages, requestAttachments } from "./attachments";
 import { taskHistory } from "./history";
 import { assembleContext, projectQuery } from "./context";
 import { type LaneView, laneNotice, lanesBlock } from "./lanes";
@@ -65,6 +66,8 @@ export interface SocratesOptions {
   now?: () => number;
   /** Internal diagnostics. Never shown to a model. */
   log?: (message: string) => void;
+  /** The folder of the user's attached images, which `read` may always open. */
+  attachments?: string;
 }
 
 export interface HandleOptions {
@@ -96,6 +99,8 @@ export interface HandleOptions {
    * replaces it.
    */
   onDraft?: (turnId: string, draft: Draft) => void;
+  /** Images the user attached to the message, already stored in the attachments folder. */
+  attachments?: Attachment[];
 }
 
 export interface PartResult {
@@ -210,6 +215,7 @@ export class Socrates {
     this.runner = new ToolRunner({
       store: options.store,
       timeZone: options.timeZone,
+      ...(options.attachments ? { attachments: options.attachments } : {}),
       approve: async (request, origin) => {
         const run = origin?.turnId ? this.approvers.get(origin.turnId) : undefined;
         const lane = run?.laneId ?? null;
@@ -281,7 +287,8 @@ export class Socrates {
     }
     let userEventId: string | undefined;
     try {
-      if (laneId) userEventId = this.store.recordUserMessage(message, laneId).id;
+      // A message with attachments is recorded here, so they are saved with it before routing.
+      if (laneId || options.attachments?.length) userEventId = this.store.recordUserMessage(message, laneId, options.attachments ?? []).id;
     } catch (error) {
       if (laneId) this.leaveLane(laneId);
       return Promise.reject(error);
@@ -537,6 +544,7 @@ export class Socrates {
       // Setup exhausted the working allowance. The loop makes only its bounded tool-free wrap-up.
     } finally { clearTimeout(setupTimer); }
     const run = new RunState(undefined, options.accessGrants);
+    const vision = this.options.model.vision === true;
     const shelf = skillShelf(store, capabilities.catalog, goal.id, this.options.shelf);
     const candidates = capabilityCandidates({ store, catalog: capabilities.catalog, goalId: goal.id, message: request, run, semantic: semantic.capabilities });
     // Rebuilt from the current active set each time, so compaction mid-turn keeps a Skill activated earlier in the turn.
@@ -555,11 +563,14 @@ export class Socrates {
         part: parts.length > 1 ? { order: part.order, count: parts.length } : null,
         lanes,
         access: this.options.access?.() ?? null,
+        vision,
         now: store.clock.now(),
         timeZone: this.options.timeZone,
         budgets: { retrievedMax: this.budgets.retrievedMax, projectContextMax: this.budgets.projectContextMax, previousTurn: previousTurn ?? this.budgets.previousTurn },
       });
     const context = assemble();
+    // The user's attached images go with the message to a model that can see them.
+    const images = vision ? await attachmentImages(requestAttachments(store, turn), this.options.log) : [];
     const compact = createCompactor({
       store,
       model: this.options.compactorModel ?? this.options.model,
@@ -581,7 +592,8 @@ export class Socrates {
       capabilities: () => capabilities.current(goal.id),
       startedAt,
       context,
-      scope: { binding: { goalId: goal.id, taskId: turn.taskId!, chatId: turn.chatId, turnId: turn.id }, workspace, run, signal, vision: this.options.model.vision === true },
+      ...(images.length ? { images } : {}),
+      scope: { binding: { goalId: goal.id, taskId: turn.taskId!, chatId: turn.chatId, turnId: turn.id }, workspace, run, signal, vision },
       limits: this.limits,
       budgets: this.budgets,
       compact,

@@ -2,6 +2,7 @@ import type { EventPayloads, TextPart } from "@socrates/contracts";
 import { countTokens } from "@socrates/shared";
 import type { Evidence, HistoryRecord, LedgerStore, Turn } from "@socrates/store";
 import { head, headTail } from "@socrates/tools";
+import { attachmentLines, requestAttachments } from "./attachments";
 import { omissionMarker, renderRecord } from "./summaries";
 
 /** Turn N−1 is fitted to this size (agent-harness.md, "Fitting turn N−1"). */
@@ -255,7 +256,8 @@ function lastLine(text: string): string {
 /** The user's request as this turn received it, with a routing clarification when there was one. */
 export function userSection(store: LedgerStore, turn: Turn): string {
   const { request, clarification } = store.requestForTurn(turn.id);
-  return clarification ? `${request}\n${clarificationLine(clarification)}` : request;
+  const attached = attachmentLines(requestAttachments(store, turn));
+  return [request, clarification ? clarificationLine(clarification) : "", attached].filter(Boolean).join("\n");
 }
 
 export function clarificationLine(c: { question: string; answer: string }): string {

@@ -39,7 +39,7 @@ export function Standard({ app, mode, onMode, onSettings }: { app: AppState; mod
           {mainBusy && <button type="button" className="quiet-button" onClick={() => store.cancel("main")}><Square aria-hidden /> Stop</button>}
         </div>
         <Thread app={app} conversation="main" empty="Ask Socrates anything to begin." />
-        <Composer app={app} conversation="main" laneNumber={null} variant="panel" onModel={onSettings} onNewLane={(text) => store.sendToNewLane(text)} />
+        <Composer app={app} conversation="main" laneNumber={null} variant="panel" onModel={onSettings} onNewLane={(text, attachments) => store.sendToNewLane(text, attachments)} />
       </section>
 
       {side && (
@@ -77,7 +77,7 @@ function LanePanel({ app, lane }: { app: AppState; lane: Lane }) {
         )}
       </div>
       <Thread app={app} conversation={lane.id} compact empty={`Lane ${lane.number} is ready.`} />
-      <Composer app={app} conversation={lane.id} laneNumber={lane.number} variant="panel" compact autoFocus={false} onNewLane={(text) => store.sendToNewLane(text)} />
+      <Composer app={app} conversation={lane.id} laneNumber={lane.number} variant="panel" compact autoFocus={false} onNewLane={(text, attachments) => store.sendToNewLane(text, attachments)} />
     </section>
   );
 }

@@ -16,6 +16,8 @@ export interface ServerConfig {
   settingsPath: string;
   keysPath: string;
   logPath: string;
+  /** Images the user attached to messages, by content hash. */
+  attachmentsDir: string;
 }
 
 /** `$SOCRATES_HOME` or `~/.socrates-v2`, and `$SOCRATES_PORT` or 4200. */
@@ -32,6 +34,7 @@ export function resolveConfig(env: Record<string, string | undefined> = process.
     settingsPath: path.join(home, "settings.json"),
     keysPath: path.join(home, ".env"),
     logPath: path.join(home, "logs", "server.log"),
+    attachmentsDir: path.join(home, "attachments"),
   };
 }
 

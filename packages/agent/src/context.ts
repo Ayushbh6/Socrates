@@ -4,6 +4,7 @@ import { type AccessPolicy, type ActiveCapabilities, type WorkspaceRoot, describ
 import { renderActivity } from "@socrates/router";
 import type { Goal, LedgerStore, Task, Turn } from "@socrates/store";
 import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
+import { attachmentLines, requestAttachments } from "./attachments";
 import { clarificationLine, historyParts, taskHistory } from "./history";
 import { projectContext } from "./project-context";
 import { retrievedHistory } from "./retrieval";
@@ -38,6 +39,8 @@ export interface ContextInput {
   now: Date;
   timeZone: string;
   budgets?: Pick<ContextBudgets, "previousTurn" | "retrievedMax"> & Partial<Pick<ContextBudgets, "projectContextMax">>;
+  /** Whether the working model sees the message's attached images. */
+  vision?: boolean;
 }
 
 /**
@@ -55,7 +58,7 @@ export function assembleContext(input: ContextInput): TextPart[] {
   const budgets = input.budgets ?? DEFAULT_BUDGETS;
   const history = taskHistory(store, turn.id);
   parts.push(...historyParts(store, history, budgets.previousTurn));
-  const message = currentMessage(store, turn);
+  const message = currentMessage(store, turn, input.vision ?? false);
   const boundary = Math.max(history.summary?.to ?? 0, history.omitted?.to ?? 0);
 
   const volatile = [
@@ -185,11 +188,11 @@ function evidenceFromPart(store: LedgerStore, order: number, turn: Turn): string
 }
 
 /** The exact user message, once. A compound part sees the whole message; its own part is named in CURRENT_TASK. */
-function currentMessage(store: LedgerStore, turn: Turn): string {
+function currentMessage(store: LedgerStore, turn: Turn, vision: boolean): string {
   const bound = store.listEvents({ turnId: turn.id, type: "turn_bound" })[0]!.payload as EventPayloads["turn_bound"];
   const original = (store.getEvent(bound.request_event_id)!.payload as EventPayloads["user_message"]).text;
   const { clarification } = store.requestForTurn(turn.id);
-  return clarification ? `${original}\n${clarificationLine(clarification)}` : original;
+  return [original, clarification ? clarificationLine(clarification) : "", attachmentLines(requestAttachments(store, turn), vision)].filter(Boolean).join("\n");
 }
 
 /** Synchronize only capability exposure. Keep native calls and exact stored evidence intact.

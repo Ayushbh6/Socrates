@@ -1,6 +1,7 @@
 import type { EventPayloads, StoredEvent } from "@socrates/contracts";
 import { callLine } from "@socrates/retrieval";
 import type { LedgerStore } from "@socrates/store";
+import { type AttachmentView, viewOf } from "./attachments";
 
 /** A tool's output is previewed up to this many characters; the evidence route returns the rest. */
 export const OUTPUT_PREVIEW_CHARS = 2_000;
@@ -10,7 +11,7 @@ export const THINKING_CHARS = 20_000;
 
 /** What happened, for the web app (architecture/server.md, "Live activity"). */
 export type ActivityBody =
-  | { kind: "message"; text: string }
+  | { kind: "message"; text: string; attachments: AttachmentView[] }
   | { kind: "routed"; turnId: string; projectTurn: number; goal: { number: number; title: string }; task: { number: number; title: string }; lane: number | null }
   | { kind: "question"; turnId: string; text: string }
   /** `text`: narration before tool calls, or "" when the step only thought; `thinking`: the model's readable thinking, or null. */
@@ -46,7 +47,7 @@ export function activityOf(store: LedgerStore, event: StoredEvent): Activity | n
   switch (event.type) {
     case "user_message": {
       const p = event.payload as EventPayloads["user_message"];
-      return { ...base, conversation: p.lane_id ?? "main", kind: "message", text: p.text };
+      return { ...base, conversation: p.lane_id ?? "main", kind: "message", text: p.text, attachments: (p.attachments ?? []).map(viewOf) };
     }
     case "turn_bound": {
       if (!turn?.goalId || !turn.taskId) return null;

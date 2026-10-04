@@ -4,6 +4,18 @@ export interface ModelInUse {
   provider: string;
   model: string;
   source: "settings" | "detected";
+  /** Whether the model can see images; reported for the chat model. */
+  vision?: boolean;
+}
+
+/** An image attached to a message, as the server stores it (`/api/attachments/<id>` serves it). */
+export interface AttachmentView {
+  id: string;
+  name: string;
+  media_type: string;
+  width: number;
+  height: number;
+  bytes: number;
 }
 
 export interface Lane {
@@ -99,6 +111,7 @@ export interface HistoryPart {
 }
 
 export interface HistoryItem {
+  attachments?: AttachmentView[];
   throughSeq?: number;
   activities?: Activity[];
   id: string;
@@ -124,7 +137,7 @@ export interface Folders {
 }
 
 export type ActivityBody =
-  | { kind: "message"; text: string }
+  | { kind: "message"; text: string; attachments?: AttachmentView[] }
   | { kind: "routed"; turnId: string; projectTurn: number; goal: { number: number; title: string }; task: { number: number; title: string }; lane: number | null }
   | { kind: "question"; turnId: string; text: string }
   | { kind: "step"; turnId: string; text: string; thinking?: string | null; thinkingTruncated?: boolean }
@@ -160,7 +173,7 @@ export interface LiveState {
   access: Access;
   busy: boolean;
   lanes: Lane[];
-  queue: { id: string; text: string }[];
+  queue: { id: string; text: string; attachments?: AttachmentView[] }[];
   approvals: PendingApproval[];
 }
 
@@ -179,8 +192,8 @@ export type ServerMessage =
 /** What a page sends on the live connection. */
 export type Command =
   | { type: "hello"; after?: number }
-  | { type: "send"; id: string; text: string; to: string }
-  | { type: "queue"; id: string; text: string }
+  | { type: "send"; id: string; text: string; to: string; attachments?: { id: string; name: string }[] }
+  | { type: "queue"; id: string; text: string; attachments?: { id: string; name: string }[] }
   | { type: "queue_remove"; id: string }
   | { type: "queue_to_lane"; id: string }
   | { type: "cancel"; conversation: string }

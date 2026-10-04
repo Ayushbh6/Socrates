@@ -1,4 +1,4 @@
-import type { Activity, HistoryItem, LiveState, PendingApproval, ServerMessage } from "./types";
+import type { Activity, AttachmentView, HistoryItem, LiveState, PendingApproval, ServerMessage } from "./types";
 
 /**
  * What the page knows, built from history pages and the live connection
@@ -35,6 +35,8 @@ export interface Exchange {
   seq: number | null;
   at: string;
   message: string;
+  /** Images the user attached to the message. */
+  attachments: AttachmentView[];
   /** The goal and task of its first part. */
   route: { goal: { number: number; title: string }; task: { number: number; title: string } } | null;
   steps: Step[];
@@ -76,7 +78,7 @@ export const emptyModel = (): Model => ({ live: null, conversations: { main: [] 
 export type ModelEvent =
   | { type: "history"; conversation: string; items: HistoryItem[]; older?: boolean }
   | { type: "server"; message: ServerMessage }
-  | { type: "sent"; id: string; text: string; to: string; at: string }
+  | { type: "sent"; id: string; text: string; to: string; at: string; attachments?: AttachmentView[] }
   | { type: "unsent"; id: string }
   | { type: "dismiss"; id: number };
 
@@ -92,7 +94,7 @@ export function reduce(model: Model, event: ModelEvent): Model {
       return withConversation(model, event.conversation, event.older ? [...fresh, ...current] : [...current, ...fresh].sort(bySeq));
     }
     case "sent": {
-      const exchange = blank({ key: `c${event.id}`, conversation: event.to, at: event.at, message: event.text, state: "sending", sendId: event.id });
+      const exchange = blank({ key: `c${event.id}`, conversation: event.to, at: event.at, message: event.text, attachments: event.attachments ?? [], state: "sending", sendId: event.id });
       if (event.to === "new_lane") return { ...model, pending: [...model.pending, exchange] };
       return withConversation(model, event.to, [...(model.conversations[event.to] ?? []), exchange]);
     }
@@ -159,7 +161,7 @@ function activity(model: Model, a: Activity | DraftArrived): Model {
       const adopted = { ...model.pending[waiting]!, ...saved, conversation: a.conversation };
       return withConversation({ ...model, pending: model.pending.filter((_, i) => i !== waiting) }, a.conversation, [...list, adopted]);
     }
-    return withConversation(model, a.conversation, [...list, blank({ ...saved, conversation: a.conversation, message: a.text })]);
+    return withConversation(model, a.conversation, [...list, blank({ ...saved, conversation: a.conversation, message: a.text, attachments: a.attachments ?? [] })]);
   }
   const turnId = a.turnId;
   let index = turnId ? list.findLastIndex((e) => e.turns.includes(turnId)) : -1;
@@ -171,7 +173,7 @@ function activity(model: Model, a: Activity | DraftArrived): Model {
     // A turn handed over from the main conversation starts its own exchange in the lane.
     if (turnId && (!last || (last.state !== "working" && last.open.length === 0))) {
       const origin = (model.conversations.main ?? []).find((e) => e.turns.includes(turnId));
-      next = [...list, blank({ key: `t${turnId}`, conversation: a.conversation, at: a.at, message: origin?.message ?? "Handed over from the main conversation.", state: "working" })];
+      next = [...list, blank({ key: `t${turnId}`, conversation: a.conversation, at: a.at, message: origin?.message ?? "Handed over from the main conversation.", attachments: origin?.attachments ?? [], state: "working" })];
       index = next.length - 1;
     }
   }
@@ -184,7 +186,7 @@ function activity(model: Model, a: Activity | DraftArrived): Model {
     if (laneId) {
       const lane = result.conversations[laneId] ?? [];
       if (!lane.some((e) => e.turns.includes(a.turnId))) {
-        result = withConversation(result, laneId, [...lane, blank({key: `t${a.turnId}`, conversation: laneId, at: a.at, message: updated.message,
+        result = withConversation(result, laneId, [...lane, blank({key: `t${a.turnId}`, conversation: laneId, at: a.at, message: updated.message, attachments: updated.attachments,
           route: a.goal && a.task ? {goal:a.goal,task:a.task} : updated.route, turns:[a.turnId], open:[a.turnId] })]);
       }
     }
@@ -291,6 +293,7 @@ export function fromHistory(item: HistoryItem, conversation: string): Exchange {
     seq: item.seq,
     at: item.at,
     message: item.message,
+    attachments: item.attachments ?? [],
     route: first ? { goal: first.goal, task: first.task } : null,
     steps: item.parts.flatMap((p): Step[] => [
       ...(p.handedOff && p.lane !== null ? [{ kind: "handed_off" as const, lane: p.lane }] : []),
@@ -312,7 +315,7 @@ export function fromHistory(item: HistoryItem, conversation: string): Exchange {
 }
 
 function blank(e: Partial<Exchange> & Pick<Exchange, "key" | "conversation" | "at" | "message">): Exchange {
-  return { seq: null, route: null, steps: [], answers: [], draft: null, thinking: null, workedAt: null, draftCalls: {}, throughSeq: 0, question: null, state: "working", note: null, sendId: null, turns: [], open: [], ...e };
+  return { seq: null, attachments: [], route: null, steps: [], answers: [], draft: null, thinking: null, workedAt: null, draftCalls: {}, throughSeq: 0, question: null, state: "working", note: null, sendId: null, turns: [], open: [], ...e };
 }
 
 function bySeq(a: Exchange, b: Exchange): number {

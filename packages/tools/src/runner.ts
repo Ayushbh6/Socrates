@@ -3,7 +3,8 @@ import { abortable, countTokens } from "@socrates/shared";
 import type { SemanticSearch } from "@socrates/retrieval";
 import type { LedgerStore, TaskRefs } from "@socrates/store";
 import { type AccessPolicy, isProtected, protectedPath, within } from "./access";
-import { statSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
+import path from "node:path";
 import { RESULT_CEILING_TOKENS, headTail } from "./bounds";
 import { type CapabilityCatalog, StaticCatalog } from "./catalog";
 import { type ApprovalRequest, type Approve, type HandlerContext, type RunState, type ToolBinding, throwIfCancelled, requireWorkspace } from "./context";
@@ -18,7 +19,7 @@ import { editTool } from "./tools/edit";
 import { readTool } from "./tools/read";
 import { globTool, grepTool } from "./tools/search";
 import { terminalControlTool, terminalTool } from "./tools/terminal";
-import type { WorkspaceRoot } from "./workspace";
+import type { ResolvedPath, WorkspaceRoot } from "./workspace";
 
 export interface ToolRunnerOptions {
   store: LedgerStore;
@@ -37,6 +38,12 @@ export interface ToolRunnerOptions {
   access?: () => AccessPolicy | null;
   /** Receives internal diagnostics of infrastructure failures. Never shown to a model. */
   log?: (message: string) => void;
+  /**
+   * The folder of the user's attached images. `read` may always open a file
+   * in it, by its absolute path, though it lies in Socrates' own data; no
+   * other tool can.
+   */
+  attachments?: string;
 }
 
 /** Where one call runs: its task binding, workspace, run state, and cancellation. */
@@ -96,6 +103,21 @@ export class ToolRunner {
     ] as ToolHandler[];
     this.handlers = new Map(handlers.map((h) => [h.name, h]));
     this.definitions = handlers.map(toDefinition);
+  }
+
+  /** An absolute path of a file in the attachments folder, by its real path, or null. */
+  private attachmentPath(input: string): ResolvedPath | null {
+    const folder = this.options.attachments;
+    if (!folder || !path.isAbsolute(input)) return null;
+    let real: string;
+    let root: string;
+    try {
+      real = realpathSync(input);
+      root = realpathSync(folder);
+    } catch {
+      return null;
+    }
+    return path.dirname(real) === root ? { abs: real, rel: real } : null;
   }
 
   /** Whether calls to this tool may run in parallel. Unknown and MCP tools are serial. */
@@ -227,6 +249,8 @@ export class ToolRunner {
       ...(this.options.semantic ? { semantic: this.options.semantic } : {}),
       resolveReadPath: async (input) => {
         throwIfCancelled(scope.signal);
+        const attachment = this.attachmentPath(input);
+        if (attachment) return attachment;
         const resource = await this.capabilities.resourcePath(scope.binding.goalId, input, scope.signal);
         throwIfCancelled(scope.signal);
         return resource ?? ctx.path(input);

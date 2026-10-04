@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import fastifyStatic from "@fastify/static";
@@ -6,7 +6,9 @@ import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
 import { PROVIDER_DEFAULTS } from "@socrates/providers";
 import { callLine } from "@socrates/retrieval";
+import { IMAGE_MAX_BYTES } from "@socrates/tools";
 import { z } from "zod";
+import { AttachmentError, findAttachment, storeAttachment, viewOf } from "./attachments";
 import { KEY_NAMES, KeyError } from "./keys";
 import { LiveHub } from "./live";
 import { type Runtime, RuntimeBusyError, SettingsError } from "./runtime";
@@ -53,7 +55,7 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof z.ZodError) return reply.code(400).send(problem("invalid_request", error.issues.map((i) => `${i.path.join(".") || "request"}: ${i.message}`).join("; ")));
     if (error instanceof RuntimeBusyError) return reply.code(409).send(problem("busy", error.message));
-    if (error instanceof KeyError || error instanceof FolderError || error instanceof SettingsError) return reply.code(400).send(problem("invalid_request", error.message));
+    if (error instanceof KeyError || error instanceof FolderError || error instanceof SettingsError || error instanceof AttachmentError) return reply.code(400).send(problem("invalid_request", error.message));
     const status = (error as { statusCode?: number }).statusCode;
     if ((error as { code?: string }).code === "FST_ERR_CTP_INVALID_JSON_BODY") return reply.code(400).send(problem("invalid_request", "The request body must be valid JSON."));
     if (status && status >= 400 && status < 500) return reply.code(status).send(problem("invalid_request", (error as Error).message));
@@ -124,6 +126,20 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
   app.delete("/api/keys/:name", async (request, reply) => {
     await runtime.setKey((request.params as { name: string }).name, null);
     return reply.code(204).send();
+  });
+
+  // Images for a message: stored by content, then named in the message that carries them.
+  app.addContentTypeParser(/^image\//, { parseAs: "buffer", bodyLimit: IMAGE_MAX_BYTES }, (_request, body, done) => done(null, body));
+  app.post("/api/attachments", async (request) => {
+    const { name } = z.object({ name: z.string().max(1000).optional() }).strict().parse(request.query);
+    if (!Buffer.isBuffer(request.body)) throw new AttachmentError("Send the image's bytes with its image content type.");
+    return viewOf(storeAttachment(runtime.config.attachmentsDir, request.body, name ?? "image"));
+  });
+  app.get("/api/attachments/:id", async (request, reply) => {
+    const found = findAttachment(runtime.config.attachmentsDir, (request.params as { id: string }).id);
+    if (!found) return reply.code(404).send(problem("not_found", "There is no such attachment."));
+    // Content-addressed: the same id is always the same image.
+    return reply.header("cache-control", "private, max-age=31536000, immutable").type(found.media_type).send(readFileSync(found.path));
   });
 
   app.get("/api/goals", async () => goalsView(runtime.store));

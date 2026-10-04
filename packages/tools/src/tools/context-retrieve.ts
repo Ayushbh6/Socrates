@@ -366,7 +366,7 @@ function taskView(goal: Goal, task: Task, ctx: HandlerContext, scale: number) {
 
 function turnView(turn: Turn, ref: string | null, ctx: HandlerContext, scale: number) {
   const store = ctx.store;
-  const request = store.requestForTurn(turn.id).request;
+  const { request, attachments } = store.requestForTurn(turn.id);
   const response = turn.responseEventId ? (store.getEvent(turn.responseEventId)?.payload as EventPayloads["assistant_response"]).text : null;
   const goal = turn.goalId ? store.requireGoal(turn.goalId) : null;
   const task = turn.taskId ? store.requireTask(turn.taskId) : null;
@@ -386,6 +386,8 @@ function turnView(turn: Turn, ref: string | null, ctx: HandlerContext, scale: nu
       status: turn.status,
     },
     user_message: component(request, Math.floor(2_500 * scale)),
+    // Read one by its path to see it again.
+    ...(attachments.length ? { attached_images: attachments.map((a) => ({ path: a.path, name: a.name, width: a.width, height: a.height })) } : {}),
     tool_activity: evidence.map((e, i) => ({
       ref: sameTask ? e.handle : null,
       tool: e.tool,

@@ -8,8 +8,12 @@ import type { JsonSchema, ModelResponse } from "./model";
  */
 
 export interface EventPayloads {
-  /** `lane_id`: the lane the message was sent to; absent for the main conversation. */
-  user_message: { text: string; lane_id?: string };
+  /**
+   * `lane_id`: the lane the message was sent to; absent for the main
+   * conversation. `attachments`: images the user attached, stored in
+   * Socrates' attachments folder, which `read` may always open.
+   */
+  user_message: { text: string; lane_id?: string; attachments?: Attachment[] };
   /** A parallel lane (agent-harness.md, "Lanes"); numbers are never reused. */
   lane_opened: { lane_id: string; lane_number: number };
   lane_closed: { lane_id: string };
@@ -133,6 +137,20 @@ export interface EventPayloads {
 }
 
 export type EventType = keyof EventPayloads;
+
+/** An image the user attached to a message (agent-harness.md, "Images"). */
+export interface Attachment {
+  /** Content hash; the file is `<attachments folder>/<id>.<ext>`. */
+  id: string;
+  /** The file's name on the user's machine, for the user; never a path. */
+  name: string;
+  /** Absolute path of the stored copy. */
+  path: string;
+  media_type: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+  width: number;
+  height: number;
+  bytes: number;
+}
 
 /** One tool as its MCP server advertised it. */
 export interface McpToolSnapshot {

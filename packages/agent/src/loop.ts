@@ -1,4 +1,4 @@
-import { type FinalAnswer, type ModelClient, ModelError, type ModelMessage, type ModelResponse, type TextPart, type ToolCall, type ToolDefinition, type TurnStop } from "@socrates/contracts";
+import { type FinalAnswer, type ImageData, type ModelClient, ModelError, type ModelMessage, type ModelResponse, type TextPart, type ToolCall, type ToolDefinition, type TurnStop } from "@socrates/contracts";
 import type { TokenCalibration } from "@socrates/providers";
 import { abortable } from "@socrates/shared";
 import type { ActiveCapabilities, CallScope, ToolRunner } from "@socrates/tools";
@@ -39,6 +39,8 @@ export interface RunInput {
   startedAt?: number;
   /** The assembled working context: the first user message. */
   context: TextPart[];
+  /** Images shown with the context: the ones the user attached, for a model that can see. */
+  images?: ImageData[];
   scope: CallScope;
   limits: AgentLimits;
   /** The compaction trigger and the hard ceiling. */
@@ -78,7 +80,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
   const now = input.now ?? Date.now;
   const started = input.startedAt ?? now();
   const { model, limits, scope } = input;
-  const messages: ModelMessage[] = [{ role: "user", content: input.context }];
+  const messages: ModelMessage[] = [{ role: "user", content: input.context, ...(input.images?.length ? { images: input.images } : {}) }];
   let tools = input.tools;
   let baseTokens = requestTokens(input.system, [], tools);
   const sizes: number[] = [messageTokens(messages[0]!)];
@@ -246,7 +248,10 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
         if (scope.signal.aborted) return interrupted("cancelled");
         if (compacted === null) return await wrapUp("time");
         messages.splice(0, messages.length, ...compacted);
-        sizes.splice(0, sizes.length, ...compacted.map(messageTokens));
+        // The rebuilt context still carries the images the user attached.
+        const first = messages[0];
+        if (input.images?.length && first?.role === "user" && !first.images) messages[0] = { ...first, images: input.images };
+        sizes.splice(0, sizes.length, ...messages.map(messageTokens));
         compactedAt = measure(messages);
         continue;
       }
@@ -307,7 +312,7 @@ function withRollingBreakpoint(messages: ModelMessage[]): ModelMessage[] {
   if (last.role === "tool") out.push({ ...last, cache: true });
   else if (last.role === "user") {
     const parts = typeof last.content === "string" ? [{ text: last.content }] : last.content;
-    out.push({ role: "user", content: parts.map((p, i) => (i === parts.length - 1 ? { ...p, cache: true } : p)) });
+    out.push({ ...last, content: parts.map((p, i) => (i === parts.length - 1 ? { ...p, cache: true } : p)) });
   } else out.push(last);
   return out;
 }

@@ -41,7 +41,7 @@ export function Thread({ app, conversation, extra = [], compact = false, empty }
         {!list.length && <p className="thread-empty">{empty}</p>}
         {list.map((e) => (
           <article key={e.key} className="thread-item">
-            <QuestionCard text={e.message} note={e.state === "working" || e.state === "sending" ? e.note : null} />
+            <QuestionCard text={e.message} attachments={e.attachments} note={e.state === "working" || e.state === "sending" ? e.note : null} />
             <div className="thread-answer">
               <AnswerView exchange={e} approvals={e === latest ? approvals : []} />
             </div>

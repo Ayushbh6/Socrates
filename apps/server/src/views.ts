@@ -6,6 +6,7 @@ import { callLine } from "@socrates/retrieval";
 import type { LedgerStore, Turn, Workspace } from "@socrates/store";
 import { assertSeparateFromClassic } from "./config";
 import { type Activity, activityOf } from "./activity";
+import { type AttachmentView, viewOf } from "./attachments";
 
 /** Turns per history page; a message's compound parts always stay on one page. */
 export const HISTORY_PAGE_TURNS = 30;
@@ -34,6 +35,8 @@ export interface HistoryItem {
   activities: Activity[];
   /** The message's ledger event; stable across pages. */
   id: string;
+  /** Images the user attached, without where they are stored. */
+  attachments: AttachmentView[];
   /** That event's sequence number: a page resumes the live connection from just before an unfinished message. */
   seq: number;
   at: string;
@@ -71,6 +74,7 @@ export function conversationHistory(store: LedgerStore, laneId: string | null, b
       seq: event.seq,
       at: event.at,
       message: event.payload.text,
+      attachments: (event.payload.attachments ?? []).map(viewOf),
       unrouted: turns.length === 0,
       question: clarification ? responseText(store, clarification) : null,
       parts: all.filter((t) => t.kind === "task").map((t) => part(store, t, laneId)),
