@@ -142,13 +142,21 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
         if (draft.kind === "answer") partial = draft.text;
         onDraft(draft);
       }, request) : undefined;
+      // The model's readable thinking is its own draft beside the reply's.
+      let thought = "";
+      const live = () => streaming && request === requests && !signal.aborted && !scope.signal.aborted;
       try {
         const response = await abortable(model.complete({
           system: input.system, messages: withRollingBreakpoint(messages), tools,
           toolChoice: phase === "work" ? "auto" : "none", maxOutputTokens: input.maxOutputTokens ?? 16_000, signal,
           // Every request, a retry included, is its own draft.
           ...(onText ? { onText: (text: string) => {
-            if (streaming && request === requests && !signal.aborted && !scope.signal.aborted) onText(text);
+            if (live()) onText(text);
+          } } : {}),
+          ...(onDraft ? { onReasoning: (text: string) => {
+            if (!live() || !text) return;
+            thought += text;
+            try { onDraft({ call: request, kind: "thinking", text: thought }); } catch {}
           } } : {}),
         }), signal);
         input.onResponse?.(response, phase);

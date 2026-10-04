@@ -325,6 +325,37 @@ describe("drafts of a reply that is arriving", () => {
     hold.open();
   });
 
+  it("sends thinking beside the reply's draft, saves it on the step, and keeps it in history", async () => {
+    const hold = gate();
+    const { page, app, token, port } = await liveServer(new Responder("r", () => createGoal("Shop", "Fix checkout")), new Responder("a", async (_m, request) => {
+      request.onReasoning?.("Weighing the checkout ");
+      const text = final({ full_answer: "Checkout fixed." }).text;
+      request.onText?.(text.slice(0, 24));
+      await hold.opened;
+      request.onReasoning?.("late");
+      request.onText?.(text.slice(24));
+      return { text, reasoning: "Weighing the checkout flow." };
+    }));
+    const p = await page();
+    p.send({ type: "hello" });
+    p.send({ type: "send", id: "m1", text: "Fix the checkout.", to: "main" });
+    const thinking = await p.next((m) => m.type === "draft" && m.kind === "thinking");
+    const answer = await p.next((m) => m.type === "draft" && m.kind === "answer");
+    expect(thinking).toMatchObject({ conversation: "main", call: 1, text: "Weighing the checkout " });
+    expect(answer).toMatchObject({ call: 1, text: "Checkout" });
+    // A page that joins now gets both drafts of the turn.
+    const late = await page();
+    late.send({ type: "hello" });
+    await late.next((m) => m.type === "state");
+    expect((await Promise.all([late.next((m) => m.type === "draft" && m.kind === "thinking"), late.next((m) => m.type === "draft" && m.kind === "answer")])).map((m) => m.text)).toEqual(["Weighing the checkout ", "Checkout"]);
+    hold.open();
+    await p.next(isResult("m1"));
+    const step = p.received.find((m) => m.type === "activity" && m.kind === "step")!;
+    expect(step).toMatchObject({ text: "", thinking: "Weighing the checkout flow.", thinkingTruncated: false });
+    const history = await app.inject({ method: "GET", url: "/api/history", headers: { authorization: `Bearer ${token}`, host: `127.0.0.1:${port}` } });
+    expect(history.json().items[0].activities).toEqual([expect.objectContaining({ kind: "step", text: "", thinking: "Weighing the checkout flow." })]);
+  });
+
   it("sends a lane's draft under the lane and keeps drafts of simultaneous turns apart", async () => {
     const hold = gate();
     const { page } = await liveServer(new Responder("r", (m) => createGoal(m.slice(0, 12), m.slice(0, 12))), new Responder("a", async (m, request) => {

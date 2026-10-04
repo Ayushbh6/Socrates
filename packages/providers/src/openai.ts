@@ -69,7 +69,7 @@ export class OpenAICompatibleModel implements ModelClient {
 
     let completion: Completion;
     try {
-      completion = request.onText ? await this.stream(params, request.onText, request.signal) : await this.client.chat.completions.create(params, request.signal ? { signal: request.signal } : undefined);
+      completion = request.onText ? await this.stream(params, request.onText, request.onReasoning, request.signal) : await this.client.chat.completions.create(params, request.signal ? { signal: request.signal } : undefined);
     } catch (error) {
       throw toModelError(error);
     }
@@ -101,18 +101,20 @@ export class OpenAICompatibleModel implements ModelClient {
       },
       servedBy: completion.model,
       ...(message ? { raw: { provider: this.id, content: structuredClone(message) } } : {}),
+      ...(reasoningOf(message) ? { reasoning: reasoningOf(message) } : {}),
     };
   }
 
   /** The same request, streamed: text reaches `onText` as it arrives and the complete completion is rebuilt from the chunks. */
-  private async stream(params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming, onText: (delta: string) => void, signal?: AbortSignal): Promise<Completion> {
+  private async stream(params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming, onText: (delta: string) => void, onReasoning: ((delta: string) => void) | undefined, signal?: AbortSignal): Promise<Completion> {
     const guard = idleGuard(signal, this.options.idleMs ?? 60_000);
     try {
       const chunks = await this.client.chat.completions.create({ ...params, stream: true, stream_options: { include_usage: true } }, { signal: guard.signal });
       const reply = new ChatReply();
       for await (const chunk of chunks) {
         guard.touch();
-        const text = reply.add(chunk);
+        const { text, reasoning } = reply.add(chunk);
+        if (reasoning) onReasoning?.(reasoning);
         if (text) onText(text);
       }
       // The SDK ends a stream that was aborted quietly, so the ending is checked here.
@@ -132,6 +134,13 @@ export class OpenAICompatibleModel implements ModelClient {
 type Completion = Pick<OpenAI.Chat.ChatCompletion, "model" | "usage"> & {
   choices: { finish_reason: string | null; message: OpenAI.Chat.ChatCompletionMessage }[];
 };
+
+/** The readable reasoning of a completion message: DeepSeek's reasoning_content or OpenRouter's reasoning. */
+function reasoningOf(message: OpenAI.Chat.ChatCompletionMessage | undefined): string | undefined {
+  const fields = message as { reasoning_content?: unknown; reasoning?: unknown } | undefined;
+  const text = typeof fields?.reasoning_content === "string" ? fields.reasoning_content : typeof fields?.reasoning === "string" ? fields.reasoning : "";
+  return text.trim() ? text : undefined;
+}
 
 const MERGED_DETAIL_FIELDS = new Set(["text", "summary", "data"]);
 
@@ -155,12 +164,12 @@ export class ChatReply {
     return this.finish !== null;
   }
 
-  /** Take one chunk; returns the text it carried. */
-  add(chunk: OpenAI.Chat.ChatCompletionChunk): string {
+  /** Take one chunk; returns the text and the readable reasoning it carried. */
+  add(chunk: OpenAI.Chat.ChatCompletionChunk): { text: string; reasoning: string } {
     if (chunk.model) this.model = chunk.model;
     if (chunk.usage) this.usage = chunk.usage;
     const choice = chunk.choices?.[0];
-    if (!choice) return "";
+    if (!choice) return { text: "", reasoning: "" };
     if (choice.finish_reason) this.finish = choice.finish_reason;
     const { role: _role, content, tool_calls, ...rest } = choice.delta as Record<string, unknown> & { content?: string | null; tool_calls?: OpenAI.Chat.ChatCompletionChunk.Choice.Delta.ToolCall[] };
     for (const [key, value] of Object.entries(rest)) {
@@ -175,9 +184,10 @@ export class ChatReply {
       if (call.function?.name) own.name += call.function.name;
       if (call.function?.arguments) own.args += call.function.arguments;
     }
-    if (!content) return "";
-    this.text += content;
-    return content;
+    // DeepSeek streams its reasoning as reasoning_content, OpenRouter as reasoning.
+    const reasoning = typeof rest.reasoning_content === "string" ? rest.reasoning_content : typeof rest.reasoning === "string" ? rest.reasoning : "";
+    if (content) this.text += content;
+    return { text: content ?? "", reasoning };
   }
 
   completion(): Completion {

@@ -76,6 +76,12 @@ export interface ModelRequest {
    * text already, so a retry starts the text again from its beginning.
    */
   onText?: (delta: string) => void;
+  /**
+   * Called with each piece of the model's readable thinking (its reasoning,
+   * or the provider's summary of it) while a streamed reply arrives. For
+   * display only: replay uses the raw content.
+   */
+  onReasoning?: (delta: string) => void;
 }
 
 /**
@@ -101,6 +107,12 @@ export interface ModelResponse {
   raw?: ProviderContent;
   /** The model that actually served the request, when the provider reports it (for example after a fallback). */
   servedBy?: string;
+  /**
+   * The model's readable thinking, when the provider shows it: its reasoning
+   * text or a summary of it. For display only; it is never sent back to a
+   * model (the raw content carries what the provider needs).
+   */
+  reasoning?: string;
 }
 
 export interface ModelClient {

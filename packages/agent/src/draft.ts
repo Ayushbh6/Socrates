@@ -6,8 +6,12 @@
 export interface Draft {
   /** Which model request of the turn this draft belongs to; a retry or repair starts a new one. */
   call: number;
-  /** Narration is the line before tool calls; the answer is the final message's `full_answer`. */
-  kind: "narration" | "answer";
+  /**
+   * Narration is the line before tool calls; the answer is the final
+   * message's `full_answer`; thinking is the model's readable reasoning (or
+   * its provider's summary), kept apart from both.
+   */
+  kind: "narration" | "answer" | "thinking";
   /** Everything readable so far, not only the newest piece. */
   text: string;
 }
@@ -21,7 +25,7 @@ const SIMPLE_ESCAPES: Record<string, string> = { n: "\n", t: "\t", r: "\r", b: "
  * answer is that string decoded as far as it has arrived; the rest of the
  * object is never shown. Any other text is narration.
  */
-export function draftOf(text: string): Omit<Draft, "call"> | null {
+export function draftOf(text: string): { kind: "narration" | "answer"; text: string } | null {
   const start = ANSWER_START.exec(text);
   if (start) {
     const answer = decodeString(text, start.index + start[0].length);

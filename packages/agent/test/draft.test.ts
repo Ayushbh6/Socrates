@@ -187,4 +187,23 @@ describe("drafts from the agent loop", () => {
     const second = await plain.socrates.handle("Again.", { signal: quiet.signal });
     expect(w.store.interruption(second.kind === "answered" ? second.parts[0]!.turn.id : "")!.partial_answer).toBeUndefined();
   });
+
+  it("sends the model's thinking as its own draft, beside the reply's, and saves it with the reply", async () => {
+    const w = await world({ files: { "a.txt": "x\n" } });
+    const { seen, result } = drafts(w, [
+      { reasoning: "I should read the file first.", text: "Reading it.", toolCalls: [call("read", { path: "a.txt" })] },
+      { ...final({ full_answer: "It holds x." }), reasoning: "Now I can answer." },
+    ]);
+    const done = await result;
+    const thinking = seen.filter((d) => d.kind === "thinking");
+    expect(thinking.filter((d) => d.call === 1).at(-1)!.text).toBe("I should read the file first.");
+    expect(thinking.filter((d) => d.call === 2).at(-1)!.text).toBe("Now I can answer.");
+    // Thinking arrives before the reply of the same request, and never mixes into it.
+    expect(seen.findIndex((d) => d.kind === "thinking" && d.call === 2)).toBeLessThan(seen.findIndex((d) => d.kind === "answer"));
+    expect(seen.filter((d) => d.kind !== "thinking").every((d) => !d.text.includes("Now I can"))).toBe(true);
+    const turnId = done.kind === "answered" ? done.parts[0]!.turn.id : "";
+    const saved = w.store.listEvents({ turnId, type: "agent_message" }).map((e) => (e.payload as { response: { reasoning?: string } }).response.reasoning);
+    expect(saved).toEqual(["I should read the file first.", "Now I can answer."]);
+  });
 });
+

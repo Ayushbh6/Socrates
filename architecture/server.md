@@ -149,6 +149,8 @@ Changes to settings or keys also broadcast state to every subscribed page. `read
 
 ## Live drafts
 
+A turn has up to two drafts at once: its reply (`narration` or `answer`) and the model's thinking (`kind: "thinking"`, the readable reasoning or summary so far). Each is kept, combined and replayed on its own, as below; a saved step that only thought replaces the thinking draft and leaves the reply's.
+
 While a turn's model writes its reply, the pages see it as it arrives. A `draft` carries the turn and its conversation, the model request it belongs to (`call`, counted from 1 within the turn; a retried or repaired request is a new one), and the readable text so far: `kind: "narration"` is the line before tool calls, `kind: "answer"` is the final message's `full_answer`, decoded as far as it has arrived (the rest of the final JSON object is never sent). Each draft holds everything readable so far, not only the newest piece, so a missed one costs nothing. They are combined to at most one per turn every `50` ms.
 
 Drafts are temporary and are never saved: the event log, history and replay contain only what is saved, and the saved `step`, `answer` or `question` activity (or `finished`, when the turn ends without one) replaces the turn's draft, so no draft follows it. A page that connects while a reply is arriving receives the current drafts after its state and replay, and a reply that was saved before the next interval is never sent as a draft at all.
@@ -159,7 +161,7 @@ The agent suppresses callbacks from cancelled, failed or finished model requests
 
 Every event is shown to the pages once it is saved (after its transaction commits), as one compact activity with the event's `seq`, time, and conversation (`main` or a lane id; a turn's activities belong to the conversation it runs in now):
 
-`message` (the exact text), `routed` (goal, task, lane), `question` (the router's clarification), `step` (the agent's narration before tool calls), `tool_started` (the call as one line, with its task and evidence handle), `tool_finished` (status and the first `2,000` characters of output), `answer`, `finished` (completed or interrupted, and why), `handed_off`, `lane` (opened or closed), `approval_decided`, `warning`, and `ledger` (goals or tasks changed: reload them).
+`message` (the exact text), `routed` (goal, task, lane), `question` (the router's clarification), `step` (the agent's narration before tool calls, or `""`, and the model's readable `thinking` for that request, or null, shown up to `20,000` characters with `thinkingTruncated`), `tool_started` (the call as one line, with its task and evidence handle), `tool_finished` (status and the first `2,000` characters of output), `answer`, `finished` (completed or interrupted, and why), `handed_off`, `lane` (opened or closed), `approval_decided`, `warning`, and `ledger` (goals or tasks changed: reload them).
 
 The `handed_off` activity carries the destination `laneId` and exact goal/task as well as the lane number. The page creates that turn's lane exchange immediately, so its first draft is placed correctly before a tool or saved answer arrives.
 

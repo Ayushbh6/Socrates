@@ -77,7 +77,7 @@ export async function freePort(): Promise<number> {
   });
 }
 
-type Out = { text: string } | { toolCalls: { name: string; input: unknown }[] };
+type Out = ({ text: string } | { toolCalls: { name: string; input: unknown }[] }) & { reasoning?: string };
 
 /** The exact user message a router or agent request is about. */
 export const messageOf = (request: ModelRequest) => {
@@ -97,7 +97,7 @@ export class Responder implements ModelClient {
     const answer = Promise.resolve(this.respond(messageOf(request), request));
     const out = request.signal ? await abortable(answer, request.signal) : await answer;
     const toolCalls = "toolCalls" in out ? out.toolCalls.map((c) => ({ ...c, id: `call_${++this.calls}` })) : [];
-    return { text: "text" in out ? out.text : "", toolCalls, stopReason: toolCalls.length ? "tool_use" : "end", usage: { promptTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+    return { text: "text" in out ? out.text : "", toolCalls, stopReason: toolCalls.length ? "tool_use" : "end", usage: { promptTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, ...(out.reasoning ? { reasoning: out.reasoning } : {}) };
   }
 }
 

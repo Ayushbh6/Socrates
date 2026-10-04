@@ -267,3 +267,70 @@ describe("Gemini Interactions streaming", () => {
     expect((await model.complete({ system: "s", messages: [], onText: () => {} })).toolCalls[0]!.input).toEqual({ path: "a.txt" });
   });
 });
+
+describe("readable thinking", () => {
+  it("streams Anthropic thinking apart from the text and keeps the signed block for replay", async () => {
+    const events = [
+      { event: "message_start", data: { type: "message_start", message: { id: "m1", type: "message", role: "assistant", model: "claude-opus-5-5", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } } } },
+      { event: "content_block_start", data: { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } } },
+      { event: "content_block_delta", data: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "The user wants " } } },
+      { event: "content_block_delta", data: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "a short answer." } } },
+      { event: "content_block_delta", data: { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "sig" } } },
+      { event: "content_block_stop", data: { type: "content_block_stop", index: 0 } },
+      { event: "content_block_start", data: { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } } },
+      { event: "content_block_delta", data: { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "Short." } } },
+      { event: "content_block_stop", data: { type: "content_block_stop", index: 1 } },
+      { event: "message_delta", data: { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 9 } } },
+      { event: "message_stop", data: { type: "message_stop" } },
+    ];
+    const client = new Anthropic({ apiKey: "test", maxRetries: 0, fetch: sseFetch((signal) => sse(events, { pieces: 4, signal })) });
+    const thought: string[] = [];
+    const text: string[] = [];
+    const res = await new AnthropicModel({ model: "claude-opus-5-5", client }).complete({ system: "s", messages: [{ role: "user", content: "go" }], onText: (d) => text.push(d), onReasoning: (d) => thought.push(d) });
+    expect(thought.join("")).toBe("The user wants a short answer.");
+    expect(text.join("")).toBe("Short.");
+    expect(res).toMatchObject({ text: "Short.", reasoning: "The user wants a short answer." });
+    expect((res.raw!.content as { type: string; signature?: string }[])[0]).toMatchObject({ type: "thinking", signature: "sig" });
+  });
+
+  it("streams DeepSeek reasoning_content and OpenRouter reasoning as thinking, once each", async () => {
+    const chunk = (delta: Record<string, unknown>, finish: string | null = null) => ({ data: { id: "c", object: "chat.completion.chunk", created: 0, model: "m", choices: [{ index: 0, delta, finish_reason: finish }] } });
+    const deepseek = [chunk({ role: "assistant", reasoning_content: "Check " }), chunk({ reasoning_content: "divisors." }), chunk({ content: "No." }, "stop"), { data: "[DONE]" }];
+    const openrouter = [chunk({ role: "assistant", reasoning: "7 × 11 ", reasoning_details: [{ type: "reasoning.text", index: 0, text: "7 × 11 " }] }), chunk({ reasoning: "× 13.", reasoning_details: [{ type: "reasoning.text", index: 0, text: "× 13." }] }), chunk({ content: "Not prime." }, "stop"), { data: "[DONE]" }];
+    for (const [events, expected] of [[deepseek, "Check divisors."], [openrouter, "7 × 11 × 13."]] as const) {
+      const client = new OpenAI({ apiKey: "test", maxRetries: 0, fetch: sseFetch((signal) => sse([...events], { pieces: 3, signal })) });
+      const thought: string[] = [];
+      const res = await new OpenAICompatibleModel({ model: "m", client }).complete({ system: "s", messages: [{ role: "user", content: "go" }], onText: () => {}, onReasoning: (d) => thought.push(d) });
+      expect(thought.join("")).toBe(expected);
+      expect(res.reasoning).toBe(expected);
+    }
+  });
+
+  it("asks Gemini for thought summaries only when they are shown, and keeps them on the thought as a plain reply has them", async () => {
+    const event = (event_type: string, rest: Record<string, unknown>) => ({ event: event_type, data: { ...rest, event_type } });
+    const events = [
+      event("step.start", { index: 0, step: { type: "thought" } }),
+      event("step.delta", { index: 0, delta: { type: "thought_summary", content: { type: "text", text: "**Weighing options**" } } }),
+      event("step.delta", { index: 0, delta: { type: "thought_summary", content: { type: "text", text: "**Choosing quiet sites**" } } }),
+      event("step.delta", { index: 0, delta: { type: "thought_signature", signature: "sig" } }),
+      event("step.stop", { index: 0 }),
+      event("step.start", { index: 1, step: { type: "model_output" } }),
+      event("step.delta", { index: 1, delta: { type: "text", text: "Go early." } }),
+      event("step.stop", { index: 1 }),
+      event("interaction.completed", { interaction: { status: "completed" } }),
+    ];
+    const bodies: Record<string, any>[] = [];
+    const thought: string[] = [];
+    const model = new GeminiInteractionsModel({ model: "g", apiKey: "test", fetch: sseFetch((signal) => sse(events, { signal }), bodies) });
+    const res = await model.complete({ system: "s", messages: [], onText: () => {}, onReasoning: (d) => thought.push(d) });
+    expect(bodies[0]!.generation_config.thinking_summaries).toBe("auto");
+    expect(thought).toEqual(["**Weighing options**", "**Choosing quiet sites**"]);
+    expect(res.reasoning).toBe("**Weighing options**\n\n**Choosing quiet sites**");
+    expect((res.raw!.content as unknown[])[0]).toEqual({ type: "thought", signature: "sig", summary: [{ type: "text", text: "**Weighing options**" }, { type: "text", text: "**Choosing quiet sites**" }] });
+
+    const plain = new GeminiInteractionsModel({ model: "g", apiKey: "test", fetch: sseFetch(() => new Response(JSON.stringify({ status: "completed", steps: [{ type: "thought", signature: "s", summary: [{ type: "text", text: "Plain summary" }] }] }), { headers: { "content-type": "application/json" } }), bodies) });
+    expect((await plain.complete({ system: "s", messages: [] })).reasoning).toBe("Plain summary");
+    expect(bodies[1]!.generation_config.thinking_summaries).toBeUndefined();
+  });
+});
+

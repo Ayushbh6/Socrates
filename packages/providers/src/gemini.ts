@@ -60,7 +60,8 @@ export class GeminiInteractionsModel implements ModelClient {
           stream: guard !== null,
           // Interactions has no "no new calls" switch; a request that must not call tools sends none.
           ...(request.tools?.length && request.toolChoice !== "none" ? { tools: request.tools.map(t => ({ type: "function", name: t.name, description: t.description, parameters: t.inputSchema })) } : {}),
-          generation_config: { max_output_tokens: request.maxOutputTokens ?? 16_000, thinking_level: this.options.thinkingLevel ?? "low" },
+          // Summaries of the model's thoughts are asked for only when someone shows them.
+          generation_config: { max_output_tokens: request.maxOutputTokens ?? 16_000, thinking_level: this.options.thinkingLevel ?? "low", ...(request.onReasoning ? { thinking_summaries: "auto" } : {}) },
         }),
       });
     } catch {
@@ -73,7 +74,7 @@ export class GeminiInteractionsModel implements ModelClient {
     }
     let interaction: Interaction;
     try {
-      interaction = guard ? await readStream(response, request.onText!, guard.touch, signal) : await response.json() as Interaction;
+      interaction = guard ? await readStream(response, request.onText!, request.onReasoning, guard.touch, signal) : await response.json() as Interaction;
       signal.throwIfAborted();
     }
     catch (error) {
@@ -97,6 +98,9 @@ export class GeminiInteractionsModel implements ModelClient {
     });
     const text = steps.filter(s => s.type === "model_output").flatMap(s => Array.isArray(s.content) ? s.content : [])
       .filter((c: { type: string; text?: unknown } | null) => c?.type === "text" && typeof c.text === "string").map((c: { text: string }) => c.text).join("");
+    // The thought summaries, when they were asked for, are the readable thinking.
+    const reasoning = steps.filter(s => s.type === "thought").flatMap(s => Array.isArray(s.summary) ? s.summary : [])
+      .filter((c: { type?: string; text?: unknown } | null) => typeof c?.text === "string").map((c: { text: string }) => c.text).join("\n\n");
     const u = interaction.usage;
     return {
       text, toolCalls,
@@ -104,6 +108,7 @@ export class GeminiInteractionsModel implements ModelClient {
       usage: { promptTokens: u?.total_input_tokens ?? 0, outputTokens: (u?.total_output_tokens ?? 0) + (u?.total_thought_tokens ?? 0), cacheReadTokens: u?.total_cached_tokens ?? 0, cacheWriteTokens: 0 },
       raw: { provider: this.id, content: structuredClone(steps) },
       ...(interaction.model ? { servedBy: interaction.model } : {}),
+      ...(reasoning.trim() ? { reasoning } : {}),
     };
   }
 }
@@ -127,7 +132,7 @@ export function toGeminiSteps(messages: ModelMessage[], provider: string): Step[
  * signature, a model output its text, a function call its parsed arguments.
  * Text reaches `onText` as it arrives.
  */
-async function readStream(response: Response, onText: (delta: string) => void, touch: () => void, signal: AbortSignal): Promise<Interaction> {
+async function readStream(response: Response, onText: (delta: string) => void, onReasoning: ((delta: string) => void) | undefined, touch: () => void, signal: AbortSignal): Promise<Interaction> {
   if (!response.body) throw new ModelError("Gemini returned an invalid response.", "server");
   const steps: Step[] = [];
   const arguments_: string[] = [];
@@ -151,6 +156,11 @@ async function readStream(response: Response, onText: (delta: string) => void, t
           if (text) text.text += delta.text;
           else content.push({ type: "text", text: delta.text });
           if (step.type === "model_output" && delta.text) onText(delta.text);
+        } else if (delta.type === "thought_summary" && typeof (delta.content as { text?: unknown } | undefined)?.text === "string") {
+          // Kept on the thought as the plain reply has it: one text part per summary.
+          const text = (delta.content as { text: string }).text;
+          ((step.summary as { type: string; text: string }[] | undefined) ??= []).push({ type: "text", text });
+          if (text) onReasoning?.(text);
         } else if (delta.type === "thought_signature" && typeof delta.signature === "string") {
           step.signature = delta.signature;
         } else if (delta.type === "arguments_delta" && typeof delta.arguments === "string") {

@@ -5,13 +5,16 @@ import type { LedgerStore } from "@socrates/store";
 /** A tool's output is previewed up to this many characters; the evidence route returns the rest. */
 export const OUTPUT_PREVIEW_CHARS = 2_000;
 const STEP_TEXT_CHARS = 4_000;
+/** The model's thinking is shown up to this many characters; some models think at great length. */
+export const THINKING_CHARS = 20_000;
 
 /** What happened, for the web app (architecture/server.md, "Live activity"). */
 export type ActivityBody =
   | { kind: "message"; text: string }
   | { kind: "routed"; turnId: string; projectTurn: number; goal: { number: number; title: string }; task: { number: number; title: string }; lane: number | null }
   | { kind: "question"; turnId: string; text: string }
-  | { kind: "step"; turnId: string; text: string }
+  /** `text`: narration before tool calls, or "" when the step only thought; `thinking`: the model's readable thinking, or null. */
+  | { kind: "step"; turnId: string; text: string; thinking: string | null; thinkingTruncated: boolean }
   | { kind: "tool_started"; turnId: string; task: string; handle: string; line: string }
   | { kind: "tool_finished"; turnId: string; task: string; handle: string; status: "ok" | "error"; preview: string; truncated: boolean }
   | { kind: "answer"; turnId: string; text: string }
@@ -53,9 +56,11 @@ export function activityOf(store: LedgerStore, event: StoredEvent): Activity | n
     }
     case "agent_message": {
       const p = event.payload as EventPayloads["agent_message"];
-      // Narration before tool calls; the final answer arrives as `answer`.
-      if (p.phase !== "work" || !p.response.toolCalls.length || !p.response.text.trim() || !turn) return null;
-      return { ...base, kind: "step", turnId: turn.id, text: p.response.text.trim().slice(0, STEP_TEXT_CHARS) };
+      // Narration before tool calls and the model's thinking; the final answer arrives as `answer`.
+      const narration = p.phase === "work" && p.response.toolCalls.length ? p.response.text.trim() : "";
+      const thinking = p.response.reasoning?.trim() ?? "";
+      if ((!narration && !thinking) || !turn) return null;
+      return { ...base, kind: "step", turnId: turn.id, text: narration.slice(0, STEP_TEXT_CHARS), thinking: thinking ? thinking.slice(0, THINKING_CHARS) : null, thinkingTruncated: thinking.length > THINKING_CHARS };
     }
     case "tool_called": {
       const p = event.payload as EventPayloads["tool_called"];

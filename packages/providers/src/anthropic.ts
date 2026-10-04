@@ -80,15 +80,17 @@ export class AnthropicModel implements ModelClient {
 
     let message: Anthropic.Beta.BetaMessage;
     try {
-      message = request.onText ? await this.stream(params, request.onText, request.signal) : await this.client.beta.messages.create(params, request.signal ? { signal: request.signal } : undefined);
+      message = request.onText ? await this.stream(params, request.onText, request.onReasoning, request.signal) : await this.client.beta.messages.create(params, request.signal ? { signal: request.signal } : undefined);
     } catch (error) {
       throw toModelError(error);
     }
 
     const toolCalls: ToolCall[] = [];
     const text: string[] = [];
+    const thinking: string[] = [];
     for (const block of message.content) {
       if (block.type === "text") text.push(block.text);
+      else if (block.type === "thinking" && block.thinking) thinking.push(block.thinking);
       else if (block.type === "tool_use") toolCalls.push({ id: block.id, name: block.name, input: block.input });
     }
     const u = message.usage;
@@ -104,16 +106,18 @@ export class AnthropicModel implements ModelClient {
       },
       raw: { provider: PROVIDER, content: message.content },
       servedBy: message.model,
+      ...(thinking.length ? { reasoning: thinking.join("\n\n") } : {}),
     };
   }
 
   /** The same request, streamed: text reaches `onText` as it arrives and the complete message comes back. */
-  private async stream(params: Anthropic.Beta.MessageCreateParamsNonStreaming, onText: (delta: string) => void, signal?: AbortSignal): Promise<Anthropic.Beta.BetaMessage> {
+  private async stream(params: Anthropic.Beta.MessageCreateParamsNonStreaming, onText: (delta: string) => void, onReasoning: ((delta: string) => void) | undefined, signal?: AbortSignal): Promise<Anthropic.Beta.BetaMessage> {
     const guard = idleGuard(signal, this.options.idleMs ?? 60_000);
     try {
       const stream = this.client.beta.messages.stream(params, { signal: guard.signal });
       stream.on("streamEvent", guard.touch);
       stream.on("text", onText);
+      if (onReasoning) stream.on("thinking", (delta) => { if (delta) onReasoning(delta); });
       return await stream.finalMessage();
     } catch (error) {
       if (guard.idled()) throw new ModelError("The Anthropic stream went quiet.", "network");
