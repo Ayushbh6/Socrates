@@ -127,7 +127,7 @@ export type ActivityBody =
   | { kind: "message"; text: string }
   | { kind: "routed"; turnId: string; projectTurn: number; goal: { number: number; title: string }; task: { number: number; title: string }; lane: number | null }
   | { kind: "question"; turnId: string; text: string }
-  | { kind: "step"; turnId: string; text: string }
+  | { kind: "step"; turnId: string; text: string; thinking?: string | null; thinkingTruncated?: boolean }
   | { kind: "tool_started"; turnId: string; task: string; handle: string; line: string }
   | { kind: "tool_finished"; turnId: string; task: string; handle: string; status: "ok" | "error"; preview: string; truncated: boolean }
   | { kind: "answer"; turnId: string; text: string }
@@ -167,7 +167,7 @@ export interface LiveState {
 export type ServerMessage =
   | ({ type: "state" } & LiveState)
   | ({ type: "activity" } & Activity)
-  | { type: "draft"; conversation: string; turnId: string; call: number; kind: "narration" | "answer"; text: string }
+  | { type: "draft"; conversation: string; turnId: string; call: number; kind: "narration" | "answer" | "thinking"; text: string }
   | { type: "accepted"; id: string; conversation: string }
   | ({ type: "approval" } & PendingApproval)
   | { type: "handed_off"; id: string; conversation: string; lane: number; mainReleased: boolean }

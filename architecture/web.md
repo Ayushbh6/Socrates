@@ -24,10 +24,19 @@ The name, the motto, and one button: **Chat with Socrates**. Before Socrates can
 One question and its answer at a time, on an open canvas.
 
 - **The orb.** Socrates' presence: a slow, drifting planet in the middle of the canvas. A new question floats above it, cut off after six lines with **Show more**, while the orb breathes ("Thinking"). When work starts (the first draft of the reply, narration line or tool call), the orb shrinks and glides to where the answer begins, and stays there: teal while working, amber while an approval waits, faded when stopped. A slight parallax moves the planet and the dots against the pointer.
-- **The answer.** The goal and task it was routed to, the agent's narration, each tool call as one line (open it for the live preview, or the complete recorded output), approval decisions, and the answer in Markdown. It is written as it is generated ("Streaming").
+- **The answer.** The goal and task it was routed to, the work behind it ("Work and answer"), approval cards, and the answer in Markdown. It is written as it is generated ("Streaming").
 - **Notes.** Two sticky notes beside the conversation: the current task (its title, status and continuation note) and its goal (objective, note, open and done tasks). They follow the question on the canvas. Drag them anywhere, or move them with the arrow keys; their places are remembered in this browser. On a phone they step aside.
 - **Sidebar.** The ☰ opens it over the canvas: the conversations (main and each lane, with what it is doing; an idle lane can be closed) and the questions of the conversation on the canvas, newest first by day. Choosing an earlier question shows it; **Return to the latest** comes back.
 - **Header.** On the right, the switch between Flow and Standard and the way to settings. On the left, the ☰ and the access chip: **My folders: …** or **Full access** (orange). Its menu sets the project folder new work starts in (which also joins the folders), adds or removes folders, and chooses the scope (`server.md`, "Access"). The folder picker browses this Mac's folders or takes a typed path (`~` is the home folder).
+
+## Work and answer
+
+What Socrates did and what it says look different, in both modes. The work comes first, quiet and foldable; the answer follows in ordinary text.
+
+- **The work** is, in order: the model's thinking for each request (when the model shows it: `server.md`, "Live drafts"), its narration, its tool calls, and handoffs, warnings and approval decisions. Tool calls of one kind in a row are one group with one line, such as **Read 2 files**, **Searched 1 time**, **Edited 1 file** or **Ran 1 command**; the group opens to each call, which opens to its preview and full output ("Tool output").
+- **While Socrates works** the work is open under a line that says how long it has been working and what it did so far. Thinking that is arriving shows its newest lines in small muted italics, with older lines fading upward, under **Thinking…**; once its request is saved it becomes one **Thought** line that opens to all of it (shown up to its first `20,000` characters). The newest tool group stays open while it runs.
+- **Once the answer starts**, or for an earlier question, the work folds into one line, such as "Worked for 16s · thought · read 2 files · ran 1 command", which opens it again. The clock stops at the last step of the work.
+- Soft tinted panels hold thinking and tool groups; there are no lines.
 
 ## Streaming
 
@@ -50,7 +59,7 @@ The familiar harness layout, for following everything at once. The switch in eit
 
 ## Tool output
 
-Every tool row opens to its live preview; **Open the full output** shows the complete recorded output (`GET /api/evidence`) in a dialog: a file change as its diff with additions and removals coloured, a structured result as tidy JSON, and anything else as recorded, with long lines wrapped or not. It says when the output was cut at 200,000 characters or when a command printed more than Socrates keeps.
+Every tool call opens to its live preview; **Open the full output** shows the complete recorded output (`GET /api/evidence`) in a dialog: a file change as its diff with additions and removals coloured, a structured result as tidy JSON, and anything else as recorded, with long lines wrapped or not. It says when the output was cut at 200,000 characters or when a command printed more than Socrates keeps.
 
 ## Settings
 

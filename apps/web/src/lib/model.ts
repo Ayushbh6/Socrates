@@ -7,6 +7,8 @@ import type { Activity, HistoryItem, LiveState, PendingApproval, ServerMessage }
 
 export type Step =
   | { kind: "step"; text: string }
+  /** The model's readable thinking for one request; `truncated` when the server cut it. */
+  | { kind: "thinking"; text: string; truncated: boolean }
   | { kind: "tool"; handle: string; task: string; line: string; status: "running" | "ok" | "error"; preview: string | null; truncated: boolean }
   | { kind: "handed_off"; lane: number }
   | { kind: "warning"; detail: string }
@@ -14,14 +16,14 @@ export type Step =
 
 /**
  * The reply a turn is writing now, as far as it has arrived: the line before
- * tool calls, or the answer. Temporary; the saved narration or answer
- * replaces it (architecture/web.md, "Streaming").
+ * tool calls, the answer, or the model's thinking. Temporary; the saved
+ * narration, answer or thinking replaces it (architecture/web.md, "Streaming").
  */
 export interface Draft {
   turnId: string;
   /** The model request it came from; a retried or repaired request is a later one. */
   call: number;
-  kind: "narration" | "answer";
+  kind: "narration" | "answer" | "thinking";
   text: string;
 }
 
@@ -38,7 +40,11 @@ export interface Exchange {
   steps: Step[];
   answers: string[];
   draft: Draft | null;
-  /** Keep a request's watermark after its visible draft has been saved. */
+  /** The model's thinking as it arrives, kept beside the reply's draft. */
+  thinking: Draft | null;
+  /** When the latest work (thinking, narration or a tool) was saved, for "Worked for". */
+  workedAt: string | null;
+  /** Keep a request's watermark after its visible draft has been saved (thinking under "<turn>:thinking"). */
   draftCalls: Record<string, { call: number; settled: boolean }>;
   /** Events already included in this exchange's history snapshot. */
   throughSeq: number;
@@ -143,7 +149,7 @@ function activity(model: Model, a: Activity | DraftArrived): Model {
     const existing = list.findIndex((e) => e.seq === a.seq);
     if (existing >= 0 && a.seq <= list[existing]!.throughSeq) return model;
     // A replayed message is rebuilt from its events.
-    if (existing >= 0) return withConversation(model, a.conversation, list.map((e, i) => (i === existing ? blank({ ...e, steps: [], answers: [], draft: null, draftCalls: {}, question: null, state: "working", note: null, turns: [], open: [] }) : e)));
+    if (existing >= 0) return withConversation(model, a.conversation, list.map((e, i) => (i === existing ? blank({ ...e, steps: [], answers: [], draft: null, thinking: null, workedAt: null, draftCalls: {}, question: null, state: "working", note: null, turns: [], open: [] }) : e)));
     const sending = list.findIndex((e) => e.state === "sending" && e.message === a.text);
     const saved = { key: `m${a.seq}`, seq: a.seq, at: a.at, state: "working" as const };
     if (sending >= 0) return withConversation(model, a.conversation, list.map((e, i) => (i === sending ? { ...e, ...saved } : e)));
@@ -189,13 +195,20 @@ function activity(model: Model, a: Activity | DraftArrived): Model {
 /** The saved narration, answer or question, or the end of the turn, replaces its draft. */
 const SETTLES_DRAFT = new Set(["step", "answer", "question", "finished", "handed_off"]);
 
+const thinkingKey = (turnId: string) => `${turnId}:thinking`;
+
 function apply(e: Exchange, a: Activity | DraftArrived): Exchange {
   const next = applyOne(e, a);
   if (SETTLES_DRAFT.has(a.kind) && "turnId" in a && a.turnId) {
-    const previous = next.draftCalls[a.turnId];
+    // A step that only thought replaces the thinking draft and leaves the reply's, such as an answer still being written.
+    const onlyThinking = a.kind === "step" && !a.text;
+    const keys = onlyThinking ? [thinkingKey(a.turnId)] : [a.turnId, thinkingKey(a.turnId)];
+    const draftCalls = { ...next.draftCalls };
+    for (const key of keys) if (draftCalls[key]) draftCalls[key] = { ...draftCalls[key]!, settled: true };
     return { ...next,
-      draft: next.draft?.turnId === a.turnId ? null : next.draft,
-      draftCalls: previous ? { ...next.draftCalls, [a.turnId]: { ...previous, settled: true } } : next.draftCalls,
+      draft: !onlyThinking && next.draft?.turnId === a.turnId ? null : next.draft,
+      thinking: next.thinking?.turnId === a.turnId ? null : next.thinking,
+      draftCalls,
     };
   }
   return next;
@@ -205,28 +218,40 @@ function applyOne(e: Exchange, a: Activity | DraftArrived): Exchange {
   if (a.kind === "draft") {
     if (e.turns.includes(a.turnId) && !e.open.includes(a.turnId)) return e;
     if (e.state !== "working" && e.state !== "sending") return e;
-    const previous = e.draftCalls[a.turnId];
+    const thinking = a.draftKind === "thinking";
+    const previous = e.draftCalls[thinking ? thinkingKey(a.turnId) : a.turnId];
     if (previous && (a.call < previous.call || (a.call === previous.call && previous.settled))) return e;
-    if (e.draft?.turnId === a.turnId && e.draft.call === a.call && e.draft.kind === a.draftKind && e.draft.text.length > a.text.length) return e;
+    const shown = thinking ? e.thinking : e.draft;
+    if (shown?.turnId === a.turnId && shown.call === a.call && shown.kind === a.draftKind && shown.text.length > a.text.length) return e;
   }
   const turnId = "turnId" in a ? a.turnId : null;
   const seen = turnId && !e.turns.includes(turnId) ? { turns: [...e.turns, turnId], open: [...e.open, turnId] } : {};
   const x = { ...e, ...seen };
   switch (a.kind) {
-    case "draft":
-      // A later request's draft replaces the earlier one; a stale one is ignored.
-      if (x.draft?.turnId === a.turnId && x.draft.call > a.call) return x;
-      return { ...x, draftCalls: { ...x.draftCalls, [a.turnId]: { call: a.call, settled: false } }, draft: { turnId: a.turnId, call: a.call, kind: a.draftKind, text: a.text } };
+    case "draft": {
+      // A later request's draft replaces the earlier one; a stale one is ignored. Thinking has its own place.
+      const thinking = a.draftKind === "thinking";
+      const shown = thinking ? x.thinking : x.draft;
+      if (shown?.turnId === a.turnId && shown.call > a.call) return x;
+      const draft = { turnId: a.turnId, call: a.call, kind: a.draftKind, text: a.text };
+      return { ...x, draftCalls: { ...x.draftCalls, [thinking ? thinkingKey(a.turnId) : a.turnId]: { call: a.call, settled: false } }, ...(thinking ? { thinking: draft } : { draft }) };
+    }
     case "routed":
       return { ...x, route: x.route ?? { goal: a.goal, task: a.task } };
     case "question":
       return { ...x, question: a.text, state: "done", open: x.open.filter((t) => t !== a.turnId) };
-    case "step":
-      return { ...x, steps: [...x.steps, { kind: "step", text: a.text }] };
+    case "step": {
+      // The request's thinking comes before what it said.
+      const steps: Step[] = [
+        ...(a.thinking ? [{ kind: "thinking" as const, text: a.thinking, truncated: a.thinkingTruncated ?? false }] : []),
+        ...(a.text ? [{ kind: "step" as const, text: a.text }] : []),
+      ];
+      return { ...x, steps: [...x.steps, ...steps], workedAt: a.at };
+    }
     case "tool_started":
-      return { ...x, steps: [...x.steps, { kind: "tool", handle: a.handle, task: a.task, line: a.line, status: "running", preview: null, truncated: false }] };
+      return { ...x, steps: [...x.steps, { kind: "tool", handle: a.handle, task: a.task, line: a.line, status: "running", preview: null, truncated: false }], workedAt: a.at };
     case "tool_finished":
-      return { ...x, steps: x.steps.map((s) => (s.kind === "tool" && s.handle === a.handle && s.task === a.task ? { ...s, status: a.status, preview: a.preview, truncated: a.truncated } : s)) };
+      return { ...x, steps: x.steps.map((s) => (s.kind === "tool" && s.handle === a.handle && s.task === a.task ? { ...s, status: a.status, preview: a.preview, truncated: a.truncated } : s)), workedAt: a.at };
     case "answer":
       return { ...x, answers: [...x.answers, a.text] };
     case "handed_off": {
@@ -287,7 +312,7 @@ export function fromHistory(item: HistoryItem, conversation: string): Exchange {
 }
 
 function blank(e: Partial<Exchange> & Pick<Exchange, "key" | "conversation" | "at" | "message">): Exchange {
-  return { seq: null, route: null, steps: [], answers: [], draft: null, draftCalls: {}, throughSeq: 0, question: null, state: "working", note: null, sendId: null, turns: [], open: [], ...e };
+  return { seq: null, route: null, steps: [], answers: [], draft: null, thinking: null, workedAt: null, draftCalls: {}, throughSeq: 0, question: null, state: "working", note: null, sendId: null, turns: [], open: [], ...e };
 }
 
 function bySeq(a: Exchange, b: Exchange): number {
@@ -322,7 +347,7 @@ export function orbState(exchange: Exchange | null, approvals: PendingApproval[]
   if (exchange.state === "failed" || exchange.state === "stopped") return "stopped";
   if (exchange.state === "done") return "done";
   if (approvals.some((a) => a.conversation === exchange.conversation)) return "waiting";
-  return exchange.steps.length || exchange.answers.length || exchange.draft ? "working" : "thinking";
+  return exchange.steps.length || exchange.answers.length || exchange.draft || exchange.thinking ? "working" : "thinking";
 }
 
 /** The orb sits in the middle until the answer starts, then docks where the answer begins. */

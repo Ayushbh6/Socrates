@@ -137,7 +137,7 @@ describe("standard mode helpers", () => {
 });
 
 describe("drafts of a reply that is arriving", () => {
-  const draft = (turnId: string, call: number, kind: "narration" | "answer", text: string, conversation = "main"): ServerMessage => ({ type: "draft", conversation, turnId, call, kind, text });
+  const draft = (turnId: string, call: number, kind: "narration" | "answer" | "thinking", text: string, conversation = "main"): ServerMessage => ({ type: "draft", conversation, turnId, call, kind, text });
   const working = () => run(emptyModel(),
     act("main", { kind: "message", text: "Why does login fail?" }),
     act("main", { kind: "routed", turnId: "t1", projectTurn: 4, ...route, lane: null }),
@@ -241,6 +241,18 @@ describe("drafts of a reply that is arriving", () => {
     expect(exchange(m)).toMatchObject({ draft: null, answers: ["The refresh path drops"], state: "stopped", note: "Stopped." });
     const plain = run(working(), act("main", { kind: "finished", turnId: "t1", status: "interrupted", reason: "cancelled" }));
     expect(exchange(plain).answers).toEqual([]);
+  });
+
+  it("keeps thinking beside the reply's draft, and a step that only thought leaves the answer being written", () => {
+    let m = run(working(), draft("t1", 1, "thinking", "Weighing"), draft("t1", 1, "answer", "The refresh"));
+    expect(exchange(m)).toMatchObject({ thinking: { kind: "thinking", text: "Weighing" }, draft: { kind: "answer", text: "The refresh" } });
+    expect(orbState({ ...exchange(working()), thinking: exchange(m).thinking }, [])).toBe("working");
+    m = run(m, act("main", { kind: "step", turnId: "t1", text: "", thinking: "Weighing it all.", thinkingTruncated: false }));
+    expect(exchange(m)).toMatchObject({ thinking: null, draft: { text: "The refresh" } });
+    expect(exchange(m).steps).toEqual([{ kind: "thinking", text: "Weighing it all.", truncated: false }]);
+    // A late thinking draft of the saved request is ignored; the answer still grows.
+    m = run(m, draft("t1", 1, "thinking", "Weighing it all. late"), draft("t1", 1, "answer", "The refresh path"));
+    expect(exchange(m)).toMatchObject({ thinking: null, draft: { text: "The refresh path" } });
   });
 });
 
