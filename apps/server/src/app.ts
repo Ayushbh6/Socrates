@@ -1,3 +1,7 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
 import { callLine } from "@socrates/retrieval";
@@ -14,7 +18,12 @@ export interface ServerOptions {
   token: string;
   /** Tests shrink how far behind a reconnecting page may catch up. */
   replayMax?: number;
+  /** The built web app; `pnpm socrates` builds it. Tests pass their own or null. */
+  webRoot?: string | null;
 }
+
+/** Where `pnpm build:web` puts the web app. */
+export const WEB_ROOT = fileURLToPath(new URL("../../web/dist", import.meta.url));
 
 /** The evidence route returns at most this much of one call's output. */
 export const EVIDENCE_MAX_CHARS = 200_000;
@@ -29,7 +38,7 @@ const History = z.object({
  * failures are `{ error: { code, message } }` with a message meant for the
  * user. The live connection (sending, approvals, activity) is separate.
  */
-export async function buildServer({ runtime, token, replayMax }: ServerOptions): Promise<FastifyInstance> {
+export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROOT }: ServerOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: false, bodyLimit: 1024 * 1024 });
   app.addHook("onRequest", async (_request, reply) => {
     reply.header("cache-control", "no-store");
@@ -68,8 +77,13 @@ export async function buildServer({ runtime, token, replayMax }: ServerOptions):
     return reply.header("set-cookie", sessionCookie(token)).redirect("/");
   });
 
-  app.get("/", async (_request, reply) =>
-    reply.type("text/html; charset=utf-8").send("<!doctype html><title>Socrates</title><p>Socrates is running. The app arrives with the next update.</p>"));
+  // The web app (architecture/web.md), behind the same session as the API.
+  if (webRoot && existsSync(path.join(webRoot, "index.html"))) {
+    await app.register(fastifyStatic, { root: webRoot, index: "index.html", cacheControl: false });
+  } else {
+    app.get("/", async (_request, reply) =>
+      reply.type("text/html; charset=utf-8").send("<!doctype html><title>Socrates</title><p>Socrates is running, but its web app is not built. Start it with <code>pnpm socrates</code>.</p>"));
+  }
 
   app.get("/api/status", async () => {
     const index = await runtime.embeddingStatus();

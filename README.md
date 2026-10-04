@@ -7,6 +7,7 @@ The design lives in [`architecture/`](architecture):
 - [`agent-harness.md`](architecture/agent-harness.md): tools, the agent loop, context layout, compaction, caching.
 - [`Goal-router.md`](architecture/Goal-router.md): goals, tasks, routing, the ledger, rollover.
 - [`server.md`](architecture/server.md): the local app server: data folder, settings and keys, startup, security, and its API.
+- [`web.md`](architecture/web.md): the web app: the welcome page, flow mode (the orb, the notes, the question sidebar, the composer), approvals, and how it stays in sync.
 
 ## Packages
 
@@ -22,16 +23,17 @@ The design lives in [`architecture/`](architecture):
 | `@socrates/retrieval` | The embedding index of Socrates' memory: LanceDB storage beside the ledger, background indexing of goals, tasks, exchanges, tool calls, capabilities and workspace files (secrets and generated files excluded), meaning search with similarity floors, and the one hybrid (reciprocal rank fusion) scoring function |
 | `@socrates/agent` | The working agent: `Socrates.handle` runs one message end to end (route, bind, agent loop per part, `FinalAnswer` validation and persistence) in the main conversation or a parallel lane, one run per task, recovery of turns a stopped process left running, context assembly in the canonical layout, three-tier history with N−1 fitting, per-turn limits, cancellation, and prompt-cache breakpoints, and compaction: history checkpoints, in-turn linearization, the failsafe, automatic rollover with handover capsules, and `<RETRIEVED_HISTORY>` |
 | `@socrates/server` (`apps/server`) | The local app server: builds the one Socrates from `~/.socrates-v2` (settings, keys, Skills, MCP servers, embedding index), interrupts turns left running at startup, and serves the session-protected HTTP API and live WebSocket on `127.0.0.1:4200`: Send, Queue and Send in a lane, live activity, per-conversation approvals, and cancel; and where Socrates may work (my folders or full access) and when it asks (ask first or work freely) |
+| `@socrates/web` (`apps/web`) | The web app the server serves: the welcome page and setup, flow mode with the orb and the task and goal notes, the question sidebar with lanes, the composer (Send, Queue, Send in a new lane, stop, approvals mode), the access menu and approval cards |
 
 ## Running Socrates
 
 ```sh
-pnpm server
+pnpm socrates
 ```
 
-It prints a link to open, with this launch's session secret. Data lives in `~/.socrates-v2` (`SOCRATES_HOME` changes it), never in Socrates 0.1's folder. Without an API key it starts and reports what setup is needed; add a key with `PUT /api/keys/<NAME>` until the web app arrives.
+It builds the web app, starts the server, and opens Socrates in your browser. `pnpm server` starts only the server and prints the link to open, with this launch's session secret. Data lives in `~/.socrates-v2` (`SOCRATES_HOME` changes it), never in Socrates 0.1's folder. Without an API key the welcome page asks for one.
 
-S1 is reviewed and closed in the [server-core closure report](docs/reviews/server-s1-closure.md). Run its live acceptance with `SOCRATES_ENV_FILE=.env pnpm eval:server-core`; it uses disposable data and synthetic project content. Message execution in this evaluation calls the runtime directly. S2 is closed in its [live-server report](docs/reviews/server-s2-closure.md), and A1 in the [access closure report](docs/reviews/access-a1-closure.md). `SOCRATES_ENV_FILE=.env pnpm eval:server` runs the real server process and drives it only through its API and live connection: an approval answered over the connection, the access modes (a refused edit, a folder outside the user's folders, Socrates' own data, full access working freely), access changes reaching two pages and an existing terminal, a lane beside main, a queued message, cancelling, catching up after a reconnect, recovery after the process is killed mid-turn, and a clean Ctrl-C. W1, the web app, is next; command process sandboxing remains deferred.
+S1 is reviewed and closed in the [server-core closure report](docs/reviews/server-s1-closure.md). Run its live acceptance with `SOCRATES_ENV_FILE=.env pnpm eval:server-core`; it uses disposable data and synthetic project content. Message execution in this evaluation calls the runtime directly. S2 is closed in its [live-server report](docs/reviews/server-s2-closure.md), and A1 in the [access closure report](docs/reviews/access-a1-closure.md). `SOCRATES_ENV_FILE=.env pnpm eval:server` runs the real server process and drives it only through its API and live connection: an approval answered over the connection, the access modes (a refused edit, a folder outside the user's folders, Socrates' own data, full access working freely), access changes reaching two pages and an existing terminal, a lane beside main, a queued message, cancelling, catching up after a reconnect, recovery after the process is killed mid-turn, and a clean Ctrl-C. W1, the web app's flow mode, is built ([`web.md`](architecture/web.md)); W2, standard mode, follows. Command process sandboxing remains deferred.
 
 ## Development
 

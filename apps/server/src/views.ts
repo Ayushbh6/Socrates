@@ -28,6 +28,8 @@ export interface HistoryPart {
 export interface HistoryItem {
   /** The message's ledger event; stable across pages. */
   id: string;
+  /** That event's sequence number: a page resumes the live connection from just before an unfinished message. */
+  seq: number;
   at: string;
   message: string;
   /** The exact message is saved, but routing has not bound any part yet. */
@@ -52,6 +54,7 @@ export function conversationHistory(store: LedgerStore, laneId: string | null, b
     const clarification = all.find((t) => t.kind === "clarification");
     items.push({
       id: event.id,
+      seq: event.seq,
       at: event.at,
       message: event.payload.text,
       unrouted: turns.length === 0,

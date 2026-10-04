@@ -7,7 +7,7 @@ It is built in two changes:
 - **S1, core:** the data folder, settings and keys, startup and recovery, security, and the HTTP API (status, settings, keys, history, goals, lanes, workspaces, folders).
 - **S2, live connection:** a WebSocket for sending (Send, Queue, Send in a lane), live activity, approvals, cancellation, and anchor decisions.
 
-Run it with `pnpm server`. It prints a link to open; the web app arrives in a later change. `pnpm eval:server` drives the real server process through its API and live connection with real models.
+Run it with `pnpm server`, which prints a link to open, or with `pnpm socrates`, which also builds the web app (`web.md`) and opens the link in the default browser. `pnpm eval:server` drives the real server process through its API and live connection with real models.
 
 ## Data folder
 
@@ -79,13 +79,13 @@ The server can run shell commands on the user's machine, so:
 - every request's `Host` must be this server's own address (`127.0.0.1` or `localhost` with its port), so a site cannot reach it through a rebound domain name;
 - a request carrying a browser `Origin` must come from this server, so another site open in the browser cannot drive the agent;
 - requests marked cross-site by the browser are refused, even without an `Origin`;
-- everything except `/api/health` and `/auth` requires the session.
+- everything except `/api/health` and `/auth` requires the session, the web app's page and files included. A browser opening a page without it gets a short page saying how to open Socrates instead of JSON.
 
 Responses cannot be cached, the launch link cannot become a referrer, and the page cannot be framed. Cookies are scoped to a host, not a port; the Origin and Host checks remain necessary when other local apps use that host.
 
 ## HTTP API
 
-API responses are JSON. A failure, including an unknown route, is `{ "error": { "code", "message" } }` with a message meant for the user: `invalid_request` (400), `unauthorized` (401), `forbidden_host` or `forbidden_origin` (403), `not_found` (404), `busy` (409, a change while Socrates works or rebuilds), or `internal` (500, details only in the log). Repeated query parameters and malformed JSON are rejected without echoing a key-bearing request body. `/auth` redirects; `/` currently serves the app placeholder.
+API responses are JSON. A failure, including an unknown route, is `{ "error": { "code", "message" } }` with a message meant for the user: `invalid_request` (400), `unauthorized` (401), `forbidden_host` or `forbidden_origin` (403), `not_found` (404), `busy` (409, a change while Socrates works or rebuilds), or `internal` (500, details only in the log). Repeated query parameters and malformed JSON are rejected without echoing a key-bearing request body. `/auth` redirects. `/` and the files beside it are the built web app from `apps/web/dist` (`web.md`); without a build, `/` says to run `pnpm socrates`.
 
 | Route | Returns |
 |---|---|
@@ -105,7 +105,7 @@ API responses are JSON. A failure, including an unknown route, is `{ "error": { 
 
 `GET /api/history?conversation=main|<lane id>&before=<cursor>` returns a conversation's messages in send order, newest first, with a budget of `30` turns per page; a message with no bound turn counts as one. `next` is the `before` value of the following page, or `null` when no older message exists. The cursor is a stable message-event sequence; callers pass the returned value, never a project-turn number. A message's compound parts always stay on one page, even when they interleave with other messages.
 
-Each item holds the exact message, `unrouted` when no part has been bound yet, the router's question when it asked one instead, and one entry per part: its project turn, status, goal and task (number and title), the lane it ran in, its answer, why it was interrupted, and its tool calls as one line each with their evidence handle and status. A message saved before routing, or queued in a lane, remains visible after restart. The main conversation lists the messages sent there, including parts handed to a lane (marked `handedOff`); a lane lists messages sent there and parts handed to it.
+Each item holds the exact message and its event sequence number (a page resumes the live connection from just before an unfinished message), `unrouted` when no part has been bound yet, the router's question when it asked one instead, and one entry per part: its project turn, status, goal and task (number and title), the lane it ran in, its answer, why it was interrupted, and its tool calls as one line each with their evidence handle and status. A message saved before routing, or queued in a lane, remains visible after restart. The main conversation lists the messages sent there, including parts handed to a lane (marked `handedOff`); a lane lists messages sent there and parts handed to it.
 
 ## Live connection
 

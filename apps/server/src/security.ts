@@ -46,7 +46,7 @@ export function guard(port: number, token: string) {
     if (request.headers["sec-fetch-site"] === "cross-site") return refuse(request, reply, 403, "forbidden_origin", "Requests from other sites are refused.");
     const route = request.url.split("?")[0];
     if (route === "/api/health" || route === "/auth") return;
-    if (!authorized(request, token)) return refuse(request, reply, 401, "unauthorized", "Open Socrates from the link it printed when it started.");
+    if (!authorized(request, token)) return refuse(request, reply, 401, "unauthorized", "Open Socrates from the link it printed when it started, or start it with pnpm socrates, which opens it for you.");
   };
 }
 
@@ -57,6 +57,10 @@ export function guard(port: number, token: string) {
  */
 function refuse(request: FastifyRequest, reply: FastifyReply, status: number, code: string, message: string) {
   if (request.headers.upgrade) reply.raw.once("finish", () => request.raw.socket.destroy());
+  // A browser opening the page gets a page, not JSON.
+  if (request.method === "GET" && !request.headers.upgrade && (request.headers.accept ?? "").includes("text/html")) {
+    return reply.code(status).header("connection", "close").type("text/html; charset=utf-8").send(`<!doctype html><meta charset="utf-8"><title>Socrates</title><p>${message}</p>`);
+  }
   return reply.code(status).header("connection", "close").send(problem(code, message));
 }
 

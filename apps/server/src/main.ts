@@ -1,4 +1,5 @@
-/** Start Socrates: `pnpm server` (architecture/server.md). */
+/** Start Socrates: `pnpm server`, or `pnpm socrates`, which also builds the web app and opens it (architecture/server.md). */
+import { spawn } from "node:child_process";
 import type { FastifyInstance } from "fastify";
 import { HOST, resolveConfig } from "./config";
 import { buildServer } from "./app";
@@ -33,7 +34,9 @@ async function main(): Promise<void> {
     lifetime.signal.throwIfAborted();
     await app.listen({ host: HOST, port: config.port });
     lifetime.signal.throwIfAborted();
-    console.log(`Socrates is running. Open http://${HOST}:${config.port}/auth?token=${token}`);
+    const link = `http://${HOST}:${config.port}/auth?token=${token}`;
+    console.log(`Socrates is running. Open ${link}`);
+    if (process.argv.includes("--open")) openBrowser(link);
     console.log(`Data: ${config.home}${runtime.setup.length ? `\nSetup needed: ${runtime.setup.join(" ")}` : ""}`);
   } catch (error) {
     await close();
@@ -45,6 +48,14 @@ async function main(): Promise<void> {
     process.off("SIGINT", stop);
     process.off("SIGTERM", stop);
   }
+}
+
+/** Open the link in the default browser; if that fails, the printed link still works. */
+function openBrowser(link: string): void {
+  const [command, args] = process.platform === "darwin" ? ["open", [link]] : process.platform === "win32" ? ["cmd", ["/c", "start", "", link]] : ["xdg-open", [link]];
+  try {
+    spawn(command as string, args as string[], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
+  } catch {}
 }
 
 await main();

@@ -54,10 +54,10 @@ export async function runtime(config: ServerConfig, deps: RuntimeDeps = {}) {
 }
 
 /** A server over a runtime, with a request helper that carries the session and this server's Host. */
-export async function server(config: ServerConfig, deps: RuntimeDeps = {}) {
+export async function server(config: ServerConfig, deps: RuntimeDeps = {}, options: { webRoot?: string } = {}) {
   const { rt, logs } = await runtime(config, deps);
   const token = sessionToken();
-  const app = await buildServer({ runtime: rt, token });
+  const app = await buildServer({ runtime: rt, token, webRoot: options.webRoot ?? null });
   cleanups.push(() => app.close());
   const request = (method: "GET" | "PUT" | "POST" | "DELETE", url: string, body?: unknown, headers: Record<string, string> = {}) =>
     app.inject({ method, url, headers: { host: `127.0.0.1:${PORT}`, authorization: `Bearer ${token}`, ...headers }, ...(body !== undefined ? { payload: body as object } : {}) });
@@ -118,7 +118,7 @@ export async function liveServer(router: Responder, agent: Responder, options: {
   const config = resolveConfig({ SOCRATES_HOME: dir, SOCRATES_PORT: String(port) });
   const { rt, logs } = await runtime(config, { makeModel: (_p, model) => (model === "router" ? router : agent), ...options.deps });
   const token = sessionToken();
-  const app = await buildServer({ runtime: rt, token, ...(options.replayMax ? { replayMax: options.replayMax } : {}) });
+  const app = await buildServer({ runtime: rt, token, webRoot: null, ...(options.replayMax ? { replayMax: options.replayMax } : {}) });
   await app.listen({ host: "127.0.0.1", port });
   cleanups.push(() => app.close());
   const url = `ws://127.0.0.1:${port}/api/live`;

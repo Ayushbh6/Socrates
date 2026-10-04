@@ -1,0 +1,125 @@
+import { describe, expect, it } from "vitest";
+import { type Model, emptyModel, orbDocked, orbState, reduce, replayFrom, sendTarget } from "../src/lib/model";
+import type { Activity, ActivityBody, HistoryItem, ServerMessage } from "../src/lib/types";
+
+let seq = 100;
+const at = "2026-10-04T10:00:00Z";
+const act = (conversation: string, body: ActivityBody): ServerMessage => ({ type: "activity", seq: ++seq, at, conversation, ...body } as { type: "activity" } & Activity);
+const run = (model: Model, ...messages: ServerMessage[]) => messages.reduce((m, message) => reduce(m, { type: "server", message }), model);
+const route = { goal: { number: 2, title: "Ship auth" }, task: { number: 3, title: "Fix login" } };
+
+const item = (over: Partial<HistoryItem>): HistoryItem => ({
+  id: "ev", seq: 10, at, message: "Earlier question", unrouted: false, question: null,
+  parts: [{ projectTurn: 1, status: "completed", ...route, lane: null, handedOff: false, answer: "Earlier answer", interrupted: null, toolCalls: [{ handle: "e1", line: "read a.ts", status: "ok" }] }],
+  ...over,
+});
+
+describe("the conversation model", () => {
+  it("turns a sent message into one exchange with its steps, tools and answer, then done", () => {
+    let m = reduce(emptyModel(), { type: "sent", id: "c1", text: "Why does login fail?", to: "main", at });
+    expect(m.conversations.main![0]).toMatchObject({ key: "cc1", state: "sending", sendId: "c1" });
+    expect(orbState(m.conversations.main![0]!, [])).toBe("thinking");
+    m = run(m,
+      act("main", { kind: "message", text: "Why does login fail?" }),
+      act("main", { kind: "routed", turnId: "t1", projectTurn: 4, ...route, lane: null }),
+    );
+    expect(m.conversations.main).toHaveLength(1);
+    expect(m.conversations.main![0]).toMatchObject({ key: `m${seq - 1}`, state: "working", sendId: "c1", route });
+    expect(orbDocked(orbState(m.conversations.main![0]!, []))).toBe(false);
+    m = run(m,
+      act("main", { kind: "step", turnId: "t1", text: "Checking the refresh handler." }),
+      act("main", { kind: "tool_started", turnId: "t1", task: "g2/t3", handle: "e4", line: "read src/refresh.ts" }),
+    );
+    expect(orbState(m.conversations.main![0]!, [])).toBe("working");
+    m = run(m,
+      act("main", { kind: "tool_finished", turnId: "t1", task: "g2/t3", handle: "e4", status: "ok", preview: "export function refresh", truncated: false }),
+      act("main", { kind: "answer", turnId: "t1", text: "The refresh path drops the token." }),
+      act("main", { kind: "finished", turnId: "t1", status: "completed", reason: null }),
+    );
+    const done = m.conversations.main![0]!;
+    expect(done.steps).toEqual([
+      { kind: "step", text: "Checking the refresh handler." },
+      { kind: "tool", handle: "e4", task: "g2/t3", line: "read src/refresh.ts", status: "ok", preview: "export function refresh", truncated: false },
+    ]);
+    expect(done).toMatchObject({ answers: ["The refresh path drops the token."], state: "done" });
+    expect(orbState(done, [])).toBe("done");
+    expect(m.seq).toBe(seq);
+  });
+
+  it("waits on an approval, records stops, and marks a failed send", () => {
+    let m = run(emptyModel(), act("main", { kind: "message", text: "Run it" }), act("main", { kind: "tool_started", turnId: "t1", task: "g1/t1", handle: "e1", line: "terminal npm test" }));
+    const approval = { id: "a1", conversation: "main", lane: null, turnId: "t1", task: null, kind: "action", tool: "terminal", detail: "Run npm test", preview: null };
+    expect(orbState(m.conversations.main![0]!, [approval])).toBe("waiting");
+    m = run(m, act("main", { kind: "finished", turnId: "t1", status: "interrupted", reason: "cancelled" }));
+    expect(m.conversations.main![0]).toMatchObject({ state: "stopped", note: "Stopped." });
+    m = reduce(m, { type: "sent", id: "c2", text: "Again", to: "main", at });
+    m = run(m, { type: "error", id: "c2", code: "lane_limit", message: "Four lanes are already working." });
+    expect(m.conversations.main!.at(-1)).toMatchObject({ state: "failed", note: "Four lanes are already working." });
+    m = reduce(m, { type: "unsent", id: "c2" });
+    expect(m.conversations.main).toHaveLength(1);
+  });
+
+  it("moves a message sent to a new lane into that lane, and follows a handoff into the lane", () => {
+    let m = reduce(emptyModel(), { type: "sent", id: "c3", text: "Write NOTES.md", to: "new_lane", at });
+    expect(m.pending).toHaveLength(1);
+    m = run(m, act("lane_1", { kind: "lane", laneId: "lane_1", number: 1, state: "opened" }), { type: "accepted", id: "c3", conversation: "lane_1" });
+    expect(m.pending).toEqual([]);
+    expect(m.conversations.lane_1![0]).toMatchObject({ message: "Write NOTES.md", conversation: "lane_1", state: "sending" });
+
+    m = run(m,
+      act("main", { kind: "message", text: "Also add a line to the notes" }),
+      act("main", { kind: "routed", turnId: "t9", projectTurn: 7, ...route, lane: null }),
+      act("main", { kind: "handed_off", turnId: "t9", lane: 1 }),
+      act("lane_1", { kind: "message", text: "Write NOTES.md" }),
+      act("lane_1", { kind: "answer", turnId: "t8", text: "Created." }),
+      act("lane_1", { kind: "finished", turnId: "t8", status: "completed", reason: null }),
+      act("lane_1", { kind: "tool_started", turnId: "t9", task: "g2/t3", handle: "e2", line: "edit NOTES.md" }),
+    );
+    expect(m.conversations.main![0]).toMatchObject({ state: "done", steps: [{ kind: "handed_off", lane: 1 }] });
+    expect(m.conversations.lane_1!.map((e) => [e.message, e.state])).toEqual([["Write NOTES.md", "done"], ["Also add a line to the notes", "working"]]);
+  });
+
+  it("keeps one exchange when a new lane's message is saved before the send is accepted", () => {
+    let m = reduce(emptyModel(), { type: "sent", id: "c5", text: "Create NOTES.md", to: "new_lane", at });
+    m = run(m,
+      act("lane_2", { kind: "lane", laneId: "lane_2", number: 2, state: "opened" }),
+      act("lane_2", { kind: "message", text: "Create NOTES.md" }),
+      { type: "accepted", id: "c5", conversation: "lane_2" },
+      act("lane_2", { kind: "answer", turnId: "t5", text: "Created." }),
+    );
+    expect(m.pending).toEqual([]);
+    expect(m.conversations.lane_2).toHaveLength(1);
+    expect(m.conversations.lane_2![0]).toMatchObject({ sendId: "c5", answers: ["Created."], state: "working" });
+  });
+
+  it("queues a message to main while main works, and sends everything else", () => {
+    expect(sendTarget("main", true)).toBe("queue");
+    expect(sendTarget("main", false)).toBe("send");
+    expect(sendTarget("lane_1", true)).toBe("send");
+  });
+
+  it("loads history oldest first, pages older items, and rebuilds a replayed message from its events", () => {
+    let m = reduce(emptyModel(), { type: "history", conversation: "main", items: [item({ seq: 20, message: "Newer" }), item({ seq: 10 })] });
+    expect(m.conversations.main!.map((e) => [e.seq, e.message, e.state, e.answers[0]])).toEqual([[10, "Earlier question", "done", "Earlier answer"], [20, "Newer", "done", "Earlier answer"]]);
+    expect(m.conversations.main![0]!.steps).toEqual([{ kind: "tool", handle: "e1", task: "g2/t3", line: "read a.ts", status: "ok", preview: null, truncated: false }]);
+    m = reduce(m, { type: "history", conversation: "main", items: [item({ seq: 5, message: "Oldest" })], older: true });
+    expect(m.conversations.main!.map((e) => e.seq)).toEqual([5, 10, 20]);
+    m = run(m, { type: "activity", seq: 20, at, conversation: "main", kind: "message", text: "Newer" } as ServerMessage);
+    expect(m.conversations.main!.at(-1)).toMatchObject({ seq: 20, steps: [], answers: [], state: "working" });
+    const stopped = reduce(emptyModel(), { type: "history", conversation: "main", items: [item({ parts: [{ ...item({}).parts[0]!, status: "interrupted", interrupted: "restarted", answer: null }] })] });
+    expect(stopped.conversations.main![0]).toMatchObject({ state: "stopped", note: "Stopped when Socrates restarted." });
+  });
+
+  it("replays from just before the oldest unfinished message, or from the status", () => {
+    const working = item({ seq: 30, parts: [{ ...item({}).parts[0]!, status: "in_progress", answer: null }] });
+    expect(replayFrom([[item({ seq: 40 }), working], [item({ seq: 35, unrouted: true, parts: [] })]], 50)).toBe(29);
+    expect(replayFrom([[item({ seq: 40 })]], 50)).toBe(50);
+  });
+
+  it("collects lane notices from results until dismissed", () => {
+    let m = run(emptyModel(), { type: "result", id: "c1", conversation: "main", result: { kind: "answered", text: "ok", notices: ["Lane 1 finished: Create NOTES.md"] } });
+    expect(m.notices.map((n) => n.text)).toEqual(["Lane 1 finished: Create NOTES.md"]);
+    m = reduce(m, { type: "dismiss", id: m.notices[0]!.id });
+    expect(m.notices).toEqual([]);
+  });
+});

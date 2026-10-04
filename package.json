@@ -7,8 +7,10 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p apps/web/tsconfig.json --noEmit",
+    "socrates": "pnpm --filter @socrates/web build && NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx apps/server/src/main.ts --open",
     "server": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx apps/server/src/main.ts",
+    "build:web": "pnpm --filter @socrates/web build",
     "test": "NODE_OPTIONS=--disable-warning=ExperimentalWarning vitest run",
     "test:watch": "NODE_OPTIONS=--disable-warning=ExperimentalWarning vitest",
     "eval:router": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/router/eval/run-router-eval.ts",

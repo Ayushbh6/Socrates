@@ -1,4 +1,5 @@
 {
   "extends": "./tsconfig.base.json",
-  "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts", "packages/*/eval/**/*.ts", "apps/*/src/**/*.ts", "apps/*/test/**/*.ts", "apps/*/eval/**/*.ts", "vitest.config.ts"]
+  "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts", "packages/*/eval/**/*.ts", "apps/*/src/**/*.ts", "apps/*/test/**/*.ts", "apps/*/eval/**/*.ts", "vitest.config.ts"],
+  "exclude": ["apps/web"]
 }
