@@ -80,6 +80,7 @@ export function assembleContext(input: ContextInput): TextPart[] {
       store,
       goalId: goal.id,
       workspace: input.workspace ?? null,
+      access: input.access,
       query: projectQuery(task, store.requestForTurn(turn.id).request),
       semantic: { anchors: input.semantic?.anchors ?? [], related: input.semantic?.related ?? [] },
       maxTokens: input.budgets?.projectContextMax ?? DEFAULT_BUDGETS.projectContextMax,

@@ -1,7 +1,7 @@
 import { type FileSection, readIndexableSync, SECRET_PATH, type SemanticHit, fileSections, fuse, sectionHash, sectionText } from "@socrates/retrieval";
 import { countTokens } from "@socrates/shared";
 import { type LedgerStore, significantTerms } from "@socrates/store";
-import { type WorkspaceRoot, head } from "@socrates/tools";
+import { type AccessPolicy, type WorkspaceRoot, canReadAutomatically, head } from "@socrates/tools";
 
 /** An anchor at most this large is shown whole. */
 export const ANCHOR_WHOLE_MAX_TOKENS = 1_500;
@@ -16,6 +16,7 @@ export interface ProjectContextInput {
   store: LedgerStore;
   goalId: string;
   workspace: WorkspaceRoot | null;
+  access?: AccessPolicy | null;
   /** The message with the current task's title and note: what the sections should serve. */
   query: string;
   /** Meaning matches among the anchors' sections (related floor) and other files' sections (strong floor). */
@@ -51,7 +52,7 @@ export function projectContext(input: ProjectContextInput): string | null {
       entries.push(`${label}: not shown, it may hold credentials; read it only when the work needs it`);
       continue;
     }
-    const { text: file, problem } = readText(workspace, anchor.path);
+    const { text: file, problem } = readText(workspace, anchor.path, input.access);
     if (file === undefined) {
       entries.push(`${label}: ${problem === "missing" ? "not found in the workspace or excluded by the automatic-context read policy" : "too large or not text; read the parts you need"}`);
       continue;
@@ -79,7 +80,7 @@ export function projectContext(input: ProjectContextInput): string | null {
   const related: Candidate[] = [];
   for (const hit of input.semantic?.related ?? []) {
     if (related.length >= RELATED_MAX_SECTIONS || !hit.path || anchorPaths.has(hit.path) || SECRET_PATH.test(hit.path)) continue;
-    const file = readText(workspace, hit.path).text;
+    const file = readText(workspace, hit.path, input.access).text;
     if (file === undefined) continue;
     const found = fileSections(hit.path, file).find((s) => sectionHash(hit.path!, s) === hit.hash);
     if (found) related.push({ path: hit.path, section: found, hash: hit.hash!, related: true });
@@ -97,7 +98,9 @@ export function projectContext(input: ProjectContextInput): string | null {
 }
 
 /** A file's text as it is now, or why it cannot be shown. */
-function readText(workspace: WorkspaceRoot, rel: string): { text?: string; problem?: "missing" | "unreadable" } {
+function readText(workspace: WorkspaceRoot, rel: string, access: AccessPolicy | null = null): { text?: string; problem?: "missing" | "unreadable" } {
+  try { if (!canReadAutomatically(access, workspace.resolve(rel).abs)) return { problem: "missing" }; }
+  catch { return { problem: "missing" }; }
   const file = readIndexableSync(workspace.root, rel);
   return file ? { text: file.text } : { problem: "missing" };
 }

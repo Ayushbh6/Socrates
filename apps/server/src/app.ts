@@ -78,6 +78,7 @@ export async function buildServer({ runtime, token, replayMax }: ServerOptions):
       home: runtime.config.home,
       ready: runtime.socrates !== null && runtime.acceptingMessages,
       setup: runtime.setup,
+      access: runtime.settings.access,
       models: runtime.models,
       embeddings: { ...runtime.settings.embeddings, ...runtime.embeddings, index },
       timeZone: runtime.timeZone,

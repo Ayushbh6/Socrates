@@ -50,7 +50,7 @@ export interface Result {
   json: any;
 }
 
-export function harness(options: { files?: Record<string, string | Buffer>; approve?: boolean | ((r: ApprovalRequest) => boolean); catalog?: CapabilityCatalog; gateArmed?: boolean; semantic?: SemanticSearch; access?: () => AccessPolicy | null } = {}): Harness {
+export function harness(options: { files?: Record<string, string | Buffer>; approve?: boolean | ((r: ApprovalRequest) => boolean | Promise<boolean>); catalog?: CapabilityCatalog; gateArmed?: boolean; semantic?: SemanticSearch; access?: () => AccessPolicy | null } = {}): Harness {
   const root = tempDir();
   writeFiles(root, options.files ?? {});
   const clock = fixedClock("2026-09-01T10:00:00Z");

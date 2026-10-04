@@ -292,6 +292,7 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
       }
 
       case "write": {
+        await ctx.path(session.spec.cwd, "run");
         if (input.input === undefined && !input.keys?.length) throw new ToolError("invalid_parameters", "write needs input or keys.", "Pass input text, keys, or both.");
         if (session.status !== "running") throw new ToolError("terminal_exited", `${session.selector} has exited (exit code ${session.exitCode}).`, "Restart it with terminal_control restart, or start a new command.");
         const unsupported = input.keys?.filter((k) => !["ENTER", "CTRL_C", "CTRL_D"].includes(k)) ?? [];
@@ -329,6 +330,7 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
       }
 
       case "restart": {
+        await ctx.path(session.spec.cwd, "run");
         const started = Date.now();
         await terminals.terminate(session);
         throwIfCancelled(ctx.signal);

@@ -4,7 +4,7 @@ import { TokenCalibration } from "@socrates/providers";
 import { GoalRouter, type RoutedPart, laneSummaries } from "@socrates/router";
 import type { Goal, Lane, LedgerStore, Task, Turn } from "@socrates/store";
 import type { SemanticHit, SemanticIndex } from "@socrates/retrieval";
-import { type AccessPolicy, type Approve, type CapabilityCatalog, RunState, type ShelfOptions, type SupervisorOptions, ToolRunner, WorkspaceRoot, capabilityCandidates, skillShelf } from "@socrates/tools";
+import { type AccessGrant, type AccessPolicy, type Approve, type CapabilityCatalog, RunState, type ShelfOptions, type SupervisorOptions, ToolRunner, WorkspaceRoot, canReadAutomatically, capabilityCandidates, skillShelf } from "@socrates/tools";
 import { taskHistory } from "./history";
 import { assembleContext, projectQuery } from "./context";
 import { type LaneView, laneNotice, lanesBlock } from "./lanes";
@@ -103,6 +103,9 @@ export interface PartResult {
   /** Quiet, reversible anchor notifications for the application. */
   anchorChanges?: AnchorChange[];
 }
+
+/** Outside-folder grants last for this whole message, including its compound parts. */
+type RunOptions = HandleOptions & { accessGrants: AccessGrant[] };
 
 /**
  * `notices` contains one line per lane part (or clarification), each with its
@@ -378,6 +381,7 @@ export class Socrates {
       }
 
       const results: PartResult[] = [];
+      const runOptions: RunOptions = { ...options, accessGrants: [] };
       let stopped = false;
       for (const part of parts) {
         // A part runs only after every earlier part finished with an answer.
@@ -385,7 +389,7 @@ export class Socrates {
         else {
           try {
             if (setupError) throw setupError.error;
-            results.push(await this.runLocked(part, parts, signal, options, laneId, parts.length === 1 ? releaseMain : () => {}));
+            results.push(await this.runLocked(part, parts, signal, runOptions, laneId, parts.length === 1 ? releaseMain : () => {}));
           } catch (error) {
             const cancelled = signal.aborted;
             const refs = { goal_id: part.goal.id, task_id: part.task.id, turn_id: part.turn.id, chat_id: part.turn.chatId };
@@ -419,7 +423,7 @@ export class Socrates {
    * is queued or running in a lane moves to that lane, and the main
    * conversation is free for the next message.
    */
-  private async runLocked(part: RoutedPart, parts: RoutedPart[], signal: AbortSignal, options: HandleOptions, channel: string | null, releaseMain: () => void): Promise<PartResult> {
+  private async runLocked(part: RoutedPart, parts: RoutedPart[], signal: AbortSignal, options: RunOptions, channel: string | null, releaseMain: () => void): Promise<PartResult> {
     const taskId = part.task.id;
     const held = this.taskLocks.get(taskId);
     const laneId = channel;
@@ -472,7 +476,7 @@ export class Socrates {
     }
   }
 
-  private async runPart(part: RoutedPart, parts: RoutedPart[], signal: AbortSignal, options: HandleOptions, fresh: boolean): Promise<PartResult> {
+  private async runPart(part: RoutedPart, parts: RoutedPart[], signal: AbortSignal, options: RunOptions, fresh: boolean): Promise<PartResult> {
     const { store } = this;
     const turn = part.turn;
     const goal = store.requireGoal(turn.goalId!);
@@ -488,6 +492,7 @@ export class Socrates {
     let initialTools = this.runner.definitions;
     const request = store.requestForTurn(turn.id).request;
     const semantic = { task: [] as SemanticHit[], siblings: [] as SemanticHit[], capabilities: [] as SemanticHit[], anchors: [] as SemanticHit[], related: [] as SemanticHit[] };
+    const access = this.options.access?.() ?? null;
     const historyBoundary = () => {
       const history = taskHistory(store, turn.id);
       return Math.max(history.summary?.to ?? 0, history.omitted?.to ?? 0);
@@ -500,7 +505,7 @@ export class Socrates {
         // One query embedding (cached) serves the history and capability searches, and one more the
         // project files, read with the task it continues; failures return nothing and keywords carry on.
         const search = this.options.semantic;
-        const workspaceId = workspace ? store.requireGoal(goal.id).workspaceId : null;
+        const workspaceId = workspace && canReadAutomatically(access, workspace.root) ? store.requireGoal(goal.id).workspaceId : null;
         const anchorPaths = store.listAnchors(goal.id).filter((a) => a.status !== "superseded").map((a) => a.path);
         const files = workspaceId ? projectQuery(store.requireTask(turn.taskId!), request) : "";
         [semantic.task, semantic.siblings, semantic.capabilities, semantic.anchors, semantic.related] = await Promise.all([
@@ -524,13 +529,12 @@ export class Socrates {
       if (signal.aborted || !setupDeadline.signal.aborted) throw error;
       // Setup exhausted the working allowance. The loop makes only its bounded tool-free wrap-up.
     } finally { clearTimeout(setupTimer); }
-    const run = new RunState();
+    const run = new RunState(undefined, options.accessGrants);
     const shelf = skillShelf(store, capabilities.catalog, goal.id, this.options.shelf);
     const candidates = capabilityCandidates({ store, catalog: capabilities.catalog, goalId: goal.id, message: request, run, semantic: semantic.capabilities });
     // Rebuilt from the current active set each time, so compaction mid-turn keeps a Skill activated earlier in the turn.
     // The main conversation sees what its lanes are doing, as of the start of this turn.
     const lanes = turn.laneId ? null : lanesBlock(store, this.laneViews(), store.clock.now(), this.options.timeZone);
-    const access = this.options.access?.() ?? null;
     const assemble = (previousTurn?: number) =>
       assembleContext({
         store,
@@ -543,7 +547,7 @@ export class Socrates {
         dependsOn: part.dependsOn.map((order) => ({ order, turn: parts.find((p) => p.order === order)!.turn })),
         part: parts.length > 1 ? { order: part.order, count: parts.length } : null,
         lanes,
-        access,
+        access: this.options.access?.() ?? null,
         now: store.clock.now(),
         timeZone: this.options.timeZone,
         budgets: { retrievedMax: this.budgets.retrievedMax, projectContextMax: this.budgets.projectContextMax, previousTurn: previousTurn ?? this.budgets.previousTurn },
@@ -630,7 +634,7 @@ export class Socrates {
     }
 
     const { answer } = outcome;
-    const anchors = applyAnchors({ store, goal, workspace, turn, proposals: answer.anchors, decisions: anchorDecisions, refs });
+    const anchors = applyAnchors({ store, goal, workspace, turn, proposals: answer.anchors, decisions: anchorDecisions, refs, access: this.options.access?.() ?? null });
     const visible = [answer.full_answer, anchors.question].filter(Boolean).join("\n\n");
     const response = store.recordResponse(visible, refs);
     store.completeTurn(turn.id, {

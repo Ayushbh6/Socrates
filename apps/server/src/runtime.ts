@@ -8,7 +8,7 @@ import { PROVIDER_DEFAULTS, type Provider, makeEmbedder, makeModel } from "@socr
 import { Retrieval } from "@socrates/retrieval";
 import { abortable, type Clock } from "@socrates/shared";
 import { LedgerStore, type Workspace } from "@socrates/store";
-import type { AccessPolicy } from "@socrates/tools";
+import { type AccessPolicy, canReadAutomatically } from "@socrates/tools";
 import { type ServerConfig, prepareHome } from "./config";
 import { readKeys, writeKey } from "./keys";
 import { lockHome } from "./home-lock";
@@ -179,7 +179,11 @@ export class Runtime {
    */
   accessPolicy(): AccessPolicy {
     const { scope, folders, approvals } = this.settings.access;
-    return { folders: scope === "full" ? null : folders, approvals, protected: this.protectedFolders };
+    const valid = folders.filter(folder => {
+      try { return statSync(folder).isDirectory() && realpathSync(folder) === folder; }
+      catch { return false; }
+    });
+    return { folders: scope === "full" ? null : valid, approvals, protected: this.protectedFolders };
   }
 
   /** Apply a settings change and rebuild Socrates from it; an access change alone applies at once. */
@@ -188,7 +192,7 @@ export class Runtime {
     const parsed = SettingsPatch.parse(patch) as Record<string, unknown>;
     const sent = Object.fromEntries(Object.keys(patch as object).map((key) => [key, parsed[key]]));
     if (sent.access) sent.access = { ...this.settings.access, ...(sent.access as object) };
-    const next = Settings.parse({ ...this.settings, ...sent });
+    let next = Settings.parse({ ...this.settings, ...sent });
     if ((parsed.access as { folders?: unknown } | undefined)?.folders) {
       next.access.folders = [...new Set(next.access.folders.map((folder) => workspaceFolder(folder, this.config.home)))];
     }
@@ -199,11 +203,13 @@ export class Runtime {
       // Choosing the working folder lets Socrates work there.
       if (!next.access.folders.includes(workspace.rootPath)) next.access.folders = [...next.access.folders, workspace.rootPath];
     }
+    next = Settings.parse(next);
     if (Object.keys(sent).every((key) => key === "access")) {
       // Access needs no rebuild, so it may change while Socrates works; a rebuild would overwrite it.
       if (this.changing || this.closing) throw new RuntimeBusyError("Socrates is restarting; change access in a moment.");
       saveSettings(this.config.settingsPath, next);
       this.settings = next;
+      this.retrieval?.scheduleSync();
       this.announceChange();
       return next;
     }
@@ -350,7 +356,7 @@ export class Runtime {
       const signal = AbortSignal.any([AbortSignal.timeout(this.deps.embeddingProbeTimeoutMs ?? 3_000), ...(this.deps.signal ? [this.deps.signal] : [])]);
       const vectors = await abortable(embedder.embed(["Socrates memory search"], "query", signal), signal);
       if (vectors.length !== 1 || !vectors[0]?.length || !vectors[0].every(Number.isFinite)) throw new Error("The embedding provider returned an invalid vector.");
-      this.retrieval = await Retrieval.open({ store: this.store, embedder, uri: this.config.indexPath, capabilities: () => this.catalog?.entries() ?? [], log: this.log });
+      this.retrieval = await Retrieval.open({ store: this.store, embedder, uri: this.config.indexPath, capabilities: () => this.catalog?.entries() ?? [], fileAllowed: abs => canReadAutomatically(this.accessPolicy(), abs), log: this.log });
       this.embeddings = { state: "ready", detail: null };
     } catch (error) {
       this.deps.signal?.throwIfAborted();

@@ -42,6 +42,7 @@ const outside = path.join(dir, "outside");
 mkdirSync(outside);
 writeFileSync(path.join(outside, "notes.md"), "The field code is HERON-7.\n");
 writeFileSync(path.join(outside, "wait.js"), "setTimeout(() => console.log('waited'), 60000);\n");
+writeFileSync(path.join(outside, "service.js"), "console.log('access service ready'); setInterval(() => {}, 1000);\n");
 const home = path.join(dir, "home");
 
 const reservation = createServer();
@@ -151,6 +152,7 @@ async function run() {
   // "Ask first" is the default: the command itself is the approval.
   assert.equal(asked.kind, "action");
   assert.match(asked.detail, /node long\.js/);
+  assert.match(asked.preview, /node long\.js/);
   p.send({ type: "approve", approval: asked.id, granted: true });
   const approved = await either(p, "approve");
   assert.match(approved.text, /KESTREL-41/);
@@ -201,6 +203,29 @@ async function run() {
   assert.equal(readFileSync(path.join(outside, "summary.md"), "utf8").trim(), "HERON-7 noted");
   assert.equal(p.received.filter((m) => m.type === "approval").length, approvalsBefore);
   pass("full access, working freely: a file outside every folder is created without asking", short(created.text));
+
+  // A5. Existing terminals use the current access policy; all connected pages see a change.
+  p.send({ type: "send", id: "service", to: "main", text: `Use the terminal tool to start \`node service.js\` in cwd ${realpathSync(outside)}, with background true, name \`access-service\`, and ready.pattern \`access service ready\`. Leave it running and confirm.` });
+  await either(p, "service");
+  assert.equal(p.received.filter((m) => m.type === "approval").length, approvalsBefore);
+  const observer = await page();
+  await api("/api/settings", "PUT", { access: { scope: "folders", approvals: "auto" } });
+  const accessState = (m: any) => m.type === "state" && m.access?.scope === "folders" && m.access?.approvals === "auto";
+  await Promise.all([p.next(accessState), observer.next(accessState)]);
+  observer.socket.close();
+  const restartMark = p.received.length;
+  p.send({ type: "send", id: "restart-service", to: "main", text: "Use terminal_control action restart on terminal `access-service`. If the user declines access, leave it running and stop attempting the restart." });
+  const restart = await p.next((m) => p.received.indexOf(m) >= restartMark && m.type === "approval" && m.tool === "terminal_control");
+  assert.equal(restart.kind, "outside_folder");
+  assert.equal(restart.detail, `Run commands in ${realpathSync(outside)}, outside your folders`);
+  p.socket.on("message", refuseMore);
+  p.send({ type: "approve", approval: restart.id, granted: false });
+  await either(p, "restart-service");
+  p.socket.off("message", refuseMore);
+  assert(p.received.slice(restartMark).some((m) => m.type === "activity" && m.kind === "tool_finished" && /approval_denied/.test(m.preview)), "The terminal restart did not honor the refused access.");
+  p.send({ type: "send", id: "stop-service", to: "main", text: "Use terminal_control action terminate on `access-service` to clean it up, then confirm." });
+  await either(p, "stop-service");
+  pass("existing terminals obey changed folder access and both pages receive the new policy");
 
   // The remaining scenarios run commands in the project without stopping for approval.
   await api("/api/settings", "PUT", { access: { scope: "folders", approvals: "auto" } });

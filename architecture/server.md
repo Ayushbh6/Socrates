@@ -63,10 +63,12 @@ The `access` setting is the harness's access policy (`agent-harness.md`, "Access
 | Field | Values | Meaning |
 |---|---|---|
 | `scope` | `folders` (default), `full` | `folders`: file and command tools work freely only in `folders`, and any other path asks first; `full`: anywhere on the Mac |
-| `folders` | real folder paths, at most `50` | validated like a working folder (an existing directory, never the disk, the home folder, or Socrates' data, Socrates 0.1's included), stored by real path without duplicates; a folder that later disappears simply matches nothing |
+| `folders` | real folder paths, at most `50` | validated like a working folder (an existing directory, never the disk, the home folder, or Socrates' data, Socrates 0.1's included), stored by real path without duplicates; a missing folder or changed alias matches nothing. The limit also applies after automatically adding a working folder |
 | `approvals` | `ask` (default), `auto` | `ask`: every edit, patch, command and changing MCP call waits for the user's approval; reading never asks. `auto`: none of them asks |
 
-In every mode, tools never touch this server's data folder or `~/.socrates`. With no live page connected, every approval is refused. Commands are not sandboxed: the scope decides where a command starts, not everything it can reach, so a command in `auto` mode can still read or change other files.
+Direct file access, searches and command working directories exclude this server's data folder and `~/.socrates`, including their real targets when symlinked. The harness's existing read-only access to a valid activated Skill's contained resources remains available. Automatic project context and workspace embeddings respect the configured file scope without silently obtaining an outside-folder grant. With no live page connected, every approval is refused. Commands are not sandboxed: the scope decides where a command starts, not everything it can reach, so a command in `auto` mode can still read or change other files.
+
+Access-only updates are broadcast as `state.access` to every subscribed page and returned in `/api/status`; they do not rebuild Socrates. Existing terminals recheck folder access before restart or input. Action approvals carry the complete submitted input; previews larger than `20,000` characters are refused, rather than silently shortened.
 
 ## Security
 

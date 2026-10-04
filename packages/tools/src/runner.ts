@@ -3,6 +3,7 @@ import { abortable, countTokens } from "@socrates/shared";
 import type { SemanticSearch } from "@socrates/retrieval";
 import type { LedgerStore, TaskRefs } from "@socrates/store";
 import { type AccessPolicy, isProtected, protectedPath, within } from "./access";
+import { statSync } from "node:fs";
 import { RESULT_CEILING_TOKENS, headTail } from "./bounds";
 import { type CapabilityCatalog, StaticCatalog } from "./catalog";
 import { type ApprovalRequest, type Approve, type HandlerContext, type RunState, type ToolBinding, throwIfCancelled, requireWorkspace } from "./context";
@@ -235,9 +236,17 @@ export class ToolRunner {
         if (policy.folders && !policy.folders.some((folder) => within(folder, resolved.abs)) && !scope.run.granted(resolved.abs, write)) {
           const verb = use === "run" ? "Run commands in" : use === "write" ? "Change" : "Read";
           await ctx.requireApproval({ kind: "outside_folder", tool, detail: `${verb} ${resolved.abs}, outside your folders` });
-          scope.run.grant(resolved.abs, write);
+          ctx.recheckPath(resolved, use);
+          let recursive = false;
+          try { recursive = statSync(resolved.abs).isDirectory(); } catch {}
+          scope.run.grant(resolved.abs, write, recursive);
         }
         return resolved;
+      },
+      recheckPath: (file, use = "read") => {
+        const checked = requireWorkspace(scope).resolve(file.abs, { anywhere: policy !== null, write: use === "write" });
+        if (policy && isProtected(policy, checked.abs)) throw protectedPath(file.rel);
+        if (checked.abs !== file.abs) throw new ToolError("path_changed", `${file.rel} changed its target while the call waited.`, "Inspect the current path and request access again before retrying.", false);
       },
       visible: (abs) => !policy || !isProtected(policy, abs),
       terminals: scope.workspace ? this.terminals(scope.workspace) : null,
@@ -298,9 +307,9 @@ function actionDetail(tool: string, input: Record<string, unknown>): string {
 function preview(tool: string, input: Record<string, unknown>): { preview?: string } {
   const text = tool === "edit" ? `--- replace\n${String(input.old_text)}\n+++ with\n${String(input.new_text)}`
     : tool === "apply_patch" ? String(input.patch)
-    : tool === "terminal_control" && typeof input.input === "string" ? input.input
-    : null;
-  return text === null ? {} : { preview: text.slice(0, APPROVAL_PREVIEW_CHARS) };
+    : JSON.stringify(input);
+  if (text.length > APPROVAL_PREVIEW_CHARS) throw new ToolError("approval_too_large", "This action is too large to preview completely before approval.", "Split it into smaller calls so the user can review each complete action.", false);
+  return { preview: text };
 }
 
 function describe(call: ToolCall): string {

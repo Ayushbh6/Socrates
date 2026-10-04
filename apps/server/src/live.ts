@@ -133,6 +133,7 @@ export class LiveHub {
       seq: this.runtime.store.latestEventSeq(),
       ready: socrates !== null && this.runtime.acceptingMessages,
       setup: this.runtime.setup,
+      access: this.runtime.settings.access,
       busy: socrates?.busy ?? false,
       lanes: this.runtime.lanes(),
       queue: [...this.queue],

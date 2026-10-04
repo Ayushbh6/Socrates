@@ -50,7 +50,7 @@ export class WorkspaceRoot {
     if (options.anywhere && (raw === "~" || raw.startsWith("~/"))) raw = path.join(homedir(), raw.slice(1));
     const requested = path.resolve(this.root, raw);
     if (!options.anywhere && !isInside(this.root, requested)) throw outside(input);
-    const abs = realOfNearestExisting(requested);
+    const abs = canonicalPath(requested);
     if (!options.anywhere && !isInside(this.root, abs)) throw outside(input);
     const rel = this.relative(abs);
     if (options.write && isRepositoryMetadata(rel)) {
@@ -67,7 +67,7 @@ export class WorkspaceRoot {
 }
 
 function isRepositoryMetadata(rel: string): boolean {
-  return rel.split("/").includes(".git");
+  return rel.split("/").some((part) => part.toLowerCase() === ".git");
 }
 
 function isInside(root: string, candidate: string): boolean {
@@ -75,13 +75,14 @@ function isInside(root: string, candidate: string): boolean {
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 }
 
-function realOfNearestExisting(abs: string): string {
+export function canonicalPath(abs: string): string {
   let current = abs;
   const rest: string[] = [];
   while (true) {
     try {
       return path.join(realpathSync(current), ...rest.reverse());
-    } catch {
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       const parent = path.dirname(current);
       if (parent === current) return abs;
       rest.push(path.basename(current));

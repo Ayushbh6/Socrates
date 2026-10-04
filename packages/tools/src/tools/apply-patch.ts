@@ -6,7 +6,7 @@ import { boundedDiff, unifiedDiff } from "../diff";
 import { ToolError } from "../errors";
 import { type TextFile, currentHash, encodeText, hashBytes, readTextFile, statOrNull, writeAtomic, writeNew } from "../files";
 import type { FileMutation, ToolHandler, ToolOutput } from "../handler";
-import { withWorkspaceLock } from "../locks";
+import { withFileLocks, withWorkspaceLock } from "../locks";
 import { PATCH_FORMAT_HINT, type PatchHunk, applyChunks, parsePatch } from "../patch";
 import type { ResolvedPath } from "../workspace";
 import { assertFresh, changedDuringCall } from "./edit";
@@ -179,6 +179,9 @@ export const applyPatchTool: ToolHandler<ApplyPatchInput> = {
       if (path.isAbsolute(raw) && !ctx.access) throw new ToolError("invalid_patch", `Patch paths must be workspace-relative; got ${raw}.`, "Use a path relative to the workspace root, such as src/index.ts.");
       paths.set(raw, await ctx.path(raw, "write"));
     }
-    return withWorkspaceLock(workspace.root, () => applyHunks(hunks, paths, ctx));
+    return withWorkspaceLock(workspace.root, () => withFileLocks([...paths.values()].map((p) => p.abs), () => {
+      for (const file of paths.values()) ctx.recheckPath(file, "write");
+      return applyHunks(hunks, paths, ctx);
+    }));
   },
 };

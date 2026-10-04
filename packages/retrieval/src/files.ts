@@ -33,9 +33,10 @@ export function indexablePath(rel: string): boolean {
  * a folder its enclosing repository ignores) a walk that skips hidden
  * entries. At most MAX_INDEXED_FILES.
  */
-export async function workspaceFiles(root: string, signal?: AbortSignal): Promise<{ files: string[]; capped: boolean }> {
-  const listed = (await gitFiles(root, signal)) ?? (await walk(root, signal));
-  const files = listed.filter(indexablePath).sort();
+export async function workspaceFiles(root: string, signal?: AbortSignal, allowed?: (abs: string) => boolean): Promise<{ files: string[]; capped: boolean }> {
+  if (allowed && !allowed(root)) return { files: [], capped: false };
+  const listed = (await gitFiles(root, signal)) ?? (await walk(root, signal, allowed));
+  const files = listed.filter(rel => indexablePath(rel) && (!allowed || allowed(path.join(root, rel)))).sort();
   return { files: files.slice(0, MAX_INDEXED_FILES), capped: files.length > MAX_INDEXED_FILES };
 }
 
@@ -57,13 +58,14 @@ function git(root: string, args: string[], signal?: AbortSignal): Promise<{ code
   });
 }
 
-async function walk(root: string, signal?: AbortSignal): Promise<string[]> {
+async function walk(root: string, signal?: AbortSignal, allowed?: (abs: string) => boolean): Promise<string[]> {
   const out: string[] = [];
   const visit = async (dir: string) => {
     signal?.throwIfAborted();
     for (const entry of await readdir(path.join(root, dir), { withFileTypes: true }).catch(() => [])) {
       if (entry.name.startsWith(".") || out.length > MAX_INDEXED_FILES) continue;
       const rel = dir ? `${dir}/${entry.name}` : entry.name;
+      if (allowed && !allowed(path.join(root, rel))) continue;
       if (entry.isDirectory() && !GENERATED_PATH.test(`${rel}/`)) await visit(rel);
       else if (entry.isFile() && indexablePath(rel)) out.push(rel);
     }

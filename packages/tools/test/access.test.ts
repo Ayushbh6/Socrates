@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, symlinkSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, symlinkSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { type AccessPolicy, describeAccess } from "../src";
@@ -10,7 +10,7 @@ afterEach(() => {
 });
 
 /** A project, a folder beside it, and Socrates' data folder; the policy is changeable between calls. */
-function setup(policy: Partial<AccessPolicy> = {}, approve: boolean | ((r: { kind: string }) => boolean) = true) {
+function setup(policy: Partial<AccessPolicy> = {}, approve: boolean | ((r: { kind: string }) => boolean | Promise<boolean>) = true) {
   const other = tempDir();
   const parent = tempDir();
   const data = path.join(parent, "data");
@@ -115,7 +115,7 @@ describe("access: approvals", () => {
     // One approval covers a command run without a deadline: the classic prompt is not asked again.
     const run = await h.call("terminal", { command: "echo approved", timeout_ms: 0 });
     expect(run.json.output).toContain("approved");
-    expect(h.approvals.slice(2)).toEqual([{ kind: "action", tool: "terminal", detail: "Run echo approved (without a deadline)" }]);
+    expect(h.approvals.slice(2)).toEqual([{ kind: "action", tool: "terminal", detail: "Run echo approved (without a deadline)", preview: JSON.stringify({ command: "echo approved", timeout_ms: 0 }) }]);
   });
 
   it("works freely in auto mode, skipping the first-change gate, and a change of policy applies to the next call", async () => {
@@ -151,5 +151,122 @@ describe("describeAccess", () => {
       "files: anywhere on this computer by absolute path (Socrates' own data folders excepted).\napprovals: edits, patches and commands run without asking.",
     );
     expect(describeAccess({ folders: ["/Users/me/acme"], approvals: "ask", protected: [] })).toContain("files: /Users/me/acme. Any other path, including the workspace when it is not listed, asks the user first");
+  });
+});
+
+describe("access review regressions", () => {
+  it("protects the real target of a data folder that is itself a symlink", async () => {
+    const data = tempDir();
+    const parent = tempDir();
+    const alias = path.join(parent, "classic-data");
+    writeFiles(data, { "secret.md": "private sentinel" });
+    symlinkSync(data, alias);
+    const { h } = setup({ protected: [alias] });
+    expect((await h.call("read", { path: path.join(data, "secret.md") })).json.error.code).toBe("protected_path");
+    expect((await h.call("grep", { path: data, pattern: "sentinel" })).json.error.code).toBe("protected_path");
+  });
+
+  it("prunes protected search folders before opening their ignore files, even with inclusion globs", async () => {
+    const parent = tempDir();
+    const data = path.join(parent, "data[private]*");
+    writeFiles(parent, { "public.md": "sentinel", "data[private]*/private.md": "private sentinel", "data[private]*/.ignore": "[\n" });
+    const { h } = setup({ protected: [data] });
+    const files = await h.call("glob", { pattern: "**", path: parent });
+    expect(files.isError).toBe(false);
+    expect(files.json.matches).toEqual([`${parent}/public.md`]);
+    const found = await h.call("grep", { pattern: "sentinel", glob: "**", path: parent });
+    expect(found.isError).toBe(false);
+    expect(found.json.matches).toEqual([{ path: `${parent}/public.md`, line_number: 1, text: "sentinel" }]);
+  });
+
+  it.each(["read", "edit", "apply_patch"])("rechecks %s paths after an outside-folder approval", async tool => {
+    const outside = tempDir();
+    const data = tempDir();
+    const file = path.join(outside, "notes.md");
+    writeFiles(outside, { "notes.md": "ordinary" });
+    writeFiles(data, { "secret.md": "private sentinel" });
+    const { h } = setup({ folders: [], protected: [data] }, () => {
+      renameSync(file, `${file}.old`);
+      symlinkSync(path.join(data, "secret.md"), file);
+      return true;
+    });
+    const input = tool === "read" ? { path: file } : tool === "edit" ? { path: file, old_text: "ordinary", new_text: "changed" } : { patch: `*** Begin Patch\n*** Update File: ${file}\n@@\n-ordinary\n+changed\n*** End Patch` };
+    const result = await h.call(tool, input);
+    expect(result.json.error.code).toBe("protected_path");
+    expect(result.content).not.toContain("private sentinel");
+    expect(readFileSync(path.join(data, "secret.md"), "utf8")).toBe("private sentinel");
+  });
+
+  it("does not turn a file grant into permission for a replacement directory", async () => {
+    const s = setup({ folders: [] });
+    const file = path.join(s.other, "notes.md");
+    await s.h.call("read", { path: file });
+    unlinkSync(file);
+    writeFiles(s.other, { "notes.md/child.md": "new child" });
+    await s.h.call("read", { path: path.join(file, "child.md") });
+    expect(s.h.approvals.map(a => a.kind)).toEqual(["outside_folder", "outside_folder"]);
+  });
+
+  it("checks current folders before restarting or writing to an existing terminal", async () => {
+    const s = setup({}, false);
+    const start = await s.h.call("terminal", { command: "node -e 'setInterval(() => {}, 1000)'", cwd: s.other, background: true, name: "service" });
+    expect(start.isError).toBe(false);
+    s.set({ folders: [s.h.root] });
+    for (const action of ["restart", "write"] as const) {
+      const result = await s.h.call("terminal_control", { action, terminal: "service", ...(action === "write" ? { input: "anything" } : {}) });
+      expect(result.json.error.code).toBe("approval_denied");
+    }
+    expect(s.h.approvals).toEqual([
+      { kind: "outside_folder", tool: "terminal_control", detail: `Run commands in ${s.other}, outside your folders` },
+      { kind: "outside_folder", tool: "terminal_control", detail: `Run commands in ${s.other}, outside your folders` },
+    ]);
+    expect((await s.h.call("terminal_control", { action: "list" })).json.terminals[0].status).toBe("running");
+    // Cleanup stays possible after permission is revoked.
+    expect((await s.h.call("terminal_control", { action: "terminate", terminal: "service" })).isError).toBe(false);
+  });
+
+  it("blocks a restart when an old terminal's folder becomes protected", async () => {
+    const s = setup();
+    await s.h.call("terminal", { command: "node -e 'setInterval(() => {}, 1000)'", cwd: s.other, background: true, name: "service" });
+    s.set({ protected: [s.other] });
+    expect((await s.h.call("terminal_control", { action: "restart", terminal: "service" })).json.error.code).toBe("protected_path");
+    expect(s.h.approvals).toEqual([]);
+  });
+
+  it("shows the full command, environment and control input in action previews", async () => {
+    const { h } = setup({ approvals: "ask" }, false);
+    const input = { command: `echo ${"a".repeat(350)}; echo tail`, cwd: ".", env: { MODE: "test" } };
+    await h.call("terminal", input);
+    expect(h.approvals[0]!.preview).toBe(JSON.stringify(input));
+    expect(h.approvals[0]!.preview).toContain("echo tail");
+    const control = { action: "write", terminal: "service", input: "changing input", keys: ["CTRL_C"] };
+    await h.call("terminal_control", control);
+    expect(h.approvals[1]!.preview).toBe(JSON.stringify(control));
+  });
+
+  it.each(["edit", "apply_patch", "terminal"])("refuses an oversized %s action instead of approving a truncated preview", async tool => {
+    const { h } = setup({ approvals: "ask" });
+    const large = "x".repeat(21_000);
+    const input = tool === "edit" ? { path: "src/a.ts", old_text: "1", new_text: large } : tool === "apply_patch" ? { patch: `*** Begin Patch\n*** Add File: huge.md\n+${large}\n*** End Patch` } : { command: `#${"\n".repeat(11_000)}` };
+    expect((await h.call(tool, input)).json.error.code).toBe("approval_too_large");
+    expect(h.approvals).toEqual([]);
+    expect(readFileSync(path.join(h.root, "src/a.ts"), "utf8")).toBe("const a = 1;\n");
+    expect(existsSync(path.join(h.root, "huge.md"))).toBe(false);
+  });
+
+  it("serializes edits of the same outside file across different workspaces", async () => {
+    const outside = tempDir();
+    writeFiles(outside, { "notes.md": "one" });
+    const file = path.join(outside, "notes.md");
+    const first = setup().h;
+    const second = setup().h;
+    await Promise.all([first.call("read", { path: file }), second.call("read", { path: file })]);
+    const results = await Promise.all([
+      first.call("edit", { path: file, old_text: "one", new_text: "two" }),
+      second.call("edit", { path: file, old_text: "one", new_text: "three" }),
+    ]);
+    expect(results.filter(r => !r.isError)).toHaveLength(1);
+    expect(results.find(r => r.isError)!.json.error.code).toBe("stale_file");
+    expect(["two", "three"]).toContain(readFileSync(file, "utf8"));
   });
 });

@@ -1,4 +1,4 @@
-import { readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -42,6 +42,30 @@ describe("access settings", () => {
     await request("PUT", "/api/settings", { workingFolder: workspace.id });
     await request("PUT", "/api/settings", { workingFolder: workspace.id });
     expect(rt.settings.access.folders).toEqual([project]);
+  });
+
+  it("validates the folder limit after adding the chosen working folder", async () => {
+    const { rt, request } = await server(home({ settings: SCRIPTED }));
+    const parent = tempDir();
+    const folders = Array.from({ length: 50 }, (_, i) => path.join(parent, `folder-${i}`));
+    for (const folder of folders) mkdirSync(folder);
+    const project = tempDir();
+    const workspace = (await request("POST", "/api/workspaces", { path: project })).json();
+    expect((await request("PUT", "/api/settings", { access: { folders } })).statusCode).toBe(200);
+    expect((await request("PUT", "/api/settings", { workingFolder: workspace.id })).statusCode).toBe(400);
+    expect(rt.settings.workingFolder).toBeNull();
+    expect(JSON.parse(readFileSync(rt.config.settingsPath, "utf8")).access.folders).toEqual(folders);
+  });
+
+  it("does not reuse stored folder permission after its path becomes a different alias", async () => {
+    const { rt, request } = await server(home({ settings: SCRIPTED }));
+    const parent = tempDir();
+    const project = path.join(parent, "project");
+    mkdirSync(project);
+    await request("PUT", "/api/settings", { access: { folders: [project] } });
+    renameSync(project, path.join(parent, "original"));
+    symlinkSync(tempDir(), project);
+    expect(rt.accessPolicy().folders).toEqual([]);
   });
 
   it("changes access at once, even while Socrates works, without rebuilding it", async () => {

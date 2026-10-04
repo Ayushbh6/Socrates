@@ -1,5 +1,6 @@
 import path from "node:path";
 import { ToolError } from "./errors";
+import { canonicalPath } from "./workspace";
 
 /**
  * Where file and command tools may work, and when they ask first
@@ -19,17 +20,40 @@ export interface AccessPolicy {
 export interface AccessGrant {
   path: string;
   write: boolean;
+  recursive: boolean;
 }
 
-/** Whether `candidate` is `folder` or lies inside it. macOS compares without case, as its disks do. */
+/** Canonical paths retain their case, including on case-sensitive macOS volumes. */
 export function within(folder: string, candidate: string): boolean {
-  const fold = (p: string) => (process.platform === "darwin" ? p.toLowerCase() : p);
-  const rel = path.relative(fold(folder), fold(candidate));
+  const rel = path.relative(folder, candidate);
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 }
 
 export function isProtected(policy: AccessPolicy, abs: string): boolean {
-  return policy.protected.some((folder) => within(folder, abs));
+  const target = canonicalPath(abs);
+  const contains = (folder: string, candidate: string) => within(folder, candidate) || process.platform === "darwin" && within(folder.toLowerCase(), candidate.toLowerCase());
+  return policy.protected.some((folder) => contains(folder, abs) || contains(canonicalPath(folder), target));
+}
+
+/** Automatic context/indexing never obtains an outside-folder grant. */
+export function canReadAutomatically(policy: AccessPolicy | null, abs: string): boolean {
+  if (!policy) return true;
+  try {
+    const target = canonicalPath(abs);
+    return !isProtected(policy, target) && (policy.folders === null || policy.folders.some((folder) => within(folder, target)));
+  } catch { return false; }
+}
+
+/** Exclude protected directories before ripgrep walks or opens their contents. */
+export function protectedSearchGlobs(policy: AccessPolicy | null, root: string): string[] {
+  if (!policy) return [];
+  const globs = new Set<string>();
+  for (const folder of policy.protected.flatMap((p) => [p, canonicalPath(p)])) {
+    if (!within(root, folder)) continue;
+    const rel = path.relative(root, folder).split(path.sep).join("/").replace(/([\\*?\[\]{}])/g, "\\$1");
+    for (const glob of rel ? [`!/${rel}`, `!/${rel}/**`] : ["!**"]) globs.add(glob);
+  }
+  return [...globs].flatMap((glob) => ["--glob", glob]);
 }
 
 export function protectedPath(input: string): ToolError {

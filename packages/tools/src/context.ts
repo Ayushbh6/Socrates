@@ -55,9 +55,8 @@ export class RunState {
   private readonly refs = new Map<string, RunRef>();
   private cursorCounter = 0;
   private readonly refCounters = new Map<string, number>();
-  private readonly grants: AccessGrant[] = [];
 
-  constructor(private readonly maxCursors = 64) {}
+  constructor(private readonly maxCursors = 64, private readonly grants: AccessGrant[] = []) {}
 
   /** Freeze the remainder of a result set and return the cursor that continues it. */
   saveCursor(key: string, items: unknown[], offset: number, capped = false): string {
@@ -92,11 +91,11 @@ export class RunState {
 
   /** The user allowed this path, or a folder holding it, outside their folders earlier in this run. */
   granted(abs: string, write: boolean): boolean {
-    return this.grants.some((g) => within(g.path, abs) && (g.write || !write));
+    return this.grants.some((g) => (g.path === abs || g.recursive && within(g.path, abs)) && (g.write || !write));
   }
 
-  grant(abs: string, write: boolean): void {
-    this.grants.push({ path: abs, write });
+  grant(abs: string, write: boolean, recursive = false): void {
+    this.grants.push({ path: abs, write, recursive });
   }
 }
 
@@ -122,6 +121,8 @@ export interface HandlerContext {
    * their folders. "run" is a command's working directory.
    */
   path(input: string, use?: "read" | "write" | "run"): Promise<ResolvedPath>;
+  /** Revalidate a resolved target after approvals or a mutation-lock wait. */
+  recheckPath(file: ResolvedPath, use?: "read" | "write" | "run"): void;
   /** False inside folders tools never show, such as Socrates' own data. */
   visible(abs: string): boolean;
   /** The terminal supervisor of the selected workspace, when there is one. */

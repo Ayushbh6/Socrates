@@ -77,6 +77,8 @@ export interface RetrievalOptions {
   capabilities?: () => { kind: "skill" | "mcp"; name: string; description: string }[];
   /** Index the files of every workspace bound to a goal, for `<PROJECT_CONTEXT>`. On by default. */
   workspaceFiles?: boolean;
+  /** Live access check before automatic workspace traversal and each file read. */
+  fileAllowed?: (abs: string) => boolean;
   thresholds?: Partial<Thresholds>;
   queryTimeoutMs?: number;
   now?: () => number;
@@ -261,9 +263,15 @@ export class Retrieval implements SemanticIndex {
   }
 
   private async syncWorkspace(workspaceId: string, root: string, budget: number, signal: AbortSignal): Promise<number> {
+    if (this.options.fileAllowed && !this.options.fileAllowed(root)) {
+      this.files.delete(workspaceId);
+      this.partialFiles.delete(workspaceId);
+      await this.index.delete(await this.index.ids("file_section", workspaceId));
+      return 0;
+    }
     const seen = this.files.get(workspaceId) ?? new Map<string, { stamp: string; ids: string[] }>();
     this.files.set(workspaceId, seen);
-    const { files, capped } = await workspaceFiles(root, signal);
+    const { files, capped } = await workspaceFiles(root, signal, this.options.fileAllowed);
     if (capped && !this.capped.has(workspaceId)) {
       this.capped.add(workspaceId);
       this.options.log?.(`workspace ${workspaceId} has more indexable files than the limit; only the first are indexed`);
@@ -285,12 +293,12 @@ export class Retrieval implements SemanticIndex {
     };
     for (const rel of files) {
       signal.throwIfAborted();
-      const checked = indexableFile(root, rel);
+      const checked = !this.options.fileAllowed || this.options.fileAllowed(path.join(root, rel)) ? indexableFile(root, rel) : null;
       const st = checked?.stat;
       const stamp = st ? `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}` : "not indexable";
       if (seen.get(rel)?.stamp === stamp) continue;
       const file = checked ? await readIndexable(path.join(root, rel), root) : null;
-      const fileDocs = file ? fileDocuments(workspaceId, rel, file.text, file.mtime.toISOString()) : [];
+      const fileDocs = file && (!this.options.fileAllowed || this.options.fileAllowed(path.join(root, rel))) ? fileDocuments(workspaceId, rel, file.text, file.mtime.toISOString()) : [];
       const ids = fileDocs.map((d) => d.id);
       let offset = file && partial.get(rel)?.stamp === stamp ? partial.get(rel)!.offset : 0;
       do {
@@ -318,6 +326,13 @@ export class Retrieval implements SemanticIndex {
 
   /** Embed and store the documents whose content changed. */
   private async write(docs: SourceDocument[], signal: AbortSignal): Promise<number> {
+    if (this.options.fileAllowed) docs = docs.filter(doc => {
+      if (doc.kind !== "file_section") return true;
+      const root = doc.workspaceId ? this.options.store.getWorkspace(doc.workspaceId)?.rootPath : null;
+      if (root && doc.path && this.options.fileAllowed!(path.join(root, doc.path))) return true;
+      if (doc.workspaceId) { this.files.delete(doc.workspaceId); this.partialFiles.delete(doc.workspaceId); }
+      return false;
+    });
     if (!docs.length) return 0;
     const stored = await this.index.hashes(docs.map((d) => d.id));
     const changed = docs.filter((d) => stored.get(d.id)?.hash !== contentHash(d.text));

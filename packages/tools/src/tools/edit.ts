@@ -4,7 +4,7 @@ import { boundedDiff, unifiedDiff } from "../diff";
 import { ToolError } from "../errors";
 import { currentHash, encodeText, hashBytes, readTextFile, writeAtomic } from "../files";
 import type { ToolHandler } from "../handler";
-import { withWorkspaceLock } from "../locks";
+import { withFileLocks, withWorkspaceLock } from "../locks";
 import { findMatches, lineNumberAt, nearMisses } from "../match";
 
 /**
@@ -39,7 +39,8 @@ export const editTool: ToolHandler<EditInput> = {
   async execute(input, ctx) {
     const workspace = requireWorkspace(ctx);
     const file = await ctx.path(input.path, "write");
-    return withWorkspaceLock(workspace.root, async () => {
+    return withWorkspaceLock(workspace.root, () => withFileLocks([file.abs], async () => {
+      ctx.recheckPath(file, "write");
       const text = await readTextFile(file);
       assertFresh(ctx, file.rel, text.hash);
       const find = input.old_text.replace(/\r\n/g, "\n");
@@ -93,6 +94,6 @@ export const editTool: ToolHandler<EditInput> = {
         facts: [{ kind: "file_changed", value: file.rel }],
         mutations: [{ path: file.rel, action: "updated", fromPath: null, before: text.text, after }],
       };
-    });
+    }));
   },
 };

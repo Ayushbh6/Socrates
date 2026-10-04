@@ -26,6 +26,15 @@ async function anchored(files: Record<string, string>, anchors: { path: string; 
 }
 
 describe("<PROJECT_CONTEXT>", () => {
+  it("filters protected anchors and related sections even inside an allowed workspace", async () => {
+    const { w, workspace } = await anchored({ "private/anchor.md": "PRIVATE-ANCHOR", "private/related.md": "PRIVATE-RELATED", "allowed.md": "PUBLIC-CONTEXT" }, [
+      { path: "private/anchor.md", role: "private_plan" }, { path: "allowed.md", role: "goal_plan" },
+    ]);
+    const block = projectContext({ store: w.store, goalId: w.goalId, workspace, query: "plan", maxTokens: 3000, access: { folders: [w.root], approvals: "auto", protected: [path.join(w.root, "private")] }, semantic: { anchors: [], related: [hit("private/related.md", "PRIVATE-RELATED")] } });
+    expect(block).toContain("PUBLIC-CONTEXT");
+    expect(block).not.toContain("PRIVATE-ANCHOR");
+    expect(block).not.toContain("PRIVATE-RELATED");
+  });
   it("shows a small anchor whole, and a large one as an outline with the sections the task's note points to", async () => {
     expect(countTokens(PLAN)).toBeGreaterThan(ANCHOR_WHOLE_MAX_TOKENS);
     const { w } = await anchored({ "learning/30-day-plan.md": PLAN, "learning/rules.md": "Always answer in German first." }, [

@@ -138,6 +138,30 @@ describe("which files are indexed", () => {
 });
 
 describe("indexing workspace files", () => {
+  it("never sends disallowed files to the embedder, and applies changed access on each sync", async () => {
+    const root = dir();
+    write(root, { "public.md": "PUBLIC-EMBED", "private/notes.md": "PRIVATE-EMBED" });
+    const { store, workspaceId } = await workspaceStore(root);
+    const embedder = recording();
+    let allowed = false;
+    const retrieval = await Retrieval.open({ store, embedder, uri: dir(), thresholds: { related: -1 }, fileAllowed: abs => allowed && !abs.startsWith(path.join(root, "private")) });
+    cleanups.push(() => retrieval.close());
+    await retrieval.idle();
+    expect(embedder.documents.join("\n")).not.toContain("PUBLIC-EMBED");
+    expect(embedder.documents.join("\n")).not.toContain("PRIVATE-EMBED");
+    allowed = true;
+    await retrieval.sync();
+    expect(embedder.documents.join("\n")).toContain("PUBLIC-EMBED");
+    expect(embedder.documents.join("\n")).not.toContain("PRIVATE-EMBED");
+    write(root, { "public.md": "REVOKED-NEW-CONTENT" });
+    allowed = false;
+    await retrieval.sync();
+    expect(embedder.documents.join("\n")).not.toContain("REVOKED-NEW-CONTENT");
+    allowed = true;
+    await retrieval.sync();
+    expect((await retrieval.search("public", { kinds: ["file_section"], workspaceIds: [workspaceId], limit: 5 })).map(h => h.path)).toEqual(["public.md"]);
+    expect(embedder.documents.join("\n")).toContain("REVOKED-NEW-CONTENT");
+  });
   it("embeds each section once, re-embeds only edited sections, drops deleted files, and never embeds secrets", async () => {
     const root = dir();
     write(root, {

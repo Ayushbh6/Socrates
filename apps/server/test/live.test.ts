@@ -19,6 +19,21 @@ const general = () => ({ text: decision({ decision: "resume_existing", goal_labe
 const isResult = (id: string) => (m: Record<string, any>) => m.type === "result" && m.id === id;
 
 describe("the live connection", () => {
+  it("broadcasts access settings to both pages and exposes them in API status", async () => {
+    const { rt, page, app, token, port } = await liveServer(new Responder("r", () => general()), new Responder("a", () => final()));
+    const first = await page();
+    const second = await page();
+    first.send({ type: "hello" });
+    second.send({ type: "hello" });
+    await Promise.all([first.next(m => m.type === "state"), second.next(m => m.type === "state")]);
+    await rt.updateSettings({ access: { scope: "full", approvals: "auto" } });
+    const match = (m: Record<string, any>) => m.type === "state" && m.access?.scope === "full" && m.access?.approvals === "auto";
+    expect((await first.next(match)).access).toEqual(rt.settings.access);
+    expect((await second.next(match)).access).toEqual(rt.settings.access);
+    const status = await app.inject({ method: "GET", url: "/api/status", headers: { authorization: `Bearer ${token}`, host: `127.0.0.1:${port}` } });
+    expect(status.statusCode).toBe(200);
+    expect(status.json().access).toEqual(rt.settings.access);
+  });
   it("needs the session and this server's own origin", async () => {
     const { page, port, token, app } = await liveServer(new Responder("r", () => general()), new Responder("a", () => final()));
     await expect(page({})).rejects.toThrow("refused 401");
@@ -142,7 +157,7 @@ describe("the live connection", () => {
     p.send({ type: "send", id: "a1", text: "Run it with no deadline.", to: "new_lane" });
     const asked = await p.next((m) => m.type === "approval");
     const lane = (await p.next((m) => m.type === "accepted" && m.id === "a1")).conversation;
-    expect(asked).toMatchObject({ conversation: lane, lane: 1, kind: "action", tool: "terminal", detail: "Run echo approved-run (without a deadline)", preview: null, task: "g1/t1 Run it with no deadl" });
+    expect(asked).toMatchObject({ conversation: lane, lane: 1, kind: "action", tool: "terminal", detail: "Run echo approved-run (without a deadline)", preview: JSON.stringify({ command: "echo approved-run", timeout_ms: 0 }), task: "g1/t1 Run it with no deadl" });
     expect(await p.next((m) => m.type === "state" && m.approvals.length === 1 && m.lanes[0]?.waitingForApproval)).toBeDefined();
     p.send({ type: "approve", approval: asked.id, granted: true });
     const finished = await p.next((m) => m.type === "activity" && m.kind === "tool_finished");

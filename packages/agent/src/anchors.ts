@@ -3,7 +3,7 @@ import { readFileSync, statSync } from "node:fs";
 import { AnchorProposal, type EventPayloads, type EventRefs } from "@socrates/contracts";
 import type { Anchor, Goal, LedgerStore, Turn } from "@socrates/store";
 import { GENERATED_PATH } from "@socrates/retrieval";
-import type { WorkspaceRoot } from "@socrates/tools";
+import { type AccessPolicy, type WorkspaceRoot, canReadAutomatically } from "@socrates/tools";
 
 export const MAX_GOAL_ANCHORS = 8;
 
@@ -21,6 +21,7 @@ type Candidate = AnchorProposal & { hash: string; conflicts: string[] };
 export function applyAnchors(input: {
   store: LedgerStore; goal: Goal; workspace: WorkspaceRoot | null; turn: Turn;
   proposals: AnchorProposal[]; decisions: AnchorDecision[]; refs: EventRefs;
+  access?: AccessPolicy | null;
 }): { question: string | null; changes: AnchorChange[] } {
   const { store, goal, workspace, turn, refs } = input;
   const changes: AnchorChange[] = [];
@@ -32,6 +33,7 @@ export function applyAnchors(input: {
   const file = (p: { path: string; role: string }): { path: string; hash: string } | null => {
     try {
       const resolved = workspace.resolve(p.path);
+      if (!canReadAutomatically(input.access ?? null, resolved.abs)) { warn(p, "excluded by file access; read it with approval before selecting it"); return null; }
       const stat = statSync(resolved.abs);
       if (!stat.isFile()) throw new Error("not a file");
       if (GENERATED_PATH.test(resolved.rel)) { warn(p, "temporary or generated files are not anchors"); return null; }

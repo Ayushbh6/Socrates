@@ -1,5 +1,6 @@
 import path from "node:path";
 import { GlobInput, GrepInput } from "@socrates/contracts";
+import { protectedSearchGlobs } from "../access";
 import { cutLine } from "../bounds";
 import { type HandlerContext, requireWorkspace } from "../context";
 import { ToolError } from "../errors";
@@ -24,15 +25,15 @@ const MAX_COLLECTED_MATCHES = 5_000;
 const EXCLUDE_GIT = ["--no-require-git", "--glob", "!.git", "--glob", "!**/.git/**"];
 
 /** Intersect ripgrep's native glob matches with its ignore-respecting file list. */
-async function listFiles(dirAbs: string, signal: AbortSignal, pattern: string | undefined, onFile: (rel: string) => boolean): Promise<void> {
+async function listFiles(dirAbs: string, signal: AbortSignal, pattern: string | undefined, onFile: (rel: string) => boolean, excludes: string[] = []): Promise<void> {
   let matching: Set<string> | null = null;
   if (pattern !== undefined) {
     matching = new Set();
     const candidates = matching;
-    const filtered = await runRipgrep(["--no-config", "--files", "--hidden", "--sort", "path", "--glob", pattern, ...EXCLUDE_GIT], dirAbs, signal, (line) => (candidates.add(line.replace(/^\.\//, "").split(path.sep).join("/")), true));
+    const filtered = await runRipgrep(["--no-config", "--files", "--hidden", "--sort", "path", "--glob", pattern, ...EXCLUDE_GIT, ...excludes], dirAbs, signal, (line) => (candidates.add(line.replace(/^\.\//, "").split(path.sep).join("/")), true));
     if (filtered.code === 2) throw new ToolError("invalid_pattern", `The glob was rejected: ${firstLines(filtered.stderr, 3)}`, 'Use a glob such as "**/*.ts" or "src/**/test_*.py".');
   }
-  const listed = await runRipgrep(["--no-config", "--files", "--hidden", "--sort", "path", ...EXCLUDE_GIT], dirAbs, signal, (line) => {
+  const listed = await runRipgrep(["--no-config", "--files", "--hidden", "--sort", "path", ...EXCLUDE_GIT, ...excludes], dirAbs, signal, (line) => {
     if (!line) return true;
     const rel = line.replace(/^\.\//, "").split(path.sep).join("/");
     return !matching || matching.has(rel) ? onFile(rel) : true;
@@ -79,7 +80,7 @@ export const globTool: ToolHandler<GlobInput> = {
           return false;
         }
         return true;
-      });
+      }, protectedSearchGlobs(ctx.access, dir.abs));
     }
     const { out, nextCursor } = page(ctx, key, items, offset, limit, (p) => json(p), { capped });
     const result: Record<string, unknown> = { root: dir.rel, matches: out, returned: out.length, truncated: nextCursor !== null, next_cursor: nextCursor };
@@ -128,7 +129,7 @@ export const grepTool: ToolHandler<GrepInput> = {
         await listFiles(cwd, ctx.signal, input.glob, (rel) => {
           if (info.isDirectory() || rel === path.basename(target.abs)) allowed.add(rel);
           return true;
-        });
+        }, protectedSearchGlobs(ctx.access, cwd));
       }
       const args = [
         "--no-config",
@@ -140,6 +141,7 @@ export const grepTool: ToolHandler<GrepInput> = {
         ...(input.literal ? ["--fixed-strings"] : []),
         ...(input.glob ? ["--glob", input.glob] : []),
         ...EXCLUDE_GIT,
+        ...protectedSearchGlobs(ctx.access, cwd),
         "--regexp",
         input.pattern,
         "--",
