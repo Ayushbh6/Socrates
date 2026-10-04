@@ -86,6 +86,7 @@ export interface GoalView {
 }
 
 export interface HistoryPart {
+  turnId?: string;
   projectTurn: number;
   status: "in_progress" | "completed" | "interrupted" | "failed" | string;
   goal: { number: number; title: string };
@@ -98,6 +99,8 @@ export interface HistoryPart {
 }
 
 export interface HistoryItem {
+  throughSeq?: number;
+  activities?: Activity[];
   id: string;
   /** The message event's sequence number. */
   seq: number;
@@ -109,6 +112,7 @@ export interface HistoryItem {
 }
 
 export interface History {
+  seq?: number;
   items: HistoryItem[];
   next: number | null;
 }
@@ -128,7 +132,7 @@ export type ActivityBody =
   | { kind: "tool_finished"; turnId: string; task: string; handle: string; status: "ok" | "error"; preview: string; truncated: boolean }
   | { kind: "answer"; turnId: string; text: string }
   | { kind: "finished"; turnId: string; status: "completed" | "interrupted"; reason: string | null }
-  | { kind: "handed_off"; turnId: string; lane: number }
+  | { kind: "handed_off"; turnId: string; lane: number; laneId?: string; goal?: { number: number; title: string }; task?: { number: number; title: string } }
   | { kind: "lane"; laneId: string; number: number; state: "opened" | "closed" }
   | { kind: "approval_decided"; turnId: string | null; granted: boolean; detail: string }
   | { kind: "warning"; turnId: string | null; detail: string }
@@ -149,6 +153,7 @@ export interface PendingApproval {
 }
 
 export interface LiveState {
+  settings?: Settings;
   seq: number;
   ready: boolean;
   setup: string[];

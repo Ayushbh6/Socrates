@@ -105,4 +105,40 @@ describe("drafts from the agent loop", () => {
     const { result } = drafts(w, [final({ full_answer: "Still answered." })], () => { throw new Error("watcher failed"); });
     expect(await result).toMatchObject({ kind: "answered", text: "Still answered." });
   });
+
+  it("ignores callbacks from a failed request during retry and after the answer is saved", async () => {
+    const w = await world();
+    let late: ((text: string) => void) | undefined;
+    const { seen, result } = drafts(w, [
+      (request) => { late = request.onText; request.onText?.("Initial"); throw new ModelError("Retry", "server", 503); },
+      () => { late?.(" stale"); return final({ full_answer: "Fresh answer." }); },
+    ]);
+    await result;
+    const count = seen.length;
+    late?.(" after completion");
+    expect(seen).toHaveLength(count);
+    expect(seen.filter(d => d.call === 1).map(d => d.text)).toEqual(["Initial"]);
+    expect(seen.at(-1)).toMatchObject({ call: 2, text: "Fresh answer." });
+  });
+
+  it("ignores a producer that invokes its callback after Stop", async () => {
+    const w = await world();
+    const controller = new AbortController();
+    let late: ((text: string) => void) | undefined;
+    const { socrates } = w.socrates([continueTask()], [(request) => {
+      late = request.onText;
+      request.onText?.(' {"full_answer":"Partial');
+      controller.abort();
+      request.onText?.(" after cancellation");
+      return final({ full_answer: "Should not be saved." });
+    }]);
+    const seen: Draft[] = [];
+    const result = await socrates.handle("Go.", { signal: controller.signal, onDraft: (_id, d) => seen.push(d) });
+    const count = seen.length;
+    late?.(" after the interrupted turn");
+    expect(seen).toHaveLength(count);
+    expect(seen.map(d => d.text)).toEqual(["Partial"]);
+    expect(result.kind === "answered" && result.parts[0]!.status).toBe("interrupted");
+    expect(w.store.listEvents({ type: "assistant_response" }).some(e => (e.payload as { text: string }).text.includes("Should not"))).toBe(false);
+  });
 });

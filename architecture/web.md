@@ -1,6 +1,6 @@
 # Socrates web app
 
-The web app is Socrates' face: a page served by the local server (`server.md`) and driven only through its HTTP API and live connection. Everything it shows comes from the ledger; it keeps no state of its own beyond where the user placed the notes.
+The web app is Socrates' face: a page served by the local server (`server.md`) and driven through its HTTP API and live connection. Conversation records come from the ledger. The page also holds temporary streamed drafts and unsent text; layout choice and note positions are remembered in this browser.
 
 It is built in two changes:
 
@@ -35,8 +35,8 @@ Text appears while the model writes it. The server sends the readable part of th
 
 - **One draft per turn.** A draft is kept on its question's exchange and replaced by each newer one; one from an earlier request than the one showing is ignored (a retry or repair is a later request). The saved narration, answer or question, or the end of the turn, replaces it, and a stopped turn leaves nothing behind. The first draft moves the orb out of the middle, so the answer grows from where the orb lands. A draft never changes where the page resumes the live connection, because it is not an event.
 - **One element for the draft and its answer.** The draft and the saved answer that replaces it are the same piece of text on the page, so nothing flickers or jumps at the swap.
-- **Even flow.** Models send text in bursts, so each frame shows a share of the text still waiting (at least one character, about a fifth of a second to catch up), never splitting a character, and carries on after the saved answer replaces the draft. A soft point marks the end of text still being written. Text already finished when the page loads is shown whole; with reduced motion, text is shown as it arrives.
-- **Following.** The area stays at the end of the text while the reader is there and leaves a reader who scrolled up alone; a new question brings it back to the end. Flow follows the canvas, and every thread and lane panel of standard mode follows its own.
+- **Even flow.** Models send text in bursts, so each frame shows a share of the text still waiting (at least one character), never splitting a Unicode code point, and carries on after the saved answer replaces the draft. Catch-up time depends on the burst's size. A soft point marks the end of text still being written. Finished history is shown whole; with reduced motion, text is shown as it arrives, including when that setting changes while the answer is open.
+- **Following.** The area stays at the end of the text while the reader is there and leaves a reader who scrolled up alone; a new question brings it back to the end. Opening a lane or resizing the panel keeps following active. Loading an older page preserves the reading position. Flow follows the canvas, and every thread and lane panel of standard mode follows its own.
 - **Joining late.** A page that opens or reloads mid-reply is sent the current drafts after its state and replay, and carries on from there.
 
 ## Standard mode
@@ -64,6 +64,8 @@ The gear in either header, or the model name in the composer, opens settings:
 
 Model, key, memory and time-zone changes restart Socrates, so they wait until it is idle and say so otherwise; the page stays where it is during the restart. Access changes apply at once.
 
+Settings, the folder picker and full tool output contain keyboard focus, close only the topmost dialog on Escape, and restore focus on close. Choosing a typed folder validates that path directly; navigating first with Enter is optional.
+
 ## Composer
 
 - **Enter** sends to the conversation on the canvas. While main works, a message to main waits in the queue instead; a lane queues its own messages. **Shift+Enter** is a new line.
@@ -72,6 +74,7 @@ Model, key, memory and time-zone changes restart Socrates, so they wait until it
 - **Stop** cancels the work of the conversation on the canvas.
 - The approvals chip chooses **Ask first** (reading is free; every edit and command asks) or **Work freely**. It turns orange with full access.
 - The chat model is shown beside Send.
+- Unsent text belongs to its conversation and survives a mode switch or reconnect. Sending waits for a ready connection. A rejected queue submission keeps its text on the page and restores it to an empty composer; if another draft is already being written, that draft is preserved.
 
 ## Approvals
 
@@ -85,4 +88,5 @@ The page builds each conversation from history pages and the live connection, wi
 - Live activities join the message they belong to by turn; a turn handed from main to a lane starts its own exchange in that lane, with main's message.
 - A message this page sent shows at once and is matched to its saved message; a message for a new lane joins the lane the server names, in either order.
 - A lost connection reconnects and catches up from the newest event the page applied; one too far behind reloads from history.
+- History includes a snapshot cursor, turn IDs and ordered narration, tool previews and decisions. On a replay reset, delivery pauses while that snapshot loads, then a fresh connection requests activity and the current drafts. Events already represented by each snapshot are ignored. An unfinished turn older than the replay window uses the snapshot directly.
 - Changes to settings, keys or access from another tab reach every page.

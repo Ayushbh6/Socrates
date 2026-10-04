@@ -3,8 +3,8 @@ const REVEAL_FRAMES = 12;
 
 /**
  * How much of the text to show next. A share of what is still waiting, and
- * at least one character, so text that arrives in bursts flows out evenly in
- * about a fifth of a second, and text that trickles in keeps pace with it.
+ * at least one character, so bursts flow out progressively and a trickle
+ * keeps pace with the provider. Catch-up time depends on the burst's size.
  */
 export function nextShown(shown: number, total: number): number {
   const waiting = total - shown;

@@ -5,12 +5,14 @@ import type { EventPayloads } from "@socrates/contracts";
 import { callLine } from "@socrates/retrieval";
 import type { LedgerStore, Turn, Workspace } from "@socrates/store";
 import { assertSeparateFromClassic } from "./config";
+import { type Activity, activityOf } from "./activity";
 
 /** Turns per history page; a message's compound parts always stay on one page. */
 export const HISTORY_PAGE_TURNS = 30;
 const FOLDER_LIST_MAX = 500;
 
 export interface HistoryPart {
+  turnId: string;
   projectTurn: number;
   status: Turn["status"];
   goal: { number: number; title: string };
@@ -26,6 +28,10 @@ export interface HistoryPart {
 }
 
 export interface HistoryItem {
+  /** Snapshot boundary: replayed events through here are already represented. */
+  throughSeq: number;
+  /** Ordered narration, tool previews and decisions, using the live activity format. */
+  activities: Activity[];
   /** The message's ledger event; stable across pages. */
   id: string;
   /** That event's sequence number: a page resumes the live connection from just before an unfinished message. */
@@ -44,7 +50,8 @@ export interface HistoryItem {
  * "History"). `before` pages backward by message event; `next` is the value
  * for the following page, or null at the start.
  */
-export function conversationHistory(store: LedgerStore, laneId: string | null, before?: number, limit = HISTORY_PAGE_TURNS): { items: HistoryItem[]; next: number | null } {
+export function conversationHistory(store: LedgerStore, laneId: string | null, before?: number, limit = HISTORY_PAGE_TURNS): { items: HistoryItem[]; next: number | null; seq: number } {
+  const seq = store.latestEventSeq();
   const messages = store.conversationMessages(laneId, { ...(before !== undefined ? { before } : {}), limit });
   const items: HistoryItem[] = [];
   for (const event of messages) {
@@ -53,6 +60,13 @@ export function conversationHistory(store: LedgerStore, laneId: string | null, b
     const all = turns.filter((t) => !laneId || t.laneId === laneId);
     const clarification = all.find((t) => t.kind === "clarification");
     items.push({
+      throughSeq: seq,
+      activities: all.flatMap((turn) => store.listEvents({ turnId: turn.id }))
+        .sort((a, b) => a.seq - b.seq)
+        .flatMap((event) => {
+          const a = activityOf(store, event);
+          return a && ["step", "tool_started", "tool_finished", "warning", "approval_decided"].includes(a.kind) ? [a] : [];
+        }),
       id: event.id,
       seq: event.seq,
       at: event.at,
@@ -64,13 +78,14 @@ export function conversationHistory(store: LedgerStore, laneId: string | null, b
   }
   const oldest = messages.at(-1)?.seq;
   const next = oldest !== undefined && store.conversationMessages(laneId, { before: oldest, limit: 1 }).length ? oldest : null;
-  return { items, next };
+  return { items, next, seq };
 }
 
 function part(store: LedgerStore, t: Turn, laneId: string | null): HistoryPart {
   const goal = store.requireGoal(t.goalId!);
   const task = store.requireTask(t.taskId!);
   return {
+    turnId: t.id,
     projectTurn: t.projectTurn,
     status: t.status,
     goal: { number: goal.number, title: goal.title },

@@ -132,12 +132,17 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
       if ((phase === "work" && timeExpired()) || signal.aborted) return { kind: "deadline" };
       // The same gate covers ordinary requests, retries, wrap-up and repair.
       if (input.calibration.measure(model.id, harnessCount) >= budgets.ceiling) return { kind: "context" };
+      let streaming = true;
+      const request = ++requests;
+      const onText = input.onDraft ? streamDrafts(input.onDraft, request) : undefined;
       try {
         const response = await abortable(model.complete({
           system: input.system, messages: withRollingBreakpoint(messages), tools,
           toolChoice: phase === "work" ? "auto" : "none", maxOutputTokens: input.maxOutputTokens ?? 16_000, signal,
           // Every request, a retry included, is its own draft.
-          ...(input.onDraft ? { onText: streamDrafts(input.onDraft, ++requests) } : {}),
+          ...(onText ? { onText: (text: string) => {
+            if (streaming && request === requests && !signal.aborted && !scope.signal.aborted) onText(text);
+          } } : {}),
         }), signal);
         input.onResponse?.(response, phase);
         steps++;
@@ -145,6 +150,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
         input.calibration.observe(model.id, harnessCount, response.usage);
         return { kind: "response", response };
       } catch (error) {
+        streaming = false;
         if (scope.signal.aborted) return { kind: "cancelled" };
         if (signal.aborted) return { kind: "deadline" };
         if (error instanceof ModelError && error.kind === "aborted") return { kind: "cancelled" };
@@ -154,6 +160,8 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
           return { kind: "failed", detail: error instanceof Error ? error.message : String(error) };
         }
         await sleep(delay, signal);
+      } finally {
+        streaming = false;
       }
     }
   };

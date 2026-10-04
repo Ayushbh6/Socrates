@@ -111,7 +111,7 @@ export function Flow({ app, mode, onMode, onSettings }: { app: AppState; mode: M
                 <QuestionCard text={exchange.message} note={exchange.state === "working" || exchange.state === "sending" ? exchange.note : null} />
                 <section className="answer" aria-live="polite">
                   <div className="answer-dock">{docked && <Orb state={state} docked />}</div>
-                  <AnswerView exchange={exchange} approvals={approvals} />
+                  <AnswerView key={exchange.key} exchange={exchange} approvals={approvals} />
                 </section>
               </>
             )}
@@ -124,9 +124,11 @@ export function Flow({ app, mode, onMode, onSettings }: { app: AppState; mode: M
         conversation={conversation}
         laneNumber={lane?.number ?? null}
         onModel={onSettings}
+        onSent={() => setSelected(null)}
         onNewLane={(text) => {
           const id = store.sendToNewLane(text);
           if (id) setFollowing(id);
+          return id;
         }}
       />
 

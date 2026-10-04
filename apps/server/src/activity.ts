@@ -16,7 +16,7 @@ export type ActivityBody =
   | { kind: "tool_finished"; turnId: string; task: string; handle: string; status: "ok" | "error"; preview: string; truncated: boolean }
   | { kind: "answer"; turnId: string; text: string }
   | { kind: "finished"; turnId: string; status: "completed" | "interrupted"; reason: EventPayloads["turn_interrupted"]["reason"] | null }
-  | { kind: "handed_off"; turnId: string; lane: number }
+  | { kind: "handed_off"; turnId: string; lane: number; laneId: string; goal: { number: number; title: string }; task: { number: number; title: string } }
   | { kind: "lane"; laneId: string; number: number; state: "opened" | "closed" }
   | { kind: "approval_decided"; turnId: string | null; granted: boolean; detail: string }
   | { kind: "warning"; turnId: string | null; detail: string }
@@ -78,7 +78,9 @@ export function activityOf(store: LedgerStore, event: StoredEvent): Activity | n
       return turn ? { ...base, kind: "finished", turnId: turn.id, status: "interrupted", reason: (event.payload as EventPayloads["turn_interrupted"]).reason } : null;
     case "turn_moved_to_lane": {
       const p = event.payload as EventPayloads["turn_moved_to_lane"];
-      return { ...base, conversation: "main", kind: "handed_off", turnId: event.turn_id!, lane: store.requireLane(p.lane_id).number };
+      const goal = store.requireGoal(turn!.goalId!);
+      const task = store.requireTask(turn!.taskId!);
+      return { ...base, conversation: "main", kind: "handed_off", turnId: event.turn_id!, lane: store.requireLane(p.lane_id).number, laneId: p.lane_id, goal: { number: goal.number, title: goal.title }, task: { number: task.number, title: task.title } };
     }
     case "lane_opened":
     case "lane_closed": {

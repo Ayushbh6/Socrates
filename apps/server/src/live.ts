@@ -153,6 +153,7 @@ export class LiveHub {
       ready: socrates !== null && this.runtime.acceptingMessages,
       setup: this.runtime.setup,
       access: this.runtime.settings.access,
+      settings: this.runtime.settings,
       busy: socrates?.busy ?? false,
       lanes: this.runtime.lanes(),
       queue: [...this.queue],
@@ -250,8 +251,11 @@ export class LiveHub {
   /** Keep the newest draft of a turn and send it with the next interval's. */
   private draft(runId: string, turnId: string, draft: Draft): void {
     if (this.closed) return;
+    const run = this.runs.get(runId);
     const turn = this.runtime.store.getTurn(turnId);
-    this.drafts.set(turnId, { runId, message: { type: "draft", conversation: turn?.laneId ?? "main", turnId, ...draft } });
+    if (!run || run.controller.signal.aborted || turn?.status !== "in_progress") return;
+    if ((this.drafts.get(turnId)?.message.call ?? 0) > draft.call) return;
+    this.drafts.set(turnId, { runId, message: { type: "draft", conversation: turn.laneId ?? "main", turnId, ...draft } });
     this.draftsUnsent.add(turnId);
     this.draftTimer ??= setTimeout(() => {
       this.draftTimer = null;

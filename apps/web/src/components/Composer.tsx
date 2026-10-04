@@ -6,20 +6,22 @@ import { MAX_RUNNING_LANES } from "../lib/types";
 import { Popover } from "./Popover";
 
 /** The message box: Send, Queue while main works, or Send in a new lane (architecture/web.md, "Composer"). */
-export function Composer({ app, conversation, laneNumber, onNewLane, onModel, variant = "float", compact = false, autoFocus = true }: {
+export function Composer({ app, conversation, laneNumber, onNewLane, onModel, onSent, variant = "float", compact = false, autoFocus = true }: {
   app: AppState;
   conversation: string;
   laneNumber: number | null;
-  onNewLane: (text: string) => void;
+  onNewLane: (text: string) => string | null;
   /** The model label opens the settings. */
   onModel?: () => void;
+  onSent?: () => void;
   /** Floating over the flow canvas, or inside a standard-mode panel. */
   variant?: "float" | "panel";
   /** A lane panel's composer: no approvals chip or model label. */
   compact?: boolean;
   autoFocus?: boolean;
 }) {
-  const [text, setText] = useState("");
+  const text = app.drafts[conversation] ?? "";
+  const setText = (value: string) => store.setDraft(conversation, value);
   const [menu, setMenu] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
   const live = app.model.live;
@@ -27,6 +29,7 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, va
   const target = sendTarget(conversation, live?.busy ?? false);
   const runningLanes = live?.lanes.filter((l) => l.running).length ?? 0;
   const empty = !text.trim();
+  const unavailable = !app.connected || !live?.ready;
 
   useEffect(() => {
     const el = area.current;
@@ -39,10 +42,10 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, va
   }, [conversation, autoFocus]);
 
   const submit = (how: "send" | "queue" | "lane" = target) => {
-    if (empty) return;
-    if (how === "lane") onNewLane(text);
-    else if (how === "queue") store.queue(text);
-    else store.send(text, conversation);
+    if (empty || unavailable || (how === "lane" && runningLanes >= MAX_RUNNING_LANES)) return;
+    const sent = how === "lane" ? onNewLane(text) : how === "queue" ? store.queue(text) : store.send(text, conversation);
+    if (!sent) return;
+    onSent?.();
     setText("");
     setMenu(false);
   };
@@ -88,7 +91,7 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, va
             </button>
           )}
           <div className="send-group">
-            <button type="button" className="send-button" disabled={empty} onClick={() => submit()} aria-label={target === "queue" ? "Queue" : "Send"} title={target === "queue" ? "Queue: runs when Socrates is free" : "Send"}>
+            <button type="button" className="send-button" disabled={empty || unavailable} onClick={() => submit()} aria-label={target === "queue" ? "Queue" : "Send"} title={target === "queue" ? "Queue: runs when Socrates is free" : "Send"}>
               {target === "queue" ? <ListPlus aria-hidden /> : <ArrowUp aria-hidden />}
             </button>
             <button type="button" className="send-more" onClick={() => setMenu(!menu)} aria-label="More ways to send" aria-expanded={menu}>
@@ -96,9 +99,9 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, va
             </button>
             {menu && (
               <Popover onClose={() => setMenu(false)} className="send-menu" align="right" above>
-                <MenuItem icon={<ArrowUp aria-hidden />} title="Send" detail={conversation === "main" ? "To the main conversation" : `To lane ${laneNumber}`} disabled={empty || target === "queue"} onClick={() => submit("send")} />
-                <MenuItem icon={<ListPlus aria-hidden />} title="Queue" detail="Runs as soon as Socrates is free" disabled={empty || conversation !== "main" || !live?.busy} onClick={() => submit("queue")} />
-                <MenuItem icon={<Split aria-hidden />} title="Send in a new lane" detail={runningLanes >= MAX_RUNNING_LANES ? `${MAX_RUNNING_LANES} lanes are already working` : "Works beside the main conversation"} disabled={empty || runningLanes >= MAX_RUNNING_LANES} onClick={() => submit("lane")} />
+                <MenuItem icon={<ArrowUp aria-hidden />} title="Send" detail={conversation === "main" ? "To the main conversation" : `To lane ${laneNumber}`} disabled={empty || unavailable || target === "queue"} onClick={() => submit("send")} />
+                <MenuItem icon={<ListPlus aria-hidden />} title="Queue" detail="Runs as soon as Socrates is free" disabled={empty || unavailable || conversation !== "main" || !live?.busy} onClick={() => submit("queue")} />
+                <MenuItem icon={<Split aria-hidden />} title="Send in a new lane" detail={runningLanes >= MAX_RUNNING_LANES ? `${MAX_RUNNING_LANES} lanes are already working` : "Works beside the main conversation"} disabled={empty || unavailable || runningLanes >= MAX_RUNNING_LANES} onClick={() => submit("lane")} />
               </Popover>
             )}
           </div>

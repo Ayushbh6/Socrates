@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import type { ModelMessage } from "@socrates/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AnthropicModel, ChatReply, GeminiInteractionsModel, OpenAICompatibleModel, serverSentEvents } from "../src";
 
 /** An event-stream reply whose body arrives in the given pieces (a piece may end anywhere). */
@@ -208,5 +208,62 @@ describe("Gemini Interactions streaming", () => {
     const controller = new AbortController();
     const model = new GeminiInteractionsModel({ model: "g", apiKey: "test", fetch: sseFetch((signal) => sse(events.slice(0, 6), { end: false, signal })) });
     await expect(model.complete({ system: "s", messages: [], signal: controller.signal, onText: () => controller.abort() })).rejects.toMatchObject({ kind: "aborted" });
+  });
+
+  it("honors cancellation even when completion is already in the same network chunk", async () => {
+    const controller = new AbortController();
+    const model = new GeminiInteractionsModel({ model: "g", apiKey: "test", fetch: sseFetch(() => sse(events)) });
+    await expect(model.complete({ system: "s", messages: [], signal: controller.signal, onText: () => controller.abort() })).rejects.toMatchObject({ kind: "aborted" });
+  });
+
+  it("counts heartbeat bytes as traffic during a reply longer than its idle timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const model = new GeminiInteractionsModel({ model: "g", apiKey: "test", timeoutMs: 60,
+        fetch: sseFetch((signal) => {
+          const encoder = new TextEncoder();
+          let timer: ReturnType<typeof setInterval>;
+          const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+              let count = 0;
+              timer = setInterval(() => {
+                if (++count < 8) controller.enqueue(encoder.encode(": heartbeat\n\n"));
+                else {
+                  clearInterval(timer);
+                  controller.enqueue(encoder.encode('data: {"event_type":"interaction.completed","interaction":{"status":"completed"}}\n\n'));
+                  controller.close();
+                }
+              }, 20);
+              signal?.addEventListener("abort", () => { clearInterval(timer); controller.error(new DOMException("aborted", "AbortError")); }, {once:true});
+            },
+            cancel() { clearInterval(timer); },
+          });
+          return new Response(body);
+        }),
+      });
+      const pending = model.complete({system:"s",messages:[],onText:()=>{}});
+      void pending.catch(() => {});
+      await vi.advanceTimersByTimeAsync(160);
+      expect((await pending).stopReason).toBe("end");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps thought text private and accepts an initially empty content list", async () => {
+    const reply = [event("step.start", { index: 0, step: { type: "thought", content: [] } }),
+      event("step.delta", { index: 0, delta: { type: "text", text: "Private thinking" } }),
+      event("step.start", { index: 1, step: { type: "model_output", content: [] } }),
+      event("step.delta", { index: 1, delta: { type: "text", text: "Public 😀" } }),
+      event("interaction.completed", { interaction: { status: "completed" } })];
+    const model = new GeminiInteractionsModel({ model: "g", apiKey: "test", fetch: sseFetch(() => sse(reply, { pieces: 50 })) });
+    const pieces: string[] = [];
+    const result = await model.complete({ system: "s", messages: [], onText: (text) => pieces.push(text) });
+    expect(pieces).toEqual(["Public 😀"]);
+    expect(result.text).toBe("Public 😀");
+    expect(result.raw!.content).toMatchObject([{ content: [{ text: "Private thinking" }] }, { content: [{ text: "Public 😀" }] }]);
+  });
+
+  it("assembles tool arguments at completion when the stop event is absent", async () => {
+    const model = new GeminiInteractionsModel({ model: "g", apiKey: "test", fetch: sseFetch(() => sse(events.filter(e => !(typeof e.data === "object" && e.data.event_type === "step.stop")))) });
+    expect((await model.complete({ system: "s", messages: [], onText: () => {} })).toolCalls[0]!.input).toEqual({ path: "a.txt" });
   });
 });

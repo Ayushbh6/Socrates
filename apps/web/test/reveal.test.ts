@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { cut, nextShown } from "../src/lib/reveal";
 
 describe("letting text out", () => {
-  it("catches up on a burst in a fifth of a second and keeps pace with a trickle", () => {
+  it("shows a burst progressively and keeps pace with a trickle", () => {
     let shown = 0;
     let frames = 0;
     while (shown < 150) {

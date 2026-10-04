@@ -1,7 +1,8 @@
 import { WrapText, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../lib/api";
+import { useDialog } from "../lib/dialog";
 import { viewEvidence } from "../lib/evidence";
 import type { Evidence } from "../lib/types";
 
@@ -10,20 +11,21 @@ export function EvidenceViewer({ task, handle, onClose }: { task: string; handle
   const [evidence, setEvidence] = useState<Evidence | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [wrap, setWrap] = useState(true);
+  const modal = useRef<HTMLDivElement>(null);
+  useDialog(modal, onClose);
   useEffect(() => {
-    api.evidence(task, handle).then(setEvidence, (e) => setError(e instanceof Error ? e.message : String(e)));
+    let active = true;
+    setEvidence(null);
+    setError(null);
+    api.evidence(task, handle).then((found) => { if (active) setEvidence(found); }, (e) => { if (active) setError(e instanceof Error ? e.message : String(e)); });
+    return () => { active = false; };
   }, [task, handle]);
-  useEffect(() => {
-    const close = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", close);
-    return () => window.removeEventListener("keydown", close);
-  }, [onClose]);
   const view = evidence ? viewEvidence(evidence.content) : null;
 
   // At the page level, so no panel's blur or clipping can trap the dialog.
   return createPortal(
     <div className="modal-scrim" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal evidence" role="dialog" aria-modal="true" aria-label="Tool output">
+      <div ref={modal} tabIndex={-1} className="modal evidence" role="dialog" aria-modal="true" aria-label="Tool output">
         <div className="modal-head">
           <div className="evidence-title">
             <code>{evidence?.line ?? "…"}</code>

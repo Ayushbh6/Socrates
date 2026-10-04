@@ -108,6 +108,8 @@ API responses are JSON. A failure, including an unknown route, is `{ "error": { 
 
 Each item holds the exact message and its event sequence number (a page resumes the live connection from just before an unfinished message), `unrouted` when no part has been bound yet, the router's question when it asked one instead, and one entry per part: its project turn, status, goal and task (number and title), the lane it ran in, its answer, why it was interrupted, and its tool calls as one line each with their evidence handle and status. A message saved before routing, or queued in a lane, remains visible after restart. The main conversation lists the messages sent there, including parts handed to a lane (marked `handedOff`); a lane lists messages sent there and parts handed to it.
 
+The response also carries its snapshot `seq`; each item carries `throughSeq`, ordered `activities` (narration, tool starts/results, warnings and approval decisions), and each part its `turnId`. These let a page recover an unfinished turn from history without replaying beyond the event window or losing its current draft. Snapshot activities use the same public output bounds as live activities.
+
 ## Live connection
 
 `GET /api/live` upgrades to a WebSocket, under the same Host, Origin and session rules as every request; a refused upgrade is answered and its connection closed. It carries JSON messages. All live state is held by the server, so a reload or a second tab sees exactly the same thing.
@@ -134,7 +136,7 @@ Changes to settings or keys also broadcast state to every subscribed page. `read
 
 | Message | Meaning |
 |---|---|
-| `state` | `seq`, readiness and setup needed, whether main is busy, the lanes, the main queue, and pending approvals; sent on every change |
+| `state` | `seq`, readiness and setup needed, access and settings (without key values), whether main is busy, the lanes, the main queue, and pending approvals; sent on every change |
 | `accepted { id, conversation }` | the message started; for `new_lane`, `conversation` is the new lane's id |
 | `activity` | one saved event (see "Live activity") |
 | `draft { conversation, turnId, call, kind, text }` | the reply a turn is writing now (see "Live drafts") |
@@ -151,11 +153,15 @@ While a turn's model writes its reply, the pages see it as it arrives. A `draft`
 
 Drafts are temporary and are never saved: the event log, history and replay contain only what is saved, and the saved `step`, `answer` or `question` activity (or `finished`, when the turn ends without one) replaces the turn's draft, so no draft follows it. A page that connects while a reply is arriving receives the current drafts after its state and replay, and a reply that was saved before the next interval is never sent as a draft at all.
 
+The agent suppresses callbacks from cancelled, failed or finished model requests. The hub accepts drafts only for an active run and an in-progress turn. The page retains the request watermark after saving a draft and ignores late callbacks, older requests and shorter copies. Stop retains the existing interrupted-turn contract: no partial answer is saved (retaining it is the separate T4 proposal).
+
 ## Live activity
 
 Every event is shown to the pages once it is saved (after its transaction commits), as one compact activity with the event's `seq`, time, and conversation (`main` or a lane id; a turn's activities belong to the conversation it runs in now):
 
 `message` (the exact text), `routed` (goal, task, lane), `question` (the router's clarification), `step` (the agent's narration before tool calls), `tool_started` (the call as one line, with its task and evidence handle), `tool_finished` (status and the first `2,000` characters of output), `answer`, `finished` (completed or interrupted, and why), `handed_off`, `lane` (opened or closed), `approval_decided`, `warning`, and `ledger` (goals or tasks changed: reload them).
+
+The `handed_off` activity carries the destination `laneId` and exact goal/task as well as the lane number. The page creates that turn's lane exchange immediately, so its first draft is placed correctly before a tool or saved answer arrives.
 
 `GET /api/evidence?task=gN/tN&handle=eN` returns one tool call's complete retained recording, up to `200,000` characters. Terminal output uses its full recording, MCP output uses its recorded content, other results use their structured JSON, and failed calls include their public error and recorded failure detail. Internal diagnostics are excluded. `truncated` says the route shortened the recording; `outputLost` says a terminal's retention limit already discarded some output. Interrupted calls without a result return `content: null`. Selectors must be positive safe integers.
 

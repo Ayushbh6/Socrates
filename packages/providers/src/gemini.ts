@@ -72,7 +72,10 @@ export class GeminiInteractionsModel implements ModelClient {
       throw new ModelError("Gemini Interactions rejected the request.", s === 401 || s === 403 ? "authentication" : s === 429 ? "rate_limit" : s >= 500 ? "server" : "invalid_request", s);
     }
     let interaction: Interaction;
-    try { interaction = guard ? await readStream(response, request.onText!, guard.touch) : await response.json() as Interaction; }
+    try {
+      interaction = guard ? await readStream(response, request.onText!, guard.touch, signal) : await response.json() as Interaction;
+      signal.throwIfAborted();
+    }
     catch (error) {
       if (request.signal?.aborted) throw new ModelError("Request aborted.", "aborted");
       if (error instanceof ModelError) throw error;
@@ -124,12 +127,12 @@ export function toGeminiSteps(messages: ModelMessage[], provider: string): Step[
  * signature, a model output its text, a function call its parsed arguments.
  * Text reaches `onText` as it arrives.
  */
-async function readStream(response: Response, onText: (delta: string) => void, touch: () => void): Promise<Interaction> {
+async function readStream(response: Response, onText: (delta: string) => void, touch: () => void, signal: AbortSignal): Promise<Interaction> {
   if (!response.body) throw new ModelError("Gemini returned an invalid response.", "server");
   const steps: Step[] = [];
   const arguments_: string[] = [];
-  for await (const { data } of serverSentEvents(response.body)) {
-    touch();
+  for await (const { data } of serverSentEvents(response.body, touch)) {
+    signal.throwIfAborted();
     if (data === "[DONE]") break;
     let event: { event_type?: string; index?: number; step?: Step; delta?: Record<string, unknown> & { type?: string }; interaction?: Interaction; message?: string };
     try { event = JSON.parse(data); } catch { throw new ModelError("Gemini returned an invalid response.", "server"); }
@@ -144,8 +147,10 @@ async function readStream(response: Response, onText: (delta: string) => void, t
         if (!step || !delta) break;
         if (delta.type === "text" && typeof delta.text === "string") {
           const content = ((step.content as { type: string; text: string }[] | undefined) ??= [{ type: "text", text: "" }]);
-          content[0]!.text += delta.text;
-          if (delta.text) onText(delta.text);
+          const text = content.find((c) => c.type === "text");
+          if (text) text.text += delta.text;
+          else content.push({ type: "text", text: delta.text });
+          if (step.type === "model_output" && delta.text) onText(delta.text);
         } else if (delta.type === "thought_signature" && typeof delta.signature === "string") {
           step.signature = delta.signature;
         } else if (delta.type === "arguments_delta" && typeof delta.arguments === "string") {
@@ -161,6 +166,12 @@ async function readStream(response: Response, onText: (delta: string) => void, t
         break;
       }
       case "interaction.completed":
+        // Parse any final argument fragments even when the provider omits a stop event.
+        for (const [i, step] of steps.entries()) {
+          if (step?.type === "function_call" && arguments_[i]) {
+            try { step.arguments = JSON.parse(arguments_[i]!); } catch { throw new ModelError("Gemini returned an invalid function call.", "server"); }
+          }
+        }
         return { ...(event.interaction ?? { status: "completed" }), steps: steps.filter(Boolean) } as Interaction;
       case "error":
         throw new ModelError("Gemini reported an error while streaming.", "server");

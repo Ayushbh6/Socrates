@@ -1,7 +1,8 @@
 import { ChevronLeft, Folder, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../lib/api";
+import { useDialog } from "../lib/dialog";
 import type { Folders } from "../lib/types";
 
 /** Browse this Mac's folders and choose one. */
@@ -11,32 +12,46 @@ export function FolderPicker({ title, onChoose, onCancel }: { title: string; onC
   const [typed, setTyped] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const request = useRef(0);
+  const modal = useRef<HTMLDivElement>(null);
+  useDialog(modal, onCancel);
 
   const open = (path?: string) => {
+    if (busy) return;
+    const id = ++request.current;
     setError(null);
+    setLoading(true);
     api.folders(path).then((found) => {
+      if (request.current !== id) return;
       setListing(found);
       setTyped(found.path);
       if (!path) setHome(found.path);
-    }, (e) => setError(e.message));
+    }, (e) => { if (request.current === id) setError(e.message); })
+      .finally(() => { if (request.current === id) setLoading(false); });
   };
   // A typed or pasted path; ~ is the home folder the picker opened in.
-  const go = () => open(home && (typed === "~" || typed.startsWith("~/")) ? home + typed.slice(1) : typed.trim());
+  const typedPath = () => {
+    const value = typed.trim();
+    return home && (value === "~" || value.startsWith("~/")) ? home + value.slice(1) : value;
+  };
+  const go = () => { if (!busy) open(typedPath()); };
   useEffect(() => {
     open();
+    return () => { request.current++; };
   }, []);
-  useEffect(() => {
-    const close = (e: KeyboardEvent) => e.key === "Escape" && onCancel();
-    window.addEventListener("keydown", close);
-    return () => window.removeEventListener("keydown", close);
-  }, [onCancel]);
 
   const choose = async () => {
-    if (!listing) return;
+    if (!listing || busy || loading || !typed.trim()) return;
+    const id = ++request.current;
     setBusy(true);
     setError(null);
     try {
-      await onChoose(listing.path);
+      const found = typedPath() === listing.path ? listing : await api.folders(typedPath());
+      if (id !== request.current) return;
+      setListing(found);
+      setTyped(found.path);
+      await onChoose(found.path);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -47,14 +62,14 @@ export function FolderPicker({ title, onChoose, onCancel }: { title: string; onC
   // At the page level, so no panel's blur or clipping can trap the dialog.
   return createPortal(
     <div className="modal-scrim" onPointerDown={(e) => e.target === e.currentTarget && onCancel()}>
-      <div className="modal picker" role="dialog" aria-modal="true" aria-label={title}>
+      <div ref={modal} tabIndex={-1} className="modal picker" role="dialog" aria-modal="true" aria-label={title}>
         <div className="modal-head">
           <strong>{title}</strong>
           <button type="button" className="icon-button" onClick={onCancel} aria-label="Close"><X aria-hidden /></button>
         </div>
         <div className="picker-path">
           <button type="button" className="icon-button" disabled={!listing?.parent} onClick={() => listing?.parent && open(listing.parent)} aria-label="Up one folder"><ChevronLeft aria-hidden /></button>
-          <input value={typed} onChange={(e) => setTyped(e.target.value)} onKeyDown={(e) => e.key === "Enter" && go()} aria-label="Folder path" spellCheck={false} />
+          <input value={typed} disabled={busy} onChange={(e) => setTyped(e.target.value)} onKeyDown={(e) => e.key === "Enter" && go()} aria-label="Folder path" spellCheck={false} />
         </div>
         <ul className="picker-list">
           {listing?.folders.map((f) => (
@@ -67,7 +82,7 @@ export function FolderPicker({ title, onChoose, onCancel }: { title: string; onC
         {error && <p className="setup-error" role="alert">{error}</p>}
         <div className="modal-actions">
           <button type="button" className="quiet-button" onClick={onCancel}>Cancel</button>
-          <button type="button" className="solid-button" disabled={!listing || busy} onClick={choose}>Choose this folder</button>
+          <button type="button" className="solid-button" disabled={!listing || busy || loading || !typed.trim()} onClick={choose}>Choose this folder</button>
         </div>
       </div>
     </div>,

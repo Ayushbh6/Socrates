@@ -25,6 +25,7 @@ export class LiveConnection {
     if (this.timer) clearTimeout(this.timer);
     this.socket?.close();
     this.socket = null;
+    this.on.connected(false);
   }
 
   /** False when the connection is down; the page says so instead of losing the command. */
@@ -38,11 +39,14 @@ export class LiveConnection {
     const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/live`);
     this.socket = socket;
     socket.onopen = () => {
+      if (this.socket !== socket) return;
       this.attempts = 0;
       socket.send(JSON.stringify({ type: "hello", after: this.on.after() } satisfies Command));
       this.on.connected(true);
     };
-    socket.onmessage = (event) => this.on.message(JSON.parse(String(event.data)) as ServerMessage);
+    socket.onmessage = (event) => {
+      if (this.socket === socket) this.on.message(JSON.parse(String(event.data)) as ServerMessage);
+    };
     socket.onclose = () => {
       if (this.socket !== socket) return;
       this.socket = null;

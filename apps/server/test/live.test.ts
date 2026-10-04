@@ -30,6 +30,10 @@ describe("the live connection", () => {
     const match = (m: Record<string, any>) => m.type === "state" && m.access?.scope === "full" && m.access?.approvals === "auto";
     expect((await first.next(match)).access).toEqual(rt.settings.access);
     expect((await second.next(match)).access).toEqual(rt.settings.access);
+    await rt.updateSettings({ timeZone: "Europe/Vienna" });
+    const updated = (m: Record<string, any>) => m.type === "state" && m.ready && m.settings?.timeZone === "Europe/Vienna";
+    expect((await first.next(updated)).settings).toEqual(rt.settings);
+    expect((await second.next(updated)).settings).toEqual(rt.settings);
     const status = await app.inject({ method: "GET", url: "/api/status", headers: { authorization: `Bearer ${token}`, host: `127.0.0.1:${port}` } });
     expect(status.statusCode).toBe(200);
     expect(status.json().access).toEqual(rt.settings.access);
@@ -241,6 +245,26 @@ describe("the live connection", () => {
 });
 
 describe("drafts of a reply that is arriving", () => {
+  it("does not revive a cancelled draft when its producer ignores the abort", async () => {
+    const hold = gate();
+    let late: ((text: string) => void) | undefined;
+    const { page, rt } = await liveServer(new Responder("r", () => general()), new Responder("a", async (_m, request) => {
+      late = request.onText;
+      request.onText?.('{"full_answer":"Partial');
+      await hold.opened;
+      request.onText?.(" from an ignored abort");
+      return final();
+    }));
+    const p = await page(); p.send({type:"hello"}); p.send({type:"send",id:"stop",text:"Stop it.",to:"main"});
+    await p.next(m => m.type === "draft");
+    p.send({type:"cancel",conversation:"main"});
+    await p.next(isResult("stop"));
+    late?.(" after persistence"); hold.open();
+    const joined = await page(); joined.send({type:"hello"}); await joined.next(m => m.type === "state");
+    await new Promise(resolve => setTimeout(resolve, 80));
+    expect(joined.received.filter(m => m.type === "draft")).toEqual([]);
+    expect(rt.store.listEvents({type:"assistant_response"})).toEqual([]);
+  });
   /** An agent that streams the first part of its answer, waits, then finishes. */
   function slowAgent(hold: ReturnType<typeof gate>, answer: string) {
     return new Responder("a", async (_m, request) => {

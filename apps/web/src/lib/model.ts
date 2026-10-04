@@ -38,6 +38,10 @@ export interface Exchange {
   steps: Step[];
   answers: string[];
   draft: Draft | null;
+  /** Keep a request's watermark after its visible draft has been saved. */
+  draftCalls: Record<string, { call: number; settled: boolean }>;
+  /** Events already included in this exchange's history snapshot. */
+  throughSeq: number;
   /** The router's clarifying question, instead of work. */
   question: string | null;
   state: "sending" | "working" | "done" | "stopped" | "failed";
@@ -99,7 +103,8 @@ function serverMessage(model: Model, message: ServerMessage): Model {
   switch (message.type) {
     case "state": {
       const { type: _type, ...live } = message;
-      return { ...model, live, seq: Math.max(model.seq, live.seq) };
+      // State may precede replay; only applied activities advance the resume cursor.
+      return { ...model, live };
     }
     case "activity":
       return { ...activity(model, message), seq: Math.max(model.seq, message.seq) };
@@ -136,8 +141,9 @@ function activity(model: Model, a: Activity | DraftArrived): Model {
   const list = model.conversations[a.conversation] ?? [];
   if (a.kind === "message") {
     const existing = list.findIndex((e) => e.seq === a.seq);
+    if (existing >= 0 && a.seq <= list[existing]!.throughSeq) return model;
     // A replayed message is rebuilt from its events.
-    if (existing >= 0) return withConversation(model, a.conversation, list.map((e, i) => (i === existing ? blank({ ...e, steps: [], answers: [], draft: null, question: null, state: "working", note: null, turns: [], open: [] }) : e)));
+    if (existing >= 0) return withConversation(model, a.conversation, list.map((e, i) => (i === existing ? blank({ ...e, steps: [], answers: [], draft: null, draftCalls: {}, question: null, state: "working", note: null, turns: [], open: [] }) : e)));
     const sending = list.findIndex((e) => e.state === "sending" && e.message === a.text);
     const saved = { key: `m${a.seq}`, seq: a.seq, at: a.at, state: "working" as const };
     if (sending >= 0) return withConversation(model, a.conversation, list.map((e, i) => (i === sending ? { ...e, ...saved } : e)));
@@ -152,6 +158,7 @@ function activity(model: Model, a: Activity | DraftArrived): Model {
   const turnId = a.turnId;
   let index = turnId ? list.findLastIndex((e) => e.turns.includes(turnId)) : -1;
   let next = list;
+  if (a.kind === "draft" && index < 0) return model;
   if (index < 0) {
     index = list.findLastIndex((e) => e.state !== "sending");
     const last = list[index];
@@ -163,8 +170,20 @@ function activity(model: Model, a: Activity | DraftArrived): Model {
     }
   }
   if (index < 0) return model;
+  if (a.kind !== "draft" && a.seq <= next[index]!.throughSeq) return model;
   const updated = apply(next[index]!, a);
-  return withConversation(model, a.conversation, next.map((e, i) => (i === index ? updated : e)));
+  let result = withConversation(model, a.conversation, next.map((e, i) => (i === index ? updated : e)));
+  if (a.kind === "handed_off") {
+    const laneId = a.laneId ?? model.live?.lanes.find((lane) => lane.number === a.lane)?.id;
+    if (laneId) {
+      const lane = result.conversations[laneId] ?? [];
+      if (!lane.some((e) => e.turns.includes(a.turnId))) {
+        result = withConversation(result, laneId, [...lane, blank({key: `t${a.turnId}`, conversation: laneId, at: a.at, message: updated.message,
+          route: a.goal && a.task ? {goal:a.goal,task:a.task} : updated.route, turns:[a.turnId], open:[a.turnId] })]);
+      }
+    }
+  }
+  return result;
 }
 
 /** The saved narration, answer or question, or the end of the turn, replaces its draft. */
@@ -172,10 +191,24 @@ const SETTLES_DRAFT = new Set(["step", "answer", "question", "finished", "handed
 
 function apply(e: Exchange, a: Activity | DraftArrived): Exchange {
   const next = applyOne(e, a);
-  return next.draft && SETTLES_DRAFT.has(a.kind) && "turnId" in a && next.draft.turnId === a.turnId ? { ...next, draft: null } : next;
+  if (SETTLES_DRAFT.has(a.kind) && "turnId" in a && a.turnId) {
+    const previous = next.draftCalls[a.turnId];
+    return { ...next,
+      draft: next.draft?.turnId === a.turnId ? null : next.draft,
+      draftCalls: previous ? { ...next.draftCalls, [a.turnId]: { ...previous, settled: true } } : next.draftCalls,
+    };
+  }
+  return next;
 }
 
 function applyOne(e: Exchange, a: Activity | DraftArrived): Exchange {
+  if (a.kind === "draft") {
+    if (e.turns.includes(a.turnId) && !e.open.includes(a.turnId)) return e;
+    if (e.state !== "working" && e.state !== "sending") return e;
+    const previous = e.draftCalls[a.turnId];
+    if (previous && (a.call < previous.call || (a.call === previous.call && previous.settled))) return e;
+    if (e.draft?.turnId === a.turnId && e.draft.call === a.call && e.draft.kind === a.draftKind && e.draft.text.length > a.text.length) return e;
+  }
   const turnId = "turnId" in a ? a.turnId : null;
   const seen = turnId && !e.turns.includes(turnId) ? { turns: [...e.turns, turnId], open: [...e.open, turnId] } : {};
   const x = { ...e, ...seen };
@@ -183,7 +216,7 @@ function applyOne(e: Exchange, a: Activity | DraftArrived): Exchange {
     case "draft":
       // A later request's draft replaces the earlier one; a stale one is ignored.
       if (x.draft?.turnId === a.turnId && x.draft.call > a.call) return x;
-      return { ...x, draft: { turnId: a.turnId, call: a.call, kind: a.draftKind, text: a.text } };
+      return { ...x, draftCalls: { ...x.draftCalls, [a.turnId]: { call: a.call, settled: false } }, draft: { turnId: a.turnId, call: a.call, kind: a.draftKind, text: a.text } };
     case "routed":
       return { ...x, route: x.route ?? { goal: a.goal, task: a.task } };
     case "question":
@@ -223,9 +256,9 @@ function stopReason(reason: string | null): string {
 
 export function fromHistory(item: HistoryItem, conversation: string): Exchange {
   const first = item.parts[0];
-  const working = item.unrouted || item.parts.some((p) => p.status === "in_progress");
+  const working = item.unrouted || item.parts.some((p) => p.status === "in_progress" && !p.handedOff);
   const interrupted = item.parts.find((p) => p.interrupted);
-  return blank({
+  let exchange = blank({
     key: `m${item.seq}`,
     conversation,
     seq: item.seq,
@@ -240,11 +273,19 @@ export function fromHistory(item: HistoryItem, conversation: string): Exchange {
     question: item.question,
     state: working ? "working" : interrupted ? "stopped" : "done",
     note: interrupted ? stopReason(interrupted.interrupted) : null,
+    turns: item.parts.flatMap((p) => p.turnId ? [p.turnId] : []),
+    open: item.parts.flatMap((p) => p.turnId && p.status === "in_progress" && !p.handedOff ? [p.turnId] : []),
+    throughSeq: item.throughSeq ?? 0,
   });
+  if (item.activities) {
+    exchange = { ...exchange, steps: exchange.steps.filter((s) => s.kind === "handed_off") };
+    for (const a of item.activities) exchange = apply(exchange, a);
+  }
+  return exchange;
 }
 
 function blank(e: Partial<Exchange> & Pick<Exchange, "key" | "conversation" | "at" | "message">): Exchange {
-  return { seq: null, route: null, steps: [], answers: [], draft: null, question: null, state: "working", note: null, sendId: null, turns: [], open: [], ...e };
+  return { seq: null, route: null, steps: [], answers: [], draft: null, draftCalls: {}, throughSeq: 0, question: null, state: "working", note: null, sendId: null, turns: [], open: [], ...e };
 }
 
 function bySeq(a: Exchange, b: Exchange): number {
@@ -267,7 +308,7 @@ function mapSent(model: Model, id: string, change: (e: Exchange) => Exchange | n
  * steps; otherwise from the status the history was read at.
  */
 export function replayFrom(histories: HistoryItem[][], statusSeq: number): number {
-  const working = histories.flatMap((items) => items.filter((i) => i.unrouted || i.parts.some((p) => p.status === "in_progress")));
+  const working = histories.flatMap((items) => items.filter((i) => i.unrouted || i.parts.some((p) => p.status === "in_progress" && !p.handedOff)));
   return working.length ? Math.min(...working.map((i) => i.seq)) - 1 : statusSeq;
 }
 

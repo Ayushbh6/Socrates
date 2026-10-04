@@ -1,7 +1,8 @@
 import { X } from "lucide-react";
-import { type FormEvent, type ReactNode, useEffect, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../lib/api";
+import { useDialog } from "../lib/dialog";
 import { type AppState, store } from "../lib/store";
 import type { Embeddings, ModelChoice, Provider } from "../lib/types";
 import { AccessControls } from "./AccessMenu";
@@ -12,18 +13,15 @@ const EMBEDDERS: Embeddings["provider"][] = ["ollama", "openrouter", "openai", "
 /** Everything the user chooses (architecture/web.md, "Settings"). Model, key and memory changes restart Socrates, so they wait until it is idle. */
 export function SettingsDialog({ app, onClose }: { app: AppState; onClose: () => void }) {
   const [providers, setProviders] = useState<Provider[]>([]);
+  const modal = useRef<HTMLDivElement>(null);
+  useDialog(modal, onClose, !!app.settings && !!app.status);
   useEffect(() => {
     api.providers().then(setProviders, () => {});
   }, []);
-  useEffect(() => {
-    const close = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", close);
-    return () => window.removeEventListener("keydown", close);
-  }, [onClose]);
   if (!app.settings || !app.status) return null;
   return createPortal(
     <div className="modal-scrim" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal settings" role="dialog" aria-modal="true" aria-label="Settings">
+      <div ref={modal} tabIndex={-1} className="modal settings" role="dialog" aria-modal="true" aria-label="Settings">
         <div className="modal-head">
           <strong>Settings</strong>
           <button type="button" className="icon-button" onClick={onClose} aria-label="Close"><X aria-hidden /></button>

@@ -1,5 +1,5 @@
 import { LoaderCircle } from "lucide-react";
-import { useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 import { useFollow } from "../lib/follow";
 import { type Exchange, orbState, workLine } from "../lib/model";
 import { type AppState, store } from "../lib/store";
@@ -19,9 +19,18 @@ export function Thread({ app, conversation, extra = [], compact = false, empty }
   const content = useRef<HTMLDivElement>(null);
   const following = useFollow(scroller, content);
   // A new question always brings the thread to its end.
-  const count = useRef(list.length);
-  if (list.length > count.current) following.current = true;
-  count.current = list.length;
+  const newest = useRef(latest?.key);
+  if (latest?.key !== newest.current) following.current = true;
+  newest.current = latest?.key;
+  // Preserve the question at the reader's position when an older page is prepended.
+  const first = useRef(list[0]?.key);
+  const area = scroller.current;
+  const restore = first.current && first.current !== list[0]?.key && !following.current && area
+    ? { height: area.scrollHeight, top: area.scrollTop } : null;
+  first.current = list[0]?.key;
+  useLayoutEffect(() => {
+    if (restore && scroller.current) scroller.current.scrollTop = restore.top + scroller.current.scrollHeight - restore.height;
+  });
 
   return (
     <div className="thread" data-compact={compact} ref={scroller}>

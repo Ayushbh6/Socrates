@@ -22,14 +22,17 @@ export function idleGuard(signal: AbortSignal | undefined, ms: number) {
 }
 
 /** The events of a server-sent-events body: its `event:` name (if any) and its `data:` text. */
-export async function* serverSentEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<{ event: string | null; data: string }> {
+export async function* serverSentEvents(body: ReadableStream<Uint8Array>, onChunk?: () => void): AsyncGenerator<{ event: string | null; data: string }> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (value) buffer += decoder.decode(value, { stream: !done });
+      if (value?.length) {
+        onChunk?.();
+        buffer += decoder.decode(value, { stream: !done });
+      }
       if (done) buffer += decoder.decode();
       // Events end at a blank line; the last one may end at the end of the body.
       const parts = buffer.split(/\r?\n\r?\n/);
@@ -47,5 +50,6 @@ export async function* serverSentEvents(body: ReadableStream<Uint8Array>): Async
     }
   } finally {
     await reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
 }

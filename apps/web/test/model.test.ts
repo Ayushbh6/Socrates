@@ -197,5 +197,42 @@ describe("drafts of a reply that is arriving", () => {
     const done = run(working(), act("main", { kind: "answer", turnId: "t1", text: "Done." }), act("main", { kind: "finished", turnId: "t1", status: "completed", reason: null }));
     expect(exchange(done).state).toBe("done");
     expect(orbState(exchange(run(done, draft("t1", 1, "answer", "late"))), [])).toBe("done");
+    expect(exchange(run(done, draft("t1", 1, "answer", "late"))).draft).toBeNull();
+  });
+
+  it("ignores late drafts after narration settles, shorter pieces, and unknown finished turns", () => {
+    const base = run(working(), draft("t1", 2, "narration", "Checking the configuration."));
+    expect(exchange(run(base, draft("t1", 2, "narration", "Checking"))).draft?.text).toBe("Checking the configuration.");
+    const settled = run(base, act("main", { kind: "step", turnId: "t1", text: "Checking the configuration." }));
+    expect(exchange(run(settled, draft("t1", 1, "answer", "Old attempt"))).draft).toBeNull();
+    expect(exchange(run(settled, draft("t1", 2, "narration", "Late callback"))).draft).toBeNull();
+    expect(exchange(run(settled, draft("t1", 3, "answer", "New answer"))).draft?.text).toBe("New answer");
+    const done = run(settled, act("main", {kind:"finished",turnId:"t1",status:"completed",reason:null}));
+    expect(run(done, draft("unknown",1,"answer","Late")).conversations.main).toHaveLength(1);
+  });
+
+  it("does not advance the replay cursor to the state sent before replay", () => {
+    const model = working();
+    const state = { type:"state", seq:model.seq+100, ready:true, setup:[], access:{scope:"folders",folders:[],approvals:"ask"}, busy:true, lanes:[], queue:[], approvals:[] } as const;
+    expect(run(model, state as unknown as ServerMessage).seq).toBe(model.seq);
+  });
+
+  it("places a handed-off turn in its lane before its first draft, with the exact task", () => {
+    const moved = run(working(), act("main",{kind:"handed_off",turnId:"t1",lane:2,laneId:"lane2",...route}), draft("t1",1,"answer","In the lane","lane2"));
+    expect(exchange(moved,"lane2")).toMatchObject({route,turns:["t1"],open:["t1"],draft:{text:"In the lane"}});
+    expect(exchange(moved).state).toBe("done");
+    expect(exchange(moved,"lane2").message).toBe(exchange(moved).message);
+  });
+
+  it("restores ordered narration and tool previews and ignores activity already in the snapshot", () => {
+    const page = item({throughSeq:500,activities:[
+      {seq:12,at,conversation:"main",kind:"step",turnId:"old",text:"Reading first."},
+      {seq:13,at,conversation:"main",kind:"tool_started",turnId:"old",task:"g2/t3",handle:"e1",line:"read a.ts"},
+      {seq:14,at,conversation:"main",kind:"tool_finished",turnId:"old",task:"g2/t3",handle:"e1",status:"ok",preview:"File text",truncated:false},
+    ],parts:[{...item({}).parts[0]!,turnId:"old"}]});
+    const model = reduce(emptyModel(), {type:"history",conversation:"main",items:[page]});
+    expect(model.conversations.main![0]!.steps).toEqual([{kind:"step",text:"Reading first."},{kind:"tool",task:"g2/t3",handle:"e1",line:"read a.ts",status:"ok",preview:"File text",truncated:false}]);
+    const replay = run(model, {type:"activity",seq:10,at,conversation:"main",kind:"message",text:page.message}, {type:"activity",seq:15,at,conversation:"main",kind:"answer",turnId:"old",text:"Duplicate answer"});
+    expect(replay.conversations.main).toEqual(model.conversations.main);
   });
 });

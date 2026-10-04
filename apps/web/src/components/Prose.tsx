@@ -12,7 +12,8 @@ import { cut, nextShown } from "../lib/reveal";
  */
 export function Prose({ text, animate, writing }: { text: string; animate: boolean; writing: boolean }) {
   const still = useReducedMotion();
-  const [smooth] = useState(animate && !still);
+  const [animated] = useState(animate);
+  const smooth = animated && !still;
   const [shown, setShown] = useState(smooth ? 0 : text.length);
   const at = useRef(shown);
   useEffect(() => {
