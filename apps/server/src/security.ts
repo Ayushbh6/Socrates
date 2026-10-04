@@ -40,14 +40,24 @@ export function guard(port: number, token: string) {
   const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
   const origins = hosts.map((h) => `http://${h}`);
   return async (request: FastifyRequest, reply: FastifyReply) => {
-    if (!hosts.includes(request.headers.host ?? "")) return reply.code(403).send(problem("forbidden_host", "Open Socrates at 127.0.0.1 or localhost."));
+    if (!hosts.includes(request.headers.host ?? "")) return refuse(request, reply, 403, "forbidden_host", "Open Socrates at 127.0.0.1 or localhost.");
     const origin = request.headers.origin;
-    if (origin !== undefined && !origins.includes(origin)) return reply.code(403).send(problem("forbidden_origin", "Requests from other sites are refused."));
-    if (request.headers["sec-fetch-site"] === "cross-site") return reply.code(403).send(problem("forbidden_origin", "Requests from other sites are refused."));
+    if (origin !== undefined && !origins.includes(origin)) return refuse(request, reply, 403, "forbidden_origin", "Requests from other sites are refused.");
+    if (request.headers["sec-fetch-site"] === "cross-site") return refuse(request, reply, 403, "forbidden_origin", "Requests from other sites are refused.");
     const route = request.url.split("?")[0];
     if (route === "/api/health" || route === "/auth") return;
-    if (!authorized(request, token)) return reply.code(401).send(problem("unauthorized", "Open Socrates from the link it printed when it started."));
+    if (!authorized(request, token)) return refuse(request, reply, 401, "unauthorized", "Open Socrates from the link it printed when it started.");
   };
+}
+
+/**
+ * Refuse and close the connection. A refused WebSocket upgrade is never
+ * handed to the WebSocket server, so its socket must be ended here, or it
+ * would stay open and keep the server from shutting down.
+ */
+function refuse(request: FastifyRequest, reply: FastifyReply, status: number, code: string, message: string) {
+  if (request.headers.upgrade) reply.raw.once("finish", () => request.raw.socket.destroy());
+  return reply.code(status).header("connection", "close").send(problem(code, message));
 }
 
 export function sessionCookie(token: string): string {

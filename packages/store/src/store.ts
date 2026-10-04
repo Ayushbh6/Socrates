@@ -308,6 +308,9 @@ export class LedgerStore {
   readonly db: DatabaseSync;
   readonly clock: Clock;
   private txDepth = 0;
+  private readonly listeners = new Set<(event: StoredEvent) => void>();
+  /** Events written inside the open transaction, announced only once it commits. */
+  private uncommitted: StoredEvent[] = [];
 
   private constructor(db: DatabaseSync, clock: Clock) {
     this.db = db;
@@ -357,17 +360,44 @@ export class LedgerStore {
   transaction<T>(fn: () => T): T {
     const depth = this.txDepth;
     const savepoint = `sp_${depth}`;
+    const mark = this.uncommitted.length;
     this.db.exec(depth === 0 ? "BEGIN IMMEDIATE" : `SAVEPOINT ${savepoint}`);
     this.txDepth++;
+    let committed = false;
     try {
       const result = fn();
       this.db.exec(depth === 0 ? "COMMIT" : `RELEASE ${savepoint}`);
+      committed = depth === 0;
       return result;
     } catch (error) {
       this.db.exec(depth === 0 ? "ROLLBACK" : `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}`);
+      // Events of a rolled-back transaction or savepoint never happened.
+      this.uncommitted.length = mark;
       throw error;
     } finally {
       this.txDepth--;
+      if (committed) this.announce(this.uncommitted.splice(0));
+    }
+  }
+
+  /**
+   * Be told of every event once it is durable: right after it is written, or
+   * when its transaction commits; never for a rolled-back one. Listeners run
+   * synchronously and must be cheap; their errors are ignored. Returns the
+   * unsubscribe function. Events restored from a log are not announced.
+   */
+  onEvent(listener: (event: StoredEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private announce(events: StoredEvent[]): void {
+    for (const event of events) {
+      for (const listener of this.listeners) {
+        try {
+          listener(event);
+        } catch {}
+      }
     }
   }
 
@@ -409,7 +439,7 @@ export class LedgerStore {
       JSON.stringify(payload),
     );
     const row = this.get("SELECT seq FROM events WHERE id = ?", id);
-    return {
+    const event: StoredEvent<T> = {
       seq: num(row?.seq),
       id,
       type,
@@ -420,6 +450,9 @@ export class LedgerStore {
       turn_id: refs.turn_id ?? null,
       payload,
     };
+    if (this.txDepth > 0) this.uncommitted.push(event as StoredEvent);
+    else this.announce([event as StoredEvent]);
+    return event;
   }
 
   getEvent(id: string): StoredEvent | null {

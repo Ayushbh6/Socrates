@@ -519,3 +519,32 @@ describe("handoff history boundaries", () => {
     store.close();
   });
 });
+
+describe("event listeners", () => {
+  it("announce events once durable: at once, or when their transaction commits; never rolled-back ones", () => {
+    const { store } = openStore();
+    const seen: string[] = [];
+    const stop = store.onEvent((e) => seen.push(`${e.type}:${(e.payload as { text?: string }).text ?? ""}`));
+    store.onEvent(() => { throw new Error("a broken listener changes nothing"); });
+    store.recordUserMessage("one");
+    store.transaction(() => {
+      store.recordUserMessage("two");
+      expect(seen).toEqual(["user_message:one"]);
+      // A failed savepoint drops only its own events.
+      expect(() => store.transaction(() => { store.recordUserMessage("lost"); throw new Error("no"); })).toThrow("no");
+      store.recordUserMessage("three");
+    });
+    expect(seen).toEqual(["user_message:one", "user_message:two", "user_message:three"]);
+    expect(() => store.transaction(() => { store.recordUserMessage("rolled back"); throw new Error("no"); })).toThrow("no");
+    stop();
+    store.recordUserMessage("after unsubscribe");
+    expect(seen).toHaveLength(3);
+    const rebuilt = LedgerStore.open({ path: ":memory:" });
+    const restored: string[] = [];
+    rebuilt.onEvent((e) => restored.push(e.type));
+    rebuilt.restoreEvents(store.listEvents());
+    expect(restored).toEqual([]);
+    rebuilt.close();
+    store.close();
+  });
+});

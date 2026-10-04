@@ -7,6 +7,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@fastify/websocket": "^11.2.0",
     "@socrates/agent": "workspace:*",
     "@socrates/capabilities": "workspace:*",
     "@socrates/contracts": "workspace:*",
@@ -17,6 +18,10 @@
     "@socrates/store": "workspace:*",
     "@socrates/tools": "workspace:*",
     "fastify": "^5.8.5",
+    "ws": "^8.20.1",
     "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.2"
   }
 }

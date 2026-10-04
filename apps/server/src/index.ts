@@ -5,3 +5,5 @@ export * from "./runtime";
 export * from "./security";
 export * from "./views";
 export * from "./app";
+export * from "./activity";
+export * from "./live";

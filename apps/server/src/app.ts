@@ -1,6 +1,9 @@
+import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
+import { callLine } from "@socrates/retrieval";
 import { z } from "zod";
 import { KEY_NAMES, KeyError } from "./keys";
+import { LiveHub } from "./live";
 import { type Runtime, RuntimeBusyError, SettingsError } from "./runtime";
 import { guard, problem, sameSecret, sessionCookie } from "./security";
 import { FolderError, conversationHistory, goalsView, listFolders, workspaceFolder, workspaceFor } from "./views";
@@ -9,7 +12,12 @@ export interface ServerOptions {
   runtime: Runtime;
   /** This launch's session secret. */
   token: string;
+  /** Tests shrink how far behind a reconnecting page may catch up. */
+  replayMax?: number;
 }
+
+/** The evidence route returns at most this much of one call's output. */
+export const EVIDENCE_MAX_CHARS = 200_000;
 
 const History = z.object({
   conversation: z.string().default("main"),
@@ -21,7 +29,7 @@ const History = z.object({
  * failures are `{ error: { code, message } }` with a message meant for the
  * user. The live connection (sending, approvals, activity) is separate.
  */
-export async function buildServer({ runtime, token }: ServerOptions): Promise<FastifyInstance> {
+export async function buildServer({ runtime, token, replayMax }: ServerOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: false, bodyLimit: 1024 * 1024 });
   app.addHook("onRequest", async (_request, reply) => {
     reply.header("cache-control", "no-store");
@@ -42,6 +50,12 @@ export async function buildServer({ runtime, token }: ServerOptions): Promise<Fa
     runtime.log(`request failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
     return reply.code(500).send(problem("internal", "Something went wrong on the server. Details are in the server log."));
   });
+
+  // The live connection: one hub per server, closed (cancelling its runs) before the server stops.
+  const hub = new LiveHub(runtime, replayMax ? { replayMax } : {});
+  app.addHook("onClose", () => hub.close());
+  await app.register(websocket, { options: { maxPayload: 1024 * 1024 } });
+  app.get("/api/live", { websocket: true }, (socket) => hub.attach(socket));
 
   app.get("/api/health", async () => ({ ok: true }));
 
@@ -69,6 +83,8 @@ export async function buildServer({ runtime, token }: ServerOptions): Promise<Fa
       lanes: runtime.lanes(),
       workingFolder: folder ? { id: folder.id, name: folder.name, path: folder.rootPath } : null,
       recovered: runtime.recovered,
+      // The event this status reflects: a page passes it to the live connection's `hello`.
+      seq: runtime.store.latestEventSeq(),
     };
   });
 
@@ -106,6 +122,26 @@ export async function buildServer({ runtime, token }: ServerOptions): Promise<Fa
     const { path } = z.object({ path: z.string().min(1) }).strict().parse(request.body);
     const workspace = workspaceFor(runtime.store, workspaceFolder(path, runtime.config.home));
     return { id: workspace.id, name: workspace.name, path: workspace.rootPath };
+  });
+
+  // A tool call's complete recorded output, beyond the live preview.
+  app.get("/api/evidence", async (request, reply) => {
+    const query = z.object({ task: z.string().regex(/^g\d+\/t\d+$/), handle: z.string().regex(/^e\d+$/) }).strict().parse(request.query);
+    const [goalNumber, taskNumber] = query.task.slice(1).split("/t").map(Number) as [number, number];
+    const goal = runtime.store.getGoalByNumber(goalNumber);
+    const task = goal ? runtime.store.getTaskByNumber(goal.id, taskNumber) : null;
+    const evidence = task ? runtime.store.getEvidence(task.id, Number(query.handle.slice(1))) : null;
+    if (!evidence) return reply.code(404).send(problem("not_found", "There is no such tool call."));
+    const content = evidence.result?.content ?? null;
+    return {
+      task: query.task,
+      handle: evidence.handle,
+      tool: evidence.tool,
+      line: callLine(evidence.tool, evidence.input),
+      status: evidence.status,
+      content: content === null ? null : content.slice(0, EVIDENCE_MAX_CHARS),
+      truncated: content !== null && content.length > EVIDENCE_MAX_CHARS,
+    };
   });
 
   app.get("/api/folders", async (request) => listFolders(z.object({ path: z.string().optional() }).strict().parse(request.query).path));
