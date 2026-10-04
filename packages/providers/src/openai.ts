@@ -9,6 +9,7 @@ import {
   type ToolCall,
   userText,
 } from "@socrates/contracts";
+import { idleGuard } from "./stream";
 
 export interface OpenAICompatibleModelOptions {
   model: string;
@@ -22,6 +23,8 @@ export interface OpenAICompatibleModelOptions {
   /** Send `temperature` when set. Some reasoning models reject it. */
   sampling?: boolean;
   client?: OpenAI;
+  /** A streamed reply fails after this long without receiving anything. */
+  idleMs?: number;
   /** Provider extensions, for example DeepSeek's thinking or reasoning_effort. */
   extraBody?: Record<string, unknown>;
 }
@@ -64,9 +67,9 @@ export class OpenAICompatibleModel implements ModelClient {
       ...((this.options.sampling ?? true) && request.temperature !== undefined ? { temperature: request.temperature } : {}),
     };
 
-    let completion: OpenAI.Chat.ChatCompletion;
+    let completion: Completion;
     try {
-      completion = await this.client.chat.completions.create(params, request.signal ? { signal: request.signal } : undefined);
+      completion = request.onText ? await this.stream(params, request.onText, request.signal) : await this.client.chat.completions.create(params, request.signal ? { signal: request.signal } : undefined);
     } catch (error) {
       throw toModelError(error);
     }
@@ -99,6 +102,103 @@ export class OpenAICompatibleModel implements ModelClient {
       servedBy: completion.model,
       ...(message ? { raw: { provider: this.id, content: structuredClone(message) } } : {}),
     };
+  }
+
+  /** The same request, streamed: text reaches `onText` as it arrives and the complete completion is rebuilt from the chunks. */
+  private async stream(params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming, onText: (delta: string) => void, signal?: AbortSignal): Promise<Completion> {
+    const guard = idleGuard(signal, this.options.idleMs ?? 60_000);
+    try {
+      const chunks = await this.client.chat.completions.create({ ...params, stream: true, stream_options: { include_usage: true } }, { signal: guard.signal });
+      const reply = new ChatReply();
+      for await (const chunk of chunks) {
+        guard.touch();
+        const text = reply.add(chunk);
+        if (text) onText(text);
+      }
+      // The SDK ends a stream that was aborted quietly, so the ending is checked here.
+      if (guard.idled()) throw new ModelError("The model endpoint stream went quiet.", "network");
+      if (signal?.aborted) throw new ModelError("Request aborted.", "aborted");
+      if (!reply.finished) throw new ModelError("The model endpoint stream ended early.", "network");
+      return reply.completion();
+    } catch (error) {
+      if (guard.idled()) throw new ModelError("The model endpoint stream went quiet.", "network");
+      throw error;
+    } finally {
+      guard.stop();
+    }
+  }
+}
+
+type Completion = Pick<OpenAI.Chat.ChatCompletion, "model" | "usage"> & {
+  choices: { finish_reason: string | null; message: OpenAI.Chat.ChatCompletionMessage }[];
+};
+
+const MERGED_DETAIL_FIELDS = new Set(["text", "summary", "data"]);
+
+/**
+ * The completion rebuilt from streamed chunks. The SDK's own accumulator
+ * overwrites provider fields it does not know, but the replay depends on them
+ * whole (DeepSeek's reasoning_content, OpenRouter's signed reasoning_details),
+ * so every field is joined here: strings are appended, reasoning details are
+ * merged by index, and tool calls are joined by index.
+ */
+export class ChatReply {
+  private text = "";
+  private finish: string | null = null;
+  private model = "";
+  private usage: OpenAI.CompletionUsage | undefined;
+  private readonly extra: Record<string, unknown> = {};
+  private readonly calls: { id: string; name: string; args: string }[] = [];
+
+  /** Whether a choice has finished: a stream that ended without one was cut off. */
+  get finished(): boolean {
+    return this.finish !== null;
+  }
+
+  /** Take one chunk; returns the text it carried. */
+  add(chunk: OpenAI.Chat.ChatCompletionChunk): string {
+    if (chunk.model) this.model = chunk.model;
+    if (chunk.usage) this.usage = chunk.usage;
+    const choice = chunk.choices?.[0];
+    if (!choice) return "";
+    if (choice.finish_reason) this.finish = choice.finish_reason;
+    const { role: _role, content, tool_calls, ...rest } = choice.delta as Record<string, unknown> & { content?: string | null; tool_calls?: OpenAI.Chat.ChatCompletionChunk.Choice.Delta.ToolCall[] };
+    for (const [key, value] of Object.entries(rest)) {
+      if (value === null || value === undefined) continue;
+      if (key === "reasoning_details" && Array.isArray(value)) this.mergeDetails(value);
+      else if (typeof value === "string") this.extra[key] = `${(this.extra[key] as string | undefined) ?? ""}${value}`;
+      else this.extra[key] = value;
+    }
+    for (const call of tool_calls ?? []) {
+      const own = (this.calls[call.index] ??= { id: "", name: "", args: "" });
+      if (call.id) own.id = call.id;
+      if (call.function?.name) own.name += call.function.name;
+      if (call.function?.arguments) own.args += call.function.arguments;
+    }
+    if (!content) return "";
+    this.text += content;
+    return content;
+  }
+
+  completion(): Completion {
+    const tool_calls = this.calls.filter(Boolean).map((c) => ({ id: c.id, type: "function" as const, function: { name: c.name, arguments: c.args } }));
+    const message = { role: "assistant", content: this.text || null, ...this.extra, ...(tool_calls.length ? { tool_calls } : {}) } as OpenAI.Chat.ChatCompletionMessage;
+    return { model: this.model, ...(this.usage ? { usage: this.usage } : {}), choices: [{ finish_reason: this.finish, message }] };
+  }
+
+  private mergeDetails(chunk: unknown[]): void {
+    const details = ((this.extra.reasoning_details as Record<string, unknown>[] | undefined) ??= []);
+    for (const item of chunk as Record<string, unknown>[]) {
+      const own = typeof item.index === "number" ? details.find((d) => d.index === item.index && d.type === item.type) : undefined;
+      if (!own) {
+        details.push({ ...item });
+        continue;
+      }
+      for (const [key, value] of Object.entries(item)) {
+        if (value === null || value === undefined) continue;
+        own[key] = MERGED_DETAIL_FIELDS.has(key) && typeof value === "string" ? `${(own[key] as string | undefined) ?? ""}${value}` : value;
+      }
+    }
   }
 }
 
@@ -145,6 +245,7 @@ function toStopReason(reason: string | null): StopReason {
 }
 
 function toModelError(error: unknown): ModelError {
+  if (error instanceof ModelError) return error;
   if (error instanceof OpenAI.APIUserAbortError) return new ModelError("Request aborted.", "aborted");
   if (error instanceof OpenAI.APIConnectionError) return new ModelError("Could not reach the model endpoint.", "network");
   if (error instanceof OpenAI.AuthenticationError || error instanceof OpenAI.PermissionDeniedError) {

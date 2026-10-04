@@ -69,6 +69,13 @@ export interface ModelRequest {
   maxOutputTokens?: number;
   temperature?: number;
   signal?: AbortSignal;
+  /**
+   * Called with each piece of the reply's text as it arrives. A client that
+   * receives it streams the request and still returns the complete response;
+   * without it the request is not streamed. A failed attempt may have emitted
+   * text already, so a retry starts the text again from its beginning.
+   */
+  onText?: (delta: string) => void;
 }
 
 /**

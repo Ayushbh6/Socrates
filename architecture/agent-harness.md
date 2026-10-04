@@ -1428,11 +1428,13 @@ The harness owns one normalized internal contract:
 - assistant text and reasoning metadata where available;
 - JSON-Schema-compatible tool definitions;
 - tool calls and tool results;
-- streaming text and tool-call deltas;
+- streamed text (below);
 - token usage;
 - cancellation and provider errors.
 
 Each provider adapter translates between this contract and its API. Goal routing, compaction, permissions, tool execution, and persistence never import provider-specific SDK types.
+
+**Streaming.** A request may carry `onText`; the adapter then streams the reply from its provider and calls `onText` with each piece of text as it arrives. The result is the same complete response a plain request returns, rebuilt from the stream: its text, tool calls, usage and the provider's raw content, so a streamed reply continues a conversation exactly as a plain one does. Each adapter rebuilds its own native form: Anthropic's SDK accumulates content blocks; the OpenAI-compatible adapter joins text, tool-call arguments and every provider field itself (DeepSeek's `reasoning_content`, OpenRouter's `reasoning_details`, merged by index), because the replay depends on them whole; Gemini Interactions assembles its steps from the step events, signatures included, since its completion event carries only status and usage. Tool calls are not streamed to the caller: they are acted on once complete. A request without `onText` is not streamed, which is what routing and compaction use. A streamed request fails after 60 seconds without receiving anything (rather than 60 seconds in total), and a stream that is cut off or ends early is a transient `network` failure like any other, so the loop retries it. A retry starts the text again from its beginning.
 
 Provider-specific features are optional optimizations. The harness must still work when a model supports only ordinary messages and function calling.
 

@@ -24,7 +24,7 @@ export class ScriptedModel implements ModelClient {
   }
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
-    this.requests.push(structuredClone({ ...request, signal: undefined }));
+    this.requests.push(structuredClone({ ...request, signal: undefined, onText: undefined }));
     const step = this.steps[this.index++];
     if (step === undefined) throw new Error(`ScriptedModel ${this.id} has no step ${this.index}.`);
     const out = typeof step === "function" ? step(request) : step;

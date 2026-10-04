@@ -9,6 +9,7 @@ import {
   type StopReason,
   type ToolCall,
 } from "@socrates/contracts";
+import { idleGuard } from "./stream";
 
 const PROVIDER = "anthropic";
 
@@ -30,6 +31,8 @@ export interface AnthropicModelOptions {
   sampling?: boolean;
   /** Re-run a refused request on a fallback model inside the same call. On by default where supported. */
   refusalFallback?: boolean;
+  /** A streamed reply fails after this long without receiving anything. */
+  idleMs?: number;
   client?: Anthropic;
 }
 
@@ -77,7 +80,7 @@ export class AnthropicModel implements ModelClient {
 
     let message: Anthropic.Beta.BetaMessage;
     try {
-      message = await this.client.beta.messages.create(params, request.signal ? { signal: request.signal } : undefined);
+      message = request.onText ? await this.stream(params, request.onText, request.signal) : await this.client.beta.messages.create(params, request.signal ? { signal: request.signal } : undefined);
     } catch (error) {
       throw toModelError(error);
     }
@@ -102,6 +105,22 @@ export class AnthropicModel implements ModelClient {
       raw: { provider: PROVIDER, content: message.content },
       servedBy: message.model,
     };
+  }
+
+  /** The same request, streamed: text reaches `onText` as it arrives and the complete message comes back. */
+  private async stream(params: Anthropic.Beta.MessageCreateParamsNonStreaming, onText: (delta: string) => void, signal?: AbortSignal): Promise<Anthropic.Beta.BetaMessage> {
+    const guard = idleGuard(signal, this.options.idleMs ?? 60_000);
+    try {
+      const stream = this.client.beta.messages.stream(params, { signal: guard.signal });
+      stream.on("streamEvent", guard.touch);
+      stream.on("text", onText);
+      return await stream.finalMessage();
+    } catch (error) {
+      if (guard.idled()) throw new ModelError("The Anthropic stream went quiet.", "network");
+      throw error;
+    } finally {
+      guard.stop();
+    }
   }
 }
 
@@ -163,6 +182,7 @@ function toStopReason(reason: string | null): StopReason {
 }
 
 function toModelError(error: unknown): ModelError {
+  if (error instanceof ModelError) return error;
   if (error instanceof Anthropic.APIUserAbortError) return new ModelError("Request aborted.", "aborted");
   if (error instanceof Anthropic.APIConnectionError) return new ModelError("Could not reach the Anthropic API.", "network");
   if (error instanceof Anthropic.AuthenticationError || error instanceof Anthropic.PermissionDeniedError) {

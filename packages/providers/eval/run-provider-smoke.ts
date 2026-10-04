@@ -10,4 +10,5 @@ if (process.env.SOCRATES_ENV_FILE) {
 const provider = process.env.SOCRATES_PROVIDER ?? "gemini";
 const defaults = PROVIDER_DEFAULTS[provider as Provider];
 if (!defaults) throw new Error("Unknown provider.");
-verifyProviderToolRoundTrip(makeModel(provider, process.env.SOCRATES_ROUTER_MODEL ?? defaults.router)).then(result => console.log(JSON.stringify({pass: true, ...result})), error => {console.error(error instanceof Error ? error.message : "Provider smoke failed."); process.exitCode = 1;});
+const model = makeModel(provider, process.env.SOCRATES_ROUTER_MODEL ?? defaults.router);
+verifyProviderToolRoundTrip(model).then(() => verifyProviderToolRoundTrip(model, {stream: true})).then(result => console.log(JSON.stringify({pass: true, ...result})), error => {console.error(error instanceof Error ? error.message : "Provider smoke failed."); process.exitCode = 1;});

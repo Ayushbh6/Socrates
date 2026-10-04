@@ -5,3 +5,4 @@ export * from "./gemini";
 export * from "./calibration";
 export * from "./config";
 export * from "./embeddings";
+export * from "./stream";

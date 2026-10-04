@@ -56,7 +56,7 @@ SOCRATES_PROVIDER=openrouter SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:
 Environment loading reads only known provider keys/configuration and never logs credentials. `SOCRATES_ROUTER_MODEL` overrides the routing model; `SOCRATES_MAIN_MODEL` chooses an escalation model (`none` disables it). Defaults are `gemini-3.8-flash` for Gemini, `google/gemini-3.8-flash` for OpenRouter, and `deepseek-v4-pro` for direct DeepSeek. DeepSeek's `deepseek-flash` can be selected explicitly; the Pro default was verified when Flash requests were stalling. Anthropic and OpenAI remain available with `SOCRATES_PROVIDER=anthropic|openai` and their corresponding keys.
 
 ```sh
-SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:provider # real function call/result continuation with native metadata
+SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:provider # real function call/result continuation with native metadata, plain and streamed
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:goal     # real router and scoped worker, persistent goals and artifacts
 pnpm eval:tools                                          # all ten tools, persistent restart and event replay
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:tools --live # also verify a provider-selected tool call
