@@ -57,6 +57,7 @@ Environment loading reads only known provider keys/configuration and never logs 
 
 ```sh
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:provider # real function call/result continuation with native metadata, plain and streamed
+SOCRATES_ENV_FILE=/absolute/path/to/.env SOCRATES_PROVIDER=gemini pnpm eval:vision # a real model reads a synthetic image, attached and from a tool
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:goal     # real router and scoped worker, persistent goals and artifacts
 pnpm eval:tools                                          # all ten tools, persistent restart and event replay
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:tools --live # also verify a provider-selected tool call

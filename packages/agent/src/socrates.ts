@@ -581,7 +581,7 @@ export class Socrates {
       capabilities: () => capabilities.current(goal.id),
       startedAt,
       context,
-      scope: { binding: { goalId: goal.id, taskId: turn.taskId!, chatId: turn.chatId, turnId: turn.id }, workspace, run, signal },
+      scope: { binding: { goalId: goal.id, taskId: turn.taskId!, chatId: turn.chatId, turnId: turn.id }, workspace, run, signal, vision: this.options.model.vision === true },
       limits: this.limits,
       budgets: this.budgets,
       compact,

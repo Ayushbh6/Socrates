@@ -15,13 +15,13 @@ describe("the runtime", () => {
     expect(rt.setup).toEqual([expect.stringContaining("Add an API key")]);
     await rt.setKey("GEMINI_API_KEY", "test-key");
     expect(rt.setup).toEqual([]);
-    expect(rt.models).toEqual({ chat: { provider: "gemini", model: "gemini-3.8-flash", source: "detected" }, router: { provider: "gemini", model: "gemini-3.8-flash", source: "detected" } });
+    expect(rt.models).toEqual({ chat: { provider: "gemini", model: "gemini-3.8-flash", source: "detected", vision: true }, router: { provider: "gemini", model: "gemini-3.8-flash", source: "detected" } });
     expect(rt.socrates).not.toBeNull();
   });
 
   it("uses the chosen models, and reports a chosen provider without its key", async () => {
     const { rt } = await runtime(home({ settings: { chat: { provider: "anthropic", model: "claude-opus-5-5" } }, keys: { GEMINI_API_KEY: "k" } }));
-    expect(rt.models.chat).toEqual({ provider: "anthropic", model: "claude-opus-5-5", source: "settings" });
+    expect(rt.models.chat).toEqual({ provider: "anthropic", model: "claude-opus-5-5", source: "settings", vision: true });
     expect(rt.models.router).toEqual({ provider: "anthropic", model: "claude-haiku-4-5", source: "settings" });
     expect(rt.socrates).toBeNull();
     expect(rt.setup).toEqual(["Missing ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN. Add it in settings."]);

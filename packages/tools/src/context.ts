@@ -127,6 +127,8 @@ export interface HandlerContext {
   visible(abs: string): boolean;
   /** The terminal supervisor of the selected workspace, when there is one. */
   terminals: TerminalSupervisor | null;
+  /** Whether the working model can see images; `read` shows it an image only then. */
+  vision: boolean;
   /** Ask the user, record the decision, and fail with a corrective error when denied or cancelled. */
   requireApproval(request: ApprovalRequest): Promise<void>;
 }

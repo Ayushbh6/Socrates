@@ -13,6 +13,8 @@ export type ScriptedStep = Scripted | ((request: ModelRequest) => ModelResponse 
  */
 export class ScriptedModel implements ModelClient {
   readonly requests: ModelRequest[] = [];
+  /** Whether it plays a model that can see images. */
+  vision = false;
   private index = 0;
   private callCounter = 0;
 

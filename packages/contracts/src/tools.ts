@@ -15,7 +15,7 @@ const IsoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD.").refin
 }, "Use a real calendar date.");
 
 export const ReadInput = z.strictObject({
-  path: Path.describe("Workspace-relative path of one UTF-8 text file."),
+  path: Path.describe("Workspace-relative path of one UTF-8 text file, or of a PNG, JPEG, GIF or WebP image."),
   offset: z.number().int().min(1).optional().describe("1-based first line. Default 1."),
   limit: z.number().int().min(1).optional().describe("Maximum lines. Default 2000."),
 });

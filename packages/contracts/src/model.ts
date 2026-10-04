@@ -41,10 +41,22 @@ export interface TextPart {
   cache?: boolean;
 }
 
+/**
+ * One image a model is shown (agent-harness.md, "Images"): base64 bytes of a
+ * format every vision provider accepts. Only a model that can see receives
+ * images; the harness never sends them to one that cannot.
+ */
+export interface ImageData {
+  mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+  /** The image's bytes, base64-encoded. */
+  data: string;
+}
+
+/** `images`: shown to the model with the user's message or the tool's result. */
 export type ModelMessage =
-  | { role: "user"; content: string | TextPart[] }
+  | { role: "user"; content: string | TextPart[]; images?: ImageData[] }
   | { role: "assistant"; content: string; toolCalls?: ToolCall[]; raw?: ProviderContent }
-  | { role: "tool"; toolCallId: string; toolName: string; content: string; isError?: boolean; cache?: boolean };
+  | { role: "tool"; toolCallId: string; toolName: string; content: string; isError?: boolean; cache?: boolean; images?: ImageData[] };
 
 /** The plain text of a user message, whichever form it has. */
 export function userText(content: string | TextPart[]): string {
@@ -118,6 +130,8 @@ export interface ModelResponse {
 export interface ModelClient {
   /** Human-readable identity, e.g. "anthropic:claude-sonnet-5-5". */
   readonly id: string;
+  /** Whether the model can see images. Absent means it cannot, and it is never sent one. */
+  readonly vision?: boolean;
   complete(request: ModelRequest): Promise<ModelResponse>;
 }
 

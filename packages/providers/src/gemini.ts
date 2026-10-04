@@ -1,4 +1,4 @@
-import { ModelError, type ModelClient, type ModelMessage, type ModelRequest, type ModelResponse, userText } from "@socrates/contracts";
+import { type ImageData, ModelError, type ModelClient, type ModelMessage, type ModelRequest, type ModelResponse, userText } from "@socrates/contracts";
 import { idleGuard, serverSentEvents } from "./stream";
 
 export interface GeminiInteractionsOptions {
@@ -10,6 +10,8 @@ export interface GeminiInteractionsOptions {
   fetch?: typeof globalThis.fetch;
   /** A reply fails after this long: for a streamed reply, without receiving anything. */
   timeoutMs?: number;
+  /** Whether the model can see images; Gemini models can. */
+  vision?: boolean;
 }
 
 type Step = Record<string, unknown> & { type: string };
@@ -24,9 +26,11 @@ interface Interaction {
  * output steps, including thought signatures, are replayed unchanged. */
 export class GeminiInteractionsModel implements ModelClient {
   readonly id: string;
+  readonly vision: boolean;
   private readonly fetch: typeof globalThis.fetch;
   constructor(private readonly options: GeminiInteractionsOptions) {
     this.id = `gemini:interactions:${options.model}`;
+    this.vision = options.vision ?? true;
     this.fetch = options.fetch ?? globalThis.fetch;
   }
 
@@ -113,10 +117,15 @@ export class GeminiInteractionsModel implements ModelClient {
   }
 }
 
+/** Interactions takes an image as content beside text, in a user's input and in a function's result. */
+function geminiImage(image: ImageData) {
+  return { type: "image", data: image.data, mime_type: image.mediaType };
+}
+
 export function toGeminiSteps(messages: ModelMessage[], provider: string): Step[] {
   return messages.flatMap((m): Step[] => {
-    if (m.role === "user") return [{ type: "user_input", content: [{ type: "text", text: userText(m.content) }] }];
-    if (m.role === "tool") return [{ type: "function_result", call_id: m.toolCallId, name: m.toolName, result: [{ type: "text", text: m.content }], ...(m.isError ? { is_error: true } : {}) }];
+    if (m.role === "user") return [{ type: "user_input", content: [{ type: "text", text: userText(m.content) }, ...(m.images ?? []).map(geminiImage)] }];
+    if (m.role === "tool") return [{ type: "function_result", call_id: m.toolCallId, name: m.toolName, result: [{ type: "text", text: m.content }, ...(m.images ?? []).map(geminiImage)], ...(m.isError ? { is_error: true } : {}) }];
     if (m.raw?.provider === provider && Array.isArray(m.raw.content)) return structuredClone(m.raw.content) as Step[];
     return [
       ...(m.content ? [{ type: "model_output", content: [{ type: "text", text: m.content }] }] : []),

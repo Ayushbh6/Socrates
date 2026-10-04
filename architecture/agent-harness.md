@@ -53,7 +53,7 @@ Successful output is structured and rendered to the model with line numbers:
 
 The initial contract performs no LLM-generated summary and no automatic code folding. It returns exact text. Structural code outlines may be added later as an explicitly requested mode only if evaluations show that they improve large-code navigation without hiding important content.
 
-Directory discovery does not belong in `read`; use `glob`. Binary files, directories, invalid UTF-8, and files outside the granted workspace fail with corrective errors rather than returning damaged text.
+Directory discovery does not belong in `read`; use `glob`. Binary files, directories, invalid UTF-8, and files outside the granted workspace fail with corrective errors rather than returning damaged text. A PNG, JPEG, GIF or WebP image is the exception: `read` shows it to a model that can see ("Images").
 
 #### 2. `glob`
 
@@ -1419,6 +1419,15 @@ The goal note is the only goal-level state the agent writes. It records the goal
 The task-completion proposal (`task_complete`, with one short reason) is recorded by the harness and can always be overridden or reopened by the user — the user has the final say. Anchor proposals (`anchors`, for example `{ "path": "learning/30-day-plan.md", "role": "goal_plan", "reason": "Defines the lesson sequence for this goal." }`) follow the anchor lifecycle in `Goal-router.md`.
 
 A null completion proposal leaves task status unchanged. Only the router's explicit `reopen_task: true` reopens completed work; a historical question must preserve completion.
+
+## Images
+
+A model that can see is shown images; one that cannot is never sent one, and is told so instead of being left to guess.
+
+- **Which models can see.** Every Claude and Gemini model, and OpenAI's GPT-4o, GPT-4.1, GPT-5 and o-series models. DeepSeek and OpenRouter differ by model (DeepSeek Flash and GLM 5.3 Flash can; DeepSeek V4 Pro cannot), so the server asks their model lists, which state each model's input modalities, when it builds the chat model; a failed lookup means no. The client carries the answer as `vision`, and status reports it.
+- **In the contract.** A user message and a tool result may carry `images` (base64 PNG, JPEG, GIF or WebP). Anthropic receives them as image blocks, before the user's text and inside the tool result. Gemini Interactions receives them as image content beside the text, in the user's input and in the function's result. OpenAI-compatible APIs accept only text in a tool message, so the images of a run of tool results follow it as one user message that names the call each came from.
+- **`read` on an image** (by its file ending, confirmed by its header) returns one line naming it, such as `shots/a.png — image, 1280×720 PNG, 45 KB, shown below.`, with the image for a model that can see. For one that cannot, the line says the content is unknown and must not be guessed. An image over `5` MB is refused with a correction to make a smaller copy (`sips -Z 1600` on a Mac). The tool's recorded result holds the path, format, size and whether it was shown, and the file's hash is observed; the image's bytes are never stored, since the file is.
+- **In the context.** An image is shown only within the turn that read it, on every step of that turn. Later turns see the text line in their history and read the file again to look. Each image counts as `1,600` tokens before calibration, so the compaction trigger never underestimates a turn full of images.
 
 ## Provider independence
 

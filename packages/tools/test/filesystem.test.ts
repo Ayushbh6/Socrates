@@ -44,12 +44,12 @@ describe("read", () => {
   });
 
   it("fails with corrective errors for missing, directory, binary, invalid UTF-8, and out-of-range reads", async () => {
-    const h = harness({ files: { "src/server.ts": "x\n", "img.png": Buffer.from([0x89, 0x50, 0x00, 0x01]), "latin.txt": Buffer.from([0x63, 0x61, 0x66, 0xe9]) } });
+    const h = harness({ files: { "src/server.ts": "x\n", "data.bin": Buffer.from([0x89, 0x50, 0x00, 0x01]), "latin.txt": Buffer.from([0x63, 0x61, 0x66, 0xe9]) } });
     const missing = await h.call("read", { path: "src/servr.ts" });
     expect(missing.json.error.code).toBe("file_not_found");
     expect(missing.json.error.message).toContain("src/server.ts");
     expect((await h.call("read", { path: "src" })).json.error.code).toBe("is_directory");
-    expect((await h.call("read", { path: "img.png" })).json.error.code).toBe("binary_file");
+    expect((await h.call("read", { path: "data.bin" })).json.error.code).toBe("binary_file");
     expect((await h.call("read", { path: "latin.txt" })).json.error.code).toBe("invalid_utf8");
     const range = await h.call("read", { path: "src/server.ts", offset: 9 });
     expect(range.json.error).toMatchObject({ code: "offset_out_of_range" });

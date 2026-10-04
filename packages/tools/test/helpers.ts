@@ -5,7 +5,7 @@ import { fixedClock } from "@socrates/shared";
 import { LedgerStore } from "@socrates/store";
 import type { SemanticSearch } from "@socrates/retrieval";
 import { afterEach } from "vitest";
-import { type AccessPolicy, type ApprovalRequest, type CapabilityCatalog, RunState, type ToolBinding, ToolRunner, WorkspaceRoot } from "../src";
+import { type AccessPolicy, type ApprovalRequest, type CapabilityCatalog, RunState, type ToolBinding, type ToolCallResult, ToolRunner, WorkspaceRoot } from "../src";
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -37,7 +37,7 @@ export interface Harness {
   run: RunState;
   approvals: ApprovalRequest[];
   /** Call one tool and parse its model-facing JSON (or keep the text for read). */
-  call(name: string, input: unknown, options?: { signal?: AbortSignal; binding?: ToolBinding; workspace?: WorkspaceRoot | null }): Promise<Result>;
+  call(name: string, input: unknown, options?: { signal?: AbortSignal; binding?: ToolBinding; workspace?: WorkspaceRoot | null; vision?: boolean }): Promise<Result>;
   /** Bind a new turn of the same task. */
   nextTurn(): void;
 }
@@ -48,6 +48,7 @@ export interface Result {
   content: string;
   /** Parsed JSON content; for read the raw text is in `content`. */
   json: any;
+  images?: ToolCallResult["images"];
 }
 
 export function harness(options: { files?: Record<string, string | Buffer>; approve?: boolean | ((r: ApprovalRequest) => boolean | Promise<boolean>); catalog?: CapabilityCatalog; gateArmed?: boolean; semantic?: SemanticSearch; access?: () => AccessPolicy | null } = {}): Harness {
@@ -93,7 +94,7 @@ export function harness(options: { files?: Record<string, string | Buffer>; appr
       clock.advance(1000);
       const result = await runner.run(
         { id: `call_${Math.random().toString(36).slice(2)}`, name, input },
-        { binding: o.binding ?? h.binding, workspace: o.workspace === undefined ? workspace : o.workspace, run: h.run, signal: o.signal ?? new AbortController().signal },
+        { binding: o.binding ?? h.binding, workspace: o.workspace === undefined ? workspace : o.workspace, run: h.run, signal: o.signal ?? new AbortController().signal, ...(o.vision ? { vision: true } : {}) },
       );
       let json: unknown = null;
       try {
@@ -101,7 +102,7 @@ export function harness(options: { files?: Record<string, string | Buffer>; appr
       } catch {
         // read returns rendered text.
       }
-      return { isError: result.isError, handle: result.handle, content: result.content, json };
+      return { isError: result.isError, handle: result.handle, content: result.content, json, ...(result.images ? { images: result.images } : {}) };
     },
     nextTurn() {
       h.binding = bind();

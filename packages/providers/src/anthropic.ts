@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import {
   type ModelClient,
   hasCacheBreakpoints,
+  type ImageData,
   ModelError,
   type ModelMessage,
   type ModelRequest,
@@ -33,6 +34,8 @@ export interface AnthropicModelOptions {
   refusalFallback?: boolean;
   /** A streamed reply fails after this long without receiving anything. */
   idleMs?: number;
+  /** Whether the model can see images; every current Claude model can. */
+  vision?: boolean;
   client?: Anthropic;
 }
 
@@ -43,10 +46,12 @@ export interface AnthropicModelOptions {
  */
 export class AnthropicModel implements ModelClient {
   readonly id: string;
+  readonly vision: boolean;
   private readonly client: Anthropic;
 
   constructor(private readonly options: AnthropicModelOptions) {
     this.id = `${PROVIDER}:${options.model}`;
+    this.vision = options.vision ?? true;
     this.client =
       options.client ??
       new Anthropic({
@@ -133,7 +138,9 @@ export function toAnthropicMessages(messages: ModelMessage[]): Anthropic.Beta.Be
   const out: Anthropic.Beta.BetaMessageParam[] = [];
   for (const m of messages) {
     if (m.role === "user") {
-      const content = typeof m.content === "string" ? m.content : m.content.map((p) => ({ type: "text" as const, text: p.text, ...(p.cache ? { cache_control: { type: "ephemeral" as const } } : {}) }));
+      const text = typeof m.content === "string" ? m.content : m.content.map((p) => ({ type: "text" as const, text: p.text, ...(p.cache ? { cache_control: { type: "ephemeral" as const } } : {}) }));
+      // Images come before the text that refers to them.
+      const content = m.images?.length ? [...m.images.map(imageBlock), ...(typeof text === "string" ? [{ type: "text" as const, text }] : text)] : text;
       const last = out.at(-1);
       // A user message right after tool results (such as a harness request) joins their user turn.
       if (last?.role === "user" && Array.isArray(last.content)) {
@@ -154,7 +161,7 @@ export function toAnthropicMessages(messages: ModelMessage[]): Anthropic.Beta.Be
       const block: Anthropic.Beta.BetaToolResultBlockParam = {
         type: "tool_result",
         tool_use_id: m.toolCallId,
-        content: m.content,
+        content: m.images?.length ? [{ type: "text", text: m.content }, ...m.images.map(imageBlock)] : m.content,
         ...(m.isError ? { is_error: true } : {}),
         ...(m.cache ? { cache_control: { type: "ephemeral" as const } } : {}),
       };
@@ -167,6 +174,10 @@ export function toAnthropicMessages(messages: ModelMessage[]): Anthropic.Beta.Be
     }
   }
   return out;
+}
+
+function imageBlock(image: ImageData): Anthropic.Beta.BetaImageBlockParam {
+  return { type: "image", source: { type: "base64", media_type: image.mediaType, data: image.data } };
 }
 
 function toStopReason(reason: string | null): StopReason {

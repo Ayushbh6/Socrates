@@ -4,7 +4,7 @@ import path from "node:path";
 import { type LaneState, Socrates, interruptUnfinishedTurns } from "@socrates/agent";
 import { InstalledCatalog } from "@socrates/capabilities";
 import { type EmbeddingClient, type ModelClient, ModelError } from "@socrates/contracts";
-import { PROVIDER_DEFAULTS, type Provider, makeEmbedder, makeModel } from "@socrates/providers";
+import { PROVIDER_DEFAULTS, type Provider, detectVision, makeEmbedder, makeModel } from "@socrates/providers";
 import { Retrieval } from "@socrates/retrieval";
 import { abortable, type Clock } from "@socrates/shared";
 import { LedgerStore, type Workspace } from "@socrates/store";
@@ -23,11 +23,15 @@ export interface ModelInUse {
   model: string;
   /** "settings" when chosen; "detected" when picked from the keys present. */
   source: "settings" | "detected";
+  /** Whether the model can see images (agent-harness.md, "Images"). */
+  vision?: boolean;
 }
 
 /** Replaceable for tests; production uses the real providers. */
 export interface RuntimeDeps {
-  makeModel?: (provider: string, model: string, env: Record<string, string | undefined>) => ModelClient;
+  makeModel?: (provider: string, model: string, env: Record<string, string | undefined>, options?: { vision?: boolean }) => ModelClient;
+  /** Whether a model can see images; production asks the provider's model list where it can. */
+  detectVision?: (provider: string, model: string, env: Record<string, string | undefined>) => Promise<boolean>;
   makeEmbedder?: (env: Record<string, string | undefined>) => EmbeddingClient;
   clock?: Clock;
   /** The process environment; keys in the data folder override it. */
@@ -300,12 +304,15 @@ export class Runtime {
     const router: ModelInUse = this.settings.router
       ? { ...this.settings.router, source: "settings" }
       : { provider: chat.provider, model: PROVIDER_DEFAULTS[chat.provider as Provider].router, source: chat.source };
-    this.models = { chat, router };
+    // Only the chat model reads files and attachments, so only it needs to know whether it can see.
+    const vision = await (this.deps.detectVision ?? detectVision)(chat.provider, chat.model, env);
+    this.deps.signal?.throwIfAborted();
+    this.models = { chat: { ...chat, vision }, router };
     const build = this.deps.makeModel ?? makeModel;
     let model: ModelClient;
     let routerModel: ModelClient;
     try {
-      model = build(chat.provider, chat.model, env);
+      model = build(chat.provider, chat.model, env, { vision });
       routerModel = build(router.provider, router.model, env);
     } catch (error) {
       this.setup.push(redact(error instanceof ModelError && error.kind === "authentication" ? `${error.message} Add it in settings.` : `The chat model cannot start: ${message(error)}`, env));

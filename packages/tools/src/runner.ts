@@ -1,4 +1,4 @@
-import type { EventPayloads, ToolCall, ToolDefinition, ToolErrorBody } from "@socrates/contracts";
+import type { EventPayloads, ImageData, ToolCall, ToolDefinition, ToolErrorBody } from "@socrates/contracts";
 import { abortable, countTokens } from "@socrates/shared";
 import type { SemanticSearch } from "@socrates/retrieval";
 import type { LedgerStore, TaskRefs } from "@socrates/store";
@@ -45,6 +45,8 @@ export interface CallScope {
   workspace: WorkspaceRoot | null;
   run: RunState;
   signal: AbortSignal;
+  /** Whether the model these results go to can see images. */
+  vision?: boolean;
 }
 
 export interface ToolCallResult {
@@ -55,6 +57,8 @@ export interface ToolCallResult {
   isError: boolean;
   /** Model-facing content, never above the result ceiling. */
   content: string;
+  /** Images shown with the content, to a model that can see. */
+  images?: ImageData[];
 }
 
 /**
@@ -205,7 +209,7 @@ export class ToolRunner {
       wall_time_ms: Date.now() - started,
     };
     store.recordToolResult(refs, payload);
-    return { callId: call.id, name: call.name, handle: evidence.handle, isError: error !== null, content };
+    return { callId: call.id, name: call.name, handle: evidence.handle, isError: error !== null, content, ...(!error && output?.images?.length ? { images: output.images } : {}) };
   }
 
   private context(scope: CallScope, refs: TaskRefs, tool: string, policy: AccessPolicy | null): HandlerContext {
@@ -250,6 +254,7 @@ export class ToolRunner {
       },
       visible: (abs) => !policy || !isProtected(policy, abs),
       terminals: scope.workspace ? this.terminals(scope.workspace) : null,
+      vision: scope.vision ?? false,
       async requireApproval(request: ApprovalRequest) {
         // With an access policy, "ask" mode already asked about the whole call.
         if (policy && (request.kind === "sigkill" || request.kind === "no_deadline" || request.kind === "mcp_tool")) return;

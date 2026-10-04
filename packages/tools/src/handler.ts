@@ -1,3 +1,4 @@
+import type { ImageData } from "@socrates/contracts";
 import type { z } from "zod";
 import type { HandlerContext } from "./context";
 
@@ -20,6 +21,8 @@ export interface ToolOutput {
   observed?: { path: string; hash: string | null }[];
   facts?: { kind: TaskFactKind; value: string }[];
   mutations?: FileMutation[];
+  /** Images shown to the model with `content`; never stored, since the file they came from is. */
+  images?: ImageData[];
 }
 
 export interface ToolHandler<I = unknown> {

@@ -1,9 +1,13 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { ReadInput } from "@socrates/contracts";
 import { countTokens } from "@socrates/shared";
 import { RESULT_CEILING_TOKENS, cutLine } from "../bounds";
 import { ToolError } from "../errors";
-import { readTextFile, splitLines } from "../files";
-import type { ToolHandler } from "../handler";
+import { hashBytes, notFound, readTextFile, splitLines, statOrNull } from "../files";
+import type { ToolHandler, ToolOutput } from "../handler";
+import { IMAGE_EXTENSIONS, IMAGE_MAX_BYTES, describeImage, imageInfo } from "../images";
+import type { ResolvedPath } from "../workspace";
 
 export const READ_DEFAULT_LIMIT = 2000;
 export const READ_MAX_LINE_CHARS = 2000;
@@ -16,12 +20,14 @@ export const readTool: ToolHandler<ReadInput> = {
     "Read a window of lines from one UTF-8 text file in the workspace, or an absolute resource path under a valid active Skill. Skill resource access is read-only. Output lines are prefixed with their 1-based number and a colon (\"42: text\"); the prefix is not part of the file.",
     `Defaults: offset 1, limit ${READ_DEFAULT_LIMIT} lines. A window also stops at about ${RESULT_CEILING_TOKENS} tokens; when more remains the footer gives the next offset to continue from.`,
     `Lines longer than ${READ_MAX_LINE_CHARS} characters are cut with a marker. Use glob to list directories and grep to find text; binary files are rejected.`,
+    "A PNG, JPEG, GIF or WebP image is shown to you as an image when you can see images; otherwise the result says you cannot, and you must not guess its content.",
   ].join(" "),
   schema: ReadInput,
   concurrency: "parallel",
   mutating: false,
   async execute(input, ctx) {
     const file = ctx.resolveReadPath ? await ctx.resolveReadPath(input.path) : await ctx.path(input.path);
+    if (IMAGE_EXTENSIONS.has(path.extname(file.abs).toLowerCase())) return readImage(file, ctx.vision);
     const text = await readTextFile(file);
     const all = splitLines(text.text);
     const offset = input.offset ?? 1;
@@ -58,3 +64,27 @@ export const readTool: ToolHandler<ReadInput> = {
     return { content, result, observed: [{ path: file.rel, hash: text.hash }] };
   },
 };
+
+/**
+ * An image file (agent-harness.md, "Images"): shown to a model that can see
+ * it, with one line naming it; described, never shown, to one that cannot.
+ * The image is not stored: the file it came from is, with its hash.
+ */
+async function readImage(file: ResolvedPath, vision: boolean): Promise<ToolOutput> {
+  const stat = await statOrNull(file.abs);
+  if (!stat) throw await notFound(file);
+  if (!stat.isFile()) throw new ToolError("not_a_file", `${file.rel} is not a regular file.`, "Read a regular file.", false);
+  if (stat.size > IMAGE_MAX_BYTES) {
+    throw new ToolError("image_too_large", `${file.rel} is ${stat.size} bytes, above the ${IMAGE_MAX_BYTES}-byte image limit.`, `Make a smaller copy first, for example with terminal: sips -Z 1600 "${file.rel}" --out /tmp/smaller.png, then read that.`, false);
+  }
+  const bytes = await readFile(file.abs);
+  const info = imageInfo(bytes);
+  if (!info) throw new ToolError("not_an_image", `${file.rel} is not a PNG, JPEG, GIF or WebP image.`, "Check the file type with terminal: file, or read it as text if it is one.", false);
+  const observed = [{ path: file.rel, hash: hashBytes(bytes) }];
+  const description = describeImage(info, stat.size);
+  const result = { path: file.rel, image: { media_type: info.mediaType, width: info.width, height: info.height, bytes: stat.size }, shown: vision };
+  if (!vision) {
+    return { content: `${file.rel} is an image (${description}). The current model cannot see images, so its content is unknown: say so rather than guess.`, result, observed };
+  }
+  return { content: `${file.rel} — image, ${description}, shown below.`, result, observed, images: [{ mediaType: info.mediaType, data: bytes.toString("base64") }] };
+}

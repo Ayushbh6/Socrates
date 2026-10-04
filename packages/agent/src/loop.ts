@@ -186,7 +186,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
     if (signal === workSignal) timeExpired();
     const results = await execute(input.runner, response.toolCalls, { ...scope, signal });
     toolCalls += results.length;
-    for (const r of results) push({ role: "tool", toolCallId: r.callId, toolName: r.name, content: r.content, ...(r.isError ? { isError: true } : {}) });
+    for (const r of results) push({ role: "tool", toolCallId: r.callId, toolName: r.name, content: r.content, ...(r.isError ? { isError: true } : {}), ...(r.images?.length ? { images: r.images } : {}) });
   };
   // Unexpected tool calls during finalization are recorded as refused. Never
   // execute them or accept their accompanying state proposals as a final answer.

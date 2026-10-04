@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import {
+  type ImageData,
   type ModelClient,
   ModelError,
   type ModelMessage,
@@ -25,6 +26,8 @@ export interface OpenAICompatibleModelOptions {
   client?: OpenAI;
   /** A streamed reply fails after this long without receiving anything. */
   idleMs?: number;
+  /** Whether the model can see images (`detectVision`). */
+  vision?: boolean;
   /** Provider extensions, for example DeepSeek's thinking or reasoning_effort. */
   extraBody?: Record<string, unknown>;
 }
@@ -32,10 +35,12 @@ export interface OpenAICompatibleModelOptions {
 /** Adapter from the normalized model contract to OpenAI-compatible Chat Completions. */
 export class OpenAICompatibleModel implements ModelClient {
   readonly id: string;
+  readonly vision: boolean;
   private readonly client: OpenAI;
 
   constructor(private readonly options: OpenAICompatibleModelOptions) {
     this.id = `${options.provider ?? "openai"}:${options.model}`;
+    this.vision = options.vision ?? false;
     this.client =
       options.client ??
       new OpenAI({
@@ -213,16 +218,33 @@ export class ChatReply {
 }
 
 export function toOpenAIMessages(messages: ModelMessage[], provider?: string): OpenAI.Chat.ChatCompletionMessageParam[] {
-  return messages.map((m): OpenAI.Chat.ChatCompletionMessageParam => {
-    if (m.role === "user") return { role: "user", content: userText(m.content) };
-    if (m.role === "tool") return { role: "tool", tool_call_id: m.toolCallId, content: m.content };
+  const out: OpenAI.Chat.ChatCompletionMessageParam[] = [];
+  // A tool message carries only text, so images from tool results follow the
+  // run of tool messages as one user message that names where they came from.
+  let pending: OpenAI.Chat.ChatCompletionContentPart[] = [];
+  const flush = () => {
+    if (pending.length) out.push({ role: "user", content: pending });
+    pending = [];
+  };
+  for (const m of messages) {
+    if (m.role !== "tool") flush();
+    if (m.role === "user") {
+      out.push({ role: "user", content: m.images?.length ? [{ type: "text", text: userText(m.content) }, ...m.images.map(imagePart)] : userText(m.content) });
+      continue;
+    }
+    if (m.role === "tool") {
+      out.push({ role: "tool", tool_call_id: m.toolCallId, content: m.images?.length ? `${m.content}\n[The image${m.images.length === 1 ? " follows" : "s follow"} in the next message.]` : m.content });
+      if (m.images?.length) pending.push({ type: "text", text: `Image${m.images.length === 1 ? "" : "s"} from ${m.toolName} (${m.toolCallId}):` }, ...m.images.map(imagePart));
+      continue;
+    }
     // Replay the complete native message on the same endpoint/model. DeepSeek
     // reasoning_content and OpenRouter signed reasoning_details are mandatory
     // on subsequent tool rounds. Never transfer those signatures to another model.
     if (provider && m.raw?.provider === provider) {
-      return structuredClone(m.raw.content) as OpenAI.Chat.ChatCompletionMessageParam;
+      out.push(structuredClone(m.raw.content) as OpenAI.Chat.ChatCompletionMessageParam);
+      continue;
     }
-    return {
+    out.push({
       role: "assistant",
       content: m.content || null,
       ...(m.toolCalls?.length
@@ -234,8 +256,14 @@ export function toOpenAIMessages(messages: ModelMessage[], provider?: string): O
             })),
           }
         : {}),
-    };
-  });
+    });
+  }
+  flush();
+  return out;
+}
+
+function imagePart(image: ImageData): OpenAI.Chat.ChatCompletionContentPartImage {
+  return { type: "image_url", image_url: { url: `data:${image.mediaType};base64,${image.data}` } };
 }
 
 function toStopReason(reason: string | null): StopReason {

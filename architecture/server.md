@@ -90,7 +90,7 @@ API responses are JSON. A failure, including an unknown route, is `{ "error": { 
 | Route | Returns |
 |---|---|
 | `GET /api/health` | `{ ok: true }`, without a session |
-| `GET /api/status` | readiness and setup needed, the models in use and why, embedding state and index size, time zone, whether main is busy, the lanes, the working folder, and how many turns startup interrupted |
+| `GET /api/status` | readiness and setup needed, the models in use and why (the chat model with whether it can see images), embedding state and index size, time zone, whether main is busy, the lanes, the working folder, and how many turns startup interrupted |
 | `GET`, `PUT /api/settings` | the settings; `PUT` takes any subset and returns the result |
 | `GET /api/keys` | each known key name with whether it is set |
 | `GET /api/providers` | each model provider with its default chat and router models and the keys it reads, for the settings screen |

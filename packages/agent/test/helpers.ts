@@ -22,7 +22,7 @@ export function tempDir(): string {
   return dir;
 }
 
-export function writeFiles(root: string, files: Record<string, string>): void {
+export function writeFiles(root: string, files: Record<string, string | Buffer>): void {
   for (const [rel, content] of Object.entries(files)) {
     mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
     writeFileSync(path.join(root, rel), content);
@@ -55,7 +55,7 @@ export interface World {
  * A store with one goal and task bound to a temporary workspace, created by
  * one completed routed exchange so later messages can continue it.
  */
-export async function world(options: { files?: Record<string, string>; workspace?: boolean } = {}): Promise<World> {
+export async function world(options: { files?: Record<string, string | Buffer>; workspace?: boolean } = {}): Promise<World> {
   const root = tempDir();
   writeFiles(root, options.files ?? {});
   const clock = fixedClock("2026-09-01T10:00:00Z");
