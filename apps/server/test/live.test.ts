@@ -142,7 +142,7 @@ describe("the live connection", () => {
     p.send({ type: "send", id: "a1", text: "Run it with no deadline.", to: "new_lane" });
     const asked = await p.next((m) => m.type === "approval");
     const lane = (await p.next((m) => m.type === "accepted" && m.id === "a1")).conversation;
-    expect(asked).toMatchObject({ conversation: lane, lane: 1, kind: "no_deadline", tool: "terminal", detail: "Run without a deadline: echo approved-run", task: "g1/t1 Run it with no deadl" });
+    expect(asked).toMatchObject({ conversation: lane, lane: 1, kind: "action", tool: "terminal", detail: "Run echo approved-run (without a deadline)", preview: null, task: "g1/t1 Run it with no deadl" });
     expect(await p.next((m) => m.type === "state" && m.approvals.length === 1 && m.lanes[0]?.waitingForApproval)).toBeDefined();
     p.send({ type: "approve", approval: asked.id, granted: true });
     const finished = await p.next((m) => m.type === "activity" && m.kind === "tool_finished");
@@ -266,8 +266,8 @@ describe("S2 closure regressions", () => {
     p.send({ type: "approve", approval: lane.id, granted: false });
     await p.next(isResult("lane"));
     expect(rt.store.listEvents({ type: "approval_decided" }).map((e) => e.payload)).toEqual([
-      expect.objectContaining({ granted: true, detail: "Run without a deadline: echo MAIN" }),
-      expect.objectContaining({ granted: false, detail: "Run without a deadline: echo LANE" }),
+      expect.objectContaining({ granted: true, detail: "Run echo MAIN (without a deadline)" }),
+      expect.objectContaining({ granted: false, detail: "Run echo LANE (without a deadline)" }),
     ]);
     p.send({ type: "send", id: "shutdown", text: "SHUTDOWN", to: "main" });
     await p.next((m) => m.type === "approval" && m.detail.includes("SHUTDOWN"));
@@ -283,7 +283,7 @@ describe("S2 closure regressions", () => {
       toolCalls: [call("terminal", { command: "node -e \"process.stdout.write('A'.repeat(12000)+'MIDDLE-KESTREL'+'Z'.repeat(12000))\"" })],
     } : final()));
     const workspace = rt.store.createWorkspace("project", folder);
-    await rt.updateSettings({ workingFolder: workspace.id });
+    await rt.updateSettings({ workingFolder: workspace.id, access: { approvals: "auto" } });
     const p = await page();
     p.send({ type: "send", id: "output", text: "Read output.", to: "main" });
     expect(await p.next((m) => m.type === "activity" && m.kind === "step")).toMatchObject({ text: "I will inspect the command output.", conversation: "main" });

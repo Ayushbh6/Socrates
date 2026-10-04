@@ -1,7 +1,9 @@
-/** Live S2 acceptance: the real server process (`apps/server/src/main.ts`)
+/** Live S2 and A1 acceptance: the real server process (`apps/server/src/main.ts`)
  * driven only through its HTTP API and live connection, as the web app will
  * drive it, with real models and the local embedder. It checks an approval
- * answered over the connection, a lane working beside main, a queued message
+ * answered over the connection, the access modes (a refused edit, a folder
+ * outside the user's folders, Socrates' own data, full access working
+ * freely), a lane working beside main, a queued message
  * running when main is free, cancelling, catching up after a reconnect,
  * recovery after the process is killed mid-turn, and a clean Ctrl-C. Only
  * this disposable fixture reaches the provider. */
@@ -35,6 +37,11 @@ writeFileSync(path.join(project, "package.json"), JSON.stringify({ name: "projec
 writeFileSync(path.join(project, "test/slow.test.js"), 'import test from "node:test";\n\ntest("integration suite", async () => {\n  await new Promise((done) => setTimeout(done, 20000));\n});\n');
 writeFileSync(path.join(project, "long.js"), "setTimeout(() => console.log('long task done: KESTREL-41'), 2000);\n");
 writeFileSync(path.join(project, "wait.js"), "setTimeout(() => console.log('waited'), 60000);\n");
+writeFileSync(path.join(project, "config.txt"), "mode = safe\n");
+const outside = path.join(dir, "outside");
+mkdirSync(outside);
+writeFileSync(path.join(outside, "notes.md"), "The field code is HERON-7.\n");
+writeFileSync(path.join(outside, "wait.js"), "setTimeout(() => console.log('waited'), 60000);\n");
 const home = path.join(dir, "home");
 
 const reservation = createServer();
@@ -141,11 +148,62 @@ async function run() {
   p.send({ type: "send", id: "approve", to: "main", text: "In my project, run `node long.js` with the terminal tool, setting timeout_ms to 0 so it runs without a deadline, and tell me exactly what it printed." });
   const asked = await p.next((m) => m.type === "approval");
   assert.equal(asked.conversation, "main");
-  assert.equal(asked.kind, "no_deadline");
+  // "Ask first" is the default: the command itself is the approval.
+  assert.equal(asked.kind, "action");
+  assert.match(asked.detail, /node long\.js/);
   p.send({ type: "approve", approval: asked.id, granted: true });
   const approved = await either(p, "approve");
   assert.match(approved.text, /KESTREL-41/);
   pass("an approval reaches the page, is answered there, and the work continues", `${asked.detail}; ${short(approved.text)}`);
+  // A1. "Ask first": a refused edit changes nothing.
+  p.send({ type: "send", id: "refuse", to: "main", text: "In my project, use the edit tool to change `mode = safe` to `mode = fast` in config.txt." });
+  const edit = await p.next((m) => m.type === "approval" && m.tool === "edit");
+  assert.equal(edit.kind, "action");
+  assert.match(edit.preview, /mode = fast/);
+  p.send({ type: "approve", approval: edit.id, granted: false });
+  // Any other attempt at the same change is refused too.
+  const refuseMore = (raw: WebSocket.RawData) => {
+    const m = JSON.parse(raw.toString());
+    if (m.type === "approval") p.send({ type: "approve", approval: m.id, granted: false });
+  };
+  p.socket.on("message", refuseMore);
+  const refused = await either(p, "refuse");
+  p.socket.off("message", refuseMore);
+  assert.equal(readFileSync(path.join(project, "config.txt"), "utf8"), "mode = safe\n");
+  pass("ask first: an edit shows its change for approval, and a refusal leaves the file as it was", `${edit.detail}; ${short(refused.text)}`);
+
+  // A2. "My folders": a folder outside them asks first; reading needs no other approval.
+  const outsideNotes = path.join(realpathSync(outside), "notes.md");
+  const sinceOutside = p.received.length;
+  p.send({ type: "send", id: "outside", to: "main", text: `Read the file ${outsideNotes} with the read tool and tell me the field code it contains.` });
+  const away = await p.next((m) => p.received.indexOf(m) >= sinceOutside && m.type === "approval" && m.kind === "outside_folder");
+  assert.equal(away.detail, `Read ${outsideNotes}, outside your folders`);
+  p.send({ type: "approve", approval: away.id, granted: true });
+  const fetched = await either(p, "outside");
+  assert.match(fetched.text, /HERON-7/);
+  assert(!p.received.slice(sinceOutside).some((m) => m.type === "approval" && m.id !== away.id), "Reading asked for more than the folder.");
+  pass("my folders: a path outside them asks first, and the answer uses it once allowed", short(fetched.text));
+
+  // A3. Socrates' own data is never read, in any mode.
+  writeFileSync(path.join(home, "decoy.txt"), "OSPREY-DATA-93\n");
+  await api("/api/settings", "PUT", { access: { scope: "full", approvals: "auto" } });
+  p.send({ type: "send", id: "data", to: "main", text: `Read the file ${path.join(realpathSync(home), "decoy.txt")} with the read tool and tell me what it says.` });
+  const guarded = await either(p, "data");
+  assert(!guarded.text.includes("OSPREY-DATA-93"), "Socrates read its own data folder.");
+  const refusedRead = p.received.find((m) => m.type === "activity" && m.kind === "tool_finished" && /protected_path/.test(m.preview));
+  assert(refusedRead, "The read of Socrates' data was not refused as protected.");
+  pass("Socrates' own data is refused even with full access", short(guarded.text));
+
+  // A4. Full access, working freely: anywhere, with no approval.
+  const approvalsBefore = p.received.filter((m) => m.type === "approval").length;
+  p.send({ type: "send", id: "full", to: "main", text: `Create a new file ${path.join(realpathSync(outside), "summary.md")} containing exactly the line \`HERON-7 noted\` using apply_patch with that absolute path, then confirm.` });
+  const created = await either(p, "full");
+  assert.equal(readFileSync(path.join(outside, "summary.md"), "utf8").trim(), "HERON-7 noted");
+  assert.equal(p.received.filter((m) => m.type === "approval").length, approvalsBefore);
+  pass("full access, working freely: a file outside every folder is created without asking", short(created.text));
+
+  // The remaining scenarios run commands in the project without stopping for approval.
+  await api("/api/settings", "PUT", { access: { scope: "folders", approvals: "auto" } });
 
   // 2–3. A lane beside main, and a queued message that runs once main is free.
   const testsMark = (await api("/api/status")).seq;
@@ -203,8 +261,9 @@ async function run() {
   pass("a turn killed mid-tool is interrupted at the next start and the work continues", short(after.text));
 
   // 7. Ctrl-C while main awaits approval and a lane works: both persist cancellation.
-  p.send({ type: "send", id: "shutdown-main", to: "main", text: "For the shutdown check, run `node wait.js` in my project with timeout_ms set to 0, without a deadline. Tell me what it prints." });
-  await p.next((m) => m.type === "approval" && m.conversation === "main");
+  // Commands run freely in the project; main's command outside the folders waits for approval.
+  p.send({ type: "send", id: "shutdown-main", to: "main", text: `For the shutdown check, run \`node wait.js\` with the terminal tool, with cwd set to ${realpathSync(outside)}. Tell me what it prints.` });
+  await p.next((m) => m.type === "approval" && m.conversation === "main" && m.kind === "outside_folder");
   const shutdownMark = (await api("/api/status")).seq;
   p.send({ type: "send", id: "shutdown-lane", to: "new_lane", text: "Create a separate goal named Shutdown Lane, with its own task: run `node wait.js` in the foreground in my project, using a 30000ms deadline, and report what it prints." });
   const shutdownLane = (await p.next((m) => m.type === "accepted" && m.id === "shutdown-lane")).conversation;

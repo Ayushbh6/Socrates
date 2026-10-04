@@ -40,9 +40,9 @@ async function listFiles(dirAbs: string, signal: AbortSignal, pattern: string | 
   if (listed.code === 2 && !listed.stopped) throw new ToolError("search_failed", `The file listing failed: ${firstLines(listed.stderr, 3)}`, "Check directory permissions and retry.");
 }
 
-function directory(ctx: HandlerContext, input: string | undefined) {
+async function directory(ctx: HandlerContext, input: string | undefined) {
   const workspace = requireWorkspace(ctx);
-  return { workspace, dir: workspace.resolve(input ?? ".") };
+  return { workspace, dir: await ctx.path(input ?? ".") };
 }
 
 export const globTool: ToolHandler<GlobInput> = {
@@ -56,7 +56,7 @@ export const globTool: ToolHandler<GlobInput> = {
   concurrency: "parallel",
   mutating: false,
   async execute(input, ctx) {
-    const { workspace, dir } = directory(ctx, input.path);
+    const { workspace, dir } = await directory(ctx, input.path);
     const limit = Math.min(input.limit ?? GLOB_DEFAULT_LIMIT, GLOB_MAX_LIMIT);
     const key = json(["glob", input.pattern, dir.rel]);
     let items: string[];
@@ -71,7 +71,9 @@ export const globTool: ToolHandler<GlobInput> = {
       items = [];
       const collected = items;
       await listFiles(dir.abs, ctx.signal, input.pattern, (rel) => {
-        collected.push(workspace.relative(path.resolve(dir.abs, rel)));
+        const abs = path.resolve(dir.abs, rel);
+        if (!ctx.visible(abs)) return true;
+        collected.push(workspace.relative(abs));
         if (collected.length >= MAX_COLLECTED_PATHS) {
           capped = true;
           return false;
@@ -106,7 +108,7 @@ export const grepTool: ToolHandler<GrepInput> = {
   mutating: false,
   async execute(input, ctx) {
     const workspace = requireWorkspace(ctx);
-    const target = workspace.resolve(input.path ?? ".");
+    const target = await ctx.path(input.path ?? ".");
     const limit = Math.min(input.limit ?? GREP_DEFAULT_LIMIT, GREP_MAX_LIMIT);
     const key = json(["grep", input.pattern, target.rel, input.glob ?? null, input.case_sensitive ?? true, input.literal ?? false]);
     let items: GrepMatch[];
@@ -151,6 +153,7 @@ export const grepTool: ToolHandler<GrepInput> = {
         const text = event.data.lines.text;
         if (file === undefined || text === undefined) return true; // Not valid UTF-8; skipped like binary content.
         if (eligible && !eligible.has(file.replace(/^\.\//, "").split(path.sep).join("/"))) return true;
+        if (!ctx.visible(path.resolve(cwd, file))) return true;
         items.push({ path: workspace.relative(path.resolve(cwd, file)), line_number: event.data.line_number, text: cutLine(text.replace(/\r?\n$/, ""), GREP_MAX_LINE_CHARS) });
         if (items.length >= MAX_COLLECTED_MATCHES) {
           capped = true;

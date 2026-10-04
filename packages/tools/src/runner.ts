@@ -2,6 +2,7 @@ import type { EventPayloads, ToolCall, ToolDefinition, ToolErrorBody } from "@so
 import { abortable, countTokens } from "@socrates/shared";
 import type { SemanticSearch } from "@socrates/retrieval";
 import type { LedgerStore, TaskRefs } from "@socrates/store";
+import { type AccessPolicy, isProtected, protectedPath, within } from "./access";
 import { RESULT_CEILING_TOKENS, headTail } from "./bounds";
 import { type CapabilityCatalog, StaticCatalog } from "./catalog";
 import { type ApprovalRequest, type Approve, type HandlerContext, type RunState, type ToolBinding, throwIfCancelled, requireWorkspace } from "./context";
@@ -27,6 +28,12 @@ export interface ToolRunnerOptions {
   /** Meaning-based memory search for context_retrieve. */
   semantic?: SemanticSearch;
   terminals?: SupervisorOptions;
+  /**
+   * Where tools may work and when they ask (agent-harness.md, "Access"), read
+   * at the start of every call so a change applies to the next one. Without
+   * it, the goal's workspace is the boundary and the classic approvals apply.
+   */
+  access?: () => AccessPolicy | null;
   /** Receives internal diagnostics of infrastructure failures. Never shown to a model. */
   log?: (message: string) => void;
 }
@@ -152,9 +159,13 @@ export class ToolRunner {
         throw new ToolError("invalid_parameters", `Invalid ${call.name} input — ${issues.join("; ")}`, `Fix the listed parameters and call ${call.name} again.`);
       }
       throwIfCancelled(scope.signal);
-      const ctx = this.context(scope, refs);
+      const policy = this.options.access?.() ?? null;
+      const ctx = this.context(scope, refs, call.name, policy);
       const mutating = typeof handler.mutating === "function" ? handler.mutating(parsed.data) : handler.mutating;
-      if (mutating && scope.workspace && store.firstMutationGatePending(scope.binding.taskId)) {
+      if (mutating && policy?.approvals === "ask") {
+        const input = (parsed.data ?? {}) as Record<string, unknown>;
+        await ctx.requireApproval({ kind: "action", tool: call.name, detail: actionDetail(call.name, input), ...preview(call.name, input) });
+      } else if (mutating && !policy && scope.workspace && store.firstMutationGatePending(scope.binding.taskId)) {
         await ctx.requireApproval({ kind: "first_mutation", tool: call.name, detail: `First change in workspace ${scope.workspace.name}: ${describe(call)}` });
       }
       output = await handler.execute(parsed.data, ctx);
@@ -196,9 +207,9 @@ export class ToolRunner {
     return { callId: call.id, name: call.name, handle: evidence.handle, isError: error !== null, content };
   }
 
-  private context(scope: CallScope, refs: TaskRefs): HandlerContext {
+  private context(scope: CallScope, refs: TaskRefs, tool: string, policy: AccessPolicy | null): HandlerContext {
     const { store, approve, timeZone } = this.options;
-    return {
+    const ctx: HandlerContext = {
       store,
       binding: scope.binding,
       workspace: scope.workspace,
@@ -207,15 +218,32 @@ export class ToolRunner {
       approve,
       timeZone,
       catalog: this.catalog,
+      access: policy,
       ...(this.options.semantic ? { semantic: this.options.semantic } : {}),
       resolveReadPath: async (input) => {
         throwIfCancelled(scope.signal);
         const resource = await this.capabilities.resourcePath(scope.binding.goalId, input, scope.signal);
         throwIfCancelled(scope.signal);
-        return resource ?? requireWorkspace(scope).resolve(input);
+        return resource ?? ctx.path(input);
       },
+      path: async (input, use = "read") => {
+        const workspace = requireWorkspace(scope);
+        if (!policy) return workspace.resolve(input, { write: use === "write" });
+        const resolved = workspace.resolve(input, { write: use === "write", anywhere: true });
+        if (isProtected(policy, resolved.abs)) throw protectedPath(input);
+        const write = use !== "read";
+        if (policy.folders && !policy.folders.some((folder) => within(folder, resolved.abs)) && !scope.run.granted(resolved.abs, write)) {
+          const verb = use === "run" ? "Run commands in" : use === "write" ? "Change" : "Read";
+          await ctx.requireApproval({ kind: "outside_folder", tool, detail: `${verb} ${resolved.abs}, outside your folders` });
+          scope.run.grant(resolved.abs, write);
+        }
+        return resolved;
+      },
+      visible: (abs) => !policy || !isProtected(policy, abs),
       terminals: scope.workspace ? this.terminals(scope.workspace) : null,
       async requireApproval(request: ApprovalRequest) {
+        // With an access policy, "ask" mode already asked about the whole call.
+        if (policy && (request.kind === "sigkill" || request.kind === "no_deadline" || request.kind === "mcp_tool")) return;
         throwIfCancelled(scope.signal);
         const granted = await abortable(approve(request, scope.binding), scope.signal).catch(error => {
           throwIfCancelled(scope.signal);
@@ -229,6 +257,7 @@ export class ToolRunner {
         }
       },
     };
+    return ctx;
   }
 }
 
@@ -240,6 +269,38 @@ function normalizeInput(input: unknown): unknown {
   } catch {
     return input;
   }
+}
+
+const APPROVAL_PREVIEW_CHARS = 20_000;
+
+/** One line naming what a changing call is about to do, for the user to approve. */
+function actionDetail(tool: string, input: Record<string, unknown>): string {
+  const text = (value: unknown) => String(value ?? "").slice(0, 300);
+  switch (tool) {
+    case "edit":
+      return `Edit ${text(input.path)}${input.replace_all ? " (every occurrence)" : ""}`;
+    case "apply_patch": {
+      const files = [...String(input.patch).matchAll(/^\*\*\* (Add|Update|Delete) File: (.+)$/gm)].map((m) => `${m[1]!.toLowerCase()} ${m[2]!.trim()}`);
+      return `Apply a patch: ${files.join(", ").slice(0, 300) || "no files"}`;
+    }
+    case "terminal":
+      return `Run ${text(input.command)}${input.cwd ? ` in ${text(input.cwd)}` : ""}${input.background ? " (in the background)" : ""}${input.timeout_ms === 0 ? " (without a deadline)" : ""}`;
+    case "terminal_control":
+      return input.action === "write" ? `Type into terminal ${text(input.terminal)}`
+        : input.action === "signal" ? `Send ${text(input.signal)} to terminal ${text(input.terminal)}`
+        : `${input.action === "restart" ? "Restart" : "Stop"} terminal ${text(input.terminal)}`;
+    default:
+      return `Use ${tool} ${JSON.stringify(input).slice(0, 200)}`;
+  }
+}
+
+/** The text a changing call writes, when there is one to show before approving. */
+function preview(tool: string, input: Record<string, unknown>): { preview?: string } {
+  const text = tool === "edit" ? `--- replace\n${String(input.old_text)}\n+++ with\n${String(input.new_text)}`
+    : tool === "apply_patch" ? String(input.patch)
+    : tool === "terminal_control" && typeof input.input === "string" ? input.input
+    : null;
+  return text === null ? {} : { preview: text.slice(0, APPROVAL_PREVIEW_CHARS) };
 }
 
 function describe(call: ToolCall): string {

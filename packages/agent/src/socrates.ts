@@ -4,7 +4,7 @@ import { TokenCalibration } from "@socrates/providers";
 import { GoalRouter, type RoutedPart, laneSummaries } from "@socrates/router";
 import type { Goal, Lane, LedgerStore, Task, Turn } from "@socrates/store";
 import type { SemanticHit, SemanticIndex } from "@socrates/retrieval";
-import { type Approve, type CapabilityCatalog, RunState, type ShelfOptions, type SupervisorOptions, ToolRunner, WorkspaceRoot, capabilityCandidates, skillShelf } from "@socrates/tools";
+import { type AccessPolicy, type Approve, type CapabilityCatalog, RunState, type ShelfOptions, type SupervisorOptions, ToolRunner, WorkspaceRoot, capabilityCandidates, skillShelf } from "@socrates/tools";
 import { taskHistory } from "./history";
 import { assembleContext, projectQuery } from "./context";
 import { type LaneView, laneNotice, lanesBlock } from "./lanes";
@@ -52,6 +52,12 @@ export interface SocratesOptions {
   /** The model that writes history checkpoints and handover capsules; defaults to the working agent's. */
   compactorModel?: ModelClient;
   terminals?: SupervisorOptions;
+  /**
+   * Where file and command tools may work and when they ask, read before
+   * every tool call (agent-harness.md, "Access"). Without it, the goal's
+   * workspace is the boundary and the classic approvals apply.
+   */
+  access?: () => AccessPolicy | null;
   maxOutputTokens?: number;
   retryDelaysMs?: number[];
   /** Wall clock in milliseconds, for the per-turn time limit. */
@@ -212,6 +218,7 @@ export class Socrates {
       ...(options.catalog ? { catalog: options.catalog } : {}),
       ...(options.semantic ? { semantic: options.semantic } : {}),
       ...(options.terminals ? { terminals: options.terminals } : {}),
+      ...(options.access ? { access: options.access } : {}),
       ...(options.log ? { log: options.log } : {}),
     });
   }
@@ -523,6 +530,7 @@ export class Socrates {
     // Rebuilt from the current active set each time, so compaction mid-turn keeps a Skill activated earlier in the turn.
     // The main conversation sees what its lanes are doing, as of the start of this turn.
     const lanes = turn.laneId ? null : lanesBlock(store, this.laneViews(), store.clock.now(), this.options.timeZone);
+    const access = this.options.access?.() ?? null;
     const assemble = (previousTurn?: number) =>
       assembleContext({
         store,
@@ -535,6 +543,7 @@ export class Socrates {
         dependsOn: part.dependsOn.map((order) => ({ order, turn: parts.find((p) => p.order === order)!.turn })),
         part: parts.length > 1 ? { order: part.order, count: parts.length } : null,
         lanes,
+        access,
         now: store.clock.now(),
         timeZone: this.options.timeZone,
         budgets: { retrievedMax: this.budgets.retrievedMax, projectContextMax: this.budgets.projectContextMax, previousTurn: previousTurn ?? this.budgets.previousTurn },

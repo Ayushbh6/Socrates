@@ -618,7 +618,7 @@ Skills and MCP servers are global: they come from the user's Socrates folder (`$
 
 #### MCP approvals
 
-A tool whose server marks it `readOnlyHint` runs freely. Any other MCP tool asks the user through the application's `approve` callback before its first call in each goal; a granted approval is recorded with the tool's catalog name and remembered for that goal, while a denial is a corrective `approval_denied` error and the next call asks again. Approval is separate from activation, and a non-read-only tool also counts as a mutation for the first-mutation gate.
+A tool whose server marks it `readOnlyHint` runs freely. Any other MCP tool asks the user through the application's `approve` callback before its first call in each goal; a granted approval is recorded with the tool's catalog name and remembered for that goal, while a denial is a corrective `approval_denied` error and the next call asks again. Approval is separate from activation, and a non-read-only tool also counts as a mutation for the first-mutation gate. Under an access policy, "Access" replaces this approval (see "Access").
 
 #### On-demand search
 
@@ -949,6 +949,14 @@ lane 2 · working since 14:02 · g3/t1 "Fix flaky tests" in goal "Server" · wor
   note: Two flaky tests isolated; rerunning the suite.
 </LANES>
 
+<ACCESS>
+Only when the application sets an access policy (see "Access"):
+files: /Users/me/acme, /Users/me/notes. Any other path, including the
+workspace when it is not listed, asks the user first, who may refuse.
+approvals: the user approves each edit, patch, command and changing MCP
+call before it runs, and may refuse. Reading and searching need no approval.
+</ACCESS>
+
 <EVIDENCE_FROM_PART_1>
 Only for a dependent compound part (see "Compound tasks").
 </EVIDENCE_FROM_PART_1>
@@ -986,6 +994,7 @@ Rules:
 - Chat history follows the three-tier attachment policy in "Context and compaction." It contains at most one active checkpoint—or, in a continuation chat, the handover capsule in the same position—followed by `[TURN k]`-labelled completed turns. Within a turn's tool loop, ordinary steps leave everything before the in-flight turn unchanged. A capability state change updates only the capability block. Deactivated or superseded Skill bodies are removed from in-flight activation rendering as well; exact stored evidence remains retrievable. An intact current activation result carries its body once, and context reconstruction excludes a duplicate body from the prefix.
 - Turn-volatile blocks hold everything that is rewritten between user turns: the goal note and open-task index, the task's continuation note, and per-turn retrieval. Each optional block is omitted entirely when empty.
 - `<LANES>` appears only in the main conversation, when an open lane is working, waiting, or finished or stopped within the last `24` hours (see "Lanes"). It is a snapshot taken when the turn starts, at most `1,500` tokens. Running lanes take priority, then lanes starting or waiting for an answer, then recently finished lanes. Each entry is bounded so a long note cannot hide other running lanes; omitted lanes are counted.
+- `<ACCESS>` appears only when the application sets an access policy. It is taken when the turn starts; the tools apply the policy current at each call, so a change made during a turn applies to its next call.
 - `<RECENT_ACTIVITY>` appears only when the turn is bound to the `general` task. It lets Socrates answer an opening "Hi, how's it going?" with a short recap of recent work and an offer to continue it.
 - Completed turns are sent as harness-formatted text, so the frozen N−1 rendering stays byte-stable for caching and no provider-specific reasoning content has to be replayed across turns. Only the in-flight turn uses native tool-call and tool-result messages. The block order above is binding either way.
 - Everything up to `<CURRENT_USER_MESSAGE>` is one user message made of parts: the goal-stable blocks, one part per completed turn, and the turn-volatile blocks. Part boundaries are where cache breakpoints may fall (see "Prompt caching").
@@ -1490,7 +1499,7 @@ Compaction summaries are not embedded: every turn they cover is embedded as its 
 - Filesystem tools resolve every path to its real target before applying the access policy, so a symbolic link cannot escape the workspace, cannot reach protected repository metadata through an alias, and cannot split one file's stale-edit record into two.
 - File mutations take one lock per workspace, shared by every run in the process, and recheck the file's content immediately before writing.
 - Terminal commands use the same workspace and approval policy.
-- Approval is one injected `approve` callback owned by the application; each message may supply its own, and every request names the goal, task, turn and lane it comes from (see "Lanes"). It is consulted for the first-mutation gate (`Goal-router.md`, "Workspace resolution"), `SIGKILL`, `timeout_ms: 0`, and the first call of a non-read-only MCP tool in each goal (see "MCP approvals"). A denial is a corrective tool error, never a crash.
+- Approval is one injected `approve` callback owned by the application; each message may supply its own, and every request names the goal, task, turn and lane it comes from (see "Lanes"). Without an access policy it is consulted for the first-mutation gate (`Goal-router.md`, "Workspace resolution"), `SIGKILL`, `timeout_ms: 0`, and the first call of a non-read-only MCP tool in each goal (see "MCP approvals"); with one, "Access" decides instead. A denial is a corrective tool error, never a crash.
 - A turn without a workspace (general conversation, or a new goal before a workspace is chosen) can still answer and use `context_retrieve` and capability tools; workspace filesystem and terminal tools fail with `no_workspace` (the read-only active-Skill resource exception above still applies), and the agent asks the user where the work belongs.
 - Every mutating tool records its effect before the next model step.
 - Terminal sessions persist independently of one HTTP request and can be rediscovered, read, awaited, or stopped in later turns.
@@ -1502,6 +1511,19 @@ Compaction summaries are not embedded: every turn they cover is embedded as its 
 - Part setup is covered by turn failure handling. If workspace resolution, an application acknowledgment callback or context setup throws, the failed part is interrupted and later bound parts are finalized as not started. Exact tool evidence remains available. Application diagnostics stay out of model-facing errors.
 - A turn still running when the process stopped is interrupted at the next start, before anything else runs: `turn_interrupted` with reason `restarted`, a mechanical continuation note ("Interrupted when Socrates stopped after 3 tool calls."), and its exact evidence kept. History shows it as stopped while running, so the next turn can continue it.
 - Cancellation makes no further model call. The turn is recorded as interrupted (a `turn_interrupted` event with the reason and the number of tool calls) with a mechanical continuation note such as "Interrupted by the user after 14 tool calls."
+
+## Access
+
+The application may give Socrates an access policy, read before every tool call so a change applies to the next call. It has two independent parts:
+
+- **Where.** `folders` lists the folders file and command tools use freely; `null` means anywhere on the computer ("full access"). Paths outside the workspace are absolute, or start with `~/`. A path outside the folders asks the user first (`outside_folder`, naming the path and whether it is read, changed, or a command's working directory); an answer covers that path, and everything below it when it is a folder, for the rest of the run, a read grant covering reads only. The goal's workspace is no exception: when it is not listed, it asks too.
+- **Approvals.** `ask` approves every changing call before it runs (`action`: `edit`, `apply_patch`, `terminal`, changing `terminal_control` actions and MCP tools not marked read-only), with one line naming it and, for edits, patches and typed input, a preview of what will change. `auto` asks for none of them. Reading and searching never ask.
+
+With a policy, these two approvals replace the classic ones: the first-mutation gate, `SIGKILL`, `timeout_ms: 0`, and the first call of an MCP tool are not asked separately. An `action` request may be followed by an `outside_folder` request for the same call when its path lies outside the folders.
+
+In every mode, `protected` folders (Socrates' own data, and Socrates 0.1's) are never read, listed, searched, changed, or used as a command's working directory, through any alias; `glob` and `grep` leave them out of results. Repository metadata stays read-only for file tools.
+
+Commands are not sandboxed. The policy decides where a command starts and, in `ask` mode, whether it runs at all; a command that runs may still reach files elsewhere. Without a policy, the goal's workspace is the boundary and only the classic approvals apply. The agent sees the policy as `<ACCESS>` (see "Working-agent context").
 
 ## Initial exclusions
 
@@ -1537,3 +1559,5 @@ The working agent is built in this order; each stage is one reviewed change:
 
 - **L1, parallel runs:** lanes in the event log, concurrent runs in one Socrates with one run per task, handing main-conversation messages to a busy lane, per-run approvals and cancellation, and a main-conversation "current" that lanes never change. See "Lanes".
 - **L2, main's awareness of lanes:** the `<LANES>` block in the main conversation's context, lane notices, and the router's `LANES` section with selectors and its lane rules. See "Lanes".
+
+**A1, access modes,** follows the server: where tools may work and when they ask, and `<ACCESS>`. See "Access".

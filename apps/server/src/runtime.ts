@@ -1,4 +1,6 @@
-import { appendFileSync, existsSync, renameSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, realpathSync, renameSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
 import { type LaneState, Socrates, interruptUnfinishedTurns } from "@socrates/agent";
 import { InstalledCatalog } from "@socrates/capabilities";
 import { type EmbeddingClient, type ModelClient, ModelError } from "@socrates/contracts";
@@ -6,6 +8,7 @@ import { PROVIDER_DEFAULTS, type Provider, makeEmbedder, makeModel } from "@socr
 import { Retrieval } from "@socrates/retrieval";
 import { abortable, type Clock } from "@socrates/shared";
 import { LedgerStore, type Workspace } from "@socrates/store";
+import type { AccessPolicy } from "@socrates/tools";
 import { type ServerConfig, prepareHome } from "./config";
 import { readKeys, writeKey } from "./keys";
 import { lockHome } from "./home-lock";
@@ -62,6 +65,8 @@ export class Runtime {
   private changePending: Promise<unknown> | null = null;
   private closing: Promise<void> | null = null;
   private readonly changeListeners = new Set<() => void>();
+  /** Socrates' own data and Socrates 0.1's: no tool reads or changes them in any mode. */
+  private readonly protectedFolders: string[];
 
   private constructor(
     readonly config: ServerConfig,
@@ -74,6 +79,7 @@ export class Runtime {
     settings: Settings,
   ) {
     this.settings = settings;
+    this.protectedFolders = [realpathSync(config.home), path.join(realpathSync(homedir()), ".socrates")];
   }
 
   static async open(config: ServerConfig, deps: RuntimeDeps = {}): Promise<Runtime> {
@@ -167,16 +173,39 @@ export class Runtime {
     }
   }
 
-  /** Apply a settings change and rebuild Socrates from it. */
+  /**
+   * Where tools may work and when they ask (architecture/server.md, "Access").
+   * Read before every tool call, so a change applies to the next one.
+   */
+  accessPolicy(): AccessPolicy {
+    const { scope, folders, approvals } = this.settings.access;
+    return { folders: scope === "full" ? null : folders, approvals, protected: this.protectedFolders };
+  }
+
+  /** Apply a settings change and rebuild Socrates from it; an access change alone applies at once. */
   async updateSettings(patch: unknown): Promise<Settings> {
     // Only the fields sent change; the patch schema's defaults must not reset the others.
     const parsed = SettingsPatch.parse(patch) as Record<string, unknown>;
     const sent = Object.fromEntries(Object.keys(patch as object).map((key) => [key, parsed[key]]));
+    if (sent.access) sent.access = { ...this.settings.access, ...(sent.access as object) };
     const next = Settings.parse({ ...this.settings, ...sent });
+    if ((parsed.access as { folders?: unknown } | undefined)?.folders) {
+      next.access.folders = [...new Set(next.access.folders.map((folder) => workspaceFolder(folder, this.config.home)))];
+    }
     if (Object.hasOwn(sent, "workingFolder") && next.workingFolder) {
       const workspace = this.store.getWorkspace(next.workingFolder);
       if (!workspace) throw new SettingsError("That workspace does not exist.");
       if (!workspace.rootPath || workspaceFolder(workspace.rootPath, this.config.home) !== workspace.rootPath) throw new SettingsError("That workspace folder is no longer available. Add the folder again.");
+      // Choosing the working folder lets Socrates work there.
+      if (!next.access.folders.includes(workspace.rootPath)) next.access.folders = [...next.access.folders, workspace.rootPath];
+    }
+    if (Object.keys(sent).every((key) => key === "access")) {
+      // Access needs no rebuild, so it may change while Socrates works; a rebuild would overwrite it.
+      if (this.changing || this.closing) throw new RuntimeBusyError("Socrates is restarting; change access in a moment.");
+      saveSettings(this.config.settingsPath, next);
+      this.settings = next;
+      this.announceChange();
+      return next;
     }
     return this.change(async () => {
       saveSettings(this.config.settingsPath, next);
@@ -283,6 +312,7 @@ export class Runtime {
       timeZone: this.timeZone,
       // Every approval comes from the message that asked (architecture/server.md, "Approvals").
       approve: async () => false,
+      access: () => this.accessPolicy(),
       resolveWorkspace: () => {
         const folder = this.workingFolder();
         return folder ? { name: folder.name, rootPath: folder.rootPath! } : null;

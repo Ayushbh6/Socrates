@@ -1,5 +1,6 @@
 import type { SemanticSearch } from "@socrates/retrieval";
 import type { LedgerStore } from "@socrates/store";
+import { type AccessGrant, type AccessPolicy, within } from "./access";
 import type { CapabilityCatalog } from "./catalog";
 import { ToolError } from "./errors";
 import type { TerminalSupervisor } from "./terminals";
@@ -13,7 +14,12 @@ export interface ToolBinding {
   turnId: string | null;
 }
 
-export type ApprovalKind = "first_mutation" | "sigkill" | "no_deadline" | "mcp_tool";
+/**
+ * Without an access policy: the classic approvals. With one: `action` (each
+ * changing call in "ask" mode) and `outside_folder` (a path outside the
+ * user's folders) are the only ones asked (agent-harness.md, "Access").
+ */
+export type ApprovalKind = "first_mutation" | "sigkill" | "no_deadline" | "mcp_tool" | "action" | "outside_folder";
 
 export interface ApprovalRequest {
   kind: ApprovalKind;
@@ -22,6 +28,8 @@ export interface ApprovalRequest {
   detail: string;
   /** What a remembered approval covers: an MCP tool's catalog name. */
   subject?: string;
+  /** What will change, for the user to check before answering: an edit's texts or a patch. */
+  preview?: string;
 }
 
 /** Where an approval request comes from, so the application can show it in the right place. */
@@ -47,6 +55,7 @@ export class RunState {
   private readonly refs = new Map<string, RunRef>();
   private cursorCounter = 0;
   private readonly refCounters = new Map<string, number>();
+  private readonly grants: AccessGrant[] = [];
 
   constructor(private readonly maxCursors = 64) {}
 
@@ -80,6 +89,15 @@ export class RunState {
   ref(id: string): RunRef | undefined {
     return this.refs.get(id);
   }
+
+  /** The user allowed this path, or a folder holding it, outside their folders earlier in this run. */
+  granted(abs: string, write: boolean): boolean {
+    return this.grants.some((g) => within(g.path, abs) && (g.write || !write));
+  }
+
+  grant(abs: string, write: boolean): void {
+    this.grants.push({ path: abs, write });
+  }
 }
 
 /** Everything a tool handler may use for one call. */
@@ -96,6 +114,16 @@ export interface HandlerContext {
   semantic?: SemanticSearch;
   /** Resolve read-only access to an active Skill resource, or fall back to workspace policy. */
   resolveReadPath?: (input: string) => Promise<ResolvedPath>;
+  /** The access policy this call runs under, or null for the workspace boundary. */
+  access: AccessPolicy | null;
+  /**
+   * Resolve a workspace path under the access policy: relative to the
+   * workspace, refused in Socrates' data, and asking the user first outside
+   * their folders. "run" is a command's working directory.
+   */
+  path(input: string, use?: "read" | "write" | "run"): Promise<ResolvedPath>;
+  /** False inside folders tools never show, such as Socrates' own data. */
+  visible(abs: string): boolean;
   /** The terminal supervisor of the selected workspace, when there is one. */
   terminals: TerminalSupervisor | null;
   /** Ask the user, record the decision, and fail with a corrective error when denied or cancelled. */

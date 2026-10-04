@@ -38,7 +38,7 @@ export const editTool: ToolHandler<EditInput> = {
   mutating: true,
   async execute(input, ctx) {
     const workspace = requireWorkspace(ctx);
-    const file = workspace.resolve(input.path, { write: true });
+    const file = await ctx.path(input.path, "write");
     return withWorkspaceLock(workspace.root, async () => {
       const text = await readTextFile(file);
       assertFresh(ctx, file.rel, text.hash);

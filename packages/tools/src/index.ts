@@ -1,5 +1,6 @@
 export * from "./runner";
 export * from "./context";
+export * from "./access";
 export * from "./errors";
 export * from "./workspace";
 export * from "./catalog";

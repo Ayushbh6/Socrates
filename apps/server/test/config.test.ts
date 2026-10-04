@@ -45,7 +45,7 @@ describe("keys", () => {
 describe("settings", () => {
   it("start from the defaults, round-trip, and refuse a broken file instead of resetting it", () => {
     const file = path.join(tempDir(), "settings.json");
-    expect(loadSettings(file)).toEqual({ chat: null, router: null, embeddings: { provider: "ollama", model: null, url: null }, timeZone: null, workingFolder: null });
+    expect(loadSettings(file)).toEqual({ chat: null, router: null, embeddings: { provider: "ollama", model: null, url: null }, timeZone: null, workingFolder: null, access: { scope: "folders", folders: [], approvals: "ask" } });
     const chosen = Settings.parse({ chat: { provider: "anthropic", model: "claude-opus-5-5" }, timeZone: "Europe/Berlin" });
     saveSettings(file, chosen);
     expect(loadSettings(file)).toEqual(chosen);

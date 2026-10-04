@@ -118,7 +118,7 @@ export interface EventPayloads {
   /** A session's exit, with the facts derived from it (a test run's outcome) for the launching task. */
   terminal_exited: { session_id: string; exit_code: number | null; signal: string | null; reason: "exited" | "terminated" | "timeout" | "failed"; facts?: { kind: "test"; value: string }[] };
   /** One approval decision. An MCP tool approval names the tool's catalog name as its subject. */
-  approval_decided: { kind: "first_mutation" | "sigkill" | "no_deadline" | "mcp_tool"; granted: boolean; detail: string; subject?: string };
+  approval_decided: { kind: "first_mutation" | "sigkill" | "no_deadline" | "mcp_tool" | "action" | "outside_folder"; granted: boolean; detail: string; subject?: string };
   capability_activated: { kind: "skill" | "mcp"; name: string; version: string; digest: string };
   capability_deactivated: { kind: "skill" | "mcp"; name: string };
   /** A configured MCP server's tools/list, recorded whenever it differs from the server's previous snapshot. */

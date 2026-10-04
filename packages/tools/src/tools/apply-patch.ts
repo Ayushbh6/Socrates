@@ -8,7 +8,7 @@ import { type TextFile, currentHash, encodeText, hashBytes, readTextFile, statOr
 import type { FileMutation, ToolHandler, ToolOutput } from "../handler";
 import { withWorkspaceLock } from "../locks";
 import { PATCH_FORMAT_HINT, type PatchHunk, applyChunks, parsePatch } from "../patch";
-import type { ResolvedPath, WorkspaceRoot } from "../workspace";
+import type { ResolvedPath } from "../workspace";
 import { assertFresh, changedDuringCall } from "./edit";
 
 interface PlannedChange {
@@ -98,18 +98,15 @@ async function commit(planned: PlannedChange[], ctx: HandlerContext): Promise<vo
   }
 }
 
-/** Validate every operation of a parsed patch, then commit it. */
-async function applyHunks(hunks: PatchHunk[], workspace: WorkspaceRoot, ctx: HandlerContext): Promise<ToolOutput> {
+/** Validate every operation of a parsed patch, then commit it. Paths were resolved, and any approval answered, before the lock. */
+async function applyHunks(hunks: PatchHunk[], paths: Map<string, ResolvedPath>, ctx: HandlerContext): Promise<ToolOutput> {
   // Validate every operation before touching the filesystem.
   const touched = new Set<string>();
   const claim = (p: ResolvedPath) => {
     if (touched.has(p.rel)) throw new ToolError("invalid_patch", `${p.rel} appears more than once in the patch.`, "Combine all changes to one file into a single Update File section.");
     touched.add(p.rel);
   };
-  const resolve = (raw: string) => {
-    if (path.isAbsolute(raw)) throw new ToolError("invalid_patch", `Patch paths must be workspace-relative; got ${raw}.`, "Use a path relative to the workspace root, such as src/index.ts.");
-    return workspace.resolve(raw, { write: true });
-  };
+  const resolve = (raw: string) => paths.get(raw)!;
   const planned: PlannedChange[] = [];
   for (const hunk of hunks) {
     const source = resolve(hunk.path);
@@ -176,6 +173,12 @@ export const applyPatchTool: ToolHandler<ApplyPatchInput> = {
   async execute(input, ctx) {
     const workspace = requireWorkspace(ctx);
     const hunks = parsePatch(input.patch);
-    return withWorkspaceLock(workspace.root, () => applyHunks(hunks, workspace, ctx));
+    const paths = new Map<string, ResolvedPath>();
+    for (const raw of hunks.flatMap((h) => (h.kind === "update" && h.moveTo ? [h.path, h.moveTo] : [h.path]))) {
+      if (paths.has(raw)) continue;
+      if (path.isAbsolute(raw) && !ctx.access) throw new ToolError("invalid_patch", `Patch paths must be workspace-relative; got ${raw}.`, "Use a path relative to the workspace root, such as src/index.ts.");
+      paths.set(raw, await ctx.path(raw, "write"));
+    }
+    return withWorkspaceLock(workspace.root, () => applyHunks(hunks, paths, ctx));
   },
 };

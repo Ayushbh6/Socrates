@@ -1,7 +1,6 @@
 import { ReadInput } from "@socrates/contracts";
 import { countTokens } from "@socrates/shared";
 import { RESULT_CEILING_TOKENS, cutLine } from "../bounds";
-import { requireWorkspace } from "../context";
 import { ToolError } from "../errors";
 import { readTextFile, splitLines } from "../files";
 import type { ToolHandler } from "../handler";
@@ -22,7 +21,7 @@ export const readTool: ToolHandler<ReadInput> = {
   concurrency: "parallel",
   mutating: false,
   async execute(input, ctx) {
-    const file = ctx.resolveReadPath ? await ctx.resolveReadPath(input.path) : requireWorkspace(ctx).resolve(input.path);
+    const file = ctx.resolveReadPath ? await ctx.resolveReadPath(input.path) : await ctx.path(input.path);
     const text = await readTextFile(file);
     const all = splitLines(text.text);
     const offset = input.offset ?? 1;

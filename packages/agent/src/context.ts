@@ -1,6 +1,6 @@
 import type { EventPayloads, ModelMessage, TextPart } from "@socrates/contracts";
 import type { SemanticHit } from "@socrates/retrieval";
-import type { ActiveCapabilities, WorkspaceRoot } from "@socrates/tools";
+import { type AccessPolicy, type ActiveCapabilities, type WorkspaceRoot, describeAccess } from "@socrates/tools";
 import { renderActivity } from "@socrates/router";
 import type { Goal, LedgerStore, Task, Turn } from "@socrates/store";
 import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
@@ -27,6 +27,8 @@ export interface ContextInput {
   semantic?: { task: SemanticHit[]; siblings: SemanticHit[]; anchors?: SemanticHit[]; related?: SemanticHit[] };
   /** The main conversation's `<LANES>` block, or null (in a lane, or with no lanes to show). */
   lanes?: string | null;
+  /** Where tools may work and when they ask, as of the turn's start; null for the workspace boundary. */
+  access?: AccessPolicy | null;
   /** The goal's workspace, whose anchors and files fill `<PROJECT_CONTEXT>`. */
   workspace?: WorkspaceRoot | null;
   /** Dependent compound parts: the finalized turns of the parts this one depends on. */
@@ -61,6 +63,7 @@ export function assembleContext(input: ContextInput): TextPart[] {
     task.general && !turn.laneId ? null : currentTask(task, input.part, store.requestForTurn(turn.id).request, laneOf(store, turn)),
     task.general ? block("RECENT_ACTIVITY", renderActivity(store, input.now, input.timeZone)) : null,
     input.lanes ?? null,
+    input.access ? block("ACCESS", describeAccess(input.access)) : null,
     ...input.dependsOn.map((d) => evidenceFromPart(store, d.order, d.turn)),
     retrievedHistory(store, {
       taskId: task.id,

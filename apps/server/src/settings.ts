@@ -16,13 +16,31 @@ const TimeZone = z.string().refine((zone) => {
   }
 }, "Use an IANA time zone such as Europe/Berlin.");
 
+/** At most this many folders in "My folders". */
+export const MAX_ACCESS_FOLDERS = 50;
+
+/**
+ * Where Socrates may work and when it asks (architecture/server.md, "Access"):
+ * - scope: "folders" limits file tools to `folders` (any other path asks);
+ *   "full" allows any path except Socrates' own data;
+ * - approvals: "ask" approves every edit, patch, command and changing MCP
+ *   call first; "auto" runs them without asking.
+ */
+export const Access = z.object({
+  scope: z.enum(["folders", "full"]),
+  folders: z.array(z.string().min(1)).max(MAX_ACCESS_FOLDERS),
+  approvals: z.enum(["ask", "auto"]),
+}).strict();
+export type Access = z.infer<typeof Access>;
+
 /**
  * The user's choices (architecture/server.md, "Settings"). API keys are not
  * settings: they live in the data folder's `.env` and are never returned.
  * - chat / router: null picks the first provider with a key, and its defaults;
  * - embeddings: local Ollama with embeddinggemma unless changed;
  * - timeZone: null follows the Mac;
- * - workingFolder: the workspace new work is bound to, or null.
+ * - workingFolder: the workspace new work is bound to, or null; choosing it adds its folder to `access`;
+ * - access: where Socrates may work and when it asks; by default only the user's folders, asking first.
  */
 export const Settings = z.object({
   chat: ModelChoice.nullable().default(null),
@@ -37,11 +55,12 @@ export const Settings = z.object({
   }).strict().default({ provider: "ollama", model: null, url: null }),
   timeZone: TimeZone.nullable().default(null),
   workingFolder: z.string().min(1).nullable().default(null),
+  access: Access.default({ scope: "folders", folders: [], approvals: "ask" }),
 }).strict();
 export type Settings = z.infer<typeof Settings>;
 
-/** What PUT /api/settings accepts: any subset of the settings. */
-export const SettingsPatch = Settings.partial().strict();
+/** What PUT /api/settings accepts: any subset of the settings, and of `access`. */
+export const SettingsPatch = Settings.partial().extend({ access: Access.partial().strict().optional() }).strict();
 
 export function loadSettings(file: string): Settings {
   if (!existsSync(file)) return Settings.parse({});

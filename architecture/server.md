@@ -47,13 +47,26 @@ Settings and keys can change only while Socrates is idle (no main-conversation m
 | `router` | `null` | `{ provider, model }` of the Goal Router; `null` uses the chat provider's router default |
 | `embeddings` | Ollama, `embeddinggemma` | `{ provider, model, url }` as in `agent-harness.md`, "Embeddings and hybrid retrieval" |
 | `timeZone` | `null` | an IANA time zone; `null` follows the machine |
-| `workingFolder` | `null` | the workspace new work is bound to |
+| `workingFolder` | `null` | the workspace new work is bound to; choosing it adds its folder to `access.folders` |
+| `access` | my folders, none yet; ask first | `{ scope, folders, approvals }`: where Socrates may work and when it asks (see "Access") |
 
-A change sends only the fields that change; the others keep their values.
+A change sends only the fields that change; the others keep their values, inside `access` too. Every other change rebuilds Socrates and is refused with `busy` while it works; an `access` change alone applies at once, even while Socrates works, and only a rebuild in progress refuses it.
 
 **Keys** are not settings. They live in the data folder's `.env`, which holds only known key names (each provider's keys and `SOCRATES_EMBEDDINGS_API_KEY`) and is written atomically with mode `600`, preserving literal backslashes. Keys there take precedence over the process environment. The API never returns a key, only its effective presence, including inherited keys. Deleting a stored key restores any inherited value of the same name. Provider diagnostics and setup messages redact secrets. Embedding URLs must be HTTP or HTTPS base URLs without embedded credentials, query parameters or fragments.
 
 **Working folder.** A goal is bound to a workspace permanently when its work starts (`Goal-router.md`, "Workspace resolution"). The server binds a new goal to the workspace chosen as the working folder; without one, the goal works without files and the agent asks where the work belongs. A workspace is added from a folder's full path: an existing directory, by its real path, never the whole disk, the home folder itself, classic Socrates data, or a folder inside or containing this server's data. Selection and new-goal binding revalidate the stored path; a missing folder, file, or changed alias is unavailable. Adding the same folder again returns its workspace; a second folder with the same name gets a numbered name.
+
+## Access
+
+The `access` setting is the harness's access policy (`agent-harness.md`, "Access"), read before every tool call:
+
+| Field | Values | Meaning |
+|---|---|---|
+| `scope` | `folders` (default), `full` | `folders`: file and command tools work freely only in `folders`, and any other path asks first; `full`: anywhere on the Mac |
+| `folders` | real folder paths, at most `50` | validated like a working folder (an existing directory, never the disk, the home folder, or Socrates' data, Socrates 0.1's included), stored by real path without duplicates; a folder that later disappears simply matches nothing |
+| `approvals` | `ask` (default), `auto` | `ask`: every edit, patch, command and changing MCP call waits for the user's approval; reading never asks. `auto`: none of them asks |
+
+In every mode, tools never touch this server's data folder or `~/.socrates`. With no live page connected, every approval is refused. Commands are not sandboxed: the scope decides where a command starts, not everything it can reach, so a command in `auto` mode can still read or change other files.
 
 ## Security
 
@@ -121,7 +134,7 @@ Changes to settings or keys also broadcast state to every subscribed page. `read
 | `state` | `seq`, readiness and setup needed, whether main is busy, the lanes, the main queue, and pending approvals; sent on every change |
 | `accepted { id, conversation }` | the message started; for `new_lane`, `conversation` is the new lane's id |
 | `activity` | one saved event (see "Live activity") |
-| `approval` | a new pending approval: its id, conversation and lane, task, kind, tool, and the one line the user approves |
+| `approval` | a new pending approval: its id, conversation and lane, task, kind (`action` or `outside_folder` under an access policy), tool, the one line the user approves, and a `preview` of what will change (an edit's texts, a patch, typed input) or null |
 | `handed_off { id, conversation, lane, mainReleased }` | a part went to the lane busy with its task. A single-part message frees main; a compound message keeps main until all parts finish, and its aggregate result stays in main |
 | `status { id, conversation, text }` | the plan of a split message, or a quiet status line during long work |
 | `result { id, conversation, result }` | the message is done: its text, lane, per-part outcome, notices, and anchor changes |

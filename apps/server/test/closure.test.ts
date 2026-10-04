@@ -181,7 +181,7 @@ describe("S1 review regressions", () => {
     expect(readFileSync(path.join(folder, "blocked.txt"), "utf8")).toBe("before");
     const approvals = rt.store.listEvents({ type: "approval_decided" });
     expect(approvals).toHaveLength(1);
-    expect(approvals[0]!.payload).toMatchObject({ kind: "first_mutation", granted: false });
+    expect(approvals[0]!.payload).toMatchObject({ kind: "action", granted: false, detail: "Edit blocked.txt" });
     if (result.kind === "answered") expect(rt.store.evidenceForTurn(result.parts[0]!.turn.id)[0]!.result?.error?.code).toBe("approval_denied");
   });
 

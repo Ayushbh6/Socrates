@@ -42,6 +42,8 @@ export interface PendingApproval {
   kind: ApprovalRequest["kind"];
   tool: string;
   detail: string;
+  /** What will change, such as an edit's texts or a patch, when the request shows it. */
+  preview: string | null;
 }
 
 interface Run {
@@ -309,6 +311,7 @@ export class LiveHub {
       kind: request.kind,
       tool: request.tool,
       detail: request.detail,
+      preview: request.preview ?? null,
     };
     return new Promise((resolve) => {
       const finish = (granted: boolean) => {

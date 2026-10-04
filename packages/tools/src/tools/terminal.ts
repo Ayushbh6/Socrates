@@ -62,9 +62,8 @@ export const terminalTool: ToolHandler<TerminalInput> = {
   mutating: true,
   async execute(input, ctx) {
     const terminals = supervisor(ctx);
-    const workspace = requireWorkspace(ctx);
     if (input.pty) throw new ToolError("pty_unavailable", "Pseudo-terminal sessions are not available yet.", "Run the command without pty; pass input through terminal_control write.");
-    const cwd = workspace.resolve(input.cwd ?? ".");
+    const cwd = await ctx.path(input.cwd ?? ".", "run");
     const info = await statOrNull(cwd.abs);
     if (!info?.isDirectory()) throw new ToolError("directory_not_found", `cwd ${cwd.rel} is not an existing directory.`, "Use an existing directory, or omit cwd to run in the workspace root.");
     if (input.ready?.pattern) compilePattern(input.ready.pattern, "ready.pattern");
