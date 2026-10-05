@@ -119,6 +119,10 @@ export class TerminalSession {
   stdinOpen = true;
   /** When the process last printed anything. */
   lastOutputAt = Date.now();
+  /** The program has hidden the terminal's cursor, as menus and prompt wizards do while they wait for a key. */
+  cursorHidden = false;
+  /** When input was last written to it: a prompt answered since it printed is no longer waiting. */
+  answeredAt = 0;
   readonly startedAt = new Date();
   exitedAt: Date | null = null;
   private listeners = new Set<() => void>();
@@ -145,7 +149,9 @@ export class TerminalSession {
    */
   inputRequired(now = Date.now()): boolean | null {
     if (!this.proc?.pty) return null;
-    if (this.status !== "running" || now - this.lastOutputAt < INPUT_IDLE_MS) return false;
+    if (this.status !== "running" || now - this.lastOutputAt < INPUT_IDLE_MS || this.answeredAt >= this.lastOutputAt) return false;
+    // A menu ("Select a framework"), unlike a plain prompt, ends its last line; it hides the cursor while it waits.
+    if (this.cursorHidden) return true;
     const last = this.output.slice(Math.max(this.output.start, this.output.end - 1)).text;
     return last !== "" && last !== "\n";
   }
@@ -288,6 +294,9 @@ export class TerminalSupervisor {
       hooks.onStart(session);
       term.onData((chunk) => {
         session.lastOutputAt = Date.now();
+        const hide = chunk.lastIndexOf("\x1b[?25l");
+        const show = chunk.lastIndexOf("\x1b[?25h");
+        if (hide >= 0 || show >= 0) session.cursorHidden = hide > show;
         const clean = text.push(chunk);
         if (clean) onData(clean);
       });

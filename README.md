@@ -64,6 +64,7 @@ SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:tools --live # also a provide
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:agent  # real router and working agent on a disposable project
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:compaction # compaction and rollover with shrunken budgets
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:capabilities # installed Skills and a real stdio MCP server
+SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:gold   # the gold standard: DeepSeek Flash and GLM 5.3 Flash each build a mockup from its picture alone (interactive terminal, packages, dev server, Playwright MCP screenshots); everything lands in .socrates/evals/gold, which `pnpm eval:gold --clean` deletes
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:embeddings   # meaning-based retrieval with local Ollama embeddinggemma
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:lanes        # parallel lanes beside the main conversation
 ```

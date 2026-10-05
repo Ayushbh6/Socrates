@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { type CatalogEntry, type LoadedMcpTool, RunState, StaticCatalog, capabilityCandidates, skillShelf } from "../src";
 import { harness } from "./helpers";
 
@@ -124,5 +126,35 @@ describe("MCP approval", () => {
     await h.call("mcp__notes__add", { text: "x" });
     expect(h.approvals.filter((a) => a.kind === "mcp_tool")).toHaveLength(2);
     expect(called).toBe(0);
+  });
+});
+
+describe("an MCP tool that returns an image", () => {
+  const png = readFileSync(path.join(import.meta.dirname, "fixture-label.png"));
+  const shot = { content: "[image image/png, about 11000 bytes]", isError: false, images: [{ mediaType: "image/png" as const, data: png.toString("base64") }] };
+  async function shotHarness() {
+    const catalog = new StaticCatalog([mcp("browser", "screenshot", "Take a screenshot", { readOnly: true })], {}, { "browser.screenshot": { ...SCHEMA, readOnly: true, inputSchema: { type: "object", properties: {} } } }, { "browser.screenshot": () => shot });
+    const h = harness({ catalog });
+    const ref = (await h.call("capability_search", { query: "browser.screenshot" })).json.matches[0].ref;
+    await h.call("capability_control", { action: "activate", ref });
+    return h;
+  }
+
+  it("shows the screenshot to a model that can see, and keeps its bytes out of the record", async () => {
+    const h = await shotHarness();
+    const r = await h.call("mcp__browser__screenshot", {}, { vision: true });
+    expect(r.isError).toBe(false);
+    expect(r.images).toEqual(shot.images);
+    expect(r.content).toBe("[image image/png, about 11000 bytes]");
+    const stored = JSON.stringify(h.store.listEvents({ type: "tool_completed" }).at(-1)!.payload);
+    expect(stored).not.toContain(png.toString("base64").slice(0, 40));
+    expect(stored).toContain('"images":1');
+  });
+
+  it("tells a model that cannot see that the image's content is unknown, and sends it nothing", async () => {
+    const h = await shotHarness();
+    const r = await h.call("mcp__browser__screenshot", {});
+    expect(r.images).toBeUndefined();
+    expect(r.content).toContain("The current model cannot see images, so this image's content is unknown");
   });
 });

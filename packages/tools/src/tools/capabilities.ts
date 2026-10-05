@@ -249,7 +249,10 @@ export class CapabilityRuntime {
           throw new ToolError("mcp_tool_error", `${publicName} returned an error: ${head(result.content, 400).text}`, "Check the input against the tool's schema, or continue without it.", true, { content: result.content });
         }
         const shown = head(result.content, RESULT_CEILING_TOKENS - 200, "the complete result is stored with this call");
-        return { content: shown.text, result: { content: result.content, truncated: shown.truncated }, facts };
+        // A screenshot is shown to a model that can see; one that cannot is told so rather than left to guess.
+        const images = result.images ?? [];
+        const unseen = images.length && !ctx.vision ? `\n(The current model cannot see images, so ${images.length === 1 ? "this image's" : "these images'"} content is unknown: say so rather than guess.)` : "";
+        return { content: shown.text + unseen, result: { content: result.content, truncated: shown.truncated, ...(images.length ? { images: images.length, images_shown: ctx.vision } : {}) }, facts, ...(images.length && ctx.vision ? { images } : {}) };
       },
     };
   }

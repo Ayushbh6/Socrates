@@ -36,6 +36,25 @@ describe("images in a turn", () => {
   });
 });
 
+describe("many images in one turn", () => {
+  it("keeps the newest screenshots in a batch and says what it dropped", async () => {
+    const w = await world({ files: { "label.png": png } });
+    const reads = Array.from({ length: 9 }, () => ({ toolCalls: [call("read", { path: "label.png" })] }));
+    const { socrates, model } = w.socrates([continueTask()], [...reads, final({ full_answer: "Done." })]);
+    model.vision = true;
+    await socrates.handle("Look at it nine times.");
+    const shown = (request: number) => model.requests[request]!.messages.filter((m) => m.role === "tool" && m.images?.length).length;
+    // Up to eight stay; the ninth brings the count down to four.
+    expect(shown(8)).toBe(8);
+    expect(shown(9)).toBe(4);
+    const tools = model.requests[9]!.messages.filter((m) => m.role === "tool");
+    expect(tools[0]).not.toHaveProperty("images");
+    expect(tools[0]!.content).toContain("label.png — image, 400×400 PNG, 11 KB, shown below.");
+    expect(tools[0]!.content).toContain("The image this result showed is no longer shown");
+    expect(tools.at(-1)).toHaveProperty("images");
+  });
+});
+
 describe("attached images", () => {
   async function attached() {
     const w = await world({ files: { "notes.md": "x\n" } });

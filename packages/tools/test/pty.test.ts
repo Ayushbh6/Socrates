@@ -51,6 +51,31 @@ describe.skipIf(!hasPty)("pseudo-terminal sessions", () => {
     expect((await h.call("terminal_control", { action: "wait", terminal: "later", event: "exit" })).json.output).toContain("got y");
   });
 
+  it("ends any wait when the program asks for input, instead of waiting out the deadline", async () => {
+    const h = harness();
+    await h.call("terminal", { command: 'sleep 0.5; read -p "Project name? " n; echo "made $n"', pty: true, background: true, name: "wizard" });
+    const started = Date.now();
+    const asked = await h.call("terminal_control", { action: "wait", terminal: "wizard", event: "exit" });
+    expect(asked.json).toMatchObject({ event: "input_required", input_required: true, output: "Project name? " });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    await h.call("terminal_control", { action: "write", terminal: "wizard", input: "shop" });
+    expect((await h.call("terminal_control", { action: "wait", terminal: "wizard", event: "exit" })).json).toMatchObject({ event: "exit", exit_code: 0 });
+  });
+
+  it("knows a menu is waiting, which hides the cursor, even though its last line is finished", async () => {
+    const h = harness();
+    await h.call("terminal", { command: `printf '\\033[?25l'; printf 'Select a framework\\n> Vue\\n  React\\n'; sleep 30`, pty: true, background: true, name: "menu" });
+    const asked = await h.call("terminal_control", { action: "wait", terminal: "menu", event: "exit" });
+    expect(asked.json).toMatchObject({ event: "input_required", input_required: true });
+    expect(asked.json.output).toContain("Select a framework");
+    await h.call("terminal_control", { action: "terminate", terminal: "menu" });
+    // Once the program shows the cursor again, it is not waiting for a key.
+    await h.call("terminal", { command: `printf '\\033[?25lbusy\\n'; printf '\\033[?25hdone\\n'; sleep 30`, pty: true, background: true, name: "quiet" });
+    await new Promise((done) => setTimeout(done, 1_200));
+    expect((await h.call("terminal_control", { action: "list" })).json.terminals.find((t: { terminal: string }) => t.terminal === "quiet")).toMatchObject({ input_required: false });
+    await h.call("terminal_control", { action: "terminate", terminal: "quiet" });
+  });
+
   it("sends keys as a keyboard does, and CTRL_C interrupts the foreground program", async () => {
     const h = harness();
     // Keys sent before the program switches the terminal to raw input would wait in the line buffer.

@@ -5,9 +5,9 @@ import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontex
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { abortable } from "@socrates/shared";
-import type { McpToolSnapshot } from "@socrates/contracts";
+import type { ImageData, McpToolSnapshot } from "@socrates/contracts";
 import type { LedgerStore } from "@socrates/store";
-import type { Availability, McpCallResult } from "@socrates/tools";
+import { type Availability, IMAGE_MAX_BYTES, MCP_IMAGES_MAX, type McpCallResult, imageInfo } from "@socrates/tools";
 import type { McpServerConfig } from "./mcp-config";
 
 /** How long connecting and the first tools/list may take. */
@@ -93,7 +93,8 @@ export class McpServer {
     const client = await this.connect(signal);
     try {
       const result = await client.callTool({ name: tool, arguments: input }, undefined, { signal, timeout: MCP_CALL_TIMEOUT_MS, resetTimeoutOnProgress: true });
-      return { content: renderResult(result), isError: result.isError === true };
+      const images = resultImages(result);
+      return { content: renderResult(result), isError: result.isError === true, ...(images.length ? { images } : {}) };
     } catch (error) {
       if (!signal.aborted && error instanceof McpError && error.code !== ErrorCode.ConnectionClosed) return { content: error.message, isError: true };
       throw error;
@@ -181,6 +182,22 @@ export class McpServer {
 }
 
 type CallToolResult = Awaited<ReturnType<Client["callTool"]>>;
+
+/**
+ * The result's image blocks a model can be shown: a PNG, JPEG, GIF or WebP
+ * (its bytes decide, not the declared type) up to IMAGE_MAX_BYTES, the first
+ * MCP_IMAGES_MAX of them. Others stay the descriptive line `renderResult` writes.
+ */
+export function resultImages(result: CallToolResult): ImageData[] {
+  const images: ImageData[] = [];
+  for (const block of Array.isArray(result.content) ? result.content : []) {
+    if (block.type !== "image" || typeof block.data !== "string" || images.length >= MCP_IMAGES_MAX) continue;
+    const bytes = Buffer.from(block.data, "base64");
+    const info = bytes.length <= IMAGE_MAX_BYTES ? imageInfo(bytes) : null;
+    if (info) images.push({ mediaType: info.mediaType, data: block.data });
+  }
+  return images;
+}
 
 /** The result as text: text blocks verbatim, other blocks as one descriptive line, structured content when nothing else was returned. */
 export function renderResult(result: CallToolResult): string {

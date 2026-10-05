@@ -21,6 +21,10 @@ export interface AgentLimits {
   maxTokens: number;
 }
 
+/** Images kept in tool results (screenshots): when more than the maximum are there, the oldest go until this many remain. */
+export const TOOL_IMAGES_KEPT = 4;
+export const TOOL_IMAGES_KEPT_MAX = 8;
+
 export const DEFAULT_LIMITS: AgentLimits = { maxSteps: 200, maxWallMs: 60 * 60_000, maxTokens: 5_000_000 };
 
 export interface RunInput {
@@ -114,6 +118,27 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
   };
   const interrupted = (reason: "cancelled" | "failed", detail: string | null = null): RunOutcome => ({ kind: "interrupted", reason, detail, toolCalls, steps, partial: reason === "cancelled" ? partial : null });
   const push = (message: ModelMessage) => { messages.push(message); sizes.push(messageTokens(message)); };
+  /**
+   * Screenshots add up: past TOOL_IMAGES_KEPT_MAX images in tool results, the
+   * oldest are dropped down to TOOL_IMAGES_KEPT, each result keeping its text
+   * and a note. A batch at a time, so the cached prefix of the conversation
+   * changes once in a while rather than at every new screenshot.
+   */
+  const dropOldToolImages = () => {
+    const shown: number[] = [];
+    messages.forEach((m, i) => { if (m.role === "tool" && m.images?.length) shown.push(i); });
+    const total = shown.reduce((n, i) => n + ((messages[i] as { images: ImageData[] }).images.length), 0);
+    if (total <= TOOL_IMAGES_KEPT_MAX) return;
+    let excess = total - TOOL_IMAGES_KEPT;
+    for (const i of shown) {
+      if (excess <= 0) break;
+      const m = messages[i] as Extract<ModelMessage, { role: "tool" }>;
+      const { images, ...rest } = m;
+      excess -= images!.length;
+      messages[i] = { ...rest, content: `${m.content}\n[${images!.length === 1 ? "The image" : "The images"} this result showed ${images!.length === 1 ? "is" : "are"} no longer shown, to keep the conversation small.]` };
+      sizes[i] = messageTokens(messages[i]!);
+    }
+  };
   const contextFallback = (stop: TurnStop): RunOutcome => ({
     kind: "limited", stop, toolCalls, steps,
     text: "Stopped because the working context is too large to request a safe final answer. The work and tool results are saved. This task is not being marked complete; ask me to continue from the saved evidence.",
@@ -192,6 +217,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
     const results = await execute(input.runner, response.toolCalls, { ...scope, signal, ...(onOutput ? { onOutput } : {}) });
     toolCalls += results.length;
     for (const r of results) push({ role: "tool", toolCallId: r.callId, toolName: r.name, content: r.content, ...(r.isError ? { isError: true } : {}), ...(r.images?.length ? { images: r.images } : {}) });
+    dropOldToolImages();
   };
   // Unexpected tool calls during finalization are recorded as refused. Never
   // execute them or accept their accompanying state proposals as a final answer.

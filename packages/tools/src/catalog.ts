@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { JsonSchema } from "@socrates/contracts";
+import type { ImageData, JsonSchema } from "@socrates/contracts";
 
 /**
  * The capability catalog (agent-harness.md, "Conditional capabilities"):
@@ -59,7 +59,12 @@ export interface LoadedMcpTool {
 export interface McpCallResult {
   content: string;
   isError: boolean;
+  /** The result's image blocks (a screenshot), for a model that can see; at most MCP_IMAGES_MAX, each up to IMAGE_MAX_BYTES. */
+  images?: ImageData[];
 }
+
+/** Images shown to a model from one MCP call; a page that returns more shows the first ones. */
+export const MCP_IMAGES_MAX = 4;
 
 export interface CapabilityCatalog {
   entries(): CatalogEntry[];

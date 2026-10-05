@@ -339,8 +339,10 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
             if (input.event === "exit" && session.status === "exited") event = "exit";
             else if (input.event === "output" && fresh.length > 0) event = "output";
             else if (pattern && pattern.test(fresh)) event = "pattern";
-            else if (input.event === "input_required" && session.inputRequired()) event = "input_required";
-            else if (input.event === "ready" && (session.ready || (session.status === "running" && (await awaitReady(session, ctx.signal, Math.max(1, deadline - Date.now())))))) event = "ready";
+            else if (input.event === "ready" && session.ready) event = "ready";
+            // Whatever it waits for, a program that asks for input cannot go on until it gets some: say so now, not at the deadline.
+            else if (session.inputRequired()) event = "input_required";
+            else if (input.event === "ready" && session.status === "running" && (await awaitReady(session, ctx.signal, Math.max(1, deadline - Date.now())))) event = "ready";
             else if (session.status === "exited") event = "exit";
             else if (Date.now() >= deadline) event = "timeout";
             else await session.changed(Math.min(250, deadline - Date.now()), ctx.signal);
@@ -376,6 +378,7 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
             }
           }
         }
+        session.answeredAt = Date.now();
         session.bump();
         const result = { action: "write", ...identity(session), accepted: true };
         return { content: json(result), result };
