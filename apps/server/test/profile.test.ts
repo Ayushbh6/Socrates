@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createGoal } from "../../../packages/router/test/helpers";
-import { final } from "../../../packages/agent/test/helpers";
-import { Responder, SCRIPTED, home, server } from "./helpers";
+import { contextText, final } from "../../../packages/agent/test/helpers";
+import { Responder, SCRIPTED, home, models, server } from "./helpers";
 
 describe("the profile", () => {
   it("starts empty and not onboarded, keeps the name and the flag across a restart, and is in the status", async () => {
@@ -39,5 +39,15 @@ describe("the profile", () => {
     expect(rt.socrates).toBe(socrates);
     release();
     await running;
+  });
+
+  it("reaches the working agent from the settings, and a name given mid-chat counts from the next message", async () => {
+    const { chatModel, makeModel } = models([createGoal("Hello", "Greet"), createGoal("Hello", "Greet")], [final({ full_answer: "Hi." }), final({ full_answer: "Hi Ada." })]);
+    const { rt, request } = await server(home({ settings: SCRIPTED }), { makeModel });
+    await rt.socrates!.handle("Hello.");
+    expect(contextText(chatModel.requests[0]!)).not.toContain("<USER>");
+    await request("PUT", "/api/settings", { profile: { name: "Ada", onboarded: true } });
+    await rt.socrates!.handle("What is my name?");
+    expect(contextText(chatModel.requests[1]!)).toContain("<USER>\nThe user's name is Ada.\n</USER>");
   });
 });

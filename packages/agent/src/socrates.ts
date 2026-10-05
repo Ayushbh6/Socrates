@@ -60,6 +60,8 @@ export interface SocratesOptions {
    * workspace is the boundary and the classic approvals apply.
    */
   access?: () => AccessPolicy | null;
+  /** The user's profile, read when a message starts, so a name given or changed in the middle of a chat counts from the next message. */
+  profile?: () => { name: string | null };
   maxOutputTokens?: number;
   retryDelaysMs?: number[];
   /** Wall clock in milliseconds, for the per-turn time limit. */
@@ -563,6 +565,7 @@ export class Socrates {
         part: parts.length > 1 ? { order: part.order, count: parts.length } : null,
         lanes,
         access: this.options.access?.() ?? null,
+        user: this.options.profile?.().name ?? null,
         vision,
         now: store.clock.now(),
         timeZone: this.options.timeZone,

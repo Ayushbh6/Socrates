@@ -374,6 +374,7 @@ export class Runtime {
       // Every approval comes from the message that asked (architecture/server.md, "Approvals").
       approve: async () => false,
       access: () => this.accessPolicy(),
+      profile: () => this.settings.profile,
       resolveWorkspace: () => {
         const folder = this.workingFolder();
         return folder ? { name: folder.name, rootPath: folder.rootPath! } : null;

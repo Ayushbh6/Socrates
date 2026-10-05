@@ -944,7 +944,11 @@ Blocks are ordered from most stable to most volatile, so that the provider promp
 system prompt · fixed behavioral rules · the ten permanent tool schemas
 (dynamically activated MCP tool schemas are appended after the permanent ones)
 
-[GOAL-STABLE — changes only when the goal, its anchors, or its active set change]
+[GOAL-STABLE — changes only when the user's name, the goal, its anchors, or its active set change]
+<USER>
+The user's name is Ada.
+</USER>
+
 <GOAL>
 title: Socrates memory system
 objective: A memory system that never loses what the user asked for or what the work established.
@@ -1054,6 +1058,7 @@ Rules:
 - Chat history follows the three-tier attachment policy in "Context and compaction." It contains at most one active checkpoint—or, in a continuation chat, the handover capsule in the same position—followed by `[TURN k]`-labelled completed turns. Within a turn's tool loop, ordinary steps leave everything before the in-flight turn unchanged. A capability state change updates only the capability block. Deactivated or superseded Skill bodies are removed from in-flight activation rendering as well; exact stored evidence remains retrievable. An intact current activation result carries its body once, and context reconstruction excludes a duplicate body from the prefix.
 - Turn-volatile blocks hold everything that is rewritten between user turns: the goal note and open-task index, the task's continuation note, and per-turn retrieval. Each optional block is omitted entirely when empty.
 - `<LANES>` appears only in the main conversation, when an open lane is working, waiting, or finished or stopped within the last `24` hours (see "Lanes"). It is a snapshot taken when the turn starts, at most `1,500` tokens. Running lanes take priority, then lanes starting or waiting for an answer, then recently finished lanes. Each entry is bounded so a long note cannot hide other running lanes; omitted lanes are counted.
+- `<USER>` appears only when the user gave a name (the web app's onboarding; `server.md`, "Settings"), in the goal-stable part so the cached prefix is the same turn after turn. The application's `profile` callback is read when a message starts, so a name given or changed in the middle of a chat counts from the next message. Angle brackets and line breaks are removed from the name. The system prompt tells the agent to use the name where a person would, not in every reply, and never to guess one when there is no `<USER>`.
 - `<ACCESS>` appears only when the application sets an access policy. It is taken when the turn starts; the tools apply the policy current at each call, so a change made during a turn applies to its next call.
 - `<RECENT_ACTIVITY>` appears only when the turn is bound to the `general` task. It lets Socrates answer an opening "Hi, how's it going?" with a short recap of recent work and an offer to continue it.
 - Completed turns are sent as harness-formatted text, so the frozen N−1 rendering stays byte-stable for caching and no provider-specific reasoning content has to be replayed across turns. Only the in-flight turn uses native tool-call and tool-result messages. The block order above is binding either way.

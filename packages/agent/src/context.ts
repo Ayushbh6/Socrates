@@ -28,6 +28,8 @@ export interface ContextInput {
   semantic?: { task: SemanticHit[]; siblings: SemanticHit[]; anchors?: SemanticHit[]; related?: SemanticHit[] };
   /** The main conversation's `<LANES>` block, or null (in a lane, or with no lanes to show). */
   lanes?: string | null;
+  /** The user's name as they gave it in onboarding, or null; it opens the first part, which stays the same from turn to turn. */
+  user?: string | null;
   /** Where tools may work and when they ask, as of the turn's start; null for the workspace boundary. */
   access?: AccessPolicy | null;
   /** The goal's workspace, whose anchors and files fill `<PROJECT_CONTEXT>`. */
@@ -54,7 +56,7 @@ export function assembleContext(input: ContextInput): TextPart[] {
   const goal = store.requireGoal(turn.goalId!);
   const task = store.requireTask(turn.taskId!);
 
-  const parts: TextPart[] = [{ text: `${[goalBlock(store, goal), input.shelf ?? null, activeCapabilities(input.capabilities)].filter(Boolean).join("\n\n")}\n\n` }];
+  const parts: TextPart[] = [{ text: `${[userBlock(input.user), goalBlock(store, goal), input.shelf ?? null, activeCapabilities(input.capabilities)].filter(Boolean).join("\n\n")}\n\n` }];
   const budgets = input.budgets ?? DEFAULT_BUDGETS;
   const history = taskHistory(store, turn.id);
   parts.push(...historyParts(store, history, budgets.previousTurn));
@@ -102,6 +104,12 @@ export function projectQuery(task: Task, request: string): string {
 
 function block(name: string, body: string, attributes = ""): string {
   return `<${name}${attributes}>\n${body.trim()}\n</${name}>`;
+}
+
+/** `<USER>`: who is asking, when they said. Angle brackets and line breaks are dropped, so a name cannot pose as another block. */
+export function userBlock(name: string | null | undefined): string | null {
+  const clean = name?.replace(/[<>\r\n]+/g, " ").trim();
+  return clean ? block("USER", `The user's name is ${clean}.`) : null;
 }
 
 function goalBlock(store: LedgerStore, goal: Goal): string {

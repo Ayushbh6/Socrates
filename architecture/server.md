@@ -51,7 +51,7 @@ Settings and keys can change only while Socrates is idle (no main-conversation m
 | `timeZone` | `null` | an IANA time zone; `null` follows the machine |
 | `workingFolder` | `null` | the workspace new work is bound to; choosing it adds its folder to `access.folders` |
 | `access` | my folders, none yet; ask first | `{ scope, folders, approvals }`: where Socrates may work and when it asks (see "Access") |
-| `profile` | no name, not onboarded | `{ name, onboarded }`: the user's name (up to 80 characters, or null) and whether they finished onboarding (`web.md`, "Welcome and onboarding"); also in `/api/status` |
+| `profile` | no name, not onboarded | `{ name, onboarded }`: the user's name (up to 80 characters, or null) and whether they finished onboarding (`web.md`, "Welcome and onboarding"); also in `/api/status`; the name reaches the working agent as `<USER>` from the next message |
 
 A change sends only the fields that change; the others keep their values, inside `access` and `profile` too. Three kinds of change apply at once, even while Socrates works, and only a rebuild in progress refuses them: `access`, `profile`, and a `chat` that names the chat model already running (a new thinking level, or the detected model now chosen). The level applies to the next model request; one the model does not accept is refused with a message listing its levels. Every other change, including another chat model, rebuilds Socrates and is refused with `busy` while it works.
 
