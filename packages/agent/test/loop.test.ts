@@ -3,6 +3,7 @@ import path from "node:path";
 import { type EventPayloads, ModelError } from "@socrates/contracts";
 import { describe, expect, it } from "vitest";
 import { AGENT_SYSTEM_PROMPT } from "../src";
+import { DEFAULT_LIMITS, spentTokens } from "../src/loop";
 import { continueTask } from "../../router/test/helpers";
 import { call, contextText, final, world } from "./helpers";
 
@@ -118,6 +119,24 @@ describe("the agent loop", () => {
       const result = await socrates.handle("Work.");
       expect(result.kind === "answered" && result.parts[0]!.stop).toBe(stop);
     }
+  });
+
+  it("counts a cached prompt at a tenth, so a long turn is not stopped for re-reading its own context", async () => {
+    expect(spentTokens({ promptTokens: 50_000, cacheReadTokens: 48_000, outputTokens: 1_000 })).toBe(2_000 + 4_800 + 1_000);
+    expect(spentTokens({ promptTokens: 10, cacheReadTokens: 99, outputTokens: 0 })).toBe(1);
+    expect(DEFAULT_LIMITS.maxTokens).toBe(20_000_000);
+    // 40 steps of a 60,000-token context, 58,000 of it cached: 2.4 million prompt tokens in full, 0.3 million as counted.
+    const w = await world({ files: { "a.txt": "a\n" } });
+    const step = () => ({ text: "", toolCalls: [{ id: "c", name: "read", input: { path: "a.txt" } }], stopReason: "tool_use" as const, usage: { promptTokens: 60_000, outputTokens: 500, cacheReadTokens: 58_000, cacheWriteTokens: 0 } });
+    const { socrates } = w.socrates([continueTask()], [...Array.from({ length: 40 }, () => step), final({ full_answer: "Done." })], { limits: { maxTokens: 1_000_000 } });
+    const result = await socrates.handle("Keep going.");
+    expect(result.kind === "answered" && result.parts[0]!.stop).toBe("final");
+    // The same turn with nothing cached does stop at that limit.
+    const w2 = await world({ files: { "a.txt": "a\n" } });
+    const bare = () => ({ ...step(), usage: { promptTokens: 60_000, outputTokens: 500, cacheReadTokens: 0, cacheWriteTokens: 0 } });
+    const { socrates: s2 } = w2.socrates([continueTask()], [...Array.from({ length: 40 }, () => bare), final({ full_answer: "Partial." })], { limits: { maxTokens: 1_000_000 } });
+    const stopped = await s2.handle("Keep going.");
+    expect(stopped.kind === "answered" && stopped.parts[0]!.stop).toBe("tokens");
   });
 
   it("makes no further model call after cancellation and records the turn as interrupted", async () => {

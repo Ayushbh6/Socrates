@@ -25,7 +25,23 @@ export interface AgentLimits {
 export const TOOL_IMAGES_KEPT = 4;
 export const TOOL_IMAGES_KEPT_MAX = 8;
 
-export const DEFAULT_LIMITS: AgentLimits = { maxSteps: 200, maxWallMs: 60 * 60_000, maxTokens: 5_000_000 };
+export const DEFAULT_LIMITS: AgentLimits = { maxSteps: 200, maxWallMs: 60 * 60_000, maxTokens: 20_000_000 };
+
+/** A cached prompt token is read, not processed again, and providers charge about a tenth for it. */
+export const CACHE_READ_WEIGHT = 0.1;
+
+/**
+ * What one request counts against the turn's token limit: the prompt without
+ * what was served from the cache, the cache read at its small weight, and the
+ * output. A long turn re-sends its whole context at every step, nearly all of
+ * it cached, so counting every prompt token in full spent the limit on work
+ * that was going well (a 100-step coding turn at 50,000 tokens of context
+ * reached the old 5,000,000 in ten minutes).
+ */
+export function spentTokens(usage: { promptTokens: number; outputTokens: number; cacheReadTokens: number }): number {
+  const cached = Math.min(usage.cacheReadTokens, usage.promptTokens);
+  return Math.round(usage.promptTokens - cached + cached * CACHE_READ_WEIGHT + usage.outputTokens);
+}
 
 export interface RunInput {
   model: ModelClient;
@@ -188,7 +204,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
         }), signal);
         input.onResponse?.(response, phase);
         steps++;
-        spent += response.usage.promptTokens + response.usage.outputTokens;
+        spent += spentTokens(response.usage);
         input.calibration.observe(model.id, harnessCount, response.usage);
         return { kind: "response", response };
       } catch (error) {
@@ -271,7 +287,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
         // Compaction is synchronous and mid-turn; the turn continues after it.
         const compacted = await input.compact(messages, measure, workSignal, {
           calibration: input.calibration,
-          recordUsage: (usage) => { spent += usage.promptTokens + usage.outputTokens; },
+          recordUsage: (usage) => { spent += spentTokens(usage); },
           tokensExhausted: () => spent >= limits.maxTokens,
         });
         if (scope.signal.aborted) return interrupted("cancelled");
