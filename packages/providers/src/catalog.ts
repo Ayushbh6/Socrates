@@ -18,6 +18,8 @@ import { EFFORTS, type Effort } from "@socrates/contracts";
 export interface EffortLevels {
   levels: Effort[];
   default: Effort | null;
+  /** The most the model may write in one reply, thinking included, when its list says. */
+  maxOutputTokens?: number;
 }
 
 export interface ListedModel {
@@ -38,12 +40,14 @@ interface OpenRouterEntry {
   supported_parameters?: string[];
   reasoning?: { mandatory?: boolean; supported_efforts?: string[] | null; default_effort?: string | null } | null;
   architecture?: { input_modalities?: unknown };
+  top_provider?: { max_completion_tokens?: number | null };
 }
 
 interface DeepSeekEntry {
   id: string;
   name?: string;
   input_modalities?: unknown;
+  max_output_tokens?: number;
   effort?: { supported_levels?: string[]; default_level?: string };
 }
 
@@ -98,13 +102,13 @@ export async function detectEfforts(provider: string, model: string, env: Record
     if (provider === "deepseek") {
       const entry = (await deepSeekModels(env, fetcher)).find((m) => m.id === model);
       // Every DeepSeek model can also answer without thinking (`thinking: { type: "disabled" }`).
-      if (entry?.effort?.supported_levels?.length) found = levelsOf(["off", ...entry.effort.supported_levels], entry.effort.default_level);
+      if (entry?.effort?.supported_levels?.length) found = withLimit(levelsOf(["off", ...entry.effort.supported_levels], entry.effort.default_level), entry.max_output_tokens);
     } else {
       const id = openRouterId(provider, model);
       const entry = id ? (await openRouterModels(fetcher)).find((m) => m.id === id) : undefined;
       const r = entry?.reasoning;
       // Gemini's thinking cannot be turned off through its own API.
-      if (r?.supported_efforts?.length) found = levelsOf([...r.supported_efforts, ...(r.mandatory === false && provider !== "gemini" ? ["off"] : [])], r.default_effort);
+      if (r?.supported_efforts?.length) found = withLimit(levelsOf([...r.supported_efforts, ...(r.mandatory === false && provider !== "gemini" ? ["off"] : [])], r.default_effort), entry?.top_provider?.max_completion_tokens);
     }
     const preferred = SOCRATES_DEFAULT[provider];
     return preferred && found.levels.includes(preferred) ? { ...found, default: preferred } : found;
@@ -112,6 +116,9 @@ export async function detectEfforts(provider: string, model: string, env: Record
     return NO_EFFORTS;
   }
 }
+
+const withLimit = (levels: EffortLevels, max: number | null | undefined): EffortLevels =>
+  typeof max === "number" && max > 0 ? { ...levels, maxOutputTokens: max } : levels;
 
 /** Levels in one vocabulary ("none" is "off"), weakest first, without ones Socrates does not know. */
 function levelsOf(named: string[], fallback: string | null | undefined): EffortLevels {

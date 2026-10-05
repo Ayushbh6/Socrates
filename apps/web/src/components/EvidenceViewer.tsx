@@ -1,6 +1,8 @@
 import { WrapText, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import Markdown from "react-markdown";
 import { createPortal } from "react-dom";
+import remarkGfm from "remark-gfm";
 import { api } from "../lib/api";
 import { useDialog } from "../lib/dialog";
 import { viewEvidence } from "../lib/evidence";
@@ -48,6 +50,36 @@ export function EvidenceViewer({ task, handle, onClose }: { task: string; handle
             {evidence.outputLost ? "Some output was not kept, because the command printed more than Socrates retains." : ""}
           </p>
         )}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/** A step's complete thinking, which the work shows only up to its first 20,000 characters. */
+export function ThinkingViewer({ seq, onClose }: { seq: number; onClose: () => void }) {
+  const [text, setText] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const modal = useRef<HTMLDivElement>(null);
+  useDialog(modal, onClose);
+  useEffect(() => {
+    let active = true;
+    api.thinking(seq).then((found) => { if (active) setText(found.text); }, (e) => { if (active) setError(e instanceof Error ? e.message : String(e)); });
+    return () => { active = false; };
+  }, [seq]);
+
+  return createPortal(
+    <div className="modal-scrim" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div ref={modal} tabIndex={-1} className="modal evidence" role="dialog" aria-modal="true" aria-label="Thinking">
+        <div className="modal-head">
+          <div className="evidence-title">
+            <strong>Thought</strong>
+            <small>{text === null ? "…" : `${text.length.toLocaleString()} characters`}</small>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Close"><X aria-hidden /></button>
+        </div>
+        {error && <p className="setup-error" role="alert">{error}</p>}
+        {text !== null && <div className="thinking-full"><Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown></div>}
       </div>
     </div>,
     document.body,

@@ -147,11 +147,26 @@ type Completion = Pick<OpenAI.Chat.ChatCompletion, "model" | "usage"> & {
   choices: { finish_reason: string | null; message: OpenAI.Chat.ChatCompletionMessage }[];
 };
 
-/** The readable reasoning of a completion message: DeepSeek's reasoning_content or OpenRouter's reasoning. */
+/**
+ * The readable reasoning of a completion message: DeepSeek's
+ * reasoning_content, or OpenRouter's reasoning. OpenRouter also sends the
+ * same reasoning as reasoning_details, which is read only when the plain
+ * field is missing, so a trace is never shown twice.
+ */
 function reasoningOf(message: OpenAI.Chat.ChatCompletionMessage | undefined): string | undefined {
-  const fields = message as { reasoning_content?: unknown; reasoning?: unknown } | undefined;
-  const text = typeof fields?.reasoning_content === "string" ? fields.reasoning_content : typeof fields?.reasoning === "string" ? fields.reasoning : "";
+  const fields = message as { reasoning_content?: unknown; reasoning?: unknown; reasoning_details?: unknown } | undefined;
+  const text = typeof fields?.reasoning_content === "string" ? fields.reasoning_content
+    : typeof fields?.reasoning === "string" ? fields.reasoning
+    : detailsText(fields?.reasoning_details);
   return text.trim() ? text : undefined;
+}
+
+/** The readable part of OpenRouter's reasoning details: full text, or a summary (encrypted details have none). */
+function detailsText(details: unknown): string {
+  if (!Array.isArray(details)) return "";
+  return (details as Record<string, unknown>[])
+    .map((d) => (d.type === "reasoning.text" && typeof d.text === "string" ? d.text : d.type === "reasoning.summary" && typeof d.summary === "string" ? d.summary : ""))
+    .join("");
 }
 
 const MERGED_DETAIL_FIELDS = new Set(["text", "summary", "data"]);
@@ -196,8 +211,11 @@ export class ChatReply {
       if (call.function?.name) own.name += call.function.name;
       if (call.function?.arguments) own.args += call.function.arguments;
     }
-    // DeepSeek streams its reasoning as reasoning_content, OpenRouter as reasoning.
-    const reasoning = typeof rest.reasoning_content === "string" ? rest.reasoning_content : typeof rest.reasoning === "string" ? rest.reasoning : "";
+    // DeepSeek streams its reasoning as reasoning_content, OpenRouter as reasoning,
+    // and again as reasoning_details, which count only when reasoning is missing.
+    const reasoning = typeof rest.reasoning_content === "string" ? rest.reasoning_content
+      : typeof rest.reasoning === "string" ? rest.reasoning
+      : detailsText(rest.reasoning_details);
     if (content) this.text += content;
     return { text: content ?? "", reasoning };
   }
@@ -248,7 +266,10 @@ export function toOpenAIMessages(messages: ModelMessage[], provider?: string): O
     // reasoning_content and OpenRouter signed reasoning_details are mandatory
     // on subsequent tool rounds. Never transfer those signatures to another model.
     if (provider && m.raw?.provider === provider) {
-      out.push(structuredClone(m.raw.content) as OpenAI.Chat.ChatCompletionMessageParam);
+      const native = structuredClone(m.raw.content) as OpenAI.Chat.ChatCompletionAssistantMessageParam;
+      // A reply cut off while it was still thinking has neither text nor tool calls; DeepSeek refuses null content then.
+      if (native.content == null && !native.tool_calls?.length) native.content = "";
+      out.push(native);
       continue;
     }
     out.push({

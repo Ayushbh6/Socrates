@@ -356,6 +356,23 @@ describe("drafts of a reply that is arriving", () => {
     expect(history.json().items[0].activities).toEqual([expect.objectContaining({ kind: "step", text: "", thinking: "Weighing the checkout flow." })]);
   });
 
+  it("sends only the end of a long thought, with its full length", async () => {
+    const hold = gate();
+    const { page } = await liveServer(new Responder("r", () => createGoal("Shop", "Fix checkout")), new Responder("a", async (_m, request) => {
+      request.onReasoning?.("a".repeat(3_000));
+      request.onReasoning?.("b".repeat(3_000));
+      await hold.opened;
+      return { ...final({ full_answer: "Done." }), reasoning: "a".repeat(3_000) + "b".repeat(3_000) };
+    }));
+    const p = await page();
+    p.send({ type: "hello" });
+    p.send({ type: "send", id: "m1", text: "Think.", to: "main" });
+    const thinking = await p.next((m) => m.type === "draft" && m.kind === "thinking");
+    expect(thinking).toMatchObject({ text: "a".repeat(1_000) + "b".repeat(3_000), length: 6_000 });
+    hold.open();
+    await p.next(isResult("m1"));
+  });
+
   it("sends a lane's draft under the lane and keeps drafts of simultaneous turns apart", async () => {
     const hold = gate();
     const { page } = await liveServer(new Responder("r", (m) => createGoal(m.slice(0, 12), m.slice(0, 12))), new Responder("a", async (m, request) => {

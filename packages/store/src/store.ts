@@ -472,6 +472,12 @@ export class LedgerStore {
     return r ? this.toEvent(r) : null;
   }
 
+  /** The event with this sequence number, as activities name it. */
+  getEventBySeq(seq: number): StoredEvent | null {
+    const r = this.get("SELECT * FROM events WHERE seq = ?", seq);
+    return r ? this.toEvent(r) : null;
+  }
+
   listEvents(filter: { type?: EventType; turnId?: string; taskId?: string; goalId?: string; afterSeq?: number } = {}): StoredEvent[] {
     const where: string[] = [];
     const params: (string | number)[] = [];

@@ -17,6 +17,12 @@ const TEXT_MAX_CHARS = 100_000;
 const DRAFT_INTERVAL_MS = 50;
 /** What replaces a draft: the saved narration, answer or question, or the end of the turn. */
 const SETTLES_DRAFT = new Set(["step", "answer", "question", "finished"]);
+/**
+ * A thinking draft shows only its newest lines, so a long one goes out as its
+ * last this-many characters with its full `length`, rather than all of it
+ * twenty times a second.
+ */
+export const THINKING_DRAFT_CHARS = 4_000;
 /** A page this far behind on reading is disconnected; it reconnects and catches up. */
 const SEND_BUFFER_MAX_BYTES = 8 * 1024 * 1024;
 
@@ -48,6 +54,8 @@ interface DraftMessage extends Draft {
   type: "draft";
   conversation: string;
   turnId: string;
+  /** The draft's full length when `text` is only its end (a long thought). */
+  length?: number;
 }
 
 /** An approval waiting for the user, shown in the panel of the conversation that asked. */
@@ -272,7 +280,8 @@ export class LiveHub {
     if (!run || run.controller.signal.aborted || turn?.status !== "in_progress") return;
     const key = draftKey(turnId, draft.kind === "thinking");
     if ((this.drafts.get(key)?.message.call ?? 0) > draft.call) return;
-    this.drafts.set(key, { runId, message: { type: "draft", conversation: turn.laneId ?? "main", turnId, ...draft } });
+    const tail = draft.kind === "thinking" && draft.text.length > THINKING_DRAFT_CHARS ? { text: draft.text.slice(-THINKING_DRAFT_CHARS), length: draft.text.length } : {};
+    this.drafts.set(key, { runId, message: { type: "draft", conversation: turn.laneId ?? "main", turnId, ...draft, ...tail } });
     this.draftsUnsent.add(key);
     this.draftTimer ??= setTimeout(() => {
       this.draftTimer = null;

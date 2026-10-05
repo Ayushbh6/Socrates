@@ -7,8 +7,8 @@ import type { Activity, AttachmentView, HistoryItem, LiveState, PendingApproval,
 
 export type Step =
   | { kind: "step"; text: string }
-  /** The model's readable thinking for one request; `truncated` when the server cut it. */
-  | { kind: "thinking"; text: string; truncated: boolean }
+  /** The model's readable thinking for one request; `truncated` when the server cut it, and `seq` names the step to fetch all of it. */
+  | { kind: "thinking"; text: string; truncated: boolean; seq: number }
   | { kind: "tool"; handle: string; task: string; line: string; status: "running" | "ok" | "error"; preview: string | null; truncated: boolean }
   | { kind: "handed_off"; lane: number }
   | { kind: "warning"; detail: string }
@@ -25,6 +25,8 @@ export interface Draft {
   call: number;
   kind: "narration" | "answer" | "thinking";
   text: string;
+  /** The full length when `text` is only the end of a long thought. */
+  length?: number;
 }
 
 /** One question and everything Socrates did for it. */
@@ -125,7 +127,7 @@ function serverMessage(model: Model, message: ServerMessage): Model {
     }
     case "draft":
       // A draft is not an event: it never moves the page's place in the log.
-      return activity(model, { kind: "draft", seq: model.seq, at: new Date().toISOString(), conversation: message.conversation, turnId: message.turnId, call: message.call, draftKind: message.kind, text: message.text });
+      return activity(model, { kind: "draft", seq: model.seq, at: new Date().toISOString(), conversation: message.conversation, turnId: message.turnId, call: message.call, draftKind: message.kind, text: message.text, ...(message.length ? { length: message.length } : {}) });
     case "status":
       return mapSent(model, message.id, (e) => ({ ...e, note: message.text }));
     case "error":
@@ -138,7 +140,7 @@ function serverMessage(model: Model, message: ServerMessage): Model {
 }
 
 /** A draft, shaped like the activities it is placed with. */
-type DraftArrived = { kind: "draft"; seq: number; at: string; conversation: string; turnId: string; call: number; draftKind: Draft["kind"]; text: string };
+type DraftArrived = { kind: "draft"; seq: number; at: string; conversation: string; turnId: string; call: number; draftKind: Draft["kind"]; text: string; length?: number };
 
 function activity(model: Model, a: Activity | DraftArrived): Model {
   if (a.kind === "ledger") return model;
@@ -224,7 +226,7 @@ function applyOne(e: Exchange, a: Activity | DraftArrived): Exchange {
     const previous = e.draftCalls[thinking ? thinkingKey(a.turnId) : a.turnId];
     if (previous && (a.call < previous.call || (a.call === previous.call && previous.settled))) return e;
     const shown = thinking ? e.thinking : e.draft;
-    if (shown?.turnId === a.turnId && shown.call === a.call && shown.kind === a.draftKind && shown.text.length > a.text.length) return e;
+    if (shown?.turnId === a.turnId && shown.call === a.call && shown.kind === a.draftKind && (shown.length ?? shown.text.length) > (a.length ?? a.text.length)) return e;
   }
   const turnId = "turnId" in a ? a.turnId : null;
   const seen = turnId && !e.turns.includes(turnId) ? { turns: [...e.turns, turnId], open: [...e.open, turnId] } : {};
@@ -235,7 +237,7 @@ function applyOne(e: Exchange, a: Activity | DraftArrived): Exchange {
       const thinking = a.draftKind === "thinking";
       const shown = thinking ? x.thinking : x.draft;
       if (shown?.turnId === a.turnId && shown.call > a.call) return x;
-      const draft = { turnId: a.turnId, call: a.call, kind: a.draftKind, text: a.text };
+      const draft = { turnId: a.turnId, call: a.call, kind: a.draftKind, text: a.text, ...(a.length ? { length: a.length } : {}) };
       return { ...x, draftCalls: { ...x.draftCalls, [thinking ? thinkingKey(a.turnId) : a.turnId]: { call: a.call, settled: false } }, ...(thinking ? { thinking: draft } : { draft }) };
     }
     case "routed":
@@ -245,7 +247,7 @@ function applyOne(e: Exchange, a: Activity | DraftArrived): Exchange {
     case "step": {
       // The request's thinking comes before what it said.
       const steps: Step[] = [
-        ...(a.thinking ? [{ kind: "thinking" as const, text: a.thinking, truncated: a.thinkingTruncated ?? false }] : []),
+        ...(a.thinking ? [{ kind: "thinking" as const, text: a.thinking, truncated: a.thinkingTruncated ?? false, seq: a.seq }] : []),
         ...(a.text ? [{ kind: "step" as const, text: a.text }] : []),
       ];
       return { ...x, steps: [...x.steps, ...steps], workedAt: a.at };

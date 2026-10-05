@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
+import type { EventPayloads } from "@socrates/contracts";
 import { PROVIDER_DEFAULTS } from "@socrates/providers";
 import { callLine } from "@socrates/retrieval";
 import { IMAGE_MAX_BYTES } from "@socrates/tools";
@@ -163,6 +164,15 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
   });
 
   // A tool call's complete recorded output, beyond the live preview.
+  // A step's complete thinking; live activity and history show its first THINKING_CHARS.
+  app.get("/api/thinking", async (request, reply) => {
+    const { seq } = z.object({ seq: z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER) }).strict().parse(request.query);
+    const event = runtime.store.getEventBySeq(seq);
+    const reasoning = event?.type === "agent_message" ? (event.payload as EventPayloads["agent_message"]).response.reasoning?.trim() : undefined;
+    if (!reasoning) return reply.code(404).send(problem("not_found", "That step has no thinking."));
+    return { seq, text: reasoning };
+  });
+
   app.get("/api/evidence", async (request, reply) => {
     const ordinal = (n: string) => Number.isSafeInteger(Number(n)) && Number(n) > 0;
     const query = z.object({

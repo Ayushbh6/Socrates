@@ -8,7 +8,7 @@ type ToolStep = Extract<Step, { kind: "tool" }>;
  * kind, and handoffs, warnings and approval decisions.
  */
 export type Segment =
-  | { kind: "thinking"; text: string; truncated: boolean; live: boolean }
+  | { kind: "thinking"; text: string; truncated: boolean; live: boolean; seq?: number }
   | { kind: "narration"; text: string; live: boolean }
   | { kind: "tools"; group: ToolGroup; steps: ToolStep[] }
   | { kind: "meta"; step: Exclude<Step, ToolStep | { kind: "step" } | { kind: "thinking" }> };
@@ -34,7 +34,7 @@ export function workSegments(exchange: Exchange): Segment[] {
   const live = exchange.state === "working";
   const out: Segment[] = [];
   for (const step of exchange.steps) {
-    if (step.kind === "thinking") out.push({ kind: "thinking", text: step.text, truncated: step.truncated, live: false });
+    if (step.kind === "thinking") out.push({ kind: "thinking", text: step.text, truncated: step.truncated, live: false, seq: step.seq });
     else if (step.kind === "step") out.push({ kind: "narration", text: step.text, live: false });
     else if (step.kind === "tool") {
       const group = toolGroup(step.line);

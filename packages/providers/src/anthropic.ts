@@ -85,7 +85,11 @@ export class AnthropicModel implements ModelClient {
           }
         : {}),
       ...(this.options.sampling && request.temperature !== undefined ? { temperature: request.temperature } : {}),
-      ...(effort === "off" ? { thinking: { type: "disabled" as const } } : effort ? { output_config: { effort: effort as "low" | "medium" | "high" | "xhigh" | "max" } } : {}),
+      // A level turns on adaptive thinking (which some models leave off by
+      // default) with its readable summary; current models omit it otherwise.
+      ...(effort === "off" ? { thinking: { type: "disabled" as const } }
+        : effort ? { thinking: { type: "adaptive" as const, display: "summarized" as const }, output_config: { effort: effort as "low" | "medium" | "high" | "xhigh" | "max" } }
+        : {}),
       ...(fallback ? { betas: [FALLBACK_BETA], fallbacks: "default" as const } : {}),
     };
 

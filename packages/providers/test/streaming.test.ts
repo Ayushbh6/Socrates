@@ -142,6 +142,37 @@ describe("OpenAI-compatible streaming", () => {
     ]);
   });
 
+  it("reads OpenRouter's thinking once: from reasoning, or from reasoning_details when that is all it sends", async () => {
+    const or = (delta: Record<string, unknown>) => chunk(delta);
+    const end = [{ data: { id: "c", object: "chat.completion.chunk", created: 0, model: "m", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] } }, { data: "[DONE]" }];
+    const run = async (stream: { data: unknown }[]) => {
+      const client = new OpenAI({ apiKey: "test", maxRetries: 0, fetch: sseFetch(() => sse(stream)) });
+      const model = new OpenAICompatibleModel({ model: "m", provider: "openrouter", client });
+      const shown: string[] = [];
+      const res = await model.complete({ system: "s", messages: [{ role: "user", content: "go" }], onText: () => {}, onReasoning: (d) => shown.push(d) });
+      return { shown: shown.join(""), reasoning: res.reasoning };
+    };
+    // Most models send both fields with the same text: it is shown once.
+    expect(await run([
+      or({ role: "assistant", reasoning: "Is 391 ", reasoning_details: [{ type: "reasoning.text", index: 0, text: "Is 391 " }] }),
+      or({ reasoning: "17 × 23?", reasoning_details: [{ type: "reasoning.text", index: 0, text: "17 × 23?" }] }),
+      or({ content: "No." }), ...end,
+    ])).toEqual({ shown: "Is 391 17 × 23?", reasoning: "Is 391 17 × 23?" });
+    // Only details: full text, or an OpenAI-style summary beside an encrypted part that has nothing readable.
+    expect(await run([
+      or({ role: "assistant", reasoning_details: [{ type: "reasoning.summary", index: 0, summary: "Checking " }] }),
+      or({ reasoning_details: [{ type: "reasoning.summary", index: 0, summary: "factors." }, { type: "reasoning.encrypted", index: 1, data: "opaque" }] }),
+      or({ content: "No." }), ...end,
+    ])).toEqual({ shown: "Checking factors.", reasoning: "Checking factors." });
+  });
+
+  it("reads a plain reply's thinking from reasoning_details when that is all it has", async () => {
+    const completion = { id: "c", object: "chat.completion", created: 0, model: "m", choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "No.", reasoning_details: [{ type: "reasoning.text", index: 0, text: "391 = 17 × 23" }, { type: "reasoning.encrypted", index: 1, data: "x" }] } }] };
+    const client = new OpenAI({ apiKey: "test", maxRetries: 0, fetch: (async () => new Response(JSON.stringify(completion), { headers: { "content-type": "application/json" } })) as typeof fetch });
+    const res = await new OpenAICompatibleModel({ model: "m", provider: "openrouter", client }).complete({ system: "s", messages: [{ role: "user", content: "go" }] });
+    expect(res.reasoning).toBe("391 = 17 × 23");
+  });
+
   it("gives up on a silent stream", async () => {
     const client = new OpenAI({ apiKey: "test", maxRetries: 0, fetch: sseFetch((signal) => sse(events.slice(0, 3), { end: false, signal })) });
     const model = new OpenAICompatibleModel({ model: "m", client, idleMs: 60 });

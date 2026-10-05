@@ -23,21 +23,21 @@ const openRouter = {
     { id: "anthropic/claude-opus-4.8", supported_parameters: ["tools"], reasoning: { mandatory: false, supported_efforts: ["max", "xhigh", "high", "medium", "low"], default_effort: "high" } },
     { id: "anthropic/claude-haiku-4.5", supported_parameters: ["tools"], reasoning: { mandatory: false, supported_efforts: null } },
     { id: "openai/gpt-5.1", supported_parameters: ["tools"], reasoning: { mandatory: false, supported_efforts: ["high", "medium", "low", "none"], default_effort: "none" } },
-    { id: "google/gemini-3.8-flash", supported_parameters: ["tools"], reasoning: { mandatory: true, supported_efforts: ["high", "medium", "low"], default_effort: "medium" } },
+    { id: "google/gemini-3.8-flash", supported_parameters: ["tools"], top_provider: { max_completion_tokens: 65_536 }, reasoning: { mandatory: true, supported_efforts: ["high", "medium", "low"], default_effort: "medium" } },
     { id: "google/gemini-2.5-flash", supported_parameters: ["tools"], reasoning: { mandatory: false, supported_efforts: ["high", "low"], default_effort: "low" } },
     { id: "z-ai/glm-5.3-flash", name: "GLM 5.3 Flash", supported_parameters: ["tools", "reasoning"], reasoning: { mandatory: true, supported_efforts: ["max", "high", "low"], default_effort: "max" } },
     { id: "z-ai/glm-5.3-flash:batch", supported_parameters: ["tools"] },
     { id: "some/no-tools", supported_parameters: ["temperature"] },
   ],
 };
-const deepSeek = { data: [{ id: "deepseek-flash", name: "DeepSeek-V4.1-Flash", effort: { supported_levels: ["low", "high", "max"], default_level: "high" } }, { id: "deepseek-old" }] };
+const deepSeek = { data: [{ id: "deepseek-flash", name: "DeepSeek-V4.1-Flash", max_output_tokens: 393_216, effort: { supported_levels: ["low", "high", "max"], default_level: "high" } }, { id: "deepseek-old" }] };
 
 describe("thinking levels", () => {
   it("reads each model's levels from DeepSeek's list or OpenRouter's, weakest first, with Socrates' default", async () => {
     const fetcher = fakeFetch({ "https://openrouter.ai/api/v1/models": openRouter, "https://api.deepseek.com/models": deepSeek });
     const env = { DEEPSEEK_API_KEY: "k" };
     // DeepSeek can always think less or not at all; Socrates starts it low, as before.
-    expect(await detectEfforts("deepseek", "deepseek-flash", env, fetcher)).toEqual({ levels: ["off", "low", "high", "max"], default: "low" });
+    expect(await detectEfforts("deepseek", "deepseek-flash", env, fetcher)).toEqual({ levels: ["off", "low", "high", "max"], default: "low", maxOutputTokens: 393_216 });
     expect(await detectEfforts("deepseek", "deepseek-old", env, fetcher)).toEqual(NO_EFFORTS);
     // Claude: Opus 5.5 cannot stop thinking, Opus 4.8 can, Haiku 4.5 has no levels.
     expect(await detectEfforts("anthropic", "claude-opus-5-5", env, fetcher)).toEqual({ levels: ["low", "medium", "high", "xhigh", "max"], default: "high" });
@@ -46,7 +46,7 @@ describe("thinking levels", () => {
     // OpenAI's "none" is "off".
     expect(await detectEfforts("openai", "gpt-5.1", env, fetcher)).toEqual({ levels: ["off", "low", "medium", "high"], default: "off" });
     // Gemini starts low, and its own API cannot turn thinking off.
-    expect(await detectEfforts("gemini", "gemini-3.8-flash", env, fetcher)).toEqual({ levels: ["low", "medium", "high"], default: "low" });
+    expect(await detectEfforts("gemini", "gemini-3.8-flash", env, fetcher)).toEqual({ levels: ["low", "medium", "high"], default: "low", maxOutputTokens: 65_536 });
     expect((await detectEfforts("gemini", "gemini-2.5-flash", env, fetcher)).levels).toEqual(["low", "high"]);
     expect(await detectEfforts("openrouter", "z-ai/glm-5.3-flash", env, fetcher)).toEqual({ levels: ["low", "high", "max"], default: "max" });
     expect(await detectEfforts("openrouter", "unknown/model", env, fetcher)).toEqual(NO_EFFORTS);
@@ -80,13 +80,28 @@ describe("thinking levels", () => {
     await claude.complete({ system: "s", messages: [{ role: "user", content: "hi" }] });
     await claude.complete({ system: "s", messages: [{ role: "user", content: "hi" }], effort: "xhigh" });
     await claude.complete({ system: "s", messages: [{ role: "user", content: "hi" }], effort: "off" });
-    expect(sent.map((c) => [c.body.output_config, c.body.thinking])).toEqual([[undefined, undefined], [{ effort: "xhigh" }, undefined], [undefined, { type: "disabled" }]]);
+    // A level also turns on adaptive thinking with its readable summary.
+    expect(sent.map((c) => [c.body.output_config, c.body.thinking])).toEqual([[undefined, undefined], [{ effort: "xhigh" }, { type: "adaptive", display: "summarized" }], [undefined, { type: "disabled" }]]);
 
     const asked: Captured[] = [];
     const gemini = new GeminiInteractionsModel({ model: "gemini-3.8-flash", apiKey: "test", fetch: fakeFetch({ "": { status: "completed", steps: [] } }, asked) });
     await gemini.complete({ system: "s", messages: [{ role: "user", content: "hi" }] });
     await gemini.complete({ system: "s", messages: [{ role: "user", content: "hi" }], effort: "high" });
     expect(asked.map((c) => (c.body.generation_config as { thinking_level: string }).thinking_level)).toEqual(["low", "high"]);
+  });
+});
+
+describe("replaying a reply cut off while thinking", () => {
+  it("sends its empty text rather than null, which DeepSeek refuses without tool calls", async () => {
+    const completion = { id: "c", object: "chat.completion", created: 0, model: "m", choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "ok" } }] };
+    const captured: Captured[] = [];
+    const model = new OpenAICompatibleModel({ model: "deepseek-flash", provider: "deepseek", client: new OpenAI({ apiKey: "test", maxRetries: 0, fetch: fakeFetch({ "": completion }, captured) }) });
+    await model.complete({ system: "s", messages: [
+      { role: "user", content: "go" },
+      { role: "assistant", content: "", raw: { provider: "deepseek:deepseek-flash", content: { role: "assistant", content: null, reasoning_content: "long thought" } } },
+      { role: "user", content: "Answer now." },
+    ] });
+    expect((captured[0]!.body.messages as unknown[])[2]).toEqual({ role: "assistant", content: "", reasoning_content: "long thought" });
   });
 });
 

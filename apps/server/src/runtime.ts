@@ -359,7 +359,7 @@ export class Runtime {
     let model: ModelClient;
     let routerModel: ModelClient;
     try {
-      model = withEffort(build(chat.provider, chat.model, env, { vision }), () => this.effortInUse());
+      model = withEffort(build(chat.provider, chat.model, env, { vision }), () => this.effortInUse(), () => this.models.chat?.effort?.maxOutputTokens);
       routerModel = build(router.provider, router.model, env);
     } catch (error) {
       this.setup.push(redact(error instanceof ModelError && error.kind === "authentication" ? `${error.message} Add it in settings.` : `The chat model cannot start: ${message(error)}`, env));
@@ -444,14 +444,26 @@ export class Runtime {
   }
 }
 
+/**
+ * Room to reply at the higher thinking levels: thinking counts toward a
+ * reply's output tokens, so at "max" a model can spend 16,000 tokens before it
+ * writes a word. Only streamed requests (the working agent's) get it, and
+ * never more than the model's own limit.
+ */
+const OUTPUT_FOR_EFFORT: Partial<Record<Effort, number>> = { high: 32_000, xhigh: 64_000, max: 64_000 };
+
 /** The chat model asked at the thinking level in use when each request is sent, so a new level applies to the next request. */
-function withEffort(model: ModelClient, effort: () => Effort | null): ModelClient {
+function withEffort(model: ModelClient, effort: () => Effort | null, maxOutputTokens: () => number | undefined): ModelClient {
   return {
     id: model.id,
     ...(model.vision !== undefined ? { vision: model.vision } : {}),
     complete: (request) => {
       const level = request.effort ?? effort();
-      return model.complete(level ? { ...request, effort: level } : request);
+      if (!level) return model.complete(request);
+      const room = OUTPUT_FOR_EFFORT[level];
+      const limit = maxOutputTokens();
+      const output = request.onText && room && limit ? Math.min(limit, Math.max(room, request.maxOutputTokens ?? 0)) : undefined;
+      return model.complete({ ...request, effort: level, ...(output ? { maxOutputTokens: output } : {}) });
     },
   };
 }

@@ -255,9 +255,16 @@ describe("drafts of a reply that is arriving", () => {
     let m = run(working(), draft("t1", 1, "thinking", "Weighing"), draft("t1", 1, "answer", "The refresh"));
     expect(exchange(m)).toMatchObject({ thinking: { kind: "thinking", text: "Weighing" }, draft: { kind: "answer", text: "The refresh" } });
     expect(orbState({ ...exchange(working()), thinking: exchange(m).thinking }, [])).toBe("working");
-    m = run(m, act("main", { kind: "step", turnId: "t1", text: "", thinking: "Weighing it all.", thinkingTruncated: false }));
+    m = run(m, act("main", { kind: "step", turnId: "t1", text: "", thinking: "Weighing it all.", thinkingTruncated: true }));
     expect(exchange(m)).toMatchObject({ thinking: null, draft: { text: "The refresh" } });
-    expect(exchange(m).steps).toEqual([{ kind: "thinking", text: "Weighing it all.", truncated: false }]);
+    // The step's sequence number fetches all of a cut-off thought.
+    expect(exchange(m).steps).toEqual([{ kind: "thinking", text: "Weighing it all.", truncated: true, seq }]);
+    // A long thought arrives as its end with its full length: a longer one replaces it, an older one does not.
+    const long = (text: string, length: number): ServerMessage => ({ type: "draft", conversation: "main", turnId: "t1", call: 2, kind: "thinking", text, length });
+    let t = run(m, long("…end of 6000", 6_000), long("…end of 7000", 7_000), long("…end of 6500", 6_500));
+    expect(exchange(t).thinking).toMatchObject({ text: "…end of 7000", length: 7_000 });
+    t = run(t, draft("t1", 2, "thinking", "short but stale"));
+    expect(exchange(t).thinking).toMatchObject({ text: "…end of 7000" });
     // A late thinking draft of the saved request is ignored; the answer still grows.
     m = run(m, draft("t1", 1, "thinking", "Weighing it all. late"), draft("t1", 1, "answer", "The refresh path"));
     expect(exchange(m)).toMatchObject({ thinking: null, draft: { text: "The refresh path" } });

@@ -4,7 +4,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Exchange, Step } from "../lib/model";
 import { type Segment, groupLabel, workSegments, workSummary } from "../lib/work";
-import { EvidenceViewer } from "./EvidenceViewer";
+import { EvidenceViewer, ThinkingViewer } from "./EvidenceViewer";
 
 /**
  * The work behind an answer, shown apart from it (architecture/web.md, "Work
@@ -58,6 +58,7 @@ function SegmentView({ segment, newest }: { segment: Segment; newest: boolean })
 /** The model's thinking: the newest lines while it thinks, then one line that opens to all of it. */
 function Thinking({ segment }: { segment: Extract<Segment, { kind: "thinking" }> }) {
   const [open, setOpen] = useState(false);
+  const [full, setFull] = useState(false);
   if (segment.live) {
     return (
       <div className="thinking" data-live>
@@ -74,9 +75,15 @@ function Thinking({ segment }: { segment: Extract<Segment, { kind: "thinking" }>
       {open && (
         <div className="thinking-text">
           <Markdown remarkPlugins={[remarkGfm]}>{segment.text}</Markdown>
-          {segment.truncated && <p className="thinking-cut">Shown up to its first 20,000 characters.</p>}
+          {segment.truncated && (
+            <p className="thinking-cut">
+              Shown up to its first 20,000 characters.
+              {segment.seq !== undefined && <button type="button" className="quiet-button" onClick={() => setFull(true)}>Show all of it</button>}
+            </p>
+          )}
         </div>
       )}
+      {full && segment.seq !== undefined && <ThinkingViewer seq={segment.seq} onClose={() => setFull(false)} />}
     </div>
   );
 }
