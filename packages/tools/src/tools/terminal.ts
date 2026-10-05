@@ -5,6 +5,7 @@ import { type HandlerContext, requireWorkspace, throwIfCancelled } from "../cont
 import { ToolError } from "../errors";
 import { statOrNull } from "../files";
 import { type ToolHandler, type ToolOutput, json } from "../handler";
+import { KEY_BYTES } from "../pty";
 import { type LaunchSpec, type TerminalSession, type TerminalSupervisor, awaitReady, commandEnvironment, settles } from "../terminals";
 
 export const DEFAULT_YIELD_MS = 10_000;
@@ -17,6 +18,10 @@ export const MAX_WAIT_MS = 600_000;
 const OUTPUT_TOKENS = RESULT_CEILING_TOKENS - 500;
 const READ_DEFAULT_LINES = 200;
 const READ_MAX_LINES = 2000;
+/** A pseudo-terminal's size until it is resized. */
+export const PTY_SIZE = { cols: 120, rows: 40 };
+/** Keys that need a terminal: over pipes there is nothing to send them to. */
+const PIPE_KEYS = new Set(["ENTER", "CTRL_C", "CTRL_D"]);
 
 const TEST_COMMAND = /(^|[\s;&|/])(pytest|vitest|jest|mocha|ava|rspec|phpunit|ctest|tox|nox|playwright test|go test|cargo test|dotnet test|mvn test|gradle test|(npm|pnpm|yarn|bun)( run)? test\S*|make test\S*)(\s|$)/;
 
@@ -52,6 +57,7 @@ export const terminalTool: ToolHandler<TerminalInput> = {
   name: "terminal",
   description: [
     "Run a shell command (bash) in the workspace. Commands run non-interactively over pipes: no pagers, colors, or credential prompts.",
+    `For an interactive program (a prompt, REPL, installer question, editor, or TUI) set pty: true: it runs in a ${PTY_SIZE.cols}×${PTY_SIZE.rows} pseudo-terminal, its output is shown as plain text, and terminal_control can send it text and keys and tell when it waits for input.`,
     `The call waits up to yield_ms (default ${DEFAULT_YIELD_MS}, max ${MAX_YIELD_MS}). A command that finishes returns status "completed" with exit_code and output; one still running is kept alive as a terminal session (status "running") that terminal_control can read, wait on, write to, or stop.`,
     `timeout_ms is the real deadline (default ${DEFAULT_FOREGROUND_TIMEOUT_MS / 60000} minutes for foreground commands, none for background); 0 asks the user for no deadline.`,
     'For servers and watchers set background: true, a name such as "dev-server", and ready (an output pattern and/or a local port) to return once it is ready.',
@@ -62,7 +68,6 @@ export const terminalTool: ToolHandler<TerminalInput> = {
   mutating: true,
   async execute(input, ctx) {
     const terminals = supervisor(ctx);
-    if (input.pty) throw new ToolError("pty_unavailable", "Pseudo-terminal sessions are not available yet.", "Run the command without pty; pass input through terminal_control write.");
     const cwd = await ctx.path(input.cwd ?? ".", "run");
     const info = await statOrNull(cwd.abs);
     if (!info?.isDirectory()) throw new ToolError("directory_not_found", `cwd ${cwd.rel} is not an existing directory.`, "Use an existing directory, or omit cwd to run in the workspace root.");
@@ -81,6 +86,7 @@ export const terminalTool: ToolHandler<TerminalInput> = {
       ready: input.ready && (input.ready.pattern || input.ready.port)
         ? { pattern: input.ready.pattern ?? null, port: input.ready.port ?? null, timeoutMs: input.ready.timeout_ms ?? DEFAULT_READY_TIMEOUT_MS }
         : null,
+      pty: input.pty ? { ...PTY_SIZE } : null,
     };
     const started = Date.now();
     throwIfCancelled(ctx.signal);
@@ -159,6 +165,7 @@ function running(session: TerminalSession, started: number): ToolOutput {
     terminal: session.selector,
     session_id: session.id,
     ready: session.ready,
+    ...(session.proc?.pty ? { pty: true, input_required: session.inputRequired() } : {}),
     ...(session.status === "exited" ? exitFields(session) : {}),
     output: out.text,
     cursor: `c${session.observed}`,
@@ -193,15 +200,15 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
   description: [
     "Manage terminal sessions started by terminal, selected by name or session id. Actions:",
     "list — all live sessions and recently exited ones;",
-    `read — retained output after cursor (default: after what you last received), paged by limit_lines (default ${READ_DEFAULT_LINES});`,
-    `wait — block until event happens: ready, output (new output), exit, or pattern (a regex in new output); returns event "timeout" after ${MAX_WAIT_MS / 60000} minutes;`,
-    "write — send input text (submit adds Enter, default true) and/or keys (ENTER, CTRL_C, CTRL_D) to the process;",
+    `read — retained output after cursor (default: after what you last received), paged by limit_lines (default ${READ_DEFAULT_LINES}); filter keeps only lines matching a regex;`,
+    `wait — block until event happens: ready, output (new output), exit, pattern (a regex in new output), or input_required (a pty session showing a prompt and waiting); returns event "timeout" after ${MAX_WAIT_MS / 60000} minutes;`,
+    "write — send input text (submit adds Enter, default true) and/or keys: over pipes ENTER, CTRL_C and CTRL_D; in a pty also TAB, ESCAPE, BACKSPACE, DELETE, arrows, HOME, END, PAGE_UP, PAGE_DOWN, CTRL_L and CTRL_Z;",
     "signal — send SIGINT, SIGTERM, SIGHUP, SIGTSTP, or SIGKILL (asks the user) to the process group;",
-    "terminate — stop the process tree gracefully, then forcibly; restart — stop it and run the same launch again under the same name.",
+    "terminate — stop the process tree gracefully, then forcibly; restart — stop it and run the same launch again under the same name; resize — set a pty session's columns and rows.",
   ].join(" "),
   schema: TerminalControlInput,
   concurrency: "serial",
-  mutating: (input) => !["list", "read", "wait"].includes(input.action),
+  mutating: (input) => !["list", "read", "wait", "resize"].includes(input.action),
   async execute(input, ctx) {
     const terminals = supervisor(ctx);
     if (input.action === "list") {
@@ -210,7 +217,7 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
         session_id: s.id,
         status: s.status,
         ready: s.ready,
-        input_required: null,
+        input_required: s.inputRequired(),
         cwd: s.spec.cwdRel,
         command: s.spec.command.slice(0, 200),
         started_at: s.startedAt.toISOString(),
@@ -226,13 +233,21 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
         const from = parseCursor(input.cursor, session);
         const slice = session.output.slice(from);
         const maxLines = Math.min(input.limit_lines ?? READ_DEFAULT_LINES, READ_MAX_LINES);
+        const filter = input.filter ? compilePattern(input.filter, "filter") : null;
         let shown = "";
+        let scanned = 0;
         let count = 0;
         let tokens = 0;
         let rest = slice.text;
         while (rest && count < maxLines) {
           const newline = rest.indexOf("\n");
           const piece = newline < 0 ? rest : rest.slice(0, newline + 1);
+          // A filtered read skips lines that do not match, and still moves past them.
+          if (filter && !filter.test(piece)) {
+            rest = rest.slice(piece.length);
+            scanned += piece.length;
+            continue;
+          }
           const cost = countTokens(json(piece));
           if (tokens + cost > OUTPUT_TOKENS) {
             // A line larger than what is left of the page is paged through, never skipped.
@@ -243,21 +258,24 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
                 budget = Math.floor(budget * 0.8);
                 shown = truncateToTokens(piece, budget).text;
               }
+              scanned += shown.length;
             }
             break;
           }
           shown += piece;
+          scanned += piece.length;
           tokens += cost;
           rest = rest.slice(piece.length);
           count++;
         }
-        const next = slice.from + shown.length;
+        const next = slice.from + scanned;
         const end = Math.min(next, session.output.end);
         session.observed = Math.max(session.observed, end);
         const result = {
           action: "read",
           ...identity(session),
           event: null,
+          ...(filter ? { filter: input.filter } : {}),
           output: shown,
           cursor: `c${end}`,
           truncated: end < session.output.end,
@@ -268,8 +286,8 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
       }
 
       case "wait": {
-        if (input.event === "input_required") {
-          throw new ToolError("pty_unavailable", "Detecting an input prompt needs a pseudo-terminal, which is not available yet.", 'Wait for event "output" or "pattern" (for example the prompt text) instead.');
+        if (input.event === "input_required" && !session.proc?.pty) {
+          throw new ToolError("needs_pty", `${session.selector} runs over pipes, where a prompt cannot be told from other output.`, 'Wait for event "pattern" with the prompt text, or start interactive programs with pty: true.');
         }
         if (input.event === "pattern" && !input.pattern) throw new ToolError("invalid_parameters", "wait with event pattern needs pattern.", "Pass pattern, a regular expression to wait for in new output.");
         if (input.event === "ready" && !session.spec.ready) throw new ToolError("no_ready_condition", `${session.selector} was started without a ready condition.`, 'Wait for event "pattern" or "output" instead, or restart it with ready.');
@@ -282,12 +300,13 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
           if (input.event === "exit" && session.status === "exited") event = "exit";
           else if (input.event === "output" && fresh.length > 0) event = "output";
           else if (pattern && pattern.test(fresh)) event = "pattern";
+          else if (input.event === "input_required" && session.inputRequired()) event = "input_required";
           else if (input.event === "ready" && (session.ready || (session.status === "running" && (await awaitReady(session, ctx.signal, Math.max(1, deadline - Date.now())))))) event = "ready";
           else if (session.status === "exited") event = "exit";
           else if (Date.now() >= deadline) event = "timeout";
           else await session.changed(Math.min(250, deadline - Date.now()), ctx.signal);
         }
-        const result = { action: "wait", ...identity(session), event, ready: session.ready, ...unseen(session), ...exitFields(session) };
+        const result = { action: "wait", ...identity(session), event, ready: session.ready, ...(session.proc?.pty ? { input_required: session.inputRequired() } : {}), ...unseen(session), ...exitFields(session) };
         return { content: json(result), result };
       }
 
@@ -295,17 +314,24 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
         await ctx.path(session.spec.cwd, "run");
         if (input.input === undefined && !input.keys?.length) throw new ToolError("invalid_parameters", "write needs input or keys.", "Pass input text, keys, or both.");
         if (session.status !== "running") throw new ToolError("terminal_exited", `${session.selector} has exited (exit code ${session.exitCode}).`, "Restart it with terminal_control restart, or start a new command.");
-        const unsupported = input.keys?.filter((k) => !["ENTER", "CTRL_C", "CTRL_D"].includes(k)) ?? [];
-        if (unsupported.length) throw new ToolError("pty_unavailable", `Keys ${unsupported.join(", ")} need a pseudo-terminal, which is not available yet.`, "Use input text, ENTER, CTRL_C, or CTRL_D.");
-        if (!session.stdinOpen || !session.child) throw new ToolError("stdin_closed", `${session.selector} no longer accepts input.`, "Restart it, or start a new command.");
-        const stdin = session.child.stdin;
-        if (input.input !== undefined) stdin.write(input.input + ((input.submit ?? true) ? "\n" : ""));
-        for (const key of input.keys ?? []) {
-          if (key === "ENTER") stdin.write("\n");
-          else if (key === "CTRL_C") terminals.signal(session, "SIGINT");
-          else if (key === "CTRL_D") {
-            stdin.end();
-            session.stdinOpen = false;
+        const proc = session.proc;
+        if (!proc) throw new ToolError("stdin_closed", `${session.selector} no longer accepts input.`, "Restart it, or start a new command.");
+        if (proc.pty) {
+          // A terminal receives keys as the bytes a keyboard sends; Enter is a carriage return.
+          if (input.input !== undefined) proc.write(input.input + ((input.submit ?? true) ? "\r" : ""));
+          for (const key of input.keys ?? []) proc.write(KEY_BYTES[key]!);
+        } else {
+          const unsupported = input.keys?.filter((k) => !PIPE_KEYS.has(k)) ?? [];
+          if (unsupported.length) throw new ToolError("needs_pty", `Keys ${unsupported.join(", ")} need a terminal, and ${session.selector} runs over pipes.`, "Use input text, ENTER, CTRL_C or CTRL_D, or restart the program with pty: true.");
+          if (!session.stdinOpen) throw new ToolError("stdin_closed", `${session.selector} no longer accepts input.`, "Restart it, or start a new command.");
+          if (input.input !== undefined) proc.write(input.input + ((input.submit ?? true) ? "\n" : ""));
+          for (const key of input.keys ?? []) {
+            if (key === "ENTER") proc.write("\n");
+            else if (key === "CTRL_C") terminals.signal(session, "SIGINT");
+            else if (key === "CTRL_D") {
+              proc.closeInput();
+              session.stdinOpen = false;
+            }
           }
         }
         session.bump();
@@ -344,6 +370,15 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
         const out = running(replacement, started);
         const result = { action: "restart", previous_session_id: session.id, ...(out.result as object), state_version: replacement.stateVersion };
         return { content: json(result), result, facts: out.facts ?? [] };
+      }
+
+      case "resize": {
+        if (session.status !== "running") throw new ToolError("terminal_exited", `${session.selector} has already exited.`, "No resize is needed.");
+        if (!session.proc?.pty) throw new ToolError("needs_pty", `${session.selector} runs over pipes, which have no size.`, "Start the program with pty: true to give it a terminal size.");
+        session.proc.resize(input.cols, input.rows);
+        session.bump();
+        const result = { action: "resize", ...identity(session), accepted: true, cols: input.cols, rows: input.rows };
+        return { content: json(result), result };
       }
     }
   },

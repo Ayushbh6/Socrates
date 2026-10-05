@@ -73,7 +73,7 @@ export const ApplyPatchInput = z.strictObject({
   patch: z.string().min(1).describe("The complete patch, from *** Begin Patch to *** End Patch."),
 });
 
-export const TerminalKey = z.enum(["ENTER", "TAB", "ESCAPE", "CTRL_C", "CTRL_D", "UP", "DOWN", "LEFT", "RIGHT"]);
+export const TerminalKey = z.enum(["ENTER", "TAB", "ESCAPE", "BACKSPACE", "DELETE", "UP", "DOWN", "LEFT", "RIGHT", "HOME", "END", "PAGE_UP", "PAGE_DOWN", "CTRL_C", "CTRL_D", "CTRL_L", "CTRL_Z"]);
 export const TerminalSignal = z.enum(["SIGINT", "SIGTERM", "SIGHUP", "SIGTSTP", "SIGKILL"]);
 const TerminalName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, "Use letters, digits, dot, dash, or underscore (max 64).");
 
@@ -83,7 +83,7 @@ export const TerminalInput = z.strictObject({
   env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), z.string()).optional().describe("Extra environment variables."),
   timeout_ms: z.number().int().min(0).optional().describe("Execution deadline. 0 requests no deadline (needs approval)."),
   yield_ms: z.number().int().min(250).optional().describe("How long to wait before returning a live session. Default 10000, max 30000."),
-  pty: z.boolean().optional().describe("Run in a pseudo-terminal. Not yet available."),
+  pty: z.boolean().optional().describe("Run in a pseudo-terminal (120×40) for interactive programs: prompts, REPLs, editors, TUIs. Default false (pipes)."),
   background: z.boolean().optional().describe("Return once the process starts, or once `ready` resolves."),
   name: TerminalName.optional().describe("Stable session name such as dev-server."),
   ready: z
@@ -100,7 +100,13 @@ const Selector = z.string().min(1).max(64).describe("Terminal name or session id
 
 export const TerminalControlInput = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("list") }),
-  z.strictObject({ action: z.literal("read"), terminal: Selector, cursor: Cursor.optional(), limit_lines: z.number().int().min(1).optional() }),
+  z.strictObject({
+    action: z.literal("read"),
+    terminal: Selector,
+    cursor: Cursor.optional(),
+    limit_lines: z.number().int().min(1).optional(),
+    filter: z.string().min(1).max(500).optional().describe("Only lines matching this regular expression."),
+  }),
   z.strictObject({
     action: z.literal("wait"),
     terminal: Selector,
@@ -117,6 +123,7 @@ export const TerminalControlInput = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("signal"), terminal: Selector, signal: TerminalSignal }),
   z.strictObject({ action: z.literal("terminate"), terminal: Selector }),
   z.strictObject({ action: z.literal("restart"), terminal: Selector }),
+  z.strictObject({ action: z.literal("resize"), terminal: Selector, cols: z.number().int().min(20).max(500), rows: z.number().int().min(5).max(200) }),
 ]);
 
 export const ContextRetrieveInput = z.discriminatedUnion("action", [

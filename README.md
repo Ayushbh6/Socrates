@@ -37,7 +37,7 @@ S1 is reviewed and closed in the [server-core closure report](docs/reviews/serve
 
 ## Development
 
-Requires Node 22.13 or later (for `node:sqlite`) and pnpm. `glob` and `grep` use ripgrep: the newer of an `rg` on `PATH` and the binary bundled through `@vscode/ripgrep`.
+Requires Node 22.13 or later (for `node:sqlite`) and pnpm. `glob` and `grep` use ripgrep: the newer of an `rg` on `PATH` and the binary bundled through `@vscode/ripgrep`. Interactive terminal sessions (`pty: true`) use `node-pty`, installed from its prebuilt binaries on macOS and Windows (pnpm is allowed to run its install script in `pnpm-workspace.yaml`); without it, terminals still run over pipes.
 
 ```sh
 pnpm install
@@ -60,7 +60,7 @@ SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:provider # real function call
 SOCRATES_ENV_FILE=/absolute/path/to/.env SOCRATES_PROVIDER=gemini pnpm eval:vision # a real model reads a synthetic image, attached and from a tool
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:goal     # real router and scoped worker, persistent goals and artifacts
 pnpm eval:tools                                          # all ten tools, persistent restart and event replay
-SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:tools --live # also a provider choosing tools: read, grep for file names only, grep with context, several edits in one call, a new file
+SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:tools --live # also a provider choosing tools: read, grep for file names only, grep with context, several edits in one call, a new file, an interactive script in a pty
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:agent  # real router and working agent on a disposable project
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:compaction # compaction and rollover with shrunken budgets
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:capabilities # installed Skills and a real stdio MCP server

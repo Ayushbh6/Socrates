@@ -22,6 +22,7 @@ Everything lives in one folder, `~/.socrates-v2` unless `SOCRATES_HOME` names an
 | `.env` | API keys, mode `600` |
 | `skills/`, `mcp.json` | global Skills and MCP servers |
 | `logs/server.log` | diagnostics; one previous log of up to 5 MB is kept |
+| `terminals.json` | the process groups of running terminal sessions, each with its start time, so that ones a crashed server left running are stopped at the next start (`agent-harness.md`, "terminal") |
 | `.server-lock.db` | the exclusive runtime ownership lock, automatically released when its process stops |
 
 A folder that holds Socrates 0.1's `socrates.sqlite`, its descendants, and aliases of them are refused, as is the old `~/.socrates` location itself. On macOS `~/.Socrates` and `~/.socrates` are the same folder, and this Socrates must never read or write the live 0.1 data. The home folder and its ancestors cannot be used as the data folder. Existing data and log directories are made private; managed paths cannot redirect through symbolic links.

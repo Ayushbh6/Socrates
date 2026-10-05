@@ -11,6 +11,7 @@ import { type ApprovalRequest, type Approve, type HandlerContext, type RunState,
 import { toDefinition } from "./definitions";
 import { INTERNAL_ERROR, ToolError, renderError } from "./errors";
 import type { ToolHandler, ToolOutput } from "./handler";
+import { reapLeftovers } from "./process-registry";
 import { TerminalSupervisor, type SupervisorOptions } from "./terminals";
 import { applyPatchTool } from "./tools/apply-patch";
 import { CapabilityRuntime, capabilityControlTool, capabilitySearchTool } from "./tools/capabilities";
@@ -87,6 +88,11 @@ export class ToolRunner {
   private readonly serial = new Map<string | null, Promise<unknown>>();
 
   constructor(private readonly options: ToolRunnerOptions) {
+    // Process groups a crashed server left running are stopped before anything new starts.
+    if (options.terminals?.registry) {
+      const stopped = reapLeftovers(options.terminals.registry);
+      if (stopped) options.log?.(`stopped ${stopped} terminal process group(s) left running when Socrates last stopped`);
+    }
     this.catalog = options.catalog ?? new StaticCatalog();
     this.capabilities = new CapabilityRuntime(options.store, this.catalog);
     const handlers: ToolHandler[] = [

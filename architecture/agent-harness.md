@@ -248,7 +248,14 @@ Run a command in the selected project workspace and, when necessary, publish it 
 }
 ```
 
-`cwd` defaults to the selected workspace and is resolved through the same access policy as filesystem tools. `env` augments the controlled process environment without requiring fragile shell quoting. `pty` defaults to `false` and should be enabled only for interactive programs or terminal-dependent output. The initial implementation runs every session over pipes: `pty: true` fails with the corrective error `pty_unavailable`, and pseudo-terminal support is added later without changing this schema.
+`cwd` defaults to the selected workspace and is resolved through the same access policy as filesystem tools. `env` augments the controlled process environment without requiring fragile shell quoting. `pty` defaults to `false` and should be enabled only for interactive programs: prompts, REPLs, installers that ask questions, editors and other full-screen programs.
+
+**PTY sessions:**
+- `pty: true` runs the command in a `120`×`40` pseudo-terminal through `node-pty`, which is native and loaded on first use. A machine where it cannot load reports `pty_unavailable` and keeps pipes. The prebuilt binaries cover macOS and Windows; elsewhere it is compiled at install.
+- The terminal is `xterm-256color` with the same pager and credential-prompt settings.
+- Its output reaches the agent as plain text: colours, cursor movement and window titles are removed, `\r\n` and a lone `\r` (a redrawn progress line) become line breaks, and backspaces are applied. A sequence split between two chunks waits for its end.
+- What the user types is echoed back, as in any terminal.
+- A terminal session reports `pty: true` and `input_required`.
 
 `yield_ms` controls only how long the current call waits before returning a live session; it defaults to `10,000` and is capped at `30,000`. It is not a process deadline. `timeout_ms` is the actual execution deadline: ten minutes by default for ordinary foreground commands and none for `background: true` services, while `0` explicitly requests no deadline and asks for approval. A command that reaches its deadline is stopped and reported with `status: "timed_out"`.
 
@@ -280,6 +287,7 @@ Persistent result:
   "terminal": "dev-server",
   "session_id": "term-3",
   "ready": true,
+  "pty": false,
   "output": "Local: http://localhost:3000",
   "cursor": "c7",
   "truncated": false,
@@ -287,7 +295,7 @@ Persistent result:
 }
 ```
 
-`terminal` is the preferred selector and equals the supplied name when present; otherwise the backend returns a short readable session id. Output is bounded to a head-and-tail excerpt within the universal per-result ceiling (see "Bounded ingestion"), treated as untrusted text, and retained separately for cursor-based reads (the most recent four million characters per background session; older output is reported as `output_lost`). The output of a finished foreground command, up to sixteen million characters, is stored with its call; beyond that the result reports `output_lost` and how many leading characters were dropped. A running session survives model turns, HTTP requests, task suspension, and user steering. The project terminal supervisor runs each session in its own process group and owns process-tree cleanup: when a command's shell exits, processes it left running in its group are stopped (a service belongs in a `background: true` session instead), and all sessions are stopped when the application exits. Reconciling sessions across an application restart is a later extension. A test run's outcome is derived from the session's exit, whenever it happens, and recorded for the launching task. The agent never kills an unverified operating-system PID directly.
+`terminal` is the preferred selector and equals the supplied name when present; otherwise the backend returns a short readable session id. Output is bounded to a head-and-tail excerpt within the universal per-result ceiling (see "Bounded ingestion"), treated as untrusted text, and retained separately for cursor-based reads (the most recent four million characters per background session; older output is reported as `output_lost`). The output of a finished foreground command, up to sixteen million characters, is stored with its call; beyond that the result reports `output_lost` and how many leading characters were dropped. A running session survives model turns, HTTP requests, task suspension, and user steering. The project terminal supervisor runs each session in its own process group and owns process-tree cleanup: when a command's shell exits, processes it left running in its group are stopped (a service belongs in a `background: true` session instead), and all sessions are stopped when the application exits. The process group of every running session is also listed, with its leader's start time, in the data folder's `terminals.json`. A server that crashed leaves its groups listed, and the next start stops those still running before anything new starts, so nothing escapes supervision. A group is stopped only when its leader still has the recorded start time, so a reused process id never names someone else's process. Reconnecting to sessions across an application restart is a later extension. A test run's outcome is derived from the session's exit, whenever it happens, and recorded for the launching task. The agent never kills an unverified operating-system PID directly.
 
 #### 7. `terminal_control`
 
@@ -304,7 +312,8 @@ The input is a discriminated union selected by `action`:
   "action": "read",
   "terminal": "string",
   "cursor": "string | optional",
-  "limit_lines": "integer >= 1 | optional"
+  "limit_lines": "integer >= 1 | optional",
+  "filter": "string | optional"
 }
 ```
 
@@ -323,7 +332,7 @@ The input is a discriminated union selected by `action`:
   "terminal": "string",
   "input": "string | optional",
   "submit": "boolean | optional",
-  "keys": "array<ENTER | TAB | ESCAPE | CTRL_C | CTRL_D | UP | DOWN | LEFT | RIGHT> | optional"
+  "keys": "array<ENTER | TAB | ESCAPE | BACKSPACE | DELETE | UP | DOWN | LEFT | RIGHT | HOME | END | PAGE_UP | PAGE_DOWN | CTRL_C | CTRL_D | CTRL_L | CTRL_Z> | optional"
 }
 ```
 
@@ -339,15 +348,22 @@ The input is a discriminated union selected by `action`:
 { "action": "terminate | restart", "terminal": "string" }
 ```
 
+```json
+{ "action": "resize", "terminal": "string", "cols": "integer 20-500", "rows": "integer 5-200" }
+```
+
 `terminal` accepts either the stable project-local name or returned short session id. The model never needs an operating-system PID.
 
-- `list` returns every owner-visible live session plus a bounded number of recently exited sessions. Each row includes name/id, command summary, cwd, state, readiness, input requirement (`null` while sessions run over pipes, where it cannot be detected), start time, and exit information.
-- `read` returns retained output after `cursor` (by default, after the output this agent last received), paged forward by `limit_lines` (default `200`) within the ceiling, together with a new cursor and explicit truncation or output-loss metadata. A single line longer than one page is paged through in pieces, never skipped. Reads are non-destructive, so the UI and model do not steal output from one another.
-- `wait` blocks the same tool call without polling the model until the requested terminal event, cancellation, or an operational failure. `pattern` is required only for the `pattern` event. There is deliberately no model-facing polling interval. A configurable policy maximum bounds one wait; reaching it returns the current state with `event: "timeout"`, and the agent may wait again. Surviving an application restart while waiting (a durable event dependency that resumes the task) is a later extension.
-- `write` sends text and/or named keys through the session's serialized input stream. `submit` defaults to `true` when `input` is supplied. Over pipes, text goes to stdin, `ENTER` writes a newline, `CTRL_C` sends `SIGINT` to the process group, `CTRL_D` closes stdin, and keys that need a terminal (`TAB`, `ESCAPE`, arrows) fail with `pty_unavailable`. Writing to a session whose stdin is closed fails.
+- `list` returns every owner-visible live session plus a bounded number of recently exited sessions. Each row includes name/id, command summary, cwd, state, readiness, whether the session waits for input, start time, and exit information. A PTY session waits for input when it is running, has printed nothing for `750` ms, and its last line is unfinished, as a prompt is (`Password: `, `Continue? [y/N] `). Over pipes it is `null`: programs rarely prompt there, and an idle partial line is more often progress output.
+- `read` returns retained output after `cursor` (by default, after the output this agent last received), paged forward by `limit_lines` (default `200`) within the ceiling, together with a new cursor and explicit truncation or output-loss metadata. A single line longer than one page is paged through in pieces, never skipped. `filter`, a regular expression, keeps only the matching lines (`ERROR`, `FAIL`, `warning`), and the cursor still moves past the lines it skipped. Reads are non-destructive, so the UI and model do not steal output from one another. Pages and the head-and-tail cut of long output never split a character.
+- `wait` blocks the same tool call without polling the model until the requested terminal event, cancellation, or an operational failure. `pattern` is required only for the `pattern` event. `input_required` resumes when a PTY session waits for input (see `list`); over pipes it is the corrective error `needs_pty`. There is deliberately no model-facing polling interval. A configurable policy maximum bounds one wait; reaching it returns the current state with `event: "timeout"`, and the agent may wait again. Surviving an application restart while waiting (a durable event dependency that resumes the task) is a later extension.
+- `write` sends text and/or named keys through the session's serialized input stream. `submit` defaults to `true` when `input` is supplied.
+  - **In a PTY,** text and every key go to the terminal as the bytes a keyboard sends: Enter is a carriage return, arrows are escape sequences, and `CTRL_C` is the interrupt character the terminal turns into `SIGINT` for the program in front.
+  - **Over pipes,** text goes to stdin, `ENTER` writes a newline, `CTRL_C` sends `SIGINT` to the process group, and `CTRL_D` closes stdin. Keys that need a terminal fail with `needs_pty`, which says to start the program with `pty: true`. Writing to a session whose stdin is closed fails.
 - `signal` targets the verified foreground process group. `SIGKILL` requires normal approval policy and is never the default shutdown path.
 - `terminate` performs graceful process-tree shutdown followed by bounded hard-kill if necessary.
-- `restart` reuses the retained launch and readiness specification and preserves the stable name while returning a new `session_id`.
+- `restart` reuses the retained launch and readiness specification (and its PTY) and preserves the stable name while returning a new `session_id`.
+- `resize` sets a PTY session's columns and rows; the program sees the new size as a terminal resize. Over pipes it is `needs_pty`.
 
 Representative list output:
 

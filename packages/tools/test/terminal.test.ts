@@ -92,7 +92,9 @@ describe.skipIf(process.platform === "win32")("terminal", () => {
     const out = await h.call("terminal_control", { action: "wait", terminal: "echoer", event: "pattern", pattern: "ping" });
     expect(out.json.output).toBe("ping\n");
     const tab = await h.call("terminal_control", { action: "write", terminal: "echoer", keys: ["TAB"] });
-    expect(tab.json.error.code).toBe("pty_unavailable");
+    expect(tab.json.error).toMatchObject({ code: "needs_pty", correction: expect.stringContaining("pty: true") });
+    expect((await h.call("terminal_control", { action: "wait", terminal: "echoer", event: "input_required" })).json.error.code).toBe("needs_pty");
+    expect((await h.call("terminal_control", { action: "resize", terminal: "echoer", cols: 80, rows: 24 })).json.error.code).toBe("needs_pty");
     await h.call("terminal_control", { action: "write", terminal: "echoer", keys: ["CTRL_D"] });
     expect((await h.call("terminal_control", { action: "wait", terminal: "echoer", event: "exit" })).json.exit_code).toBe(0);
 
@@ -140,9 +142,8 @@ describe.skipIf(process.platform === "win32")("terminal", () => {
     expect(h.store.listEvents({ type: "terminal_exited" })).toHaveLength(1);
   });
 
-  it("rejects pty, unknown terminals, bad readiness patterns, and missing directories", async () => {
+  it("rejects unknown terminals, bad readiness patterns, and missing directories", async () => {
     const h = harness();
-    expect((await h.call("terminal", { command: "true", pty: true })).json.error.code).toBe("pty_unavailable");
     expect((await h.call("terminal", { command: "true", ready: { pattern: "(" } })).json.error.code).toBe("invalid_pattern");
     expect((await h.call("terminal", { command: "true", cwd: "nope" })).json.error.code).toBe("directory_not_found");
     const missing = await h.call("terminal_control", { action: "read", terminal: "ghost" });
@@ -150,6 +151,6 @@ describe.skipIf(process.platform === "win32")("terminal", () => {
     expect(missing.json.error.message).toContain("No terminals are running");
     await h.call("terminal", { command: "sleep 30", background: true, name: "plain" });
     expect((await h.call("terminal_control", { action: "wait", terminal: "plain", event: "ready" })).json.error.code).toBe("no_ready_condition");
-    expect((await h.call("terminal_control", { action: "wait", terminal: "plain", event: "input_required" })).json.error.code).toBe("pty_unavailable");
+    expect((await h.call("terminal_control", { action: "wait", terminal: "plain", event: "input_required" })).json.error.code).toBe("needs_pty");
   });
 });

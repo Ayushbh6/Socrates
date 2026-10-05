@@ -1,7 +1,10 @@
-import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import net from "node:net";
+import { constants } from "node:os";
 import { ToolError } from "./errors";
+import { forgetProcess, recordProcess } from "./process-registry";
+import { TerminalText, loadPty } from "./pty";
 
 /**
  * The project terminal supervisor (agent-harness.md, "terminal" and
@@ -10,7 +13,7 @@ import { ToolError } from "./errors";
  * signalled and cleaned up, its output is retained for cursor reads, and it
  * survives model turns until it exits or is stopped.
  *
- * Sessions run over pipes. Pseudo-terminal support is a later extension.
+ * Sessions run over pipes, or in a pseudo-terminal for interactive programs.
  */
 
 export interface LaunchSpec {
@@ -25,7 +28,24 @@ export interface LaunchSpec {
   background: boolean;
   name: string | null;
   ready: { pattern: string | null; port: number | null; timeoutMs: number } | null;
+  /** Run in a pseudo-terminal of this size instead of over pipes. */
+  pty?: { cols: number; rows: number } | null;
 }
+
+/** A running command, over pipes or in a pseudo-terminal. */
+export interface SessionProcess {
+  readonly pid: number | undefined;
+  readonly pty: boolean;
+  write(data: string): void;
+  /** End of input: closes stdin over pipes, sends the EOF character in a terminal. */
+  closeInput(): void;
+  resize(cols: number, rows: number): void;
+}
+
+/** A pseudo-terminal session that has printed nothing for this long after a partial line is waiting for input. */
+export const INPUT_IDLE_MS = 750;
+/** A terminal's process may exit before its last output is read; the exit waits this long for it. */
+const PTY_DRAIN_MS = 100;
 
 export type ExitReason = "exited" | "terminated" | "timeout" | "failed";
 
@@ -97,6 +117,8 @@ export class TerminalSession {
   /** Output offset up to which the agent has received output. */
   observed = 0;
   stdinOpen = true;
+  /** When the process last printed anything. */
+  lastOutputAt = Date.now();
   readonly startedAt = new Date();
   exitedAt: Date | null = null;
   private listeners = new Set<() => void>();
@@ -105,7 +127,7 @@ export class TerminalSession {
   constructor(
     readonly id: string,
     readonly spec: LaunchSpec,
-    readonly child: ChildProcessWithoutNullStreams | null,
+    readonly proc: SessionProcess | null,
     readonly output: OutputBuffer,
   ) {
     this.ready = spec.ready ? false : null;
@@ -113,6 +135,19 @@ export class TerminalSession {
 
   get selector(): string {
     return this.spec.name ?? this.id;
+  }
+
+  /**
+   * Whether a terminal session waits for input: it is running, has printed
+   * nothing for INPUT_IDLE_MS, and its last line is unfinished, as a prompt
+   * is ("Password: ", "Continue? [y/N] "). Null over pipes, where programs
+   * rarely prompt and an idle partial line is more often progress output.
+   */
+  inputRequired(now = Date.now()): boolean | null {
+    if (!this.proc?.pty) return null;
+    if (this.status !== "running" || now - this.lastOutputAt < INPUT_IDLE_MS) return false;
+    const last = this.output.slice(Math.max(this.output.start, this.output.end - 1)).text;
+    return last !== "" && last !== "\n";
   }
 
   /** Resolves on the next output or lifecycle change. */
@@ -158,6 +193,8 @@ export interface SupervisorOptions {
   /** Output retained per foreground command, whose complete output is stored with its call. */
   foregroundRetainChars?: number;
   recentExited?: number;
+  /** A file in the data folder listing live process groups, so a crashed server's are stopped at the next start. */
+  registry?: string;
 }
 
 /** Grace period before leftover processes of a finished command are force-killed. */
@@ -171,6 +208,7 @@ export class TerminalSupervisor {
   private readonly retainChars: number;
   private readonly foregroundRetainChars: number;
   private readonly recentExited: number;
+  private readonly registry: string | null;
   /** Process groups whose leader exited while other members were still running. */
   private readonly lingering = new Map<number, NodeJS.Timeout>();
   private readonly onProcessExit = () => this.killAllNow();
@@ -180,6 +218,7 @@ export class TerminalSupervisor {
     this.retainChars = options.retainChars ?? 4_000_000;
     this.foregroundRetainChars = options.foregroundRetainChars ?? 16_000_000;
     this.recentExited = options.recentExited ?? 10;
+    this.registry = options.registry ?? null;
     process.on("exit", this.onProcessExit);
   }
 
@@ -199,27 +238,12 @@ export class TerminalSupervisor {
     const id = `term-${++this.counter}`;
     const { file, args } = shellCommand(spec.command);
     const output = new OutputBuffer(spec.background ? this.retainChars : this.foregroundRetainChars);
-    let child: ChildProcessWithoutNullStreams;
-    try {
-      child = spawn(file, args, { cwd: spec.cwd, env: spec.env, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" });
-    } catch (error) {
-      throw new ToolError("spawn_failed", `The command could not be started: ${(error as Error).message}`, "Check the command and working directory.", false);
-    }
-    const session = new TerminalSession(id, spec, child, output);
-    this.live.set(id, session);
-    hooks.onStart(session);
-
+    let session: TerminalSession;
     const onData = (chunk: string) => {
+      session.lastOutputAt = Date.now();
       output.append(chunk);
       session.notify();
     };
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", onData);
-    child.stderr.on("data", onData);
-    child.stdin.on("error", () => {
-      session.stdinOpen = false;
-    });
     const finish = (code: number | null, signal: string | null, reason: ExitReason) => {
       if (session.status === "exited") return;
       session.clearTimer();
@@ -233,19 +257,87 @@ export class TerminalSupervisor {
       this.live.delete(id);
       this.exited.unshift(session);
       this.exited.length = Math.min(this.exited.length, this.recentExited);
+      if (this.registry && session.proc?.pid) forgetProcess(this.registry, session.proc.pid);
       session.bump();
       hooks.onExit(session);
     };
-    child.on("error", (error) => {
-      output.append(`\n[failed to start: ${error.message}]\n`);
-      finish(null, null, "failed");
-    });
-    // Descendants can inherit the pipes and prevent `close` after the shell
-    // exits. Reap on `exit`, then let `close` drain the final output.
-    child.once("exit", () => {
-      if (child.pid) this.reapGroup(child.pid, session.exitReason === null ? output : null);
-    });
-    child.on("close", (code, signal) => finish(code, signal, "exited"));
+    // A command's own process group is reaped when its leader exits (see reapGroup).
+    const exited = (pid: number | undefined) => {
+      if (pid) this.reapGroup(pid, session.exitReason === null ? output : null);
+    };
+
+    if (spec.pty) {
+      const pty = loadPty();
+      if (!pty) throw new ToolError("pty_unavailable", "Pseudo-terminals are not available on this machine.", "Run the command without pty, passing input through terminal_control write.", false);
+      let term: import("node-pty").IPty;
+      try {
+        term = pty.spawn(file, args, { name: "xterm-256color", cols: spec.pty.cols, rows: spec.pty.rows, cwd: spec.cwd, env: { ...spec.env, TERM: "xterm-256color" } });
+      } catch (error) {
+        throw new ToolError("spawn_failed", `The command could not be started in a terminal: ${(error as Error).message}`, "Check the command and working directory, or run it without pty.", false);
+      }
+      const text = new TerminalText();
+      session = new TerminalSession(id, spec, {
+        pid: term.pid,
+        pty: true,
+        write: (data) => term.write(data),
+        closeInput: () => term.write("\x04"),
+        resize: (cols, rows) => term.resize(cols, rows),
+      }, output);
+      this.live.set(id, session);
+      if (this.registry) recordProcess(this.registry, term.pid, spec.command);
+      hooks.onStart(session);
+      term.onData((chunk) => {
+        session.lastOutputAt = Date.now();
+        const clean = text.push(chunk);
+        if (clean) onData(clean);
+      });
+      term.onExit(({ exitCode, signal }) => {
+        exited(term.pid);
+        // The last output can arrive just after the exit.
+        setTimeout(() => {
+          const rest = text.flush();
+          if (rest) onData(rest);
+          const name = signal ? signalName(signal) : null;
+          finish(name ? null : exitCode, name, "exited");
+        }, PTY_DRAIN_MS);
+      });
+    } else {
+      let child: ReturnType<typeof spawn>;
+      try {
+        child = spawn(file, args, { cwd: spec.cwd, env: spec.env, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" });
+      } catch (error) {
+        throw new ToolError("spawn_failed", `The command could not be started: ${(error as Error).message}`, "Check the command and working directory.", false);
+      }
+      const stdin = child.stdin!;
+      session = new TerminalSession(id, spec, {
+        pid: child.pid,
+        pty: false,
+        write: (data) => stdin.write(data),
+        closeInput: () => stdin.end(),
+        resize: () => {
+          throw new ToolError("not_a_terminal", `${session.selector} runs over pipes, which have no size.`, "Start the command with pty: true to give it a terminal size.");
+        },
+      }, output);
+      this.live.set(id, session);
+      if (this.registry && child.pid) recordProcess(this.registry, child.pid, spec.command);
+      hooks.onStart(session);
+      child.stdout!.setEncoding("utf8");
+      child.stderr!.setEncoding("utf8");
+      child.stdout!.on("data", onData);
+      child.stderr!.on("data", onData);
+      stdin.on("error", () => {
+        session.stdinOpen = false;
+      });
+      child.on("error", (error) => {
+        output.append(`\n[failed to start: ${error.message}]\n`);
+        finish(null, null, "failed");
+      });
+      // Descendants can inherit the pipes and prevent `close` after the shell
+      // exits. Reap on `exit`, then let `close` drain the final output.
+      child.once("exit", () => exited(child.pid));
+      child.on("close", (code, signal) => finish(code, signal, "exited"));
+    }
+
     if (spec.timeoutMs !== null) {
       session.setTimer(
         setTimeout(() => {
@@ -284,8 +376,8 @@ export class TerminalSupervisor {
 
   /** Send a signal to the session's whole process group. */
   signal(session: TerminalSession, signal: NodeJS.Signals): void {
-    if (session.status !== "running" || !session.child?.pid) return;
-    killGroup(session.child.pid, signal);
+    if (session.status !== "running" || !session.proc?.pid) return;
+    killGroup(session.proc.pid, signal);
   }
 
   /** Graceful process-tree shutdown followed by a bounded hard kill. */
@@ -326,7 +418,7 @@ export class TerminalSupervisor {
   }
 
   private killAllNow(): void {
-    for (const s of this.live.values()) if (s.child?.pid) killGroup(s.child.pid, "SIGKILL");
+    for (const s of this.live.values()) if (s.proc?.pid) killGroup(s.proc.pid, "SIGKILL");
     for (const pid of this.lingering.keys()) killGroup(pid, "SIGKILL");
   }
 }
@@ -334,6 +426,11 @@ export class TerminalSupervisor {
 function shellCommand(command: string): { file: string; args: string[] } {
   if (process.platform === "win32") return { file: "powershell.exe", args: ["-NoProfile", "-NonInteractive", "-Command", command] };
   return { file: existsSync("/bin/bash") ? "/bin/bash" : "/bin/sh", args: ["-c", command] };
+}
+
+/** The name of a signal number, such as 15 for SIGTERM. */
+function signalName(signal: number): string | null {
+  return Object.entries(constants.signals).find(([, n]) => n === signal)?.[0] ?? null;
 }
 
 /** Whether any process of a process group is still running. */

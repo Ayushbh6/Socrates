@@ -68,7 +68,7 @@ Each gap names the step that closes it:
 
 `apply_patch` gets the same line-ending and encoding fixes in 4b, since it shares the file layer.
 
-## terminal and terminal_control (step 4c)
+## terminal and terminal_control (step 4c, done)
 
 **What already holds:**
 

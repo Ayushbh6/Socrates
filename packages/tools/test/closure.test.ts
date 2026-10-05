@@ -96,9 +96,9 @@ describe.skipIf(process.platform === "win32")("terminal lifecycle", () => {
   it("keeps escaped output as valid JSON and pages it without losing characters", async () => {
     const h = harness();
     const source = '"\\'.repeat(12000);
-    await h.call("terminal", { command: `node -e 'process.stdout.write(${JSON.stringify('"\\')}.repeat(12000));setTimeout(()=>{},30000)'`, background: true, name: "escaped" });
-    await h.call("terminal_control", { action: "wait", terminal: "escaped", event: "output" });
-    await new Promise((done) => setTimeout(done, 100));
+    // The output ends with a marker, so the test waits for all of it rather than for a fixed time.
+    await h.call("terminal", { command: `node -e 'process.stdout.write(${JSON.stringify('"\\')}.repeat(12000)+"<END>");setTimeout(()=>{},30000)'`, background: true, name: "escaped" });
+    await h.call("terminal_control", { action: "wait", terminal: "escaped", event: "pattern", pattern: "<END>" });
     let cursor = "c0", output = "";
     for (let i = 0; i < 10; i++) {
       const r = await h.call("terminal_control", { action: "read", terminal: "escaped", cursor });
@@ -107,7 +107,7 @@ describe.skipIf(process.platform === "win32")("terminal lifecycle", () => {
       cursor = r.json.cursor;
       if (!r.json.truncated) break;
     }
-    expect(output).toBe(source);
+    expect(output).toBe(`${source}<END>`);
   });
 });
 

@@ -41,7 +41,7 @@ describe("tool contract", () => {
     }
     const control = h.runner.definitions.find((d) => d.name === "terminal_control")!.inputSchema as any;
     expect(control.required).toEqual(["action"]);
-    expect(control.properties.action.enum).toEqual(["list", "read", "wait", "write", "signal", "terminate", "restart"]);
+    expect(control.properties.action.enum).toEqual(["list", "read", "wait", "write", "signal", "terminate", "restart", "resize"]);
   });
 
   it.each(INVALID)("%s rejects invalid input with a corrective error and no side effects", async (name, input) => {

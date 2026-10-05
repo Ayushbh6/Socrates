@@ -380,6 +380,8 @@ export class Runtime {
       ...(this.catalog ? { catalog: this.catalog } : {}),
       ...(this.retrieval ? { semantic: this.retrieval } : {}),
       attachments: this.config.attachmentsDir,
+      // Terminal process groups are listed here, so ones a crash leaves running are stopped at the next start.
+      terminals: { registry: path.join(this.config.home, "terminals.json") },
       log: this.log,
     });
   }

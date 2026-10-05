@@ -156,8 +156,8 @@ try {
       }
       throw new Error("no edit call after five steps");
     };
-    const several = await editOnce("In billing/tax.ts, change the comment to '// Tax by region.' and change the rate 0.2 to 0.25, in one call.", (input) => {
-      assert(Array.isArray(input.edits) && input.edits.length >= 2, `expected edits: ${JSON.stringify(input)}`);
+    // One call either way: several edits, or one replacement that covers both lines.
+    const several = await editOnce("In billing/tax.ts, change the comment to '// Tax by region.' and change the rate 0.2 to 0.25, in one call.", () => {
       const tax = readFileSync(path.join(root, "billing", "tax.ts"), "utf8");
       assert(tax.includes("// Tax by region.") && tax.includes("0.25"), tax);
     });
@@ -165,7 +165,24 @@ try {
       assert.equal(input.old_text, "");
       assert.equal(readFileSync(path.join(root, "billing", "rates.ts"), "utf8").trim(), "export const EU = 0.25;");
     });
-    live = { provider: model.id, servedBy: second.servedBy ?? model.id, grep: { files, context }, edit: { several, created }, pass: true };
+    // And an interactive program: the model runs it, sees the prompt, and answers.
+    writeFileSync(path.join(root, "setup.sh"), '#!/bin/bash\nread -p "Project name? " name\nread -p "Use TypeScript? [y/N] " ts\necho "created $name (typescript: $ts)"\n', { mode: 0o755 });
+    const talk: ModelMessage[] = [{ role: "user", content: "Run ./setup.sh. It asks questions interactively: name the project demo and answer y to TypeScript. Tell me what it printed at the end." }];
+    const used: { name: string; input: unknown }[] = [];
+    let finalText = "";
+    for (let step = 0; step < 10 && !finalText; step++) {
+      const asked = await model.complete({ system: "Use the tools to do what the user asks.", messages: talk, tools: runner.definitions, maxOutputTokens: 4000, signal: AbortSignal.timeout(90000) });
+      if (!asked.toolCalls.length) finalText = asked.text;
+      talk.push({ role: "assistant", content: asked.text, toolCalls: asked.toolCalls, ...(asked.raw ? { raw: asked.raw } : {}) });
+      for (const c of asked.toolCalls) {
+        used.push({ name: c.name, input: c.input });
+        const r = await dispatch(c);
+        talk.push({ role: "tool", toolCallId: r.callId, toolName: r.name, content: r.content, isError: r.isError });
+      }
+    }
+    assert(finalText.includes("created demo (typescript: y)"), `expected the script's last line in: ${finalText}\n${JSON.stringify(used)}`);
+    const interactive = { pty: used.some((u) => u.name === "terminal" && (u.input as { pty?: boolean }).pty === true), calls: used };
+    live = { provider: model.id, servedBy: second.servedBy ?? model.id, grep: { files, context }, edit: { several, created }, interactive, pass: true };
   }
   const recovered = LedgerStore.open({ path: ":memory:" });
   try {
