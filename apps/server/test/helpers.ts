@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ModelClient, ModelRequest, ModelResponse } from "@socrates/contracts";
 import WebSocket from "ws";
-import { HashEmbedder, ScriptedModel, type ScriptedStep, knownVision } from "@socrates/providers";
+import { HashEmbedder, NO_EFFORTS, ScriptedModel, type ScriptedStep, knownVision } from "@socrates/providers";
 import { abortable, fixedClock } from "@socrates/shared";
 import { afterEach } from "vitest";
 import { Runtime, type RuntimeDeps, type ServerConfig, buildServer, resolveConfig, sessionToken } from "../src";
@@ -48,6 +48,7 @@ export async function runtime(config: ServerConfig, deps: RuntimeDeps = {}) {
     makeEmbedder: () => new HashEmbedder(),
     // Never ask a real provider which models can see.
     detectVision: async (provider, model) => knownVision(provider, model),
+    detectEfforts: async () => NO_EFFORTS,
     log: (m) => logs.push(m),
     ...deps,
   });

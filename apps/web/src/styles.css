@@ -322,6 +322,16 @@ p.thinking-label { margin: 0 0 0.25rem; color: var(--faint); }
 .mode-switch button[data-on="true"] { background: var(--button); color: #fff; }
 .composer-model { padding: 0.2rem 0.4rem; border: 0; border-radius: 0.4rem; background: transparent; }
 .composer-model:hover { background: var(--hover); color: var(--text); }
+.composer-model { display: inline-flex; align-items: center; gap: 0.2rem; white-space: nowrap; }
+.composer-model svg { width: 0.8rem; height: 0.8rem; }
+.model-menu { width: min(24rem, calc(100vw - 2rem)); }
+.model-search { width: 100%; margin-bottom: 0.3rem; padding: 0.55rem 0.7rem; border: 0; border-radius: 0.65rem; background: var(--hover); font: inherit; font-size: 0.85rem; outline: none; }
+.model-list { max-height: min(22rem, 50vh); overflow-y: auto; }
+.model-item { padding: 0.45rem 0.65rem; }
+.menu-note { display: flex; align-items: center; gap: 0.35rem; margin: 0; padding: 0.3rem 0.65rem; color: var(--muted); font-size: 0.75rem; }
+.menu-note svg { width: 0.8rem; height: 0.8rem; }
+.model-settings { width: 100%; margin-top: 0.3rem; font-size: 0.78rem; }
+.effort-menu { min-width: 12rem; }
 .tool-running { margin: 0; color: var(--faint); font-size: 0.78rem; }
 
 /* Standard mode: soft panels, no lines */

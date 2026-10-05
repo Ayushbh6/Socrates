@@ -1,4 +1,4 @@
-import type { Access, AttachmentView, Evidence, Folders, GoalView, History, Provider, Settings, Status } from "./types";
+import type { Access, AttachmentView, Evidence, Folders, GoalView, History, ListedModel, Provider, Settings, Status } from "./types";
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -35,6 +35,7 @@ export const api = {
   setWorkingFolder: (id: string) => call<Settings>("PUT", "/api/settings", { workingFolder: id }),
   setSettings: (patch: Partial<Omit<Settings, "access" | "workingFolder">>) => call<Settings>("PUT", "/api/settings", patch),
   providers: () => call<Provider[]>("GET", "/api/providers"),
+  models: (provider: string) => call<{ models: ListedModel[] }>("GET", `/api/models?provider=${encodeURIComponent(provider)}`).then((r) => r.models),
   removeKey: (name: string) => call<null>("DELETE", `/api/keys/${encodeURIComponent(name)}`),
   keys: () => call<Record<string, boolean>>("GET", "/api/keys"),
   setKey: (name: string, value: string) => call<null>("PUT", `/api/keys/${encodeURIComponent(name)}`, { value }),

@@ -6,3 +6,4 @@ export * from "./calibration";
 export * from "./config";
 export * from "./embeddings";
 export * from "./stream";
+export * from "./catalog";

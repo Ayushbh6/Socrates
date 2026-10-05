@@ -4,6 +4,7 @@ import { IMAGES_MAX, IMAGE_TYPES } from "../lib/images";
 import { conversationBusy, sendTarget } from "../lib/model";
 import { type AppState, type PendingImage, store } from "../lib/store";
 import { type AttachmentView, MAX_RUNNING_LANES } from "../lib/types";
+import { EffortMenu, ModelMenu } from "./ModelPicker";
 import { Popover } from "./Popover";
 
 /** The message box: Send, Queue while main works, or Send in a new lane (architecture/web.md, "Composer"). */
@@ -128,8 +129,11 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, on
           <input ref={picker} type="file" accept={IMAGE_TYPES.join(",")} multiple hidden onChange={(e) => { attach([...(e.target.files ?? [])]); e.target.value = ""; }} />
           {!compact && <ApprovalsChip app={app} />}
           <span className="composer-space" />
-          {!compact && app.status?.models.chat && (
-            <button type="button" className="composer-model" title="The chat model: change it in settings" onClick={onModel}>{app.status.models.chat.model}</button>
+          {!compact && (
+            <>
+              <ModelMenu app={app} onSettings={onModel ?? (() => {})} />
+              <EffortMenu app={app} />
+            </>
           )}
           {busy && (
             <button type="button" className="stop-button" onClick={() => store.cancel(conversation)} aria-label="Stop">

@@ -68,6 +68,14 @@ export function hasCacheBreakpoints(messages: ModelMessage[]): boolean {
   return messages.some((m) => (m.role === "tool" && m.cache) || (m.role === "user" && typeof m.content !== "string" && m.content.some((p) => p.cache)));
 }
 
+/**
+ * How hard a model thinks before it answers, in one vocabulary for every
+ * provider. A model accepts only some levels (`detectEfforts`); "off" turns
+ * thinking off where the model allows it.
+ */
+export const EFFORTS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type Effort = (typeof EFFORTS)[number];
+
 export interface ModelRequest {
   system: string;
   messages: ModelMessage[];
@@ -94,6 +102,8 @@ export interface ModelRequest {
    * display only: replay uses the raw content.
    */
   onReasoning?: (delta: string) => void;
+  /** The thinking level for this request; without it the client's own default applies. Only levels the model accepts. */
+  effort?: Effort;
 }
 
 /**

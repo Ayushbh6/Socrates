@@ -112,6 +112,8 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
   // What the settings screen offers: each provider's default models and the keys it reads.
   app.get("/api/providers", async () => Object.entries(PROVIDER_DEFAULTS).map(([name, d]) => ({ name, main: d.main, router: d.router, keys: [...d.keys] })));
   app.put("/api/settings", async (request) => runtime.updateSettings(request.body ?? {}));
+  // What the model pickers offer: a provider's chat models, from its own list.
+  app.get("/api/models", async (request) => ({ models: await runtime.providerModels(z.object({ provider: z.string() }).parse(request.query).provider) }));
 
   // Keys are write-only: the API says which are set, never what they are.
   app.get("/api/keys", async () => {

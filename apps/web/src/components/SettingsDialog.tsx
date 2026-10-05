@@ -4,10 +4,10 @@ import { createPortal } from "react-dom";
 import { api } from "../lib/api";
 import { useDialog } from "../lib/dialog";
 import { type AppState, store } from "../lib/store";
-import type { Embeddings, ModelChoice, Provider } from "../lib/types";
+import { PROVIDER_LABELS } from "../lib/models";
+import type { Embeddings, ListedModel, ModelChoice, Provider } from "../lib/types";
 import { AccessControls } from "./AccessMenu";
 
-const LABELS: Record<string, string> = { anthropic: "Anthropic", openai: "OpenAI", gemini: "Gemini", openrouter: "OpenRouter", deepseek: "DeepSeek" };
 const EMBEDDERS: Embeddings["provider"][] = ["ollama", "openrouter", "openai", "custom"];
 
 /** Everything the user chooses (architecture/web.md, "Settings"). Model, key and memory changes restart Socrates, so they wait until it is idle. */
@@ -64,23 +64,42 @@ function useSave() {
   return { busy: state.busy, save, feedback };
 }
 
+/** A provider's chat models, to suggest while typing; none while loading or when they cannot be listed. */
+function useModelList(provider: string | undefined): ListedModel[] {
+  const [models, setModels] = useState<ListedModel[]>([]);
+  useEffect(() => {
+    setModels([]);
+    if (!provider) return;
+    let current = true;
+    api.models(provider).then((list) => current && setModels(list), () => {});
+    return () => { current = false; };
+  }, [provider]);
+  return models;
+}
+
 function Models({ app, providers }: { app: AppState; providers: Provider[] }) {
   const [chat, setChat] = useState<ModelChoice | null>(app.settings!.chat);
   const [router, setRouter] = useState<ModelChoice | null>(app.settings!.router);
   const { busy, save, feedback } = useSave();
   const inUse = app.status!.models;
+  const chatModels = useModelList(chat?.provider);
+  const routerModels = useModelList(router?.provider);
   const pick = (value: string, kind: "main" | "router", set: (c: ModelChoice | null) => void) => {
     const provider = providers.find((p) => p.name === value);
     set(provider ? { provider: provider.name, model: provider[kind] } : null);
   };
-  const row = (label: string, choice: ModelChoice | null, kind: "main" | "router", set: (c: ModelChoice | null) => void, auto: string) => (
+  // A chat model keeps its thinking level only while it stays the same model.
+  const typed = (choice: ModelChoice, model: string): ModelChoice =>
+    choice.effort === undefined ? { ...choice, model } : { ...choice, model, effort: model === app.settings!.chat?.model ? app.settings!.chat?.effort ?? null : null };
+  const row = (label: string, choice: ModelChoice | null, kind: "main" | "router", set: (c: ModelChoice | null) => void, auto: string, listed: ListedModel[]) => (
     <div className="field-row">
       <span className="field-label">{label}</span>
       <select value={choice?.provider ?? ""} onChange={(e) => pick(e.target.value, kind, set)} aria-label={`${label} provider`}>
         <option value="">{auto}</option>
-        {providers.map((p) => <option key={p.name} value={p.name}>{LABELS[p.name] ?? p.name}</option>)}
+        {providers.map((p) => <option key={p.name} value={p.name}>{PROVIDER_LABELS[p.name] ?? p.name}</option>)}
       </select>
-      <input value={choice?.model ?? ""} disabled={!choice} placeholder="the provider's default" onChange={(e) => choice && set({ ...choice, model: e.target.value })} aria-label={`${label} model`} spellCheck={false} />
+      <input value={choice?.model ?? ""} disabled={!choice} placeholder="the provider's default" onChange={(e) => choice && set(typed(choice, e.target.value))} aria-label={`${label} model`} spellCheck={false} list={`models-${kind}`} />
+      <datalist id={`models-${kind}`}>{listed.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</datalist>
     </div>
   );
   return (
@@ -89,8 +108,8 @@ function Models({ app, providers }: { app: AppState; providers: Provider[] }) {
         In use: {inUse.chat ? `${inUse.chat.provider} · ${inUse.chat.model}` : "none yet"}{inUse.chat?.source === "detected" ? " (picked from your keys)" : ""}
         {inUse.router ? `; routing with ${inUse.router.model}` : ""}.
       </p>
-      {row("Chat", chat, "main", setChat, "Automatic: the first provider with a key")}
-      {row("Routing", router, "router", setRouter, "Automatic: the chat provider's router model")}
+      {row("Chat", chat, "main", setChat, "Automatic: the first provider with a key", chatModels)}
+      {row("Routing", router, "router", setRouter, "Automatic: the chat provider's router model", routerModels)}
       <div className="settings-actions">
         {feedback}
         <button type="button" className="solid-button" disabled={busy || !!(chat && !chat.model.trim()) || !!(router && !router.model.trim())} onClick={() => save(() => store.saveSettings({ chat, router }))}>Save models</button>
@@ -126,7 +145,7 @@ function Keys({ providers }: { providers: Provider[] }) {
           }}
         >
           <span className="field-label" title={name}>
-            <span className="key-dot" data-set={set} /> {owner(name) ? LABELS[owner(name)!.name] ?? name : "Memory search"}
+            <span className="key-dot" data-set={set} /> {owner(name) ? PROVIDER_LABELS[owner(name)!.name] ?? name : "Memory search"}
             <small>{name}</small>
           </span>
           <input type="password" autoComplete="off" placeholder={set ? "Set: type to replace" : "Not set"} value={values[name] ?? ""} onChange={(e) => setValues({ ...values, [name]: e.target.value })} aria-label={name} />
@@ -151,7 +170,7 @@ function Memory({ app }: { app: AppState }) {
       <div className="field-row">
         <span className="field-label">Embeddings</span>
         <select value={embeddings.provider} onChange={(e) => setEmbeddings({ provider: e.target.value as Embeddings["provider"], model: null, url: null })} aria-label="Embedding provider">
-          {EMBEDDERS.map((p) => <option key={p} value={p}>{p === "ollama" ? "Ollama on this Mac" : p === "custom" ? "Custom endpoint" : LABELS[p] ?? p}</option>)}
+          {EMBEDDERS.map((p) => <option key={p} value={p}>{p === "ollama" ? "Ollama on this Mac" : p === "custom" ? "Custom endpoint" : PROVIDER_LABELS[p] ?? p}</option>)}
         </select>
         <input value={embeddings.model ?? ""} placeholder="default model" onChange={(e) => setEmbeddings({ ...embeddings, model: e.target.value || null })} aria-label="Embedding model" spellCheck={false} />
       </div>

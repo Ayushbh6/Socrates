@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import {
+  type Effort,
   type ImageData,
   type ModelClient,
   ModelError,
@@ -28,8 +29,12 @@ export interface OpenAICompatibleModelOptions {
   idleMs?: number;
   /** Whether the model can see images (`detectVision`). */
   vision?: boolean;
-  /** Provider extensions, for example DeepSeek's thinking or reasoning_effort. */
+  /** Provider extensions sent with every request. */
   extraBody?: Record<string, unknown>;
+  /** The thinking level when a request names none. */
+  effort?: Effort;
+  /** How this provider is asked for a thinking level; without it no level is sent. */
+  effortBody?: (effort: Effort) => Record<string, unknown>;
 }
 
 /** Adapter from the normalized model contract to OpenAI-compatible Chat Completions. */
@@ -53,8 +58,10 @@ export class OpenAICompatibleModel implements ModelClient {
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
     const maxTokens = request.maxOutputTokens ?? 16_000;
+    const effort = request.effort ?? this.options.effort;
     const params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
       ...this.options.extraBody,
+      ...(effort && this.options.effortBody ? this.options.effortBody(effort) : {}),
       model: this.options.model,
       messages: [{ role: "system", content: request.system }, ...toOpenAIMessages(request.messages, this.id)],
       ...(request.tools?.length

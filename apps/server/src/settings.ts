@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { EFFORTS } from "@socrates/contracts";
 import { PROVIDER_DEFAULTS } from "@socrates/providers";
 import { z } from "zod";
 import { writePrivateFile } from "./private-file";
@@ -6,6 +7,8 @@ import { writePrivateFile } from "./private-file";
 const PROVIDERS = Object.keys(PROVIDER_DEFAULTS) as [keyof typeof PROVIDER_DEFAULTS, ...(keyof typeof PROVIDER_DEFAULTS)[]];
 
 const ModelChoice = z.object({ provider: z.enum(PROVIDERS), model: z.string().trim().min(1).max(200) }).strict();
+/** The chat model, with the thinking level the user chose for it (null or absent: Socrates' default for the model). */
+const ChatChoice = ModelChoice.extend({ effort: z.enum(EFFORTS).nullable().optional() }).strict();
 
 const TimeZone = z.string().refine((zone) => {
   try {
@@ -37,13 +40,14 @@ export type Access = z.infer<typeof Access>;
  * The user's choices (architecture/server.md, "Settings"). API keys are not
  * settings: they live in the data folder's `.env` and are never returned.
  * - chat / router: null picks the first provider with a key, and its defaults;
+ *   chat.effort: the thinking level, which applies to the next model request without a restart;
  * - embeddings: local Ollama with embeddinggemma unless changed;
  * - timeZone: null follows the Mac;
  * - workingFolder: the workspace new work is bound to, or null; choosing it adds its folder to `access`;
  * - access: where Socrates may work and when it asks; by default only the user's folders, asking first.
  */
 export const Settings = z.object({
-  chat: ModelChoice.nullable().default(null),
+  chat: ChatChoice.nullable().default(null),
   router: ModelChoice.nullable().default(null),
   embeddings: z.object({
     provider: z.enum(["ollama", "openrouter", "openai", "custom"]),

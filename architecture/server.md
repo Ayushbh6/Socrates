@@ -44,14 +44,14 @@ Settings and keys can change only while Socrates is idle (no main-conversation m
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `chat` | `null` | `{ provider, model }` of the working agent; `null` detects it from the keys |
+| `chat` | `null` | `{ provider, model, effort? }` of the working agent; `null` detects it from the keys. `effort` is its thinking level (`agent-harness.md`, "Thinking levels"); `null` or absent is Socrates' default for the model |
 | `router` | `null` | `{ provider, model }` of the Goal Router; `null` uses the chat provider's router default |
 | `embeddings` | Ollama, `embeddinggemma` | `{ provider, model, url }` as in `agent-harness.md`, "Embeddings and hybrid retrieval" |
 | `timeZone` | `null` | an IANA time zone; `null` follows the machine |
 | `workingFolder` | `null` | the workspace new work is bound to; choosing it adds its folder to `access.folders` |
 | `access` | my folders, none yet; ask first | `{ scope, folders, approvals }`: where Socrates may work and when it asks (see "Access") |
 
-A change sends only the fields that change; the others keep their values, inside `access` too. Every other change rebuilds Socrates and is refused with `busy` while it works; an `access` change alone applies at once, even while Socrates works, and only a rebuild in progress refuses it.
+A change sends only the fields that change; the others keep their values, inside `access` too. Two kinds of change apply at once, even while Socrates works, and only a rebuild in progress refuses them: `access`, and a `chat` that names the chat model already running (a new thinking level, or the detected model now chosen). The level applies to the next model request; one the model does not accept is refused with a message listing its levels. Every other change, including another chat model, rebuilds Socrates and is refused with `busy` while it works.
 
 **Keys** are not settings. They live in the data folder's `.env`, which holds only known key names (each provider's keys and `SOCRATES_EMBEDDINGS_API_KEY`) and is written atomically with mode `600`, preserving literal backslashes. Keys there take precedence over the process environment. The API never returns a key, only its effective presence, including inherited keys. Deleting a stored key restores any inherited value of the same name. Provider diagnostics and setup messages redact secrets. Embedding URLs must be HTTP or HTTPS base URLs without embedded credentials, query parameters or fragments.
 
@@ -91,10 +91,11 @@ API responses are JSON. A failure, including an unknown route, is `{ "error": { 
 | Route | Returns |
 |---|---|
 | `GET /api/health` | `{ ok: true }`, without a session |
-| `GET /api/status` | readiness and setup needed, the models in use and why (the chat model with whether it can see images), embedding state and index size, time zone, whether main is busy, the lanes, the working folder, and how many turns startup interrupted |
+| `GET /api/status` | readiness and setup needed, the models in use and why (the chat model with whether it can see images and, when it has them, its thinking levels: `effort: { levels, default, current }`), embedding state and index size, time zone, whether main is busy, the lanes, the working folder, and how many turns startup interrupted |
 | `GET`, `PUT /api/settings` | the settings; `PUT` takes any subset and returns the result |
 | `GET /api/keys` | each known key name with whether it is set |
 | `GET /api/providers` | each model provider with its default chat and router models and the keys it reads, for the settings screen |
+| `GET /api/models?provider=…` | `{ models: [{ id, name? }] }`: the provider's chat models from its own list (only models that can call tools; OpenAI's and Gemini's speech, image and embedding models left out), kept for ten minutes. A provider without a key, or one that cannot be reached, is `invalid_request` with a message that never carries a key |
 | `PUT`, `DELETE /api/keys/:name` | set (`{ value }`) or remove a key |
 | `GET /api/goals` | every goal, most recently updated first, with its tasks, notes and workspace |
 | `GET /api/history` | one conversation's messages (see "History") |

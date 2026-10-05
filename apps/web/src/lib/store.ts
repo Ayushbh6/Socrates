@@ -3,7 +3,7 @@ import { api } from "./api";
 import { IMAGES_MAX, prepareImage } from "./images";
 import { LiveConnection } from "./live";
 import { type Model, type ModelEvent, emptyModel, reduce, replayFrom } from "./model";
-import type { Access, AttachmentView, Command, GoalView, ServerMessage, Settings, Status } from "./types";
+import type { Access, AttachmentView, Command, Effort, GoalView, ServerMessage, Settings, Status } from "./types";
 
 export interface AppState {
   model: Model;
@@ -163,6 +163,18 @@ export class Store {
   async saveSettings(patch: Partial<Omit<Settings, "access" | "workingFolder">>): Promise<void> {
     this.set({ settings: await api.setSettings(patch) });
     await this.refreshStatus();
+  }
+
+  /** Make this the chat model; Socrates restarts with it at its default thinking level, so only when idle. */
+  async chooseModel(provider: string, model: string): Promise<void> {
+    await this.saveSettings({ chat: { provider, model } });
+  }
+
+  /** The chat model's thinking level; it applies to the next request, even while Socrates works. */
+  async setEffort(effort: Effort): Promise<void> {
+    const chat = this.state.status?.models.chat;
+    if (!chat) return;
+    await this.saveSettings({ chat: { provider: chat.provider, model: chat.model, effort } });
   }
 
   /** Set or, with null, remove a key; Socrates restarts with it. */

@@ -1,11 +1,21 @@
 /** The server's API as the page sees it (architecture/server.md, "HTTP API" and "Live connection"). */
 
+export type Effort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
 export interface ModelInUse {
   provider: string;
   model: string;
   source: "settings" | "detected";
   /** Whether the model can see images; reported for the chat model. */
   vision?: boolean;
+  /** The chat model's thinking levels, weakest first, its default, and the one in use; absent when it has none to choose. */
+  effort?: { levels: Effort[]; default: Effort | null; current: Effort | null };
+}
+
+/** A model a provider offers for chat. */
+export interface ListedModel {
+  id: string;
+  name?: string;
 }
 
 /** An image attached to a message, as the server stores it (`/api/attachments/<id>` serves it). */
@@ -56,6 +66,8 @@ export interface Access {
 export interface ModelChoice {
   provider: string;
   model: string;
+  /** The chat model's thinking level; null or absent is Socrates' default for it. */
+  effort?: Effort | null;
 }
 
 export interface Settings {

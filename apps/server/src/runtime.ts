@@ -3,8 +3,8 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { type LaneState, Socrates, interruptUnfinishedTurns } from "@socrates/agent";
 import { InstalledCatalog } from "@socrates/capabilities";
-import { type EmbeddingClient, type ModelClient, ModelError } from "@socrates/contracts";
-import { PROVIDER_DEFAULTS, type Provider, detectVision, makeEmbedder, makeModel } from "@socrates/providers";
+import { type Effort, type EmbeddingClient, type ModelClient, ModelError } from "@socrates/contracts";
+import { type EffortLevels, type ListedModel, PROVIDER_DEFAULTS, type Provider, detectEfforts, detectVision, listModels, makeEmbedder, makeModel } from "@socrates/providers";
 import { Retrieval } from "@socrates/retrieval";
 import { abortable, type Clock } from "@socrates/shared";
 import { LedgerStore, type Workspace } from "@socrates/store";
@@ -25,6 +25,11 @@ export interface ModelInUse {
   source: "settings" | "detected";
   /** Whether the model can see images (agent-harness.md, "Images"). */
   vision?: boolean;
+  /**
+   * The chat model's thinking levels (agent-harness.md, "Thinking levels"):
+   * those it accepts, Socrates' default, and the one in use now.
+   */
+  effort?: EffortLevels & { current: Effort | null };
 }
 
 /** Replaceable for tests; production uses the real providers. */
@@ -32,6 +37,10 @@ export interface RuntimeDeps {
   makeModel?: (provider: string, model: string, env: Record<string, string | undefined>, options?: { vision?: boolean }) => ModelClient;
   /** Whether a model can see images; production asks the provider's model list where it can. */
   detectVision?: (provider: string, model: string, env: Record<string, string | undefined>) => Promise<boolean>;
+  /** A provider's chat models; production asks the provider. */
+  listModels?: (provider: string, env: Record<string, string | undefined>) => Promise<ListedModel[]>;
+  /** The thinking levels a model accepts; production asks the provider's model list. */
+  detectEfforts?: (provider: string, model: string, env: Record<string, string | undefined>) => Promise<EffortLevels>;
   makeEmbedder?: (env: Record<string, string | undefined>) => EmbeddingClient;
   clock?: Clock;
   /** The process environment; keys in the data folder override it. */
@@ -190,7 +199,32 @@ export class Runtime {
     return { folders: scope === "full" ? null : valid, approvals, protected: this.protectedFolders };
   }
 
-  /** Apply a settings change and rebuild Socrates from it; an access change alone applies at once. */
+  /**
+   * The models a provider offers for chat, from its own list (OpenRouter's
+   * needs no key). A provider that cannot be asked is a SettingsError whose
+   * message never carries a key.
+   */
+  async providerModels(provider: string): Promise<ListedModel[]> {
+    if (!Object.hasOwn(PROVIDER_DEFAULTS, provider)) throw new SettingsError(`Unknown provider "${provider}".`);
+    const env = this.env();
+    const keys = PROVIDER_DEFAULTS[provider as Provider].keys;
+    if (provider !== "openrouter" && !keys.some((k) => env[k])) throw new SettingsError(`Add ${keys[0]} to list its models.`);
+    try {
+      return await (this.deps.listModels ?? listModels)(provider, env);
+    } catch (error) {
+      throw new SettingsError(redact(`Could not list ${provider}'s models: ${message(error)}`, env));
+    }
+  }
+
+  /** The chat model's thinking level now: the user's choice when the model accepts it, else Socrates' default; null leaves it to the provider. */
+  effortInUse(): Effort | null {
+    const efforts = this.models.chat?.effort;
+    if (!efforts?.levels.length) return null;
+    const chosen = this.settings.chat?.effort;
+    return chosen && efforts.levels.includes(chosen) ? chosen : efforts.default;
+  }
+
+  /** Apply a settings change and rebuild Socrates from it; a change of access or of the running chat model's thinking level applies at once. */
   async updateSettings(patch: unknown): Promise<Settings> {
     // Only the fields sent change; the patch schema's defaults must not reset the others.
     const parsed = SettingsPatch.parse(patch) as Record<string, unknown>;
@@ -208,11 +242,20 @@ export class Runtime {
       if (!next.access.folders.includes(workspace.rootPath)) next.access.folders = [...next.access.folders, workspace.rootPath];
     }
     next = Settings.parse(next);
-    if (Object.keys(sent).every((key) => key === "access")) {
-      // Access needs no rebuild, so it may change while Socrates works; a rebuild would overwrite it.
-      if (this.changing || this.closing) throw new RuntimeBusyError("Socrates is restarting; change access in a moment.");
+    // The chat model already running, perhaps with another thinking level: no rebuild.
+    const inUse = this.models.chat;
+    const sameChat = !!this.socrates && !!next.chat && !!inUse && next.chat.provider === inUse.provider && next.chat.model === inUse.model;
+    if (Object.keys(sent).every((key) => key === "access" || (key === "chat" && sameChat))) {
+      const effort = next.chat?.effort;
+      if (sameChat && effort && !inUse!.effort?.levels.includes(effort)) {
+        const levels = inUse!.effort?.levels ?? [];
+        throw new SettingsError(levels.length ? `${inUse!.model} cannot think at "${effort}"; choose ${levels.join(", ")}.` : `${inUse!.model} has no thinking levels to choose from.`);
+      }
+      // Access and thinking levels need no rebuild, so they may change while Socrates works; they apply to the next tool call or model request.
+      if (this.changing || this.closing) throw new RuntimeBusyError("Socrates is restarting; change this in a moment.");
       saveSettings(this.config.settingsPath, next);
       this.settings = next;
+      if (sameChat) this.models.chat = { ...inUse!, source: "settings", ...(inUse!.effort ? { effort: { ...inUse!.effort, current: this.effortInUse() } } : {}) };
       this.retrieval?.scheduleSync();
       this.announceChange();
       return next;
@@ -304,15 +347,19 @@ export class Runtime {
     const router: ModelInUse = this.settings.router
       ? { ...this.settings.router, source: "settings" }
       : { provider: chat.provider, model: PROVIDER_DEFAULTS[chat.provider as Provider].router, source: chat.source };
-    // Only the chat model reads files and attachments, so only it needs to know whether it can see.
-    const vision = await (this.deps.detectVision ?? detectVision)(chat.provider, chat.model, env);
+    // Only the chat model reads files and attachments, so only it needs to know whether it can see; the router keeps its own thinking level.
+    const [vision, efforts] = await Promise.all([
+      (this.deps.detectVision ?? detectVision)(chat.provider, chat.model, env),
+      (this.deps.detectEfforts ?? detectEfforts)(chat.provider, chat.model, env),
+    ]);
     this.deps.signal?.throwIfAborted();
-    this.models = { chat: { ...chat, vision }, router };
+    this.models = { chat: { ...chat, vision, ...(efforts.levels.length ? { effort: { ...efforts, current: null } } : {}) }, router };
+    if (this.models.chat?.effort) this.models.chat.effort.current = this.effortInUse();
     const build = this.deps.makeModel ?? makeModel;
     let model: ModelClient;
     let routerModel: ModelClient;
     try {
-      model = build(chat.provider, chat.model, env, { vision });
+      model = withEffort(build(chat.provider, chat.model, env, { vision }), () => this.effortInUse());
       routerModel = build(router.provider, router.model, env);
     } catch (error) {
       this.setup.push(redact(error instanceof ModelError && error.kind === "authentication" ? `${error.message} Add it in settings.` : `The chat model cannot start: ${message(error)}`, env));
@@ -375,7 +422,7 @@ export class Runtime {
   }
 
   private chatChoice(env: Record<string, string | undefined>): ModelInUse | null {
-    if (this.settings.chat) return { ...this.settings.chat, source: "settings" };
+    if (this.settings.chat) return { provider: this.settings.chat.provider, model: this.settings.chat.model, source: "settings" };
     const provider = DETECTION_ORDER.find((p) => PROVIDER_DEFAULTS[p].keys.some((k) => env[k]));
     return provider ? { provider, model: PROVIDER_DEFAULTS[provider].main, source: "detected" } : null;
   }
@@ -395,6 +442,18 @@ export class Runtime {
     const failed = outcomes.find((r) => r.status === "rejected");
     if (failed?.status === "rejected") throw failed.reason;
   }
+}
+
+/** The chat model asked at the thinking level in use when each request is sent, so a new level applies to the next request. */
+function withEffort(model: ModelClient, effort: () => Effort | null): ModelClient {
+  return {
+    id: model.id,
+    ...(model.vision !== undefined ? { vision: model.vision } : {}),
+    complete: (request) => {
+      const level = request.effort ?? effort();
+      return model.complete(level ? { ...request, effort: level } : request);
+    },
+  };
 }
 
 export class SettingsError extends Error {

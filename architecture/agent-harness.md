@@ -1450,6 +1450,20 @@ Each provider adapter translates between this contract and its API. Goal routing
 
 **Thinking.** A streamed request may also carry `onReasoning`, which receives the model's readable thinking as it arrives, and the response carries it as `reasoning`. It is for display only: what a provider needs to continue (signed or encrypted reasoning) travels in the raw content, and `reasoning` is never sent to a model. DeepSeek streams `reasoning_content`, OpenRouter `reasoning`, Anthropic its thinking blocks, and Gemini Interactions summaries of its thoughts, which are requested (`thinking_summaries: "auto"`) only when someone shows them and are kept on the thought step as a plain reply has them. A model that does not show its thinking simply has none. The working agent reports thinking as a third kind of draft, `thinking`, with its own text beside the reply's narration or answer, and the saved model reply (`agent_message`) keeps it.
 
+**Thinking levels.** A request may name an `effort`, how hard the model thinks, in one vocabulary for every provider: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` (shown as "Extra high") and `max`. Each adapter asks its provider in its own words:
+
+| Provider | A level | `off` |
+|---|---|---|
+| Anthropic | `output_config.effort` | `thinking: { type: "disabled" }` |
+| OpenAI | `reasoning_effort` | `reasoning_effort: "none"` |
+| Gemini | `thinking_level` | not offered: its thinking cannot be turned off |
+| DeepSeek | `reasoning_effort` | `thinking: { type: "disabled" }` |
+| OpenRouter | `reasoning: { effort }` | `reasoning: { enabled: false }` |
+
+A request without a level uses the client's own default: `low` for Gemini and DeepSeek, as before, and the provider's default elsewhere. The router never names one, so routing keeps those defaults. Which levels a model accepts comes from the providers' own model lists (`detectEfforts`): DeepSeek lists each model's levels (and every DeepSeek model can also answer without thinking); OpenRouter lists each model's levels, its default, and whether its thinking is mandatory, which decides `off`. OpenAI, Anthropic and Gemini do not list levels, so their models are looked up in OpenRouter's public list under the provider's prefix (`claude-opus-5-5` is `anthropic/claude-opus-5.5`). So Claude Haiku 4.5 has no levels, Opus 5.5 cannot stop thinking, and OpenAI's `none` is `off`. Socrates' default for a model is `low` where Gemini or DeepSeek accept it, otherwise the model's own. A model whose levels cannot be found has none to choose, and keeps its client default. Model lists are kept for ten minutes; a failed lookup is not kept.
+
+The server chooses the chat model's level: the user's choice when the model accepts it, otherwise Socrates' default. It is read when each request is sent, so a new level applies to the next request of a running turn without a rebuild (`server.md`, "Settings").
+
 Provider-specific features are optional optimizations. The harness must still work when a model supports only ordinary messages and function calling.
 
 ## Prompt caching

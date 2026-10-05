@@ -63,9 +63,9 @@ Every tool call opens to its live preview; **Open the full output** shows the co
 
 ## Settings
 
-The gear in either header, or the model name in the composer, opens settings:
+The gear in either header opens settings:
 
-- **Models:** the chat and routing models: automatic (the first provider with a key, and the chat provider's router model) or a provider with its default model filled in (`GET /api/providers`), which can be edited. It says which models are in use and whether they were picked from the keys.
+- **Models:** the chat and routing models: automatic (the first provider with a key, and the chat provider's router model) or a provider with its default model filled in (`GET /api/providers`), which can be edited, with the provider's models suggested while typing (`GET /api/models`). A chat model keeps its thinking level only while it stays the same model. It says which models are in use and whether they were picked from the keys.
 - **API keys:** each key Socrates knows, whether it is set, and a field to set or replace it, or remove it. Keys are never shown.
 - **Memory search:** the embedding provider (Ollama on this Mac by default), model and address, and whether memory search is ready and how much it holds.
 - **Time zone:** a time zone, or follow the Mac.
@@ -86,7 +86,9 @@ Drop images on the composer, paste a screenshot into it, or choose them with the
 - Queued messages sit above the composer; each can be removed or moved into a new lane.
 - **Stop** cancels the work of the conversation on the canvas.
 - The approvals chip chooses **Ask first** (reading is free; every edit and command asks) or **Work freely**. It turns orange with full access.
-- The chat model is shown beside Send.
+- **Model and thinking** sit beside Send, as in other chat apps: "deepseek-flash ⌄  Low ⌄" (not in a lane's compact composer).
+  - The model menu lists the chat models of every provider with a key (`GET /api/models`), the one in use first and checked, with a search box over names and ids; a provider lists at most `40` at a time, and one with no match is left out while searching. A typed id without spaces that no list has can be used with any of those providers. Choosing a model saves it as the chat model, at Socrates' default thinking level, and restarts Socrates, so while anything is working the models are greyed out and the menu says to wait. The menu links to Settings for the routing model and keys.
+  - The thinking menu shows only the levels the chat model accepts (`server.md`, "Settings"), strongest first, with Socrates' default marked and the one in use checked. A choice applies to the next model request, even while Socrates works, and every open page shows it. A model without levels has no thinking menu.
 - Unsent text belongs to its conversation and survives a mode switch or reconnect. Sending waits for a ready connection. A rejected queue submission keeps its text on the page and restores it to an empty composer; if another draft is already being written, that draft is preserved.
 
 ## Approvals

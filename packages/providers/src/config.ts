@@ -1,6 +1,7 @@
-import { ModelError, type ModelClient } from "@socrates/contracts";
+import { type Effort, ModelError, type ModelClient } from "@socrates/contracts";
 import { AnthropicModel } from "./anthropic";
 import { GeminiInteractionsModel } from "./gemini";
+import { deepSeekModels, openRouterModels } from "./catalog";
 import { OpenAICompatibleModel } from "./openai";
 
 export const PROVIDER_DEFAULTS = {
@@ -30,23 +31,26 @@ export function knownVision(provider: string, model: string): boolean {
  * failed or slow lookup falls back to `knownVision`.
  */
 export async function detectVision(provider: string, model: string, env: Record<string, string | undefined> = process.env, fetcher: typeof fetch = fetch): Promise<boolean> {
-  const lists: Record<string, { url: string; key?: string }> = {
-    deepseek: { url: `${env.SOCRATES_DEEPSEEK_BASE_URL ?? "https://api.deepseek.com"}/models`, key: env.DEEPSEEK_API_KEY },
-    openrouter: { url: "https://openrouter.ai/api/v1/models" },
-  };
-  const list = lists[provider];
-  if (!list) return knownVision(provider, model);
   try {
-    const response = await fetcher(list.url, { headers: list.key ? { authorization: `Bearer ${list.key}` } : {}, signal: AbortSignal.timeout(5_000) });
-    if (!response.ok) return knownVision(provider, model);
-    const body = (await response.json()) as { data?: { id?: string; input_modalities?: unknown; architecture?: { input_modalities?: unknown } }[] };
-    const entry = body.data?.find((m) => m.id === model);
-    const modalities = entry?.input_modalities ?? entry?.architecture?.input_modalities;
+    const modalities = provider === "deepseek" ? (await deepSeekModels(env, fetcher)).find((m) => m.id === model)?.input_modalities
+      : provider === "openrouter" ? (await openRouterModels(fetcher)).find((m) => m.id === model)?.architecture?.input_modalities
+      : undefined;
     return Array.isArray(modalities) ? modalities.includes("image") : knownVision(provider, model);
   } catch {
     return knownVision(provider, model);
   }
 }
+
+/**
+ * How each provider is asked for a thinking level (agent-harness.md,
+ * "Thinking levels"). A request's `effort` uses these; "off" turns thinking
+ * off where the model allows it.
+ */
+export const EFFORT_BODY: Record<string, (effort: Effort) => Record<string, unknown>> = {
+  openai: (effort) => ({ reasoning_effort: effort === "off" ? "none" : effort }),
+  deepseek: (effort) => (effort === "off" ? { thinking: { type: "disabled" } } : { reasoning_effort: effort }),
+  openrouter: (effort) => ({ reasoning: effort === "off" ? { enabled: false } : { effort } }),
+};
 
 export function makeModel(provider: string, model: string, env: Record<string, string | undefined> = process.env, options: { vision?: boolean } = {}): ModelClient {
   const defaults = PROVIDER_DEFAULTS[provider as Provider];
@@ -57,8 +61,8 @@ export function makeModel(provider: string, model: string, env: Record<string, s
   switch (provider) {
     case "anthropic": return new AnthropicModel({ model, apiKey, vision });
     case "gemini": return new GeminiInteractionsModel({ model, apiKey, vision });
-    case "deepseek": return new OpenAICompatibleModel({ model, provider, apiKey, vision, baseURL: env.SOCRATES_DEEPSEEK_BASE_URL ?? "https://api.deepseek.com", maxTokensParam: "max_tokens", sampling: false, extraBody: { reasoning_effort: "low" } });
-    case "openrouter": return new OpenAICompatibleModel({ model, provider, apiKey, vision, baseURL: "https://openrouter.ai/api/v1", maxTokensParam: "max_tokens", sampling: false });
-    default: return new OpenAICompatibleModel({ model, provider, apiKey, vision, sampling: false });
+    case "deepseek": return new OpenAICompatibleModel({ model, provider, apiKey, vision, baseURL: env.SOCRATES_DEEPSEEK_BASE_URL ?? "https://api.deepseek.com", maxTokensParam: "max_tokens", sampling: false, effort: "low", effortBody: EFFORT_BODY.deepseek });
+    case "openrouter": return new OpenAICompatibleModel({ model, provider, apiKey, vision, baseURL: "https://openrouter.ai/api/v1", maxTokensParam: "max_tokens", sampling: false, effortBody: EFFORT_BODY.openrouter });
+    default: return new OpenAICompatibleModel({ model, provider, apiKey, vision, sampling: false, effortBody: EFFORT_BODY.openai });
   }
 }

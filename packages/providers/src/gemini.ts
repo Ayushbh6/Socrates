@@ -1,4 +1,4 @@
-import { type ImageData, ModelError, type ModelClient, type ModelMessage, type ModelRequest, type ModelResponse, userText } from "@socrates/contracts";
+import { type Effort, type ImageData, ModelError, type ModelClient, type ModelMessage, type ModelRequest, type ModelResponse, userText } from "@socrates/contracts";
 import { idleGuard, serverSentEvents } from "./stream";
 
 export interface GeminiInteractionsOptions {
@@ -6,7 +6,8 @@ export interface GeminiInteractionsOptions {
   apiKey?: string;
   /** Stable Interactions API by default; injectable for transport tests. */
   baseURL?: string;
-  thinkingLevel?: "low" | "medium" | "high";
+  /** The thinking level (`thinking_level`) when a request names none. Default "low"; Gemini's thinking cannot be turned off. */
+  thinkingLevel?: Effort;
   fetch?: typeof globalThis.fetch;
   /** A reply fails after this long: for a streamed reply, without receiving anything. */
   timeoutMs?: number;
@@ -65,7 +66,7 @@ export class GeminiInteractionsModel implements ModelClient {
           // Interactions has no "no new calls" switch; a request that must not call tools sends none.
           ...(request.tools?.length && request.toolChoice !== "none" ? { tools: request.tools.map(t => ({ type: "function", name: t.name, description: t.description, parameters: t.inputSchema })) } : {}),
           // Summaries of the model's thoughts are asked for only when someone shows them.
-          generation_config: { max_output_tokens: request.maxOutputTokens ?? 16_000, thinking_level: this.options.thinkingLevel ?? "low", ...(request.onReasoning ? { thinking_summaries: "auto" } : {}) },
+          generation_config: { max_output_tokens: request.maxOutputTokens ?? 16_000, thinking_level: request.effort ?? this.options.thinkingLevel ?? "low", ...(request.onReasoning ? { thinking_summaries: "auto" } : {}) },
         }),
       });
     } catch {

@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import {
+  type Effort,
   type ModelClient,
   hasCacheBreakpoints,
   type ImageData,
@@ -23,8 +24,12 @@ export interface AnthropicModelOptions {
   /** Defaults to the SDK's environment resolution (ANTHROPIC_API_KEY, auth token, or `ant auth login` profile). */
   apiKey?: string;
   baseURL?: string;
-  /** Reasoning effort (`output_config.effort`). Omit for the model default; Haiku 4.5 does not accept it. */
-  effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  /**
+   * The thinking level when a request names none: `output_config.effort`, or
+   * "off" for `thinking: { type: "disabled" }`. Omit for the model default;
+   * Haiku 4.5 accepts neither.
+   */
+  effort?: Effort;
   /**
    * Send `temperature` when the request sets one. Current Opus and Sonnet
    * models reject sampling parameters, so this is off by default.
@@ -62,6 +67,7 @@ export class AnthropicModel implements ModelClient {
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
     const fallback = (this.options.refusalFallback ?? true) && FALLBACK_MODELS.has(this.options.model);
+    const effort = request.effort ?? this.options.effort;
     const params: Anthropic.Beta.MessageCreateParamsNonStreaming = {
       model: this.options.model,
       max_tokens: request.maxOutputTokens ?? 16_000,
@@ -79,7 +85,7 @@ export class AnthropicModel implements ModelClient {
           }
         : {}),
       ...(this.options.sampling && request.temperature !== undefined ? { temperature: request.temperature } : {}),
-      ...(this.options.effort ? { output_config: { effort: this.options.effort } } : {}),
+      ...(effort === "off" ? { thinking: { type: "disabled" as const } } : effort ? { output_config: { effort: effort as "low" | "medium" | "high" | "xhigh" | "max" } } : {}),
       ...(fallback ? { betas: [FALLBACK_BETA], fallbacks: "default" as const } : {}),
     };
 
