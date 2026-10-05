@@ -113,6 +113,35 @@ describe("routing outcomes and binding", () => {
   });
 });
 
+describe("a message that is only images", () => {
+  it("is routed by the conversation, never split, and its empty text is kept exactly", async () => {
+    const { store } = setup();
+    await exchange(store, "Review the onboarding page", createGoal("Onboarding", "Review onboarding page"));
+    const attachment = { id: "0123456789abcdef0123456789abcdef", name: "screen.png", path: "/tmp/screen.png", media_type: "image/png" as const, width: 10, height: 10, bytes: 100 };
+    const user = store.recordUserMessage("", null, [attachment]);
+    const part = (order: number) => ({ order, request: order === 1 ? "this" : "that", decision: "continue_current", goal_label: "current", task_decision: "continue_task", task_label: "current", new_goal_title: null, new_task_title: null, workspace_confidence: "high", reason: "r", depends_on: [] });
+    const { router, routerModel } = routerWith(store, [
+      { text: decision({ decision: "compound", workspace_confidence: null, parts: [part(1), part(2)] as never }) },
+      continueTask(),
+    ]);
+    const result = await router.route("", undefined, { userEventId: user.id });
+    const input = routerModel.requests[0]!.messages[0]!.content as string;
+    expect(input).toContain("<CURRENT_ATTACHMENTS>\n[The user attached an image: screen.png]\n</CURRENT_ATTACHMENTS>");
+    expect(input.trimEnd().endsWith("<CURRENT_USER_MESSAGE>\n(No text: the user sent only the images in CURRENT_ATTACHMENTS.)\n</CURRENT_USER_MESSAGE>")).toBe(true);
+    expect(routerModel.requests[1]!.messages.at(-1)!.content).toContain("request must be an exact, ordered sub-request");
+    expect(result.kind === "routed" && result.parts.map((p) => p.task.title)).toEqual(["Review onboarding page"]);
+    expect(store.getEvent(user.id)!.payload).toEqual({ text: "", attachments: [attachment] });
+
+    if (result.kind !== "routed") throw new Error("expected routed");
+    store.completeTurn(result.parts[0]!.turn.id, { responseEventId: store.recordResponse("A sign-up form.").id, continuationNote: null });
+
+    // Later routing shows the exchange with only its images.
+    const { router: next, routerModel: nextModel } = routerWith(store, [continueTask()]);
+    await next.route("And the footer?");
+    expect(nextModel.requests[0]!.messages[0]!.content).toContain("USER:\n[The user attached an image: screen.png]\n\nSOCRATES:");
+  });
+});
+
 describe("validation, repair, escalation, and fallback", () => {
   it("repairs an invalid label once with a corrective message", async () => {
     const { store } = setup();

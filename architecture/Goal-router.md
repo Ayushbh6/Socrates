@@ -307,7 +307,7 @@ A message that only asks how a lane's work is going routes to `general`, even wh
 
 #### 5. `CURRENT_USER_MESSAGE`
 
-This is the exact current query. It appears once, after both context sections, and is always the final block read by the router.
+This is the exact current query. It appears once, after both context sections, and is always the final block read by the router. When the message has images, `CURRENT_ATTACHMENTS` names them just before it. A message that is only images has no text; in its place the router reads "(No text: the user sent only the images in CURRENT_ATTACHMENTS.)". Such a message continues the conversation: the current task, or `general` when there is none. It is never asked about and never compound, and the stored message stays empty.
 
 ### Recent-history token budget
 

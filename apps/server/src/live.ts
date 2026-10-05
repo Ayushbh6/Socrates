@@ -21,7 +21,8 @@ const SETTLES_DRAFT = new Set(["step", "answer", "question", "finished"]);
 const SEND_BUFFER_MAX_BYTES = 8 * 1024 * 1024;
 
 const Id = z.string().regex(/^[A-Za-z0-9_-]{1,100}$/);
-const Text = z.string().min(1).max(TEXT_MAX_CHARS).refine((text) => text.trim().length > 0, "Write a message.");
+/** A message's exact text; it may be empty when images are attached (`hasWords`). */
+const Text = z.string().max(TEXT_MAX_CHARS);
 /** An attachment named in a message: a stored image's id, with the name the page gives it. */
 const Attached = z.array(z.object({ id: z.string().regex(/^[0-9a-f]{32}$/), name: z.string().max(1000) }).strict()).max(ATTACHMENTS_MAX);
 const Decision = z.object({ goalId: z.string(), path: z.string(), role: z.string(), decision: z.enum(["approve", "reject", "supersede"]) }).strict();
@@ -193,9 +194,11 @@ export class LiveHub {
       case "hello":
         return this.hello(socket, command.after);
       case "send":
+        hasWords(command.text, command.attachments);
         return this.start(command.id, command.text, command.to, command.anchorDecisions, false, this.attachments(command.attachments));
       case "queue": {
         this.assertNewId(command.id);
+        hasWords(command.text, command.attachments);
         if (this.queue.length >= QUEUE_MAX) throw new LiveError("queue_full", `At most ${QUEUE_MAX} messages can wait for the main conversation.`);
         const attachments = this.attachments(command.attachments);
         this.acceptedIds.add(command.id);
@@ -203,9 +206,12 @@ export class LiveHub {
         this.publishState();
         return this.drain();
       }
-      case "queue_edit":
-        this.queued(command.id).text = command.text;
+      case "queue_edit": {
+        const item = this.queued(command.id);
+        hasWords(command.text, item.attachments);
+        item.text = command.text;
         return this.publishState();
+      }
       case "queue_remove":
         this.queue.splice(this.queue.indexOf(this.queued(command.id)), 1);
         return this.publishState();
@@ -459,6 +465,11 @@ export class LiveError extends Error {
     super(message);
     this.name = "LiveError";
   }
+}
+
+/** A message must say something or carry an image; its text is kept exactly as sent. */
+function hasWords(text: string, attachments: readonly unknown[] | undefined): void {
+  if (!text.trim() && !attachments?.length) throw new LiveError("empty_message", "Write a message or attach an image.");
 }
 
 function problemOf(error: unknown): { code: string; message: string } {

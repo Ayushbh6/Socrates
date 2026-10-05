@@ -115,7 +115,7 @@ The response also carries its snapshot `seq`; each item carries `throughSeq`, or
 
 ## Attachments
 
-The composer stores each image the user attaches before the message is sent (`POST /api/attachments`): a PNG, JPEG, GIF or WebP image up to `5` MB, checked by its header, saved readable only by the user as `attachments/<hash>.<ext>`, so the same image is stored once. The message then names its images by id and the user's file name (only the name's last part, without control characters). The saved message keeps each image's id, name, stored path, format and pixel size; the working agent is shown them, or told their names when its model cannot see, and every later turn keeps their paths (`agent-harness.md`, "Images"). Pages never learn the stored path; they show an image from `GET /api/attachments/:id`. The router is told a message has images, by name, and so is its recent history.
+The composer stores each image the user attaches before the message is sent (`POST /api/attachments`): a PNG, JPEG, GIF or WebP image up to `5` MB, checked by its header, saved readable only by the user as `attachments/<hash>.<ext>`, so the same image is stored once. The message then names its images by id and the user's file name (only the name's last part, without control characters). The saved message keeps each image's id, name, stored path, format and pixel size; the working agent is shown them, or told their names when its model cannot see, and every later turn keeps their paths (`agent-harness.md`, "Images"). Pages never learn the stored path; they show an image from `GET /api/attachments/:id`. The router is told a message has images, by name, and so is its recent history. A message may be only images: its text is saved exactly as sent, even when empty (`agent-harness.md`, "Images").
 
 ## Live connection
 
@@ -130,9 +130,9 @@ Changes to settings or keys also broadcast state to every subscribed page. `read
 | Command | Effect |
 |---|---|
 | `hello { after? }` | the state, then the activities after `after` |
-| `send { id, text, to, anchorDecisions?, attachments? }` | `to` is `main`, `new_lane`, or an open lane's id. `attachments` names stored images (`{ id, name }`, at most `10`); one that is not stored is refused with `attachment_missing`. `main` is refused with `main_busy` while main works: the composer queues instead. A fifth running lane is refused with `lane_limit`. `anchorDecisions` are the user's explicit anchor selections (`agent-harness.md`, "Final result") |
+| `send { id, text, to, anchorDecisions?, attachments? }` | `to` is `main`, `new_lane`, or an open lane's id. `attachments` names stored images (`{ id, name }`, at most `10`); one that is not stored is refused with `attachment_missing`. A message needs words or at least one image; one with neither is refused with `empty_message`, and its text is otherwise kept exactly as sent. `main` is refused with `main_busy` while main works: the composer queues instead. A fifth running lane is refused with `lane_limit`. `anchorDecisions` are the user's explicit anchor selections (`agent-harness.md`, "Final result") |
 | `queue { id, text, attachments? }` | wait for the main conversation, with its images; queued messages run in order as soon as main is free (at most `20`) |
-| `queue_edit { id, text }`, `queue_remove { id }`, `queue_to_lane { id }` | change, drop, or send a queued message in a new lane instead |
+| `queue_edit { id, text }`, `queue_remove { id }`, `queue_to_lane { id }` | change, drop, or send a queued message in a new lane instead; an edit may clear the text only when the message has images |
 | `cancel { conversation }` | stop what runs in `main` or a lane, including a message handed to that lane |
 | `approve { approval, granted }` | answer a pending approval |
 | `close_lane { lane }` | close an idle lane |

@@ -499,7 +499,7 @@ describe("S2 closure regressions", () => {
       expect(p.received.some((m) => m.type === "accepted" && m.id === to)).toBe(false);
     }
     p.send({ type: "send", id: "blank", text: " \n ", to: "main" });
-    expect(await p.next((m) => m.type === "error" && m.code === "invalid_command")).toBeDefined();
+    expect(await p.next((m) => m.type === "error" && m.id === "blank")).toMatchObject({ code: "empty_message", message: "Write a message or attach an image." });
   });
 
   it("reserves IDs across queued messages, other tabs and reconnects, including completed messages", async () => {

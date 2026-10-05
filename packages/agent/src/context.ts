@@ -4,7 +4,7 @@ import { type AccessPolicy, type ActiveCapabilities, type WorkspaceRoot, describ
 import { renderActivity } from "@socrates/router";
 import type { Goal, LedgerStore, Task, Turn } from "@socrates/store";
 import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
-import { attachmentLines, requestAttachments } from "./attachments";
+import { attachmentLines, requestAttachments, requestText } from "./attachments";
 import { clarificationLine, historyParts, taskHistory } from "./history";
 import { projectContext } from "./project-context";
 import { retrievedHistory } from "./retrieval";
@@ -192,7 +192,8 @@ function currentMessage(store: LedgerStore, turn: Turn, vision: boolean): string
   const bound = store.listEvents({ turnId: turn.id, type: "turn_bound" })[0]!.payload as EventPayloads["turn_bound"];
   const original = (store.getEvent(bound.request_event_id)!.payload as EventPayloads["user_message"]).text;
   const { clarification } = store.requestForTurn(turn.id);
-  return [original, clarification ? clarificationLine(clarification) : "", attachmentLines(requestAttachments(store, turn), vision)].filter(Boolean).join("\n");
+  const attachments = requestAttachments(store, turn);
+  return [requestText(original, attachments), clarification ? clarificationLine(clarification) : "", attachmentLines(attachments, vision)].filter(Boolean).join("\n");
 }
 
 /** Synchronize only capability exposure. Keep native calls and exact stored evidence intact.

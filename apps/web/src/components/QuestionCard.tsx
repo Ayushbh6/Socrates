@@ -24,14 +24,17 @@ export function QuestionCard({ text, note, attachments = [] }: { text: string; n
           ))}
         </ul>
       )}
-      <div className="question-card" data-open={open} data-long={long}>
-        <p ref={body} className="question-text">{text}</p>
-        {long && (
-          <button type="button" className="question-more" onClick={() => setOpen(!open)}>
-            {open ? "Show less" : "Show more"}
-          </button>
-        )}
-      </div>
+      {/* A message that is only images shows just them. */}
+      {text.trim() && (
+        <div className="question-card" data-open={open} data-long={long}>
+          <p ref={body} className="question-text">{text}</p>
+          {long && (
+            <button type="button" className="question-more" onClick={() => setOpen(!open)}>
+              {open ? "Show less" : "Show more"}
+            </button>
+          )}
+        </div>
+      )}
       {note && <p className="question-note">{note}</p>}
     </div>
   );

@@ -86,6 +86,23 @@ describe("attached images", () => {
     expect(results[1]!.content).not.toContain("not for tools");
   });
 
+  it("can be the whole message: the text stays empty, and the models are told only images came", async () => {
+    const { w, folder, file, attachment } = await attached();
+    const { socrates, routerModel, model } = w.socrates([continueTask(), continueTask()], [
+      final({ full_answer: "A label that says ORCHID." }),
+      final({ full_answer: "Yes, ORCHID." }),
+    ], { attachments: folder });
+    model.vision = true;
+    await socrates.handle("", { attachments: [attachment] });
+    expect(w.store.listEvents({ type: "user_message" }).at(-1)!.payload).toEqual({ text: "", attachments: [attachment] });
+    expect(contextText(routerModel.requests[0]!)).toContain("<CURRENT_USER_MESSAGE>\n(No text: the user sent only the images in CURRENT_ATTACHMENTS.)");
+    expect(model.requests[0]!.messages[0]).toMatchObject({ role: "user", images: [{ mediaType: "image/png" }] });
+    expect(contextText(model.requests[0]!)).toContain(`(The user sent no text, only the images below.)\n[The user attached an image. They are shown with this message; read one by its path to look again later.]\n1. ${file}`);
+
+    await socrates.handle("Was it ORCHID?");
+    expect(contextText(model.requests[1]!)).toContain(`USER:\n(The user sent no text, only the images below.)\n[The user attached an image. Read one by its path to look at it again.]\n1. ${file}`);
+  });
+
   it("tells the router about them, and keeps them findable by name in memory", async () => {
     const { w, folder, file, attachment } = await attached();
     const { socrates, routerModel, model } = w.socrates([continueTask(), continueTask()], [

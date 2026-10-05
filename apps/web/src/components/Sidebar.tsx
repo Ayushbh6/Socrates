@@ -85,7 +85,7 @@ export function Sidebar({ app, open, conversation, selected, onClose, onConversa
                       data-current={(selected ?? latest) === e.key}
                       onClick={() => onSelect(e.key === latest ? null : e.key)}
                     >
-                      <span className="question-item-text">{e.message}</span>
+                      <span className="question-item-text">{e.message.trim() || imagesOnly(e.attachments.length)}</span>
                       <small>{e.route ? `g${e.route.goal.number}/t${e.route.task.number}` : e.question ? "question" : ""}{e.state === "working" || e.state === "sending" ? " · working" : e.state === "stopped" ? " · stopped" : ""}</small>
                     </button>
                   ))}
@@ -100,4 +100,9 @@ export function Sidebar({ app, open, conversation, selected, onClose, onConversa
       )}
     </AnimatePresence>
   );
+}
+
+/** How a message that is only images is listed. */
+function imagesOnly(count: number): string {
+  return count === 1 ? "An image" : `${count} images`;
 }

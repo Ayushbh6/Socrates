@@ -8,6 +8,14 @@ export function requestAttachments(store: LedgerStore, turn: Turn): Attachment[]
 }
 
 /**
+ * What a model is shown as the user's words: the exact text, or for a message
+ * that is only images, a note saying so. The stored text is never changed.
+ */
+export function requestText(text: string, attachments: Attachment[]): string {
+  return text.trim() || !attachments.length ? text : "(The user sent no text, only the images below.)";
+}
+
+/**
  * The lines naming a message's attachments, kept with the message wherever it
  * is shown to a model, so a later turn knows each image's path and reads it
  * again to look. `vision` says whether the current model is shown them now

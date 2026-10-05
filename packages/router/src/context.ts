@@ -149,7 +149,7 @@ export function buildRoutingContext(store: LedgerStore, message: string, options
   }
   // Images are named apart from the message, whose exact text request ranges index.
   if (options.attachments?.length) sections.push(section("CURRENT_ATTACHMENTS", attachedLine(options.attachments)));
-  sections.push(section("CURRENT_USER_MESSAGE", message));
+  sections.push(section("CURRENT_USER_MESSAGE", message.trim() ? message : IMAGES_ONLY));
 
   return {
     now,
@@ -287,8 +287,12 @@ function tagFor(exchange: Exchange, goals: Map<string, GoalEntry>, store: Ledger
 }
 
 function renderExchange(tag: string, user: string, response: string, attachments: string[] = []): string {
-  return `${tag}\nUSER:\n${user}${attachments.length ? `\n${attachedLine(attachments)}` : ""}\n\nSOCRATES:\n${response}`;
+  const said = [user.trim() ? user : "", attachments.length ? attachedLine(attachments) : ""].filter(Boolean).join("\n");
+  return `${tag}\nUSER:\n${said}\n\nSOCRATES:\n${response}`;
 }
+
+/** Shown in place of a message that is only images; the stored text stays exactly what the user sent. */
+const IMAGES_ONLY = "(No text: the user sent only the images in CURRENT_ATTACHMENTS.)";
 
 /** "[The user attached 2 images: a.png, b.png]" */
 function attachedLine(names: string[]): string {

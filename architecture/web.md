@@ -77,7 +77,7 @@ Settings, the folder picker and full tool output contain keyboard focus, close o
 
 ## Images
 
-Drop images on the composer, paste a screenshot into it, or choose them with the image button: at most `10` per message. Each is made small enough to send in the browser (at most `2,000` pixels on its longest side and under `5` MB; a PNG stays a PNG when it fits, otherwise it becomes a JPEG), stored by the server, and shown as a thumbnail that can be removed before sending. Sending waits until every image is stored, and needs a message to go with them. When the chat model cannot see images, the composer says so: Socrates will know only their names and sizes. A sent question shows its images above it, in both modes and in history; each opens full size.
+Drop images on the composer, paste a screenshot into it, or choose them with the image button: at most `10` per message. Each is made small enough to send in the browser (at most `2,000` pixels on its longest side and under `5` MB; a PNG stays a PNG when it fits, otherwise it becomes a JPEG), stored by the server, and shown as a thumbnail that can be removed before sending. Sending waits until every image is stored; a message may be only images, with no text, and Send is enabled as soon as one is attached. When the chat model cannot see images, the composer says so: Socrates will know only their names and sizes. A sent question shows its images above it, in both modes and in history; each opens full size. A question that is only images shows just them, and the sidebar lists it as "An image" or "3 images".
 
 ## Composer
 

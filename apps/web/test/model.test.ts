@@ -59,6 +59,14 @@ describe("the conversation model", () => {
     expect(m.conversations.main).toHaveLength(1);
   });
 
+  it("keeps a message that is only images as one exchange with an empty text", () => {
+    const image = { id: "a".repeat(32), name: "screen.png", media_type: "image/png" as const, width: 10, height: 10, bytes: 100 };
+    let m = reduce(emptyModel(), { type: "sent", id: "c9", text: "", to: "main", at, attachments: [image] });
+    m = run(m, act("main", { kind: "message", text: "", attachments: [image] }), act("main", { kind: "routed", turnId: "t9", projectTurn: 9, ...route, lane: null }));
+    expect(m.conversations.main).toHaveLength(1);
+    expect(m.conversations.main![0]).toMatchObject({ message: "", attachments: [image], sendId: "c9", state: "working" });
+  });
+
   it("moves a message sent to a new lane into that lane, and follows a handoff into the lane", () => {
     let m = reduce(emptyModel(), { type: "sent", id: "c3", text: "Write NOTES.md", to: "new_lane", at });
     expect(m.pending).toHaveLength(1);

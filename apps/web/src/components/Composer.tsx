@@ -32,8 +32,9 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, on
   const images = app.images[conversation] ?? [];
   const attachments = images.flatMap((i) => (i.status === "ready" && i.attachment ? [i.attachment] : []));
   const uploading = images.some((i) => i.status === "uploading");
-  const empty = !text.trim();
-  // Images wait for their upload, and go only with a message that says something.
+  // A message may be only images; its text is sent exactly as typed.
+  const empty = !text.trim() && !attachments.length;
+  // Images wait for their upload.
   const unavailable = !app.connected || !live?.ready || uploading;
   const [dragging, setDragging] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
@@ -86,7 +87,7 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, on
         <ul className="queue" aria-label="Queued messages">
           {live.queue.map((q) => (
             <li key={q.id}>
-              <span>{q.text}{q.attachments?.length ? <small> · {q.attachments.length} image{q.attachments.length === 1 ? "" : "s"}</small> : null}</span>
+              <span>{q.text}{q.attachments?.length ? <small>{q.text.trim() ? " · " : ""}{q.attachments.length} image{q.attachments.length === 1 ? "" : "s"}</small> : null}</span>
               <button type="button" className="icon-button" title="Send in a new lane instead" aria-label="Send in a new lane instead" disabled={runningLanes >= MAX_RUNNING_LANES} onClick={() => store.queuedToLane(q.id)}><Split aria-hidden /></button>
               <button type="button" className="icon-button" title="Remove" aria-label="Remove from the queue" onClick={() => store.removeQueued(q.id)}><X aria-hidden /></button>
             </li>

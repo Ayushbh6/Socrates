@@ -54,4 +54,39 @@ describe("attachments", () => {
     p.send({ type: "send", id: "m3", text: "Too many", to: "main", attachments: Array.from({ length: 11 }, () => ({ id: stored.id, name: "x.png" })) });
     expect((await p.next((m) => m.type === "error" && m.code === "invalid_command")).message).toContain("attachments");
   });
+
+  it("takes a message that is only images, sent or queued, and refuses one with neither", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const { page, rt, app, token, port } = await liveServer(
+      new Responder("r", () => createGoal("Labels", "Read labels")),
+      new Responder("a", async (m) => {
+        if (m.startsWith("Hold")) await held;
+        return final({ full_answer: "Seen." });
+      }),
+    );
+    const stored = (await app.inject({ method: "POST", url: "/api/attachments?name=label.png", headers: { host: `127.0.0.1:${port}`, authorization: `Bearer ${token}`, "content-type": "image/png" }, payload: png })).json();
+    const image = [{ id: stored.id, name: "label.png" }];
+    const p = await page();
+    p.send({ type: "hello" });
+    p.send({ type: "send", id: "m1", text: "", to: "main", attachments: image });
+    expect(await p.next((m) => m.type === "result" && m.id === "m1")).toMatchObject({ result: { kind: "answered", text: "Seen." } });
+    expect(rt.store.listEvents({ type: "user_message" }).at(-1)!.payload).toMatchObject({ text: "", attachments: [{ id: stored.id }] });
+    expect(p.received.find((m) => m.type === "activity" && m.kind === "message")).toMatchObject({ text: "", attachments: [{ id: stored.id }] });
+
+    p.send({ type: "send", id: "hold", text: "Hold on.", to: "main" });
+    await p.next((m) => m.type === "state" && m.busy);
+    p.send({ type: "queue", id: "q1", text: "", attachments: image });
+    p.send({ type: "queue", id: "q2", text: "Words only." });
+    p.send({ type: "queue", id: "q3", text: " \n" });
+    expect(await p.next((m) => m.type === "error" && m.id === "q3")).toMatchObject({ code: "empty_message", message: "Write a message or attach an image." });
+    // Clearing the words is fine while images remain; a message with neither is refused.
+    p.send({ type: "queue_edit", id: "q1", text: " " });
+    p.send({ type: "queue_edit", id: "q2", text: "" });
+    expect(await p.next((m) => m.type === "error" && m.id === "q2")).toMatchObject({ code: "empty_message" });
+    expect((await p.next((m) => m.type === "state" && m.queue[0]?.text === " ")).queue.map((q: { id: string; text: string }) => [q.id, q.text])).toEqual([["q1", " "], ["q2", "Words only."]]);
+    release();
+    await p.next((m) => m.type === "result" && m.id === "q2");
+    expect(rt.store.listEvents({ type: "user_message" }).map((e) => (e.payload as { text: string }).text)).toEqual(["", "Hold on.", " ", "Words only."]);
+  });
 });
