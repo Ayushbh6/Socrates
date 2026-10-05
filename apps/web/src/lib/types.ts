@@ -43,11 +43,18 @@ export interface Embeddings {
   url: string | null;
 }
 
+/** The user's name and whether they finished onboarding. */
+export interface Profile {
+  name: string | null;
+  onboarded: boolean;
+}
+
 export interface Status {
   home: string;
   ready: boolean;
   setup: string[];
   access: Access;
+  profile: Profile;
   models: { chat: ModelInUse | null; router: ModelInUse | null };
   embeddings: Embeddings & { state: "ready" | "unavailable"; detail: string | null; index: { documents: number } | null };
   timeZone: string;
@@ -77,6 +84,7 @@ export interface Settings {
   timeZone: string | null;
   workingFolder: string | null;
   access: Access;
+  profile: Profile;
 }
 
 /** A model provider, its default models and the keys it reads. */

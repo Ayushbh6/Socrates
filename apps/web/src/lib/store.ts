@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { api } from "./api";
+import { type SettingsPatch, api } from "./api";
 import { IMAGES_MAX, prepareImage } from "./images";
 import { LiveConnection } from "./live";
 import { type Model, type ModelEvent, emptyModel, reduce, replayFrom } from "./model";
@@ -160,9 +160,14 @@ export class Store {
   }
 
   /** A change that restarts Socrates (models, memory search, time zone); refused while it works. */
-  async saveSettings(patch: Partial<Omit<Settings, "access" | "workingFolder">>): Promise<void> {
+  async saveSettings(patch: SettingsPatch): Promise<void> {
     this.set({ settings: await api.setSettings(patch) });
     await this.refreshStatus();
+  }
+
+  /** Finish onboarding: keep the name, if given, and never ask again. */
+  async finishOnboarding(name: string): Promise<void> {
+    await this.saveSettings({ profile: { name: name.trim() || null, onboarded: true } });
   }
 
   /** Make this the chat model; Socrates restarts with it at its default thinking level, so only when idle. */

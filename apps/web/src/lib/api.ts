@@ -33,7 +33,7 @@ export const api = {
   settings: () => call<Settings>("GET", "/api/settings"),
   setAccess: (access: Partial<Access>) => call<Settings>("PUT", "/api/settings", { access }),
   setWorkingFolder: (id: string) => call<Settings>("PUT", "/api/settings", { workingFolder: id }),
-  setSettings: (patch: Partial<Omit<Settings, "access" | "workingFolder">>) => call<Settings>("PUT", "/api/settings", patch),
+  setSettings: (patch: SettingsPatch) => call<Settings>("PUT", "/api/settings", patch),
   providers: () => call<Provider[]>("GET", "/api/providers"),
   models: (provider: string) => call<{ models: ListedModel[] }>("GET", `/api/models?provider=${encodeURIComponent(provider)}`).then((r) => r.models),
   removeKey: (name: string) => call<null>("DELETE", `/api/keys/${encodeURIComponent(name)}`),
@@ -46,3 +46,6 @@ export const api = {
   thinking: (seq: number) => call<{ seq: number; text: string }>("GET", `/api/thinking?seq=${seq}`),
   evidence: (task: string, handle: string) => call<Evidence>("GET", `/api/evidence?task=${encodeURIComponent(task)}&handle=${encodeURIComponent(handle)}`),
 };
+
+/** What the page changes in settings besides access and the working folder; the profile may be sent in part. */
+export type SettingsPatch = Partial<Omit<Settings, "access" | "workingFolder" | "profile">> & { profile?: Partial<Settings["profile"]> };

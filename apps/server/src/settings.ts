@@ -37,6 +37,19 @@ export const Access = z.object({
 export type Access = z.infer<typeof Access>;
 
 /**
+ * Who the user is and whether they have been through onboarding (the web
+ * app's `#/onboarding` page, `web.md`): their name, and a flag that stays set
+ * once they chose to start.
+ */
+export const Profile = z.object({
+  name: z.string().trim().max(80).nullable().default(null),
+  onboarded: z.boolean().default(false),
+}).strict();
+export type Profile = z.infer<typeof Profile>;
+/** A change to the profile: only the fields sent (a default here would reset the others). */
+const ProfilePatch = z.object({ name: Profile.shape.name.unwrap().nullable().optional(), onboarded: z.boolean().optional() }).strict();
+
+/**
  * The user's choices (architecture/server.md, "Settings"). API keys are not
  * settings: they live in the data folder's `.env` and are never returned.
  * - chat / router: null picks the first provider with a key, and its defaults;
@@ -44,7 +57,8 @@ export type Access = z.infer<typeof Access>;
  * - embeddings: local Ollama with embeddinggemma unless changed;
  * - timeZone: null follows the Mac;
  * - workingFolder: the workspace new work is bound to, or null; choosing it adds its folder to `access`;
- * - access: where Socrates may work and when it asks; by default only the user's folders, asking first.
+ * - access: where Socrates may work and when it asks; by default only the user's folders, asking first;
+ * - profile: the user's name and whether onboarding is done.
  */
 export const Settings = z.object({
   chat: ChatChoice.nullable().default(null),
@@ -60,11 +74,12 @@ export const Settings = z.object({
   timeZone: TimeZone.nullable().default(null),
   workingFolder: z.string().min(1).nullable().default(null),
   access: Access.default({ scope: "folders", folders: [], approvals: "ask" }),
+  profile: Profile.default({ name: null, onboarded: false }),
 }).strict();
 export type Settings = z.infer<typeof Settings>;
 
-/** What PUT /api/settings accepts: any subset of the settings, and of `access`. */
-export const SettingsPatch = Settings.partial().extend({ access: Access.partial().strict().optional() }).strict();
+/** What PUT /api/settings accepts: any subset of the settings, and of `access` and `profile`. */
+export const SettingsPatch = Settings.partial().extend({ access: Access.partial().strict().optional(), profile: ProfilePatch.optional() }).strict();
 
 export function loadSettings(file: string): Settings {
   if (!existsSync(file)) return Settings.parse({});

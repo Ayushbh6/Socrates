@@ -230,6 +230,7 @@ export class Runtime {
     const parsed = SettingsPatch.parse(patch) as Record<string, unknown>;
     const sent = Object.fromEntries(Object.keys(patch as object).map((key) => [key, parsed[key]]));
     if (sent.access) sent.access = { ...this.settings.access, ...(sent.access as object) };
+    if (sent.profile) sent.profile = { ...this.settings.profile, ...(sent.profile as object) };
     let next = Settings.parse({ ...this.settings, ...sent });
     if ((parsed.access as { folders?: unknown } | undefined)?.folders) {
       next.access.folders = [...new Set(next.access.folders.map((folder) => workspaceFolder(folder, this.config.home)))];
@@ -245,13 +246,13 @@ export class Runtime {
     // The chat model already running, perhaps with another thinking level: no rebuild.
     const inUse = this.models.chat;
     const sameChat = !!this.socrates && !!next.chat && !!inUse && next.chat.provider === inUse.provider && next.chat.model === inUse.model;
-    if (Object.keys(sent).every((key) => key === "access" || (key === "chat" && sameChat))) {
+    if (Object.keys(sent).every((key) => key === "access" || key === "profile" || (key === "chat" && sameChat))) {
       const effort = next.chat?.effort;
       if (sameChat && effort && !inUse!.effort?.levels.includes(effort)) {
         const levels = inUse!.effort?.levels ?? [];
         throw new SettingsError(levels.length ? `${inUse!.model} cannot think at "${effort}"; choose ${levels.join(", ")}.` : `${inUse!.model} has no thinking levels to choose from.`);
       }
-      // Access and thinking levels need no rebuild, so they may change while Socrates works; they apply to the next tool call or model request.
+      // Access, the profile and thinking levels need no rebuild, so they may change while Socrates works; access and thinking levels apply to the next tool call or model request.
       if (this.changing || this.closing) throw new RuntimeBusyError("Socrates is restarting; change this in a moment.");
       saveSettings(this.config.settingsPath, next);
       this.settings = next;

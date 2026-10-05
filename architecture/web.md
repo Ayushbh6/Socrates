@@ -4,7 +4,7 @@ The web app is Socrates' face: a page served by the local server (`server.md`) a
 
 It is built in two changes:
 
-- **W1, flow mode:** the welcome page and first-run setup, the flow canvas (the orb, the question and its answer, the task and goal notes), the question sidebar with lanes, the composer (Send, Queue, Send in a new lane, stop, approvals mode), the access menu, approval cards, and `pnpm socrates`.
+- **W1, flow mode:** the welcome page, onboarding, the flow canvas (the orb, the question and its answer, the task and goal notes), the question sidebar with lanes, the composer (Send, Queue, Send in a new lane, stop, approvals mode), the access menu, approval cards, and `pnpm socrates`.
 - **W2, standard mode:** the familiar harness layout (goals on the left, the full scrolling conversation, lane panels beside it), the switch between the two modes, the complete tool-output viewer, and settings.
 
 ## Running it
@@ -15,9 +15,13 @@ It is built in two changes:
 
 Socrates 0.1's colours and type: cream (`#f9f8f4`), teal (`#159f9f`), the dotted canvas, Geist, and the serif gradient name. The canvas is open and calm: no borders or dividers anywhere. Floating controls sit at the top, the composer is the only footer, and depth comes from soft shadows and blur. Movement respects the system's reduced-motion setting.
 
-## Welcome
+## Welcome and onboarding
 
-The name, the motto, and one button: **Chat with Socrates**. Before Socrates can work, the same page shows a short setup instead: a provider key (stored by the server, never shown again) and an optional project folder.
+Three pages, by the address after `#`: `#/welcome` (also anything unknown), `#/onboarding` and `#/chat`.
+
+- **`#/welcome`** is the name, the motto and one button. Someone who has not been through onboarding sees **Get started**, which opens `#/onboarding`. Someone who has sees **Chat with Socrates** (with "Welcome back, <name>." when they gave a name), which opens `#/chat`. If setup went missing again (a key was removed), it says what is missing and offers **Fix the setup**.
+- **`#/onboarding`** is one calm column of three numbered steps and a button. **1. What should Socrates call you?** (optional): the name is kept in the profile setting. **2. Add an API key**: a row per provider (Anthropic, OpenAI, Gemini, OpenRouter, DeepSeek) with a field and **Save**; a saved key shows a check and "Saved. Paste a new one to replace it", and its value is never shown again. One key is enough. **3. Where may Socrates work?** (optional): the folders Socrates may use. The first folder added becomes the project folder, where new work starts; later ones only join the list, and each can be removed. Folders are only a head start: the header's access menu adds, removes and changes them at any time, even in the middle of a chat, and a folder added there counts from the very next message (`server.md`, "Access"). **Start chatting** is enabled once Socrates is ready (a key is set); it saves the name, marks the profile onboarded, and opens `#/chat`.
+- **`#/chat`** needs onboarding: someone who never finished it, or whose setup is missing again, is sent to `#/onboarding` (replacing the address, so Back does not loop). A short restart after a settings change keeps the canvas; only missing setup counts.
 
 ## Flow mode
 

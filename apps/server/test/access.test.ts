@@ -116,4 +116,33 @@ describe("access settings", () => {
       { kind: "outside_folder", granted: false, detail: `Read ${outside}/notes.md, outside your folders` },
     ]);
   });
+
+  it("lets a folder added in the middle of a chat count from the very next message, and a removed one stop", async () => {
+    const outside = tempDir();
+    writeFileSync(path.join(outside, "notes.md"), "outside notes\n");
+    const project = tempDir();
+    const agent = new Responder("a", (_m, request) => {
+      // Each message reads the same file once, then answers.
+      const answered = request.messages.some((m) => m.role === "tool");
+      return answered ? final({ full_answer: "Done." }) : { toolCalls: [call("read", { path: path.join(outside, "notes.md") })] };
+    });
+    const { rt, request } = await server(home({ settings: SCRIPTED }), { makeModel: (_p, model) => (model === "router" ? new Responder("r", () => createGoal("Notes", "Read notes")) : agent) });
+    const workspace = (await request("POST", "/api/workspaces", { path: project })).json();
+    await request("PUT", "/api/settings", { workingFolder: workspace.id });
+    const codeOf = async (message: string) => {
+      const result = await rt.socrates!.handle(message);
+      if (result.kind !== "answered") throw new Error("expected an answer");
+      return rt.store.evidenceForTurn(result.parts[0]!.turn.id)[0]!.result?.error?.code ?? "ok";
+    };
+    // Outside the folders, with nobody to ask: refused.
+    expect(await codeOf("Read the notes.")).toBe("approval_denied");
+    // The folder is added between two messages; the next one reads it, asking nothing.
+    const asked = rt.store.listEvents({ type: "approval_decided" }).length;
+    expect((await request("PUT", "/api/settings", { access: { folders: [project, outside] } })).statusCode).toBe(200);
+    expect(await codeOf("Read the notes again.")).toBe("ok");
+    expect(rt.store.listEvents({ type: "approval_decided" })).toHaveLength(asked);
+    // And taking it away counts from the next message too.
+    await request("PUT", "/api/settings", { access: { folders: [project] } });
+    expect(await codeOf("Read the notes a third time.")).toBe("approval_denied");
+  });
 });

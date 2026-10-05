@@ -98,6 +98,7 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
       ready: runtime.socrates !== null && runtime.acceptingMessages,
       setup: runtime.setup,
       access: runtime.settings.access,
+      profile: runtime.settings.profile,
       models: runtime.models,
       embeddings: { ...runtime.settings.embeddings, ...runtime.embeddings, index },
       timeZone: runtime.timeZone,
