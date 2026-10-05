@@ -37,7 +37,7 @@ export interface Harness {
   run: RunState;
   approvals: ApprovalRequest[];
   /** Call one tool and parse its model-facing JSON (or keep the text for read). */
-  call(name: string, input: unknown, options?: { signal?: AbortSignal; binding?: ToolBinding; workspace?: WorkspaceRoot | null; vision?: boolean }): Promise<Result>;
+  call(name: string, input: unknown, options?: { signal?: AbortSignal; binding?: ToolBinding; workspace?: WorkspaceRoot | null; vision?: boolean; onOutput?: (handle: string, output: string) => void }): Promise<Result>;
   /** Bind a new turn of the same task. */
   nextTurn(): void;
 }
@@ -94,7 +94,7 @@ export function harness(options: { files?: Record<string, string | Buffer>; appr
       clock.advance(1000);
       const result = await runner.run(
         { id: `call_${Math.random().toString(36).slice(2)}`, name, input },
-        { binding: o.binding ?? h.binding, workspace: o.workspace === undefined ? workspace : o.workspace, run: h.run, signal: o.signal ?? new AbortController().signal, ...(o.vision ? { vision: true } : {}) },
+        { binding: o.binding ?? h.binding, workspace: o.workspace === undefined ? workspace : o.workspace, run: h.run, signal: o.signal ?? new AbortController().signal, ...(o.vision ? { vision: true } : {}), ...(o.onOutput ? { onOutput: o.onOutput } : {}) },
       );
       let json: unknown = null;
       try {

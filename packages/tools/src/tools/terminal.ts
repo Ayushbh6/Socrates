@@ -23,6 +23,10 @@ export const PTY_SIZE = { cols: 120, rows: 40 };
 /** Keys that need a terminal: over pipes there is nothing to send them to. */
 const PIPE_KEYS = new Set(["ENTER", "CTRL_C", "CTRL_D"]);
 
+/** What a running call shows the user of its output: the newest end, at most every this often. */
+const PROGRESS_CHARS = 4_000;
+const PROGRESS_EVERY_MS = 200;
+
 const TEST_COMMAND = /(^|[\s;&|/])(pytest|vitest|jest|mocha|ava|rspec|phpunit|ctest|tox|nox|playwright test|go test|cargo test|dotnet test|mvn test|gradle test|(npm|pnpm|yarn|bun)( run)? test\S*|make test\S*)(\s|$)/;
 
 function supervisor(ctx: HandlerContext): TerminalSupervisor {
@@ -91,27 +95,60 @@ export const terminalTool: ToolHandler<TerminalInput> = {
     const started = Date.now();
     throwIfCancelled(ctx.signal);
     const session = launch(ctx, terminals, spec);
-
-    if (!spec.background) {
-      const yieldMs = Math.min(input.yield_ms ?? DEFAULT_YIELD_MS, MAX_YIELD_MS);
-      await settles(session, yieldMs, ctx.signal);
-      if (ctx.signal.aborted) {
-        await terminals.terminate(session);
-        throw new ToolError("cancelled", "The command was cancelled and stopped.", "No action needed.", false);
-      }
-      if (session.status === "exited") {
-        terminals.forget(session);
-        return completed(session, started);
-      }
+    const unwatch = watchOutput(session, ctx);
+    try {
+      return await finishLaunch(ctx, terminals, session, spec, input.yield_ms, started);
+    } finally {
+      unwatch();
     }
-    if (spec.ready) await awaitReady(session, ctx.signal);
-    if (ctx.signal.aborted) {
-      await terminals.terminate(session);
-      throw new ToolError("cancelled", "The launch was cancelled and the process was stopped.", "No action needed.", false);
-    }
-    return running(session, started);
   },
 };
+
+/** Wait for a foreground command up to its yield, or for a ready condition; a command still running stays a session. */
+async function finishLaunch(ctx: HandlerContext, terminals: TerminalSupervisor, session: TerminalSession, spec: LaunchSpec, yieldInput: number | undefined, started: number): Promise<ToolOutput> {
+  if (!spec.background) {
+    const yieldMs = Math.min(yieldInput ?? DEFAULT_YIELD_MS, MAX_YIELD_MS);
+    await settles(session, yieldMs, ctx.signal);
+    if (ctx.signal.aborted) {
+      await terminals.terminate(session);
+      throw new ToolError("cancelled", "The command was cancelled and stopped.", "No action needed.", false);
+    }
+    if (session.status === "exited") {
+      terminals.forget(session);
+      return completed(session, started);
+    }
+  }
+  if (spec.ready) await awaitReady(session, ctx.signal);
+  if (ctx.signal.aborted) {
+    await terminals.terminate(session);
+    throw new ToolError("cancelled", "The launch was cancelled and the process was stopped.", "No action needed.", false);
+  }
+  return running(session, started);
+}
+
+/**
+ * While a call waits on a session, show the user what it prints that the
+ * agent has not seen yet: the newest end of it, a few times a second.
+ */
+function watchOutput(session: TerminalSession, ctx: HandlerContext): () => void {
+  const progress = ctx.progress;
+  if (!progress) return () => {};
+  const from = session.observed;
+  const stop = new AbortController();
+  void (async () => {
+    let sent = from;
+    while (!stop.signal.aborted) {
+      await session.changed(undefined, stop.signal);
+      // Gather a burst into one update.
+      await new Promise((done) => setTimeout(done, PROGRESS_EVERY_MS));
+      const end = session.output.end;
+      if (stop.signal.aborted || end === sent) continue;
+      sent = end;
+      progress(session.output.slice(Math.max(from, end - PROGRESS_CHARS)).text);
+    }
+  })();
+  return () => stop.abort();
+}
 
 function launch(ctx: HandlerContext, terminals: TerminalSupervisor, spec: LaunchSpec): TerminalSession {
   const refs = { goal_id: ctx.binding.goalId, task_id: ctx.binding.taskId, chat_id: ctx.binding.chatId, turn_id: ctx.binding.turnId };
@@ -294,17 +331,22 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
         const pattern = input.event === "pattern" ? compilePattern(input.pattern!, "pattern") : null;
         const deadline = Date.now() + MAX_WAIT_MS;
         let event: string | null = null;
-        while (event === null) {
-          if (ctx.signal.aborted) throw new ToolError("cancelled", "The wait was cancelled.", "No action needed.", false);
-          const fresh = session.output.slice(session.observed).text;
-          if (input.event === "exit" && session.status === "exited") event = "exit";
-          else if (input.event === "output" && fresh.length > 0) event = "output";
-          else if (pattern && pattern.test(fresh)) event = "pattern";
-          else if (input.event === "input_required" && session.inputRequired()) event = "input_required";
-          else if (input.event === "ready" && (session.ready || (session.status === "running" && (await awaitReady(session, ctx.signal, Math.max(1, deadline - Date.now())))))) event = "ready";
-          else if (session.status === "exited") event = "exit";
-          else if (Date.now() >= deadline) event = "timeout";
-          else await session.changed(Math.min(250, deadline - Date.now()), ctx.signal);
+        const unwatch = watchOutput(session, ctx);
+        try {
+          while (event === null) {
+            if (ctx.signal.aborted) throw new ToolError("cancelled", "The wait was cancelled.", "No action needed.", false);
+            const fresh = session.output.slice(session.observed).text;
+            if (input.event === "exit" && session.status === "exited") event = "exit";
+            else if (input.event === "output" && fresh.length > 0) event = "output";
+            else if (pattern && pattern.test(fresh)) event = "pattern";
+            else if (input.event === "input_required" && session.inputRequired()) event = "input_required";
+            else if (input.event === "ready" && (session.ready || (session.status === "running" && (await awaitReady(session, ctx.signal, Math.max(1, deadline - Date.now())))))) event = "ready";
+            else if (session.status === "exited") event = "exit";
+            else if (Date.now() >= deadline) event = "timeout";
+            else await session.changed(Math.min(250, deadline - Date.now()), ctx.signal);
+          }
+        } finally {
+          unwatch();
         }
         const result = { action: "wait", ...identity(session), event, ready: session.ready, ...(session.proc?.pty ? { input_required: session.inputRequired() } : {}), ...unseen(session), ...exitFields(session) };
         return { content: json(result), result };

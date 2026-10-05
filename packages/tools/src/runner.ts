@@ -55,6 +55,8 @@ export interface CallScope {
   signal: AbortSignal;
   /** Whether the model these results go to can see images. */
   vision?: boolean;
+  /** Receives a running call's output as it prints, by evidence handle, for the user to watch. */
+  onOutput?: (handle: string, output: string) => void;
 }
 
 export interface ToolCallResult {
@@ -193,7 +195,7 @@ export class ToolRunner {
       }
       throwIfCancelled(scope.signal);
       const policy = this.options.access?.() ?? null;
-      const ctx = this.context(scope, refs, call.name, policy);
+      const ctx = this.context(scope, refs, call.name, policy, evidence.handle);
       const mutating = typeof handler.mutating === "function" ? handler.mutating(parsed.data) : handler.mutating;
       if (mutating && policy?.approvals === "ask") {
         const input = (parsed.data ?? {}) as Record<string, unknown>;
@@ -240,7 +242,7 @@ export class ToolRunner {
     return { callId: call.id, name: call.name, handle: evidence.handle, isError: error !== null, content, ...(!error && output?.images?.length ? { images: output.images } : {}) };
   }
 
-  private context(scope: CallScope, refs: TaskRefs, tool: string, policy: AccessPolicy | null): HandlerContext {
+  private context(scope: CallScope, refs: TaskRefs, tool: string, policy: AccessPolicy | null, handle: string): HandlerContext {
     const { store, approve, timeZone } = this.options;
     const ctx: HandlerContext = {
       store,
@@ -253,6 +255,9 @@ export class ToolRunner {
       catalog: this.catalog,
       access: policy,
       ...(this.options.semantic ? { semantic: this.options.semantic } : {}),
+      ...(scope.onOutput ? { progress: (output: string) => {
+        try { scope.onOutput!(handle, output); } catch {}
+      } } : {}),
       resolveReadPath: async (input) => {
         throwIfCancelled(scope.signal);
         const attachment = this.attachmentPath(input);

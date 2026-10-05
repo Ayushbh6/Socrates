@@ -2,9 +2,8 @@ import type { EventPayloads, StoredEvent } from "@socrates/contracts";
 import { callLine } from "@socrates/retrieval";
 import type { LedgerStore } from "@socrates/store";
 import { type AttachmentView, viewOf } from "./attachments";
+import { type CallView, type ResultView, describeCall, describeResult } from "./calls";
 
-/** A tool's output is previewed up to this many characters; the evidence route returns the rest. */
-export const OUTPUT_PREVIEW_CHARS = 2_000;
 const STEP_TEXT_CHARS = 4_000;
 /** The model's thinking is shown up to this many characters; some models think at great length. */
 export const THINKING_CHARS = 20_000;
@@ -16,8 +15,10 @@ export type ActivityBody =
   | { kind: "question"; turnId: string; text: string }
   /** `text`: narration before tool calls, or "" when the step only thought; `thinking`: the model's readable thinking, or null. */
   | { kind: "step"; turnId: string; text: string; thinking: string | null; thinkingTruncated: boolean }
-  | { kind: "tool_started"; turnId: string; task: string; handle: string; line: string }
-  | { kind: "tool_finished"; turnId: string; task: string; handle: string; status: "ok" | "error"; preview: string; truncated: boolean }
+  /** `call`: the call in plain words; `line`: its one-line form, as memory search knows it. */
+  | { kind: "tool_started"; turnId: string; task: string; handle: string; line: string; call: CallView }
+  /** `result`: what the call returned, in a form to read: output, matches, a diff. */
+  | { kind: "tool_finished"; turnId: string; task: string; handle: string; status: "ok" | "error"; result: ResultView }
   | { kind: "answer"; turnId: string; text: string }
   | { kind: "finished"; turnId: string; status: "completed" | "interrupted"; reason: EventPayloads["turn_interrupted"]["reason"] | null; partial?: string | null }
   | { kind: "handed_off"; turnId: string; lane: number; laneId: string; goal: { number: number; title: string }; task: { number: number; title: string } }
@@ -66,12 +67,12 @@ export function activityOf(store: LedgerStore, event: StoredEvent): Activity | n
     case "tool_called": {
       const p = event.payload as EventPayloads["tool_called"];
       if (!turn) return null;
-      return { ...base, kind: "tool_started", turnId: turn.id, task: selector(), handle: p.handle, line: callLine(p.tool, p.input) };
+      return { ...base, kind: "tool_started", turnId: turn.id, task: selector(), handle: p.handle, line: callLine(p.tool, p.input), call: describeCall(p.tool, p.input) };
     }
     case "tool_completed": {
       const p = event.payload as EventPayloads["tool_completed"];
       if (!turn) return null;
-      return { ...base, kind: "tool_finished", turnId: turn.id, task: selector(), handle: p.handle, status: p.status, preview: p.content.slice(0, OUTPUT_PREVIEW_CHARS), truncated: p.content.length > OUTPUT_PREVIEW_CHARS };
+      return { ...base, kind: "tool_finished", turnId: turn.id, task: selector(), handle: p.handle, status: p.status, result: describeResult(p.tool, p) };
     }
     case "assistant_response": {
       if (!turn) return null;

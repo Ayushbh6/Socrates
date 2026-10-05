@@ -186,7 +186,10 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
   const appendResponse = async (response: ModelResponse, signal: AbortSignal) => {
     push({ role: "assistant", content: response.text, toolCalls: response.toolCalls, ...(response.raw ? { raw: response.raw } : {}) });
     if (signal === workSignal) timeExpired();
-    const results = await execute(input.runner, response.toolCalls, { ...scope, signal });
+    // A running command's output is a draft of its own, shown until its result is saved.
+    const onDraft = input.onDraft;
+    const onOutput = onDraft ? (handle: string, text: string) => onDraft({ call: requests, kind: "output", handle, text }) : undefined;
+    const results = await execute(input.runner, response.toolCalls, { ...scope, signal, ...(onOutput ? { onOutput } : {}) });
     toolCalls += results.length;
     for (const r of results) push({ role: "tool", toolCallId: r.callId, toolName: r.name, content: r.content, ...(r.isError ? { isError: true } : {}), ...(r.images?.length ? { images: r.images } : {}) });
   };

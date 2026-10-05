@@ -19,9 +19,10 @@ export function viewEvidence(content: string | null): EvidenceView {
   return typeof parsed === "object" && parsed !== null ? { kind: "json", text: JSON.stringify(parsed, null, 2) } : { kind: "text", text: content };
 }
 
-function diffLines(diff: string): Extract<EvidenceView, { kind: "diff" }>["lines"] {
+export function diffLines(diff: string): Extract<EvidenceView, { kind: "diff" }>["lines"] {
   return diff.replace(/\n$/, "").split("\n").map((text) => ({
-    type: text.startsWith("+++") || text.startsWith("---") ? "head" : text.startsWith("@@") ? "hunk" : text.startsWith("+") ? "add" : text.startsWith("-") ? "del" : "same",
+    // A file's header: "*** path", "+++ path (created)", "--- path (deleted)".
+    type: text.startsWith("+++") || text.startsWith("---") || text.startsWith("*** ") ? "head" : text.startsWith("@@") ? "hunk" : text.startsWith("+") ? "add" : text.startsWith("-") ? "del" : "same",
     text,
   }));
 }

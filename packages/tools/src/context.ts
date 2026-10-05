@@ -131,6 +131,8 @@ export interface HandlerContext {
   vision: boolean;
   /** Ask the user, record the decision, and fail with a corrective error when denied or cancelled. */
   requireApproval(request: ApprovalRequest): Promise<void>;
+  /** Show the user what a command is printing while the call waits on it; never shown to a model. */
+  progress?: (output: string) => void;
 }
 
 /** Fail with the corrective cancellation error once the call has been cancelled. */

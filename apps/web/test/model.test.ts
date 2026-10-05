@@ -7,6 +7,8 @@ const at = "2026-10-04T10:00:00Z";
 const act = (conversation: string, body: ActivityBody): ServerMessage => ({ type: "activity", seq: ++seq, at, conversation, ...body } as { type: "activity" } & Activity);
 const run = (model: Model, ...messages: ServerMessage[]) => messages.reduce((m, message) => reduce(m, { type: "server", message }), model);
 const route = { goal: { number: 2, title: "Ship auth" }, task: { number: 3, title: "Fix login" } };
+const readCall = { kind: "read" as const, verb: "Read", active: "Reading", target: "src/refresh.ts", detail: null };
+const result = { summary: null, preview: "", truncated: false, diff: null, verb: null, ms: 12 };
 
 const item = (over: Partial<HistoryItem>): HistoryItem => ({
   id: "ev", seq: 10, at, message: "Earlier question", unrouted: false, question: null,
@@ -28,18 +30,18 @@ describe("the conversation model", () => {
     expect(orbDocked(orbState(m.conversations.main![0]!, []))).toBe(false);
     m = run(m,
       act("main", { kind: "step", turnId: "t1", text: "Checking the refresh handler." }),
-      act("main", { kind: "tool_started", turnId: "t1", task: "g2/t3", handle: "e4", line: "read src/refresh.ts" }),
+      act("main", { kind: "tool_started", turnId: "t1", task: "g2/t3", handle: "e4", line: "read src/refresh.ts", call: readCall }),
     );
     expect(orbState(m.conversations.main![0]!, [])).toBe("working");
     m = run(m,
-      act("main", { kind: "tool_finished", turnId: "t1", task: "g2/t3", handle: "e4", status: "ok", preview: "export function refresh", truncated: false }),
+      act("main", { kind: "tool_finished", turnId: "t1", task: "g2/t3", handle: "e4", status: "ok", result: { ...result, preview: "export function refresh" } }),
       act("main", { kind: "answer", turnId: "t1", text: "The refresh path drops the token." }),
       act("main", { kind: "finished", turnId: "t1", status: "completed", reason: null }),
     );
     const done = m.conversations.main![0]!;
     expect(done.steps).toEqual([
       { kind: "step", text: "Checking the refresh handler." },
-      { kind: "tool", handle: "e4", task: "g2/t3", line: "read src/refresh.ts", status: "ok", preview: "export function refresh", truncated: false },
+      { kind: "tool", handle: "e4", task: "g2/t3", turnId: "t1", call: readCall, status: "ok", result: { ...result, preview: "export function refresh" }, at },
     ]);
     expect(done).toMatchObject({ answers: ["The refresh path drops the token."], state: "done" });
     expect(orbState(done, [])).toBe("done");
@@ -47,7 +49,7 @@ describe("the conversation model", () => {
   });
 
   it("waits on an approval, records stops, and marks a failed send", () => {
-    let m = run(emptyModel(), act("main", { kind: "message", text: "Run it" }), act("main", { kind: "tool_started", turnId: "t1", task: "g1/t1", handle: "e1", line: "terminal npm test" }));
+    let m = run(emptyModel(), act("main", { kind: "message", text: "Run it" }), act("main", { kind: "tool_started", turnId: "t1", task: "g1/t1", handle: "e1", line: "terminal npm test", call: readCall }));
     const approval = { id: "a1", conversation: "main", lane: null, turnId: "t1", task: null, kind: "action", tool: "terminal", detail: "Run npm test", preview: null };
     expect(orbState(m.conversations.main![0]!, [approval])).toBe("waiting");
     m = run(m, act("main", { kind: "finished", turnId: "t1", status: "interrupted", reason: "cancelled" }));
@@ -81,7 +83,7 @@ describe("the conversation model", () => {
       act("lane_1", { kind: "message", text: "Write NOTES.md" }),
       act("lane_1", { kind: "answer", turnId: "t8", text: "Created." }),
       act("lane_1", { kind: "finished", turnId: "t8", status: "completed", reason: null }),
-      act("lane_1", { kind: "tool_started", turnId: "t9", task: "g2/t3", handle: "e2", line: "edit NOTES.md" }),
+      act("lane_1", { kind: "tool_started", turnId: "t9", task: "g2/t3", handle: "e2", line: "edit NOTES.md", call: readCall }),
     );
     expect(m.conversations.main![0]).toMatchObject({ state: "done", steps: [{ kind: "handed_off", lane: 1 }] });
     expect(m.conversations.lane_1!.map((e) => [e.message, e.state])).toEqual([["Write NOTES.md", "done"], ["Also add a line to the notes", "working"]]);
@@ -109,7 +111,8 @@ describe("the conversation model", () => {
   it("loads history oldest first, pages older items, and rebuilds a replayed message from its events", () => {
     let m = reduce(emptyModel(), { type: "history", conversation: "main", items: [item({ seq: 20, message: "Newer" }), item({ seq: 10 })] });
     expect(m.conversations.main!.map((e) => [e.seq, e.message, e.state, e.answers[0]])).toEqual([[10, "Earlier question", "done", "Earlier answer"], [20, "Newer", "done", "Earlier answer"]]);
-    expect(m.conversations.main![0]!.steps).toEqual([{ kind: "tool", handle: "e1", task: "g2/t3", line: "read a.ts", status: "ok", preview: null, truncated: false }]);
+    // Steps come from the item's activities alone.
+    expect(m.conversations.main![0]!.steps).toEqual([]);
     m = reduce(m, { type: "history", conversation: "main", items: [item({ seq: 5, message: "Oldest" })], older: true });
     expect(m.conversations.main!.map((e) => e.seq)).toEqual([5, 10, 20]);
     m = run(m, { type: "activity", seq: 20, at, conversation: "main", kind: "message", text: "Newer" } as ServerMessage);
@@ -137,9 +140,10 @@ describe("standard mode helpers", () => {
     let m = run(emptyModel(), act("main", { kind: "message", text: "One" }), act("main", { kind: "routed", turnId: "a", projectTurn: 1, ...route, lane: null }), act("main", { kind: "message", text: "Two" }));
     expect(currentRoute(m.conversations.main!)).toEqual(route);
     const latest = m.conversations.main!.at(-1)!;
-    expect(workLine(orbState(latest, []), latest)).toBe("Thinking…");
-    m = run(m, act("main", { kind: "step", turnId: "b", text: "Looking." }));
-    expect(workLine(orbState(m.conversations.main!.at(-1)!, []), null)).toBe("Working…");
+    // The answer's own work says when it thinks or works; the thread line covers only approvals and sending.
+    expect(workLine(orbState(latest, []), latest)).toBeNull();
+    expect(workLine("waiting", latest)).toBe("Waiting for your approval");
+    expect(workLine("thinking", { ...latest, state: "sending" })).toBe("Sending…");
     expect(workLine("done", null)).toBeNull();
   });
 });
@@ -235,11 +239,11 @@ describe("drafts of a reply that is arriving", () => {
   it("restores ordered narration and tool previews and ignores activity already in the snapshot", () => {
     const page = item({throughSeq:500,activities:[
       {seq:12,at,conversation:"main",kind:"step",turnId:"old",text:"Reading first."},
-      {seq:13,at,conversation:"main",kind:"tool_started",turnId:"old",task:"g2/t3",handle:"e1",line:"read a.ts"},
-      {seq:14,at,conversation:"main",kind:"tool_finished",turnId:"old",task:"g2/t3",handle:"e1",status:"ok",preview:"File text",truncated:false},
+      {seq:13,at,conversation:"main",kind:"tool_started",turnId:"old",task:"g2/t3",handle:"e1",line:"read a.ts",call:readCall},
+      {seq:14,at,conversation:"main",kind:"tool_finished",turnId:"old",task:"g2/t3",handle:"e1",status:"ok",result:{...result,preview:"File text"}},
     ],parts:[{...item({}).parts[0]!,turnId:"old"}]});
     const model = reduce(emptyModel(), {type:"history",conversation:"main",items:[page]});
-    expect(model.conversations.main![0]!.steps).toEqual([{kind:"step",text:"Reading first."},{kind:"tool",task:"g2/t3",handle:"e1",line:"read a.ts",status:"ok",preview:"File text",truncated:false}]);
+    expect(model.conversations.main![0]!.steps).toEqual([{kind:"step",text:"Reading first."},{kind:"tool",task:"g2/t3",handle:"e1",turnId:"old",call:readCall,status:"ok",result:{...result,preview:"File text"},at}]);
     const replay = run(model, {type:"activity",seq:10,at,conversation:"main",kind:"message",text:page.message}, {type:"activity",seq:15,at,conversation:"main",kind:"answer",turnId:"old",text:"Duplicate answer"});
     expect(replay.conversations.main).toEqual(model.conversations.main);
   });
@@ -258,7 +262,7 @@ describe("drafts of a reply that is arriving", () => {
     m = run(m, act("main", { kind: "step", turnId: "t1", text: "", thinking: "Weighing it all.", thinkingTruncated: true }));
     expect(exchange(m)).toMatchObject({ thinking: null, draft: { text: "The refresh" } });
     // The step's sequence number fetches all of a cut-off thought.
-    expect(exchange(m).steps).toEqual([{ kind: "thinking", text: "Weighing it all.", truncated: true, seq }]);
+    expect(exchange(m).steps).toEqual([{ kind: "thinking", text: "Weighing it all.", truncated: true, seq, ms: 0 }]);
     // A long thought arrives as its end with its full length: a longer one replaces it, an older one does not.
     const long = (text: string, length: number): ServerMessage => ({ type: "draft", conversation: "main", turnId: "t1", call: 2, kind: "thinking", text, length });
     let t = run(m, long("…end of 6000", 6_000), long("…end of 7000", 7_000), long("…end of 6500", 6_500));

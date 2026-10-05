@@ -131,7 +131,7 @@ describe("history and goals", () => {
     expect(main.seq).toBe(store.latestEventSeq());
     expect(main.items.every((i: {throughSeq:number}) => i.throughSeq === main.seq)).toBe(true);
     expect(main.items[2].parts[0].turnId).toBe(first.id);
-    expect(main.items[2].activities.map((a: {kind:string}) => a.kind)).toEqual(["tool_started", "tool_finished", "tool_started", "tool_finished"]);
+    expect(main.items[2].activities.map((a: {kind:string}) => a.kind)).toEqual(["routed", "tool_started", "tool_finished", "tool_started", "tool_finished"]);
     expect(main.next).toBeNull();
     expect(main.items.map((i: { message: string }) => i.message)).toEqual(["Open the other one.", "Also add a changelog.", "Fix checkout."]);
     expect(main.items[0]).toMatchObject({ question: "Which one?", parts: [] });

@@ -9,11 +9,13 @@ export interface Draft {
   /**
    * Narration is the line before tool calls; the answer is the final
    * message's `full_answer`; thinking is the model's readable reasoning (or
-   * its provider's summary), kept apart from both.
+   * its provider's summary), kept apart from both. Output is what a running
+   * tool call has printed, by its evidence `handle`.
    */
-  kind: "narration" | "answer" | "thinking";
-  /** Everything readable so far, not only the newest piece. */
+  kind: "narration" | "answer" | "thinking" | "output";
+  /** Everything readable so far, not only the newest piece; for output, its newest end. */
   text: string;
+  handle?: string;
 }
 
 const ANSWER_START = /\{\s*"full_answer"\s*:\s*"/;

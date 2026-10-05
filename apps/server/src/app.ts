@@ -10,6 +10,7 @@ import { callLine } from "@socrates/retrieval";
 import { IMAGE_MAX_BYTES } from "@socrates/tools";
 import { z } from "zod";
 import { AttachmentError, findAttachment, storeAttachment, viewOf } from "./attachments";
+import { describeCall } from "./calls";
 import { KEY_NAMES, KeyError } from "./keys";
 import { LiveHub } from "./live";
 import { type Runtime, RuntimeBusyError, SettingsError } from "./runtime";
@@ -198,6 +199,7 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
       handle: evidence.handle,
       tool: evidence.tool,
       line: callLine(evidence.tool, evidence.input),
+      call: describeCall(evidence.tool, evidence.input),
       status: evidence.status,
       content: content === null ? null : content.slice(0, EVIDENCE_MAX_CHARS),
       truncated: content !== null && content.length > EVIDENCE_MAX_CHARS,

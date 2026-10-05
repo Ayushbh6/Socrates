@@ -1,71 +1,83 @@
 import type { Exchange, Step } from "./model";
+import type { CallView } from "./types";
 
-type ToolStep = Extract<Step, { kind: "tool" }>;
+export type ToolStep = Extract<Step, { kind: "tool" }>;
+type MetaStep = Exclude<Step, ToolStep | { kind: "step" } | { kind: "thinking" }>;
+
+/** One thing inside a group of work: a thought, or a tool call with what it is printing now. */
+export type WorkItem =
+  | { kind: "thinking"; text: string; truncated: boolean; live: boolean; seq?: number; ms: number | null }
+  | { kind: "tool"; step: ToolStep; output: string | null };
 
 /**
  * The work behind an answer, in order (architecture/web.md, "Work and
- * answer"): the model's thinking, its narration, its tool calls grouped by
- * kind, and handoffs, warnings and approval decisions.
+ * answer"): the model's narration, and between two lines of it, one group of
+ * everything it did, as Codex and Claude Code show it. Handoffs, warnings and
+ * approval decisions stand on their own.
  */
 export type Segment =
-  | { kind: "thinking"; text: string; truncated: boolean; live: boolean; seq?: number }
   | { kind: "narration"; text: string; live: boolean }
-  | { kind: "tools"; group: ToolGroup; steps: ToolStep[] }
-  | { kind: "meta"; step: Exclude<Step, ToolStep | { kind: "step" } | { kind: "thinking" }> };
-
-export type ToolGroup = "read" | "search" | "edit" | "terminal" | "memory" | "capability" | "other";
-
-/** The kind of a tool call, from its one-line form ("read a.ts", "terminal: npm test"). */
-export function toolGroup(line: string): ToolGroup {
-  const tool = /^[^\s:]+/.exec(line)?.[0] ?? "";
-  switch (tool) {
-    case "read": return "read";
-    case "glob": case "grep": return "search";
-    case "edit": case "apply_patch": return "edit";
-    case "terminal": case "terminal_control": return "terminal";
-    case "context_retrieve": return "memory";
-    case "capability_search": case "capability_control": return "capability";
-    default: return "other";
-  }
-}
+  | { kind: "group"; items: WorkItem[] }
+  | { kind: "meta"; step: MetaStep };
 
 /** The exchange's work, with what is arriving now (its thinking and narration drafts) at the end. */
 export function workSegments(exchange: Exchange): Segment[] {
   const live = exchange.state === "working";
   const out: Segment[] = [];
+  const add = (item: WorkItem) => {
+    const last = out.at(-1);
+    if (last?.kind === "group") last.items.push(item);
+    else out.push({ kind: "group", items: [item] });
+  };
   for (const step of exchange.steps) {
-    if (step.kind === "thinking") out.push({ kind: "thinking", text: step.text, truncated: step.truncated, live: false, seq: step.seq });
+    if (step.kind === "thinking") add({ kind: "thinking", text: step.text, truncated: step.truncated, live: false, seq: step.seq, ms: step.ms });
     else if (step.kind === "step") out.push({ kind: "narration", text: step.text, live: false });
-    else if (step.kind === "tool") {
-      const group = toolGroup(step.line);
-      const last = out.at(-1);
-      // Calls of the same kind in a row are one group.
-      if (last?.kind === "tools" && last.group === group) last.steps.push(step);
-      else out.push({ kind: "tools", group, steps: [step] });
-    } else out.push({ kind: "meta", step });
+    else if (step.kind === "tool") add({ kind: "tool", step, output: live ? exchange.outputs[`${step.turnId}:${step.handle}`] ?? null : null });
+    else out.push({ kind: "meta", step });
   }
-  if (live && exchange.thinking) out.push({ kind: "thinking", text: exchange.thinking.text, truncated: false, live: true });
+  // Once the answer is being written, the thought before it is over.
+  const answering = exchange.draft?.kind === "answer";
+  if (live && exchange.thinking) add({ kind: "thinking", text: exchange.thinking.text, truncated: false, live: !answering, ms: null });
   if (live && exchange.draft?.kind === "narration") out.push({ kind: "narration", text: exchange.draft.text, live: true });
   return out;
 }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-/** One group's line: "Read 2 files", "Ran 1 command". */
-export function groupLabel(group: ToolGroup, steps: { line: string }[]): string {
-  const n = steps.length;
-  switch (group) {
-    case "read": return `Read ${plural(n, "file")}`;
-    case "search": return `Searched ${plural(n, "time")}`;
-    case "edit": return `Edited ${plural(n, "file")}`;
-    case "terminal": {
-      const commands = steps.filter((s) => s.line.startsWith("terminal:")).length;
-      return commands ? `Ran ${plural(commands, "command")}` : `Checked ${plural(n, "command")}`;
+/** "Read 2 files", "ran 1 command": what calls of each kind did, in the order the kinds first appear. */
+export function callCounts(calls: CallView[]): string[] {
+  const kinds: CallView["kind"][] = [];
+  for (const c of calls) if (!kinds.includes(c.kind)) kinds.push(c.kind);
+  return kinds.map((kind) => {
+    const of = calls.filter((c) => c.kind === kind);
+    const distinct = (list: CallView[]) => new Set(list.map((c) => c.target)).size;
+    switch (kind) {
+      case "read": return `Read ${plural(distinct(of), "file")}`;
+      case "search": return of.length === 1 ? "Searched once" : `Searched ${of.length} times`;
+      case "edit": return `Edited ${plural(distinct(of), "file")}`;
+      case "terminal": {
+        const commands = of.filter((c) => c.verb === "Ran" || c.verb === "Started").length;
+        return commands ? `Ran ${plural(commands, "command")}` : `Worked in ${plural(distinct(of), "terminal")}`;
+      }
+      case "memory": return of.length === 1 ? "Looked back once" : `Looked back ${of.length} times`;
+      case "capability": return `Used ${plural(of.length, "capability", "capabilities")}`;
+      case "other": return `Used ${plural(of.length, "tool")}`;
     }
-    case "memory": return `Looked back ${plural(n, "time")}`;
-    case "capability": return `Used ${plural(n, "capability", "capabilities")}`;
-    case "other": return `Used ${plural(n, "tool")}`;
-  }
+  });
+}
+
+/** Joins sentence parts: "Read 2 files, ran 1 command". */
+const joined = (parts: string[]) => parts.map((p, i) => (i ? p[0]!.toLowerCase() + p.slice(1) : p)).join(", ");
+
+/** A group's line: its calls by kind, or how long it thought when it only thought. */
+export function groupLabel(items: WorkItem[]): string {
+  const calls = items.flatMap((i) => (i.kind === "tool" ? [i.step.call] : []));
+  if (calls.length) return joined(callCounts(calls));
+  return thoughtLabel(items.reduce<number | null>((sum, i) => (i.kind === "thinking" && i.ms !== null ? (sum ?? 0) + i.ms : sum), null));
+}
+
+export function thoughtLabel(ms: number | null): string {
+  return ms === null || ms < 1000 ? "Thought" : `Thought for ${duration(Math.round(ms / 1000))}`;
 }
 
 /**
@@ -80,18 +92,38 @@ export function workSummary(segments: Segment[], exchange: Pick<Exchange, "at" |
   const end = working ? now : exchange.workedAt ? Date.parse(exchange.workedAt) : NaN;
   const seconds = Math.round((end - Date.parse(exchange.at)) / 1000);
   if (Number.isFinite(seconds) && seconds >= 1) parts.push(`${working ? "Working for" : "Worked for"} ${duration(seconds)}`);
-  if (segments.some((s) => s.kind === "thinking")) parts.push(parts.length ? "thought" : "Thought");
-  const counts = new Map<ToolGroup, { line: string }[]>();
-  for (const s of segments) if (s.kind === "tools") counts.set(s.group, [...(counts.get(s.group) ?? []), ...s.steps]);
-  for (const [group, steps] of counts) {
-    const label = groupLabel(group, steps);
+  const items = segments.flatMap((s) => (s.kind === "group" ? s.items : []));
+  if (items.some((i) => i.kind === "thinking")) parts.push(parts.length ? "thought" : "Thought");
+  for (const label of callCounts(items.flatMap((i) => (i.kind === "tool" ? [i.step.call] : [])))) {
     parts.push(parts.length ? label[0]!.toLowerCase() + label.slice(1) : label);
   }
   return parts.join(" · ") || (working ? "Working" : "Worked");
 }
 
-function duration(seconds: number): string {
+/** What a tool row says: "Ran", "Running", or the result's own verb ("Created"). */
+export function callVerb(step: ToolStep): string {
+  if (step.status === "running") return step.call.active;
+  return step.result?.verb ?? step.call.verb;
+}
+
+/** "Thinking" before anything streams, "Reading your message" before routing has placed it. */
+export function waitingLine(exchange: Pick<Exchange, "route" | "steps" | "state">): string {
+  if (exchange.state === "sending") return "Sending";
+  return exchange.route || exchange.steps.length ? "Thinking" : "Reading your message";
+}
+
+/** Whether the work shows anything arriving now: a thought, a narration, a running call, or the answer. */
+export function arriving(exchange: Pick<Exchange, "thinking" | "draft" | "steps">): boolean {
+  return exchange.thinking !== null || exchange.draft !== null || exchange.steps.some((s) => s.kind === "tool" && s.status === "running");
+}
+
+export function duration(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   return seconds % 60 ? `${minutes}m ${seconds % 60}s` : `${minutes}m`;
+}
+
+/** Milliseconds as "0.4s", "12s", "2m 3s". */
+export function elapsed(ms: number): string {
+  return ms < 10_000 ? `${(ms / 1000).toFixed(1)}s` : duration(Math.round(ms / 1000));
 }

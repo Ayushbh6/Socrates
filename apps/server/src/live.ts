@@ -47,7 +47,9 @@ const Command = z.discriminatedUnion("type", [
 ]);
 type Command = z.infer<typeof Command>;
 
-const draftKey = (turnId: string, thinking: boolean) => (thinking ? `${turnId}:thinking` : turnId);
+/** A turn's reply, its thinking, and each running call's output are drafts of their own. */
+const draftKey = (turnId: string, draft: Pick<Draft, "kind" | "handle">) =>
+  draft.kind === "thinking" ? `${turnId}:thinking` : draft.kind === "output" ? `${turnId}:output:${draft.handle}` : turnId;
 
 /** The reply a turn is writing, as the live connection sends it: everything readable so far. */
 interface DraftMessage extends Draft {
@@ -119,6 +121,8 @@ export class LiveHub {
       const activity = activityOf(runtime.store, event);
       // A step that only thought replaces the thinking draft and leaves the reply's.
       if (activity && SETTLES_DRAFT.has(activity.kind) && "turnId" in activity && activity.turnId) this.settleDraft(activity.turnId, activity.kind === "step" && !activity.text);
+      // A call's saved result replaces what it printed while it ran.
+      if (activity?.kind === "tool_finished") this.dropDraft(draftKey(activity.turnId, { kind: "output", handle: activity.handle }));
       if (activity) this.broadcast({ type: "activity", ...activity });
       // Turns and lanes change what is running; coalesce the state that follows.
       if (event.turn_id || event.type.startsWith("lane_")) this.scheduleState();
@@ -278,7 +282,7 @@ export class LiveHub {
     const run = this.runs.get(runId);
     const turn = this.runtime.store.getTurn(turnId);
     if (!run || run.controller.signal.aborted || turn?.status !== "in_progress") return;
-    const key = draftKey(turnId, draft.kind === "thinking");
+    const key = draftKey(turnId, draft);
     if ((this.drafts.get(key)?.message.call ?? 0) > draft.call) return;
     const tail = draft.kind === "thinking" && draft.text.length > THINKING_DRAFT_CHARS ? { text: draft.text.slice(-THINKING_DRAFT_CHARS), length: draft.text.length } : {};
     this.drafts.set(key, { runId, message: { type: "draft", conversation: turn.laneId ?? "main", turnId, ...draft, ...tail } });
@@ -295,10 +299,13 @@ export class LiveHub {
 
   /** The saved reply replaces a turn's drafts (or only its thinking); a draft not yet sent is dropped with it. */
   private settleDraft(turnId: string, thinkingOnly = false): void {
-    for (const key of thinkingOnly ? [draftKey(turnId, true)] : [draftKey(turnId, false), draftKey(turnId, true)]) {
-      this.drafts.delete(key);
-      this.draftsUnsent.delete(key);
-    }
+    if (thinkingOnly) return this.dropDraft(draftKey(turnId, { kind: "thinking" }));
+    for (const key of [...this.drafts.keys()]) if (key === turnId || key.startsWith(`${turnId}:`)) this.dropDraft(key);
+  }
+
+  private dropDraft(key: string): void {
+    this.drafts.delete(key);
+    this.draftsUnsent.delete(key);
   }
 
   /** Start one message: in main (refused while main is busy; queue it instead), a new lane, or an open lane. */

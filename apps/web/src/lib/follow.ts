@@ -2,7 +2,8 @@ import { type RefObject, useEffect, useRef } from "react";
 
 /**
  * Keeps a scrolling area at its end while its content grows, as long as the
- * reader is at the end. A reader who scrolls up is left alone; the returned
+ * reader is at the end. A reader who scrolls up, or clicks in the content to
+ * open something, is left alone until they return to the end; the returned
  * ref says whether the area is following, so a caller can resume it.
  */
 export function useFollow(scroller: RefObject<HTMLElement | null>, content: RefObject<HTMLElement | null>, enabled = true) {
@@ -27,7 +28,11 @@ export function useFollow(scroller: RefObject<HTMLElement | null>, content: RefO
       if (["ArrowUp", "PageUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey)) following.current = false;
     };
     const touch = () => { intent(); following.current = false; };
-    const pointer = (event: PointerEvent) => { if (event.target === area) intent(); };
+    // Opening something to read it (a fold, a tool's output) keeps the reader where they are.
+    const pointer = (event: PointerEvent) => {
+      if (event.target === area) intent();
+      else if (event.target instanceof Node && body.contains(event.target)) following.current = false;
+    };
     const onScroll = () => {
       const atEnd = area.scrollHeight - area.scrollTop - area.clientHeight < 80;
       // Width changes and browser anchoring also emit scroll events. Only a reader

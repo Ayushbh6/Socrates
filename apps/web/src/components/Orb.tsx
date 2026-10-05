@@ -3,7 +3,8 @@ import type { OrbState } from "../lib/model";
 
 const LABEL: Record<OrbState, string> = {
   idle: "Ready",
-  thinking: "Thinking",
+  // The answer's own status line says what it waits on.
+  thinking: "",
   working: "Working",
   waiting: "Waiting for you",
   done: "",

@@ -30,7 +30,7 @@ export function EvidenceViewer({ task, handle, onClose }: { task: string; handle
       <div ref={modal} tabIndex={-1} className="modal evidence" role="dialog" aria-modal="true" aria-label="Tool output">
         <div className="modal-head">
           <div className="evidence-title">
-            <code>{evidence?.line ?? "…"}</code>
+            {evidence?.call ? <span>{evidence.call.verb} {evidence.call.target && <code>{evidence.call.target}</code>} {evidence.call.detail}</span> : <code>{evidence?.line ?? "…"}</code>}
             <small>{task} · {handle}{evidence?.status === "error" ? " · failed" : ""}</small>
           </div>
           <div>

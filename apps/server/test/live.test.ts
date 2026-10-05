@@ -166,7 +166,8 @@ describe("the live connection", () => {
     p.send({ type: "approve", approval: asked.id, granted: true });
     const finished = await p.next((m) => m.type === "activity" && m.kind === "tool_finished");
     expect(finished).toMatchObject({ conversation: lane, status: "ok", handle: "e1", task: "g1/t1" });
-    expect(finished.preview).toContain("approved-run");
+    // The command's output and how it ended, in words rather than its JSON.
+    expect(finished.result).toMatchObject({ summary: "exit 0", preview: "approved-run\n", truncated: false });
     await p.next(isResult("a1"));
     p.send({ type: "approve", approval: asked.id, granted: true });
     expect(await p.next((m) => m.type === "error" && m.code === "not_found")).toBeDefined();
@@ -353,7 +354,35 @@ describe("drafts of a reply that is arriving", () => {
     const step = p.received.find((m) => m.type === "activity" && m.kind === "step")!;
     expect(step).toMatchObject({ text: "", thinking: "Weighing the checkout flow.", thinkingTruncated: false });
     const history = await app.inject({ method: "GET", url: "/api/history", headers: { authorization: `Bearer ${token}`, host: `127.0.0.1:${port}` } });
-    expect(history.json().items[0].activities).toEqual([expect.objectContaining({ kind: "step", text: "", thinking: "Weighing the checkout flow." })]);
+    expect(history.json().items[0].activities).toEqual([expect.objectContaining({ kind: "routed" }), expect.objectContaining({ kind: "step", text: "", thinking: "Weighing the checkout flow." })]);
+  });
+
+  it("sends what a running command prints as a draft of its call, until its result replaces it", async () => {
+    const folder = tempDir();
+    let n = 0;
+    const { page, rt } = await liveServer(new Responder("r", () => createGoal("Build", "Build it")), new Responder("a", () => n++ === 0 ? {
+      text: "Building.",
+      toolCalls: [call("terminal", { command: "node -e \"console.log('compiling'); setTimeout(() => console.log('built'), 900)\"", yield_ms: 10000 })],
+    } : final()));
+    const workspace = rt.store.createWorkspace("project", folder);
+    await rt.updateSettings({ workingFolder: workspace.id, access: { approvals: "auto" } });
+    const p = await page();
+    p.send({ type: "send", id: "b", text: "Build it.", to: "main" });
+    const printed = await p.next((m) => m.type === "draft" && m.kind === "output");
+    expect(printed).toMatchObject({ conversation: "main", handle: "e1", text: "compiling\n" });
+    const finished = await p.next((m) => m.type === "activity" && m.kind === "tool_finished");
+    expect(finished.result).toMatchObject({ summary: "exit 0", preview: "compiling\nbuilt\n" });
+    // Nothing of it follows its result.
+    await p.next(isResult("b"));
+    p.received.splice(0);
+    await new Promise((r) => setTimeout(r, 400));
+    expect(p.received.filter((m) => m.type === "draft")).toEqual([]);
+    // A page joining afterwards gets no output draft.
+    const after = await page();
+    after.send({ type: "hello" });
+    await after.next((m) => m.type === "state");
+    await new Promise((r) => setTimeout(r, 120));
+    expect(after.received.filter((m) => m.type === "draft")).toEqual([]);
   });
 
   it("sends only the end of a long thought, with its full length", async () => {
@@ -461,8 +490,8 @@ describe("S2 closure regressions", () => {
     expect(await p.next((m) => m.type === "activity" && m.kind === "step")).toMatchObject({ text: "I will inspect the command output.", conversation: "main" });
     const finished = await p.next((m) => m.type === "activity" && m.kind === "tool_finished");
     const result = await p.next(isResult("output"));
-    expect(finished.preview).toHaveLength(2000);
-    expect(finished.truncated).toBe(true);
+    // A command's preview is the end of its output, where its outcome is.
+    expect(finished.result).toMatchObject({ preview: "Z".repeat(2000), truncated: true, summary: "exit 0" });
     const get = (task: string, handle: string) => app.inject({ method: "GET", url: `/api/evidence?task=${task}&handle=${handle}`, headers: { host: `127.0.0.1:${port}`, authorization: `Bearer ${token}` } });
     const evidence = (await get(finished.task, finished.handle)).json();
     expect(evidence).toMatchObject({ content: `${"A".repeat(12000)}MIDDLE-KESTREL${"Z".repeat(12000)}`, truncated: false, outputLost: false });

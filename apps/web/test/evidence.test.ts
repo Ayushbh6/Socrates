@@ -10,6 +10,10 @@ describe("the tool output viewer", () => {
     ] });
   });
 
+  it("knows the edit tool's file header", () => {
+    expect(viewEvidence(JSON.stringify({ diff: "*** a.js\n@@ -1 +1 @@\n-a\n+b" }))).toMatchObject({ kind: "diff", lines: [{ type: "head", text: "*** a.js" }, { type: "hunk" }, { type: "del" }, { type: "add" }] });
+  });
+
   it("tidies structured results, keeps text as recorded, and says when nothing is recorded", () => {
     expect(viewEvidence('{"matches":["a"],"diff":""}')).toEqual({ kind: "json", text: '{\n  "matches": [\n    "a"\n  ],\n  "diff": ""\n}' });
     expect(viewEvidence("line one\nline two")).toEqual({ kind: "text", text: "line one\nline two" });

@@ -78,6 +78,31 @@ describe.skipIf(!hasPty)("pseudo-terminal sessions", () => {
   });
 });
 
+describe("what a running call shows the user", () => {
+  it("sends a waiting command's newest output as it prints, by the call's handle, and nothing after its result", async () => {
+    const h = harness();
+    const seen: { handle: string; output: string }[] = [];
+    const onOutput = (handle: string, output: string) => seen.push({ handle, output });
+    const r = await h.call("terminal", { command: 'echo "step one"; sleep 0.5; echo "step two"; sleep 0.5', yield_ms: 5000 }, { onOutput });
+    expect(r.json).toMatchObject({ status: "completed", exit_code: 0 });
+    expect(seen.length).toBeGreaterThanOrEqual(2);
+    expect(seen.every((s) => s.handle === r.handle)).toBe(true);
+    expect(seen[0]!.output).toBe("step one\n");
+    expect(seen.at(-1)!.output).toBe("step one\nstep two\n");
+    const count = seen.length;
+    await new Promise((done) => setTimeout(done, 400));
+    expect(seen).toHaveLength(count);
+
+    // A wait shows only what the agent has not read yet.
+    await h.call("terminal", { command: 'echo "ready"; sleep 0.4; echo "compiling"; sleep 0.6; echo "built"; sleep 30', background: true, name: "dev" });
+    const waits: string[] = [];
+    const waited = await h.call("terminal_control", { action: "wait", terminal: "dev", event: "pattern", pattern: "built" }, { onOutput: (_, output) => waits.push(output) });
+    expect(waited.json).toMatchObject({ event: "pattern" });
+    expect(waits.some((o) => o.endsWith("compiling\n"))).toBe(true);
+    await h.call("terminal_control", { action: "terminate", terminal: "dev" });
+  });
+});
+
 describe("terminal output and Unicode", () => {
   const source = "é🙂中".repeat(20_000);
   const script = `process.stdout.write(${JSON.stringify("é🙂中")}.repeat(20000))`;

@@ -92,6 +92,7 @@ export interface Evidence {
   handle: string;
   tool: string;
   line: string;
+  call?: CallView;
   status: "ok" | "error" | null;
   content: string | null;
   truncated: boolean;
@@ -148,13 +149,32 @@ export interface Folders {
   folders: { name: string; path: string }[];
 }
 
+/** A tool call in plain words (architecture/server.md, "Live activity"). */
+export interface CallView {
+  kind: "read" | "search" | "edit" | "terminal" | "memory" | "capability" | "other";
+  verb: string;
+  active: string;
+  target: string;
+  detail: string | null;
+}
+
+/** What a tool call returned, in a form to read. */
+export interface ResultView {
+  summary: string | null;
+  preview: string;
+  truncated: boolean;
+  diff: string | null;
+  verb: string | null;
+  ms: number | null;
+}
+
 export type ActivityBody =
   | { kind: "message"; text: string; attachments?: AttachmentView[] }
   | { kind: "routed"; turnId: string; projectTurn: number; goal: { number: number; title: string }; task: { number: number; title: string }; lane: number | null }
   | { kind: "question"; turnId: string; text: string }
   | { kind: "step"; turnId: string; text: string; thinking?: string | null; thinkingTruncated?: boolean }
-  | { kind: "tool_started"; turnId: string; task: string; handle: string; line: string }
-  | { kind: "tool_finished"; turnId: string; task: string; handle: string; status: "ok" | "error"; preview: string; truncated: boolean }
+  | { kind: "tool_started"; turnId: string; task: string; handle: string; line: string; call: CallView }
+  | { kind: "tool_finished"; turnId: string; task: string; handle: string; status: "ok" | "error"; result: ResultView }
   | { kind: "answer"; turnId: string; text: string }
   | { kind: "finished"; turnId: string; status: "completed" | "interrupted"; reason: string | null; partial?: string | null }
   | { kind: "handed_off"; turnId: string; lane: number; laneId?: string; goal?: { number: number; title: string }; task?: { number: number; title: string } }
@@ -192,7 +212,7 @@ export interface LiveState {
 export type ServerMessage =
   | ({ type: "state" } & LiveState)
   | ({ type: "activity" } & Activity)
-  | { type: "draft"; conversation: string; turnId: string; call: number; kind: "narration" | "answer" | "thinking"; text: string; length?: number }
+  | { type: "draft"; conversation: string; turnId: string; call: number; kind: "narration" | "answer" | "thinking" | "output"; handle?: string; text: string; length?: number }
   | { type: "accepted"; id: string; conversation: string }
   | ({ type: "approval" } & PendingApproval)
   | { type: "handed_off"; id: string; conversation: string; lane: number; mainReleased: boolean }

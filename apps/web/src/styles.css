@@ -137,39 +137,59 @@ svg { width: 1rem; height: 1rem; flex: none; }
 .answer-body { min-width: 0; padding-top: 0.2rem; }
 .answer-route { margin: 0.35rem 0 0.8rem; color: var(--faint); font-size: 0.75rem; }
 .answer-route span { margin: 0 0.3rem; opacity: 0.6; }
-.steps { display: grid; gap: 0.35rem; margin: 0 0 1rem; padding: 0; list-style: none; }
-.work-narration { margin: 0; color: var(--muted); font-size: 0.9rem; line-height: 1.55; }
-/* The work behind an answer: quiet, folded apart from the answer, soft panels and no lines. */
-.work { margin: 0 0 1rem; }
-.work-head, .group-head, .thinking-label { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.15rem 0.1rem; border: 0; background: transparent; color: var(--muted); font-size: 0.85rem; text-align: left; }
-.work-head:hover, .group-head:hover, button.thinking-label:hover { color: var(--text); }
-.work-head .spin, .group-head .spin { width: 0.85rem; height: 0.85rem; }
-.work-chevron { flex: none; width: 0.85rem; height: 0.85rem; transition: transform 160ms; }
-.work[data-open="true"] > .work-head .work-chevron, .tool-group[data-open="true"] > .group-head .work-chevron, .thinking[data-open="true"] .thinking-label .work-chevron { transform: rotate(90deg); }
-.work-body { display: grid; gap: 0.5rem; margin: 0.45rem 0 0 0.35rem; }
-.thinking, .tool-group { padding: 0.45rem 0.75rem; border-radius: 0.8rem; background: rgba(45, 55, 72, 0.035); }
-.thinking-label { padding: 0; font-size: 0.8rem; }
-p.thinking-label { margin: 0 0 0.25rem; color: var(--faint); }
-.thinking-text { margin-top: 0.25rem; color: var(--muted); font-size: 0.84rem; font-style: italic; line-height: 1.6; overflow-wrap: anywhere; }
+/* The work behind an answer: quiet rows with an icon each, as in Codex and Claude Code; no panels and no lines. */
+.work { min-width: 0; margin: 0 0 1.1rem; }
+.work-head { display: inline-flex; align-items: center; gap: 0.35rem; max-width: 100%; padding: 0.15rem 0; border: 0; background: transparent; color: var(--muted); font-size: 0.85rem; text-align: left; }
+.work-head:hover { color: var(--text); }
+.work-chevron { flex: none; width: 0.85rem; height: 0.85rem; opacity: 0.7; transition: transform 160ms; }
+.work[data-open="true"] > .work-head .work-chevron { transform: rotate(90deg); }
+.work-head + .work-body { margin-top: 0.45rem; }
+/* One column that never grows past the answer: long commands end in an ellipsis instead. */
+.work-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.1rem; min-width: 0; }
+.work-narration { margin: 0.4rem 0 0.35rem; color: var(--text); font-size: 0.93rem; line-height: 1.6; overflow-wrap: anywhere; }
+.work-narration p, .work-narration ul, .work-narration ol { margin: 0 0 0.4rem; }
+.work-narration > :last-child { margin-bottom: 0; }
+.work-narration code { padding: 0.05rem 0.25rem; border-radius: 0.25rem; background: rgba(45, 55, 72, 0.06); font-family: var(--mono); font-size: 0.85em; }
+/* One row: an icon, what it did in words, what it came to, and a chevron to open it. */
+.row-line { display: flex; align-items: center; gap: 0.5rem; width: 100%; min-width: 0; margin: 0; padding: 0.26rem 0.45rem; border: 0; border-radius: 0.5rem; background: transparent; color: var(--muted); font-size: 0.86rem; line-height: 1.45; text-align: left; }
+button.row-line:hover { background: var(--hover); color: var(--text); }
+.row-icon { flex: none; width: 0.95rem; height: 0.95rem; opacity: 0.7; }
+.row-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-text code { margin-left: 0.35rem; color: var(--text); font-family: var(--mono); font-size: 0.8rem; }
+.row-detail { margin-left: 0.35rem; color: var(--faint); }
+.row-summary { flex: none; color: var(--faint); font-size: 0.78rem; font-variant-numeric: tabular-nums; }
+.row-summary[data-failed="true"] { color: var(--danger); }
+.row-summary .added { color: #1d7a55; }
+.row-summary .removed { color: #b04848; }
+.row-time { flex: none; color: var(--faint); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.row-state { flex: none; width: 0.85rem; height: 0.85rem; }
+.tool[data-status="error"] .row-state { color: var(--danger); }
+.row-chevron { flex: none; width: 0.8rem; height: 0.8rem; opacity: 0; transition: transform 160ms, opacity 120ms; }
+button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, [data-open="true"] > .row-line .row-chevron { opacity: 0.7; }
+[data-open="true"] > .row-line .row-chevron { transform: rotate(90deg); }
+.group-items { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.05rem; min-width: 0; margin: 0 0 0.2rem 1rem; }
+/* Text that is happening now shimmers, as in Claude and Codex. */
+.shimmer { background: linear-gradient(90deg, var(--muted) 35%, var(--text) 50%, var(--muted) 65%); background-size: 250% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 2.2s linear infinite; }
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0% 0; } }
+.live-status { display: flex; align-items: center; gap: 0.55rem; margin: 0.25rem 0; padding: 0.26rem 0.45rem; color: var(--muted); font-size: 0.86rem; }
+.live-time { color: var(--faint); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: reduce) { .shimmer { animation: none; background: none; color: var(--muted); } }
+.thinking-text { margin: 0.1rem 0 0.45rem 1.95rem; color: var(--muted); font-size: 0.84rem; font-style: italic; line-height: 1.6; overflow-wrap: anywhere; }
 .thinking-text p, .thinking-text ul, .thinking-text ol { margin: 0 0 0.45rem; }
 .thinking-text > :last-child { margin-bottom: 0; }
 .thinking-text strong { font-weight: 500; font-style: normal; color: var(--text); }
 /* While it thinks, the newest lines show and the older ones fade upward. */
 .thinking[data-live] .thinking-text { display: flex; flex-direction: column; justify-content: flex-end; max-height: 8em; overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, transparent, #000 2.5em); mask-image: linear-gradient(to bottom, transparent, #000 2.5em); }
 .thinking-cut { color: var(--faint); font-size: 0.75rem; font-style: normal; }
-.tool-group .group-head { font-size: 0.82rem; }
-.tool-group .steps { margin: 0.25rem 0 0.1rem 0.3rem; }
-.step-meta { display: flex; align-items: center; gap: 0.45rem; color: var(--faint); font-size: 0.8rem; }
+.step-meta { display: flex; align-items: center; gap: 0.45rem; margin: 0.2rem 0; padding: 0 0.45rem; color: var(--faint); font-size: 0.8rem; }
+.step-meta svg { flex: none; width: 0.9rem; height: 0.9rem; }
 .step-meta.warn { color: var(--warm); }
-.tool-line { display: flex; align-items: center; gap: 0.45rem; max-width: 100%; padding: 0.2rem 0.4rem 0.2rem 0; border: 0; border-radius: 0.4rem; background: transparent; color: var(--muted); text-align: left; }
-.tool-line:hover { color: var(--text); }
-.tool-line code { overflow: hidden; font-family: var(--mono); font-size: 0.78rem; text-overflow: ellipsis; white-space: nowrap; }
-.tool-chevron { width: 0.85rem; height: 0.85rem; transition: transform 160ms; }
-.tool[data-open="true"] .tool-chevron { transform: rotate(90deg); }
-.tool[data-status="ok"] .tool-line > svg:last-child { color: var(--accent); }
-.tool[data-status="error"] .tool-line > svg:last-child { color: var(--danger); }
-.tool-output { margin: 0.3rem 0 0.6rem 1.3rem; }
+/* What a running command prints, newest lines only. */
+.tool-live { max-height: 9.5em; margin: 0.05rem 0 0.35rem 1.95rem; padding: 0.45rem 0.7rem; overflow: hidden; border-radius: 0.55rem; background: rgba(17, 40, 32, 0.04); color: var(--muted); font-family: var(--mono); font-size: 0.72rem; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-output { min-width: 0; margin: 0.15rem 0 0.5rem 1.95rem; }
 .tool-output pre { max-height: 18rem; margin: 0 0 0.3rem; padding: 0.7rem 0.85rem; overflow: auto; border-radius: 0.6rem; background: rgba(45, 55, 72, 0.045); font-family: var(--mono); font-size: 0.75rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-output .tool-diff { padding: 0.5rem 0; white-space: pre; overflow-wrap: normal; }
+.tool-diff .diff-line { display: block; padding: 0 0.85rem; }
 .spin { animation: spin 1s linear infinite; color: var(--accent); }
 @keyframes spin { to { transform: rotate(360deg); } }
 .approval { margin: 0.4rem 0 1.2rem; padding: 1rem 1.1rem; border-radius: 1rem; background: rgba(255, 250, 240, 0.96); box-shadow: var(--shadow-float); }
@@ -191,9 +211,9 @@ p.thinking-label { margin: 0 0 0.25rem; color: var(--faint); }
 .prose th, .prose td { padding: 0.35rem 0.7rem; background: rgba(45, 55, 72, 0.03); text-align: left; }
 .prose th { background: rgba(45, 55, 72, 0.06); }
 /* A soft point at the end of text that is still being written. */
-.prose[data-live="true"] > :last-child::after, .work-narration[data-live="true"]::after { content: ""; display: inline-block; width: 0.45rem; height: 0.45rem; margin-left: 0.3rem; border-radius: 50%; background: var(--accent); animation: writing 1.3s ease-in-out infinite; }
+.prose[data-live="true"] > :last-child::after, .work-narration[data-live="true"] > :last-child::after { content: ""; display: inline-block; width: 0.45rem; height: 0.45rem; margin-left: 0.3rem; border-radius: 50%; background: var(--accent); animation: writing 1.3s ease-in-out infinite; }
 @keyframes writing { 0%, 100% { opacity: 0.25; transform: scale(0.8); } 50% { opacity: 0.95; transform: scale(1); } }
-@media (prefers-reduced-motion: reduce) { .prose[data-live="true"] > :last-child::after, .work-narration[data-live="true"]::after { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .prose[data-live="true"] > :last-child::after, .work-narration[data-live="true"] > :last-child::after { animation: none; } }
 
 /* Notes */
 
@@ -402,6 +422,7 @@ p.thinking-label { margin: 0 0 0.25rem; color: var(--faint); }
 
 .modal.evidence { width: min(60rem, 100%); max-height: 88vh; }
 .evidence-title { display: grid; gap: 0.15rem; min-width: 0; }
+.evidence-title > span { overflow: hidden; font-size: 0.88rem; text-overflow: ellipsis; white-space: nowrap; }
 .evidence-title code { overflow: hidden; font-family: var(--mono); font-size: 0.82rem; text-overflow: ellipsis; white-space: nowrap; }
 .evidence-title small { color: var(--faint); font-size: 0.72rem; }
 .icon-button[data-on="true"] { background: var(--tint); color: var(--accent-strong); }
