@@ -74,15 +74,57 @@ export function findMatches(content: string, find: string): MatchResult | null {
   return null;
 }
 
-/** Line numbers (1-based) where the first non-blank line of `find` appears, for a helpful not-found error. */
-export function nearMisses(content: string, find: string, max = 3): number[] {
-  const first = find.split("\n").find((l) => l.trim() !== "")?.trim();
-  if (!first) return [];
-  const out: number[] = [];
-  lineSpans(content).forEach((l, i) => {
-    if (out.length < max && l.text.trim() === first) out.push(i + 1);
+/** Where `old_text` nearly matched: the closest lines of the file, and the lines that differ. */
+export interface NearMiss {
+  start_line: number;
+  end_line: number;
+  differences: { line: number; file: string; old_text: string }[];
+}
+
+const NEAR_MISS_LINE_CHARS = 160;
+const NEAR_MISS_MAX_DIFFERENCES = 5;
+
+/**
+ * The block of the file most like `find`, for a not-found error: each line of
+ * `find` votes for the blocks in which the same line (ignoring indentation and
+ * typographic punctuation) sits at the same place, and the block with the most
+ * votes wins when at least half of `find`'s lines agree. A suggestion only:
+ * it is never applied.
+ */
+export function nearMiss(content: string, find: string): NearMiss | null {
+  const lines = content.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  const findLines = (find.endsWith("\n") ? find.slice(0, -1) : find).split("\n");
+  const key = (line: string) => normalizePunctuation(line.trim());
+  const where = new Map<string, number[]>();
+  lines.forEach((line, i) => {
+    const k = key(line);
+    if (!k) return;
+    const list = where.get(k);
+    if (list) list.push(i);
+    else where.set(k, [i]);
   });
-  return out;
+  const votes = new Map<number, number>();
+  findLines.forEach((line, j) => {
+    const k = key(line);
+    if (!k) return;
+    for (const i of where.get(k) ?? []) {
+      const start = i - j;
+      if (start >= 0 && start + findLines.length <= lines.length) votes.set(start, (votes.get(start) ?? 0) + 1);
+    }
+  });
+  let best = -1;
+  let most = 0;
+  for (const [start, n] of votes) if (n > most || (n === most && start < best)) [best, most] = [start, n];
+  const needed = Math.max(1, Math.ceil(findLines.filter((l) => key(l)).length / 2));
+  if (best < 0 || most < needed) return null;
+  const cut = (line: string) => (line.length > NEAR_MISS_LINE_CHARS ? `${line.slice(0, NEAR_MISS_LINE_CHARS)}…` : line);
+  const differences: NearMiss["differences"] = [];
+  findLines.forEach((given, j) => {
+    const actual = lines[best + j] ?? "";
+    if (actual !== given && differences.length < NEAR_MISS_MAX_DIFFERENCES) differences.push({ line: best + j + 1, file: cut(actual), old_text: cut(given) });
+  });
+  return { start_line: best + 1, end_line: best + findLines.length, differences };
 }
 
 export function lineNumberAt(content: string, index: number): number {

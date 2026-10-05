@@ -133,7 +133,39 @@ try {
       assert((input.context_after ?? input.context) === 2, `expected two lines of context: ${JSON.stringify(input)}`);
       assert(content.includes("return amount * 0.2;"));
     });
-    live = { provider: model.id, servedBy: second.servedBy ?? model.id, grep: { files, context }, pass: true };
+    // And edit's newer forms: several changes in one call, and a new file.
+    const editOnce = async (request: string, check: (input: Record<string, unknown>) => void) => {
+      // It may look first (read, glob, grep); then it must change the file with one edit call.
+      const talk: ModelMessage[] = [{ role: "user", content: request }];
+      for (let step = 0; step < 5; step++) {
+        const asked = await model.complete({ system: "Use the tools. Change files with the edit tool, in as few edit calls as possible.", messages: talk, tools: runner.definitions, maxOutputTokens: 4000, signal: AbortSignal.timeout(90000) });
+        const edits = asked.toolCalls.filter((c) => c.name === "edit");
+        if (edits.length) {
+          assert.equal(edits.length, 1, `expected one edit call: ${JSON.stringify(asked.toolCalls)}`);
+          const run = await dispatch(edits[0]!);
+          assert.equal(run.isError, false, run.content);
+          check(edits[0]!.input as Record<string, unknown>);
+          return edits[0]!.input;
+        }
+        assert(asked.toolCalls.length && asked.toolCalls.every((c) => ["read", "glob", "grep"].includes(c.name)), `expected a look or an edit: ${JSON.stringify(asked.toolCalls)} ${asked.text}`);
+        talk.push({ role: "assistant", content: asked.text, toolCalls: asked.toolCalls, ...(asked.raw ? { raw: asked.raw } : {}) });
+        for (const c of asked.toolCalls) {
+          const r = await dispatch(c);
+          talk.push({ role: "tool", toolCallId: r.callId, toolName: r.name, content: r.content, isError: r.isError });
+        }
+      }
+      throw new Error("no edit call after five steps");
+    };
+    const several = await editOnce("In billing/tax.ts, change the comment to '// Tax by region.' and change the rate 0.2 to 0.25, in one call.", (input) => {
+      assert(Array.isArray(input.edits) && input.edits.length >= 2, `expected edits: ${JSON.stringify(input)}`);
+      const tax = readFileSync(path.join(root, "billing", "tax.ts"), "utf8");
+      assert(tax.includes("// Tax by region.") && tax.includes("0.25"), tax);
+    });
+    const created = await editOnce("Create billing/rates.ts containing exactly: export const EU = 0.25;", (input) => {
+      assert.equal(input.old_text, "");
+      assert.equal(readFileSync(path.join(root, "billing", "rates.ts"), "utf8").trim(), "export const EU = 0.25;");
+    });
+    live = { provider: model.id, servedBy: second.servedBy ?? model.id, grep: { files, context }, edit: { several, created }, pass: true };
   }
   const recovered = LedgerStore.open({ path: ":memory:" });
   try {

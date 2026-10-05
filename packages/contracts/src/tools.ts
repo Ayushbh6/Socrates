@@ -52,11 +52,21 @@ export const GrepInput = z.strictObject({
   cursor: Cursor.optional().describe("next_cursor from the preceding identical call."),
 });
 
-export const EditInput = z.strictObject({
-  path: Path.describe("Workspace-relative path of an existing file."),
-  old_text: z.string().min(1).describe("Exact text to replace; must occur exactly once unless replace_all is true."),
-  new_text: z.string().describe("Replacement text."),
+/** At most this many replacements in one edit call. */
+export const EDIT_MAX_EDITS = 50;
+
+const OneEdit = z.strictObject({
+  old_text: z.string().describe("Exact text to replace; must occur exactly once unless replace_all is true. Empty only to create a new file."),
+  new_text: z.string().describe("Replacement text, or the whole content of a new file."),
   replace_all: z.boolean().optional().describe("Replace every occurrence. Default false."),
+});
+
+export const EditInput = z.strictObject({
+  path: Path.describe("Workspace-relative path of the file."),
+  old_text: OneEdit.shape.old_text.optional(),
+  new_text: OneEdit.shape.new_text.optional(),
+  replace_all: OneEdit.shape.replace_all,
+  edits: z.array(OneEdit).min(1).max(EDIT_MAX_EDITS).optional().describe("Several replacements in one file, applied in order, each to the text the previous one left; all succeed or none is written. Use instead of old_text and new_text."),
 });
 
 export const ApplyPatchInput = z.strictObject({

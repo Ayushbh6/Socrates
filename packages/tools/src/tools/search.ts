@@ -35,9 +35,13 @@ type Sort = "path" | "modified";
 /** ripgrep's order: stable paths, or most recently modified first. */
 const sortArgs = (sort: Sort) => (sort === "modified" ? ["--sortr", "modified"] : ["--sort", "path"]);
 
-/** Listing and searching flags shared by glob and grep. */
-function walkArgs(sort: Sort, includeIgnored: boolean, excludes: string[]): string[] {
-  return ["--no-config", "--hidden", ...sortArgs(sort), ...(includeIgnored ? ["--no-ignore"] : []), ...EXCLUDE_GIT, ...excludes];
+/**
+ * Listing and searching flags shared by glob and grep. ripgrep lets the last
+ * matching glob win, so the caller's own globs come before the exclusions:
+ * a pattern such as "**\/*" must never bring .git or a protected folder back.
+ */
+function walkArgs(sort: Sort, includeIgnored: boolean, excludes: string[], globs: string[] = []): string[] {
+  return ["--no-config", "--hidden", ...sortArgs(sort), ...(includeIgnored ? ["--no-ignore"] : []), ...globs.flatMap((g) => ["--glob", g]), ...EXCLUDE_GIT, ...excludes];
 }
 
 const posix = (rel: string) => rel.replace(/^\.\//, "").split(path.sep).join("/");
@@ -64,15 +68,15 @@ export async function timed<T>(signal: AbortSignal, work: (signal: AbortSignal) 
  * matches are intersected with the ignore-respecting listing.
  */
 async function listFiles(dirAbs: string, signal: AbortSignal, pattern: string | undefined, onFile: (rel: string) => boolean, options: { excludes: string[]; sort: Sort; includeIgnored: boolean }): Promise<void> {
-  const walk = walkArgs(options.sort, options.includeIgnored, options.excludes);
+  const walk = (globs: string[]) => walkArgs(options.sort, options.includeIgnored, options.excludes, globs);
   let matching: Set<string> | null = null;
   if (pattern !== undefined && !options.includeIgnored) {
     matching = new Set();
     const candidates = matching;
-    const filtered = await runRipgrep(["--files", ...walk, "--glob", pattern], dirAbs, signal, (line) => (candidates.add(posix(line)), true));
+    const filtered = await runRipgrep(["--files", ...walk([pattern])], dirAbs, signal, (line) => (candidates.add(posix(line)), true));
     if (filtered.code === 2) throw invalidGlob(filtered.stderr);
   }
-  const listed = await runRipgrep(["--files", ...walk, ...(pattern !== undefined && options.includeIgnored ? ["--glob", pattern] : [])], dirAbs, signal, (line) => {
+  const listed = await runRipgrep(["--files", ...walk(pattern !== undefined && options.includeIgnored ? [pattern] : [])], dirAbs, signal, (line) => {
     if (!line) return true;
     const rel = posix(line);
     return !matching || matching.has(rel) ? onFile(rel) : true;
@@ -241,11 +245,10 @@ export const grepTool: ToolHandler<GrepInput> = {
           eligible = new Set(listed && (!input.glob || (await fileListed(cwd, path.basename(target.abs), signal, input.glob))) ? [path.basename(target.abs)] : []);
         }
         const args = [
-          ...walkArgs(sort, includeIgnored, excludes),
+          ...walkArgs(sort, includeIgnored, excludes, input.glob ? [input.glob] : []),
           input.case_sensitive === false ? "--ignore-case" : "--case-sensitive",
           ...(input.literal ? ["--fixed-strings"] : []),
           ...(input.multiline ? ["--multiline", "--multiline-dotall"] : []),
-          ...(input.glob ? ["--glob", input.glob] : []),
           ...(input.type ? ["--type", input.type] : []),
           ...(output === "files" ? ["--files-with-matches"] : output === "count" ? ["--count", "--with-filename"] : ["--json", ...(before ? ["--before-context", String(before)] : []), ...(after ? ["--after-context", String(after)] : [])]),
           "--regexp",

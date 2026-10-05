@@ -4,7 +4,7 @@ import { ApplyPatchInput } from "@socrates/contracts";
 import { type HandlerContext, requireWorkspace, throwIfCancelled } from "../context";
 import { boundedDiff, unifiedDiff } from "../diff";
 import { ToolError } from "../errors";
-import { type TextFile, currentHash, encodeText, hashBytes, readTextFile, statOrNull, writeAtomic, writeNew } from "../files";
+import { NEW_FILE, type TextFile, currentHash, encodeText, hashBytes, readTextFile, statOrNull, writeAtomic, writeNew } from "../files";
 import type { FileMutation, ToolHandler, ToolOutput } from "../handler";
 import { withFileLocks, withWorkspaceLock } from "../locks";
 import { PATCH_FORMAT_HINT, type PatchHunk, applyChunks, parsePatch } from "../patch";
@@ -19,7 +19,7 @@ interface PlannedChange {
   after: string | null;
 }
 
-const encoded = (c: PlannedChange) => encodeText(c.after!, c.before ?? { eol: "\n", bom: false });
+const encoded = (c: PlannedChange) => encodeText(c.after!, c.before ?? NEW_FILE);
 
 /**
  * Commit a validated plan file by file. Each file is checked again
@@ -44,7 +44,7 @@ async function commit(planned: PlannedChange[], ctx: HandlerContext): Promise<vo
           await writeAtomic(change.target.abs, content, change.before?.mode);
           undo.push({ path: change.target.rel, restore: async () => {
             if (!(await isWritten())) return false;
-            await writeAtomic(change.target.abs, original.toString("utf8"), change.before?.mode);
+            await writeAtomic(change.target.abs, original, change.before?.mode);
             return true;
           } });
         } else {
@@ -84,7 +84,7 @@ async function commit(planned: PlannedChange[], ctx: HandlerContext): Promise<vo
         const original = await readFile(change.source.abs);
         if (hashBytes(original) !== change.before!.hash) throw changedDuringCall(change.source.rel);
         await unlink(change.source.abs);
-        undo.push({ path: change.source.rel, restore: async () => writeNew(change.source.abs, original.toString("utf8"), change.before?.mode) });
+        undo.push({ path: change.source.rel, restore: async () => writeNew(change.source.abs, original, change.before?.mode) });
       }
     }
     throwIfCancelled(ctx.signal);

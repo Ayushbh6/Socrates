@@ -109,6 +109,12 @@ describe("access: approvals", () => {
     expect(refused.json.error.code).toBe("approval_denied");
     expect(h.approvals[0]).toEqual({ kind: "action", tool: "edit", detail: "Edit src/a.ts", preview: "--- replace\nconst a = 1;\n+++ with\nconst a = 2;" });
     expect(readFileSync(path.join(h.root, "src/a.ts"), "utf8")).toBe("const a = 1;\n");
+    // Several changes, or a new file, are shown whole too.
+    await h.call("edit", { path: "src/a.ts", edits: [{ old_text: "const", new_text: "let" }, { old_text: "1", new_text: "2", replace_all: true }] });
+    expect(h.approvals.at(-1)).toMatchObject({ detail: "Edit src/a.ts (2 changes) (every occurrence)", preview: "--- replace\nconst\n+++ with\nlet\n\n--- replace\n1\n+++ with\n2" });
+    await h.call("edit", { path: "src/new.ts", old_text: "", new_text: "export {};\n" });
+    expect(h.approvals.at(-1)).toMatchObject({ detail: "Create src/new.ts", preview: "+++ new file\nexport {};\n" });
+    h.approvals.splice(1);
     const patch = "*** Begin Patch\n*** Add File: src/b.ts\n+b\n*** Update File: src/a.ts\n@@\n-const a = 1;\n+const a = 3;\n*** End Patch";
     expect((await h.call("apply_patch", { patch })).isError).toBe(false);
     expect(h.approvals[1]).toEqual({ kind: "action", tool: "apply_patch", detail: "Apply a patch: add src/b.ts, update src/a.ts", preview: patch });
@@ -177,6 +183,9 @@ describe("access review regressions", () => {
     const found = await h.call("grep", { pattern: "sentinel", glob: "**", path: parent });
     expect(found.isError).toBe(false);
     expect(found.json.matches).toEqual([{ path: `${parent}/public.md`, line_number: 1, text: "sentinel" }]);
+    // Including ignored files never includes protected ones.
+    expect((await h.call("glob", { pattern: "**", path: parent, include_ignored: true })).json.matches).toEqual([`${parent}/public.md`]);
+    expect((await h.call("grep", { pattern: "sentinel", glob: "**", path: parent, include_ignored: true })).json.matches.map((m: { path: string }) => m.path)).toEqual([`${parent}/public.md`]);
   });
 
   it.each(["read", "edit", "apply_patch"])("rechecks %s paths after an outside-folder approval", async tool => {

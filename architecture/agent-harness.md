@@ -53,7 +53,7 @@ Successful output is structured and rendered to the model with line numbers:
 
 The initial contract performs no LLM-generated summary and no automatic code folding. It returns exact text. Structural code outlines may be added later as an explicitly requested mode only if evaluations show that they improve large-code navigation without hiding important content.
 
-Directory discovery does not belong in `read`; use `glob`. Binary files, directories, invalid UTF-8, and files outside the granted workspace fail with corrective errors rather than returning damaged text. A PNG, JPEG, GIF or WebP image is the exception: `read` shows it to a model that can see ("Images").
+Directory discovery does not belong in `read`; use `glob`. UTF-16 files with a byte-order mark are read as text. Binary files, directories, invalid UTF-8, and files outside the granted workspace fail with corrective errors rather than returning damaged text. A PNG, JPEG, GIF or WebP image is the exception: `read` shows it to a model that can see ("Images").
 
 #### 2. `glob`
 
@@ -151,22 +151,36 @@ Returned lines are bounded at `500` characters. A longer line (a minified file, 
 
 #### 4. `edit`
 
-Perform a precise replacement in one existing file.
+Perform precise replacements in one file, or create a new one.
 
 ```json
 {
   "path": "string",
-  "old_text": "string",
-  "new_text": "string",
-  "replace_all": "boolean | optional"
+  "old_text": "string | optional",
+  "new_text": "string | optional",
+  "replace_all": "boolean | optional",
+  "edits": "array<{ old_text, new_text, replace_all? }> | optional"
 }
 ```
 
-`replace_all` defaults to `false`. With that default, the operation succeeds only when `old_text` occurs exactly once. It fails safely when the text is absent or ambiguous, naming the lines involved. With `replace_all: true`, every occurrence is replaced, but zero occurrences still fail. `old_text` must not be empty.
+**One replacement:** `old_text` and `new_text`. `replace_all` defaults to `false`. With that default, the replacement succeeds only when `old_text` occurs exactly once. It fails safely when the text is absent or ambiguous, naming the lines involved. With `replace_all: true`, every occurrence is replaced, but zero occurrences still fail.
 
-Matching is exact first. Only when nothing matches exactly, whole lines are compared with increasing tolerance for the drift models commonly introduce: trailing whitespace, then indentation, then typographic punctuation (curly quotes, dashes, non-breaking spaces). Each tier still compares every line, so there is no similarity scoring and a match can never land on a block that merely resembles the request; uniqueness applies at whichever tier matched. When an indentation-tolerant match finds one consistent shift, the same shift is applied to `new_text`; with `replace_all`, each occurrence gets its own shift. If the given lines' relative indentation differs from the file's, so no single shift exists, the edit fails with `old_text_indentation_mismatch` instead of guessing. The result's `match` field reports the tier (`exact`, `trailing_whitespace`, `indentation`, or `unicode_punctuation`).
+**Several replacements:** `edits` (up to `50`) replaces one file in several places in one call, as Claude Code's multi-edit and a multi-hunk patch do. The edits apply in order, each to the text the previous one left, and either all succeed or nothing is written. An error names the failing edit (`edits[2]: …`) and says that nothing was written. Passing both forms, or neither, is `invalid_parameters`.
 
-The backend verifies the current file version under the mutation lock. Every successful `read`, `edit`, and `apply_patch` records the file's content hash for the task; if the file changed after the task last observed it, the edit fails as stale and tells the agent to reread it. A file the task has never observed can be edited, because the exact `old_text` match already proves the expected content. This prevents a successful read followed by a racing overwrite. The tool preserves the file's existing newline convention and does not create missing files.
+**Creating a file:** an empty `old_text` with the whole content as `new_text` creates a file that does not exist, with missing folders, and with `new_text` written exactly. It never overwrites: on a file with content it fails with `old_text_empty`, and a file that appears meanwhile is `file_exists`. An empty existing file can be filled the same way. A missing file with a non-empty `old_text` is `file_not_found`, with similar paths and how to create it.
+
+Matching is exact first. Only when nothing matches exactly, whole lines are compared with increasing tolerance for the drift models commonly introduce: trailing whitespace, then indentation, then typographic punctuation (curly quotes, dashes, non-breaking spaces). Each tier still compares every line, so there is no similarity scoring and a match can never land on a block that merely resembles the request; uniqueness applies at whichever tier matched. When an indentation-tolerant match finds one consistent shift, the same shift is applied to `new_text`; with `replace_all`, each occurrence gets its own shift. If the given lines' relative indentation differs from the file's, so no single shift exists, the edit fails with `old_text_indentation_mismatch` instead of guessing. The result's `match` field reports the tier (`exact`, `trailing_whitespace`, `indentation`, or `unicode_punctuation`), or `edits` lists each edit's replacements and tier.
+
+When `old_text` is not found, the error names the closest block of the file and how it differs. Each line of `old_text` votes for the blocks where the same line (ignoring indentation and typographic punctuation) sits at the same place, and the block most lines agree on (at least half) is shown. Up to three differing lines are quoted, the file's beside `old_text`'s: "The closest text is at lines 12–15, which differs at line 13: the file has … where old_text has …". It is a suggestion for the next try, never applied.
+
+The backend verifies the current file version under the mutation lock. Every successful `read`, `edit`, and `apply_patch` records the file's content hash for the task; if the file changed after the task last observed it, the edit fails as stale and tells the agent to reread it. A file the task has never observed can be edited, because the exact `old_text` match already proves the expected content. This prevents a successful read followed by a racing overwrite.
+
+**Writing it back faithfully:**
+- The file's encoding is kept: UTF-8, or UTF-16 (little- or big-endian) recognised by its byte-order mark.
+- The byte-order mark is kept.
+- Each line keeps its own ending. In a file that mixes `\r\n` and `\n`, unchanged lines keep theirs, lines that replace others take the endings of the lines they replace, and other new lines take the ending of the line before them; a uniform file stays uniform.
+- A path through a symlink edits the link's target and leaves the link.
+- Files up to `20` MB can be edited.
 
 ```json
 {
@@ -178,7 +192,7 @@ The backend verifies the current file version under the mutation lock. Every suc
 }
 ```
 
-The returned diff is bounded but the complete mutation and before/after versions are recorded in the event log. A replacement that produces identical content succeeds with `changed: false` and records no filesystem mutation.
+The returned diff is bounded but the complete mutation and before/after versions are recorded in the event log. A replacement that produces identical content succeeds with `changed: false` and records no filesystem mutation. A created file returns `created: true`. When approvals are asked, the preview shows every replacement, or the new file's content.
 
 #### 5. `apply_patch`
 
@@ -206,9 +220,9 @@ The complete patch is validated first and then committed as one unit under the w
 }
 ```
 
-The output diff is bounded while the complete patch and mutation evidence remain in the event log. `edit` is preferred for one exact replacement; `apply_patch` is preferred for new files, coordinated multi-file work, moves, deletes, or several hunks.
+Updated files keep their encoding, byte-order mark and each line's ending, as with `edit`, and a rollback restores the exact original bytes. The output diff is bounded while the complete patch and mutation evidence remain in the event log. `edit` is preferred for one exact replacement; `apply_patch` is preferred for new files, coordinated multi-file work, moves, deletes, or several hunks.
 
-There is no separate `write` tool initially. `apply_patch` already provides explicit file creation without adding another permanent schema. A dedicated `write` tool should be added only if evaluations show a concrete reliability problem with large new files.
+There is no separate `write` tool. `edit` with an empty `old_text` and `apply_patch` already create files without adding another permanent schema. A dedicated `write` tool should be added only if evaluations show a concrete reliability problem with large new files.
 
 ### Execution
 

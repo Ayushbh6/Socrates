@@ -12,7 +12,7 @@ const INVALID: [string, unknown][] = [
   ["read", { path: "a.txt", offset: 0 }],
   ["glob", { pattern: "" }],
   ["grep", { pattern: "x", case_sensitive: "yes" }],
-  ["edit", { path: "a.txt", old_text: "", new_text: "changed" }],
+  ["edit", { path: "a.txt", old_text: "original", new_text: "changed", edits: [{ old_text: "original", new_text: "x" }] }],
   ["apply_patch", { patch: 42 }],
   ["terminal", { command: "touch created-by-invalid-call", yield_ms: 10 }],
   ["terminal_control", { action: "explode", terminal: "x" }],

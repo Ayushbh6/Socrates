@@ -122,6 +122,9 @@ describe("glob", () => {
     // An inclusion pattern alone never brings an ignored file back.
     expect((await h.call("glob", { pattern: "node_modules/**" })).json.matches).toEqual([]);
     expect((await h.call("glob", { pattern: "*.{ts,md}", sort: "path" })).json.matches).toEqual(["mid.ts", "new.ts", "old.ts"]);
+    // A catch-all pattern never brings .git back, even with ignored files included.
+    expect((await h.call("glob", { pattern: "**/*", include_ignored: true, sort: "path" })).json.matches).toEqual([".gitignore", "mid.ts", "new.ts", "node_modules/pkg/index.ts", "old.ts"]);
+    expect((await h.call("glob", { pattern: ".git/**", include_ignored: true })).json.matches).toEqual([]);
   });
 
   it("returns an empty match as success with a hint", async () => {
@@ -232,6 +235,7 @@ describe("grep", () => {
     expect((await h.call("grep", { pattern: "token", glob: "dist/**" })).json.matches).toEqual([]);
     expect((await h.call("grep", { pattern: "token", include_ignored: true })).json.matches.map((m: any) => m.path)).toEqual(["dist/a.js", "src/a.ts"]);
     expect((await h.call("grep", { pattern: "token", path: "dist/a.js" })).json.matches).toEqual([]);
+    expect((await h.call("grep", { pattern: "token", glob: "**/*", include_ignored: true })).json.matches.map((m: any) => m.path)).toEqual(["dist/a.js", "src/a.ts"]);
   });
 
   it("stops a search that runs too long with a corrective error", async () => {

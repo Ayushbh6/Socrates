@@ -42,7 +42,7 @@ Each gap names the step that closes it:
 | Limits | Glob shows the first 100 and says it truncated | `limit` (default 200, max 1,000) and a cursor; at most 50,000 collected | kept |
 | Hidden files | included | included; `.git` excluded | kept |
 
-## edit (step 4b)
+## edit (step 4b, done)
 
 **What already matches or exceeds them:**
 

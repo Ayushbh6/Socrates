@@ -315,8 +315,11 @@ const APPROVAL_PREVIEW_CHARS = 20_000;
 function actionDetail(tool: string, input: Record<string, unknown>): string {
   const text = (value: unknown) => String(value ?? "").slice(0, 300);
   switch (tool) {
-    case "edit":
-      return `Edit ${text(input.path)}${input.replace_all ? " (every occurrence)" : ""}`;
+    case "edit": {
+      const edits = Array.isArray(input.edits) ? input.edits as Record<string, unknown>[] : [input];
+      if (edits.length === 1 && edits[0]!.old_text === "") return `Create ${text(input.path)}`;
+      return `Edit ${text(input.path)}${edits.length > 1 ? ` (${edits.length} changes)` : ""}${edits.some((e) => e.replace_all) ? " (every occurrence)" : ""}`;
+    }
     case "apply_patch": {
       const files = [...String(input.patch).matchAll(/^\*\*\* (Add|Update|Delete) File: (.+)$/gm)].map((m) => `${m[1]!.toLowerCase()} ${m[2]!.trim()}`);
       return `Apply a patch: ${files.join(", ").slice(0, 300) || "no files"}`;
@@ -334,7 +337,8 @@ function actionDetail(tool: string, input: Record<string, unknown>): string {
 
 /** The text a changing call writes, when there is one to show before approving. */
 function preview(tool: string, input: Record<string, unknown>): { preview?: string } {
-  const text = tool === "edit" ? `--- replace\n${String(input.old_text)}\n+++ with\n${String(input.new_text)}`
+  const text = tool === "edit" ? (Array.isArray(input.edits) ? input.edits as Record<string, unknown>[] : [input])
+      .map((e) => (e.old_text === "" ? `+++ new file\n${String(e.new_text)}` : `--- replace\n${String(e.old_text)}\n+++ with\n${String(e.new_text)}`)).join("\n\n")
     : tool === "apply_patch" ? String(input.patch)
     : JSON.stringify(input);
   if (text.length > APPROVAL_PREVIEW_CHARS) throw new ToolError("approval_too_large", "This action is too large to preview completely before approval.", "Split it into smaller calls so the user can review each complete action.", false);
