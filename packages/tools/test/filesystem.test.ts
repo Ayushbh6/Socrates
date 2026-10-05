@@ -1,6 +1,7 @@
-import { symlinkSync } from "node:fs";
+import { symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { timed } from "../src/tools/search";
 import { harness, tempDir, writeFiles } from "./helpers";
 
 describe("read", () => {
@@ -85,10 +86,10 @@ describe("glob", () => {
         ".git/config.ts": "",
       },
     });
-    const r = await h.call("glob", { pattern: "**/*.ts" });
+    const r = await h.call("glob", { pattern: "**/*.ts", sort: "path" });
     expect(r.json).toMatchObject({ root: ".", truncated: false, next_cursor: null });
     expect(r.json.matches).toEqual([".hidden/e.ts", "a.ts", "b.ts", "src/c.ts"]);
-    const scoped = await h.call("glob", { pattern: "*", path: "src" });
+    const scoped = await h.call("glob", { pattern: "*", path: "src", sort: "path" });
     expect(scoped.json.matches).toEqual(["src/c.ts", "src/d.md"]);
     expect(scoped.json.root).toBe("src");
   });
@@ -96,16 +97,31 @@ describe("glob", () => {
   it("pages an exact frozen result set with cursors", async () => {
     const files = Object.fromEntries(Array.from({ length: 7 }, (_, i) => [`f${i}.txt`, ""]));
     const h = harness({ files });
-    const first = await h.call("glob", { pattern: "*.txt", limit: 3 });
+    const first = await h.call("glob", { pattern: "*.txt", limit: 3, sort: "path" });
     expect(first.json).toMatchObject({ returned: 3, truncated: true });
     writeFiles(h.root, { "f_late.txt": "" }); // Created after the first page; must not appear.
-    const second = await h.call("glob", { pattern: "*.txt", limit: 3, cursor: first.json.next_cursor });
-    const third = await h.call("glob", { pattern: "*.txt", limit: 3, cursor: second.json.next_cursor });
+    const second = await h.call("glob", { pattern: "*.txt", limit: 3, sort: "path", cursor: first.json.next_cursor });
+    const third = await h.call("glob", { pattern: "*.txt", limit: 3, sort: "path", cursor: second.json.next_cursor });
     expect([...first.json.matches, ...second.json.matches, ...third.json.matches]).toEqual(Object.keys(files).sort());
     expect(third.json.next_cursor).toBeNull();
-    const mismatch = await h.call("glob", { pattern: "*.md", cursor: first.json.next_cursor });
+    const mismatch = await h.call("glob", { pattern: "*.txt", limit: 3, cursor: first.json.next_cursor });
     expect(mismatch.json.error.code).toBe("cursor_mismatch");
     expect((await h.call("glob", { pattern: "*.txt", cursor: "k999" })).json.error.code).toBe("cursor_expired");
+  });
+
+  it("lists the most recently modified first by default, and ignored files only when asked", async () => {
+    const h = harness({ files: { ".gitignore": "node_modules/\n", "old.ts": "", "new.ts": "", "mid.ts": "", "node_modules/pkg/index.ts": "", ".git/hooks/x.ts": "" } });
+    const day = 86_400;
+    const now = Date.now() / 1000;
+    utimesSync(path.join(h.root, "old.ts"), now - 3 * day, now - 3 * day);
+    utimesSync(path.join(h.root, "mid.ts"), now - 2 * day, now - 2 * day);
+    utimesSync(path.join(h.root, "new.ts"), now - day, now - day);
+    utimesSync(path.join(h.root, "node_modules/pkg/index.ts"), now - 4 * day, now - 4 * day);
+    expect((await h.call("glob", { pattern: "**/*.ts" })).json.matches).toEqual(["new.ts", "mid.ts", "old.ts"]);
+    expect((await h.call("glob", { pattern: "**/*.ts", include_ignored: true })).json.matches).toEqual(["new.ts", "mid.ts", "old.ts", "node_modules/pkg/index.ts"]);
+    // An inclusion pattern alone never brings an ignored file back.
+    expect((await h.call("glob", { pattern: "node_modules/**" })).json.matches).toEqual([]);
+    expect((await h.call("glob", { pattern: "*.{ts,md}", sort: "path" })).json.matches).toEqual(["mid.ts", "new.ts", "old.ts"]);
   });
 
   it("returns an empty match as success with a hint", async () => {
@@ -161,5 +177,69 @@ describe("grep", () => {
     expect(none.isError).toBe(false);
     expect(none.json.matches).toEqual([]);
     expect((await h.call("grep", { pattern: "x", path: "nope" })).json.error.code).toBe("path_not_found");
+  });
+
+  it("shows the lines around each match, and a line between two matches belongs to both", async () => {
+    const h = harness({ files: { "a.ts": ["one", "two", "hit A", "four", "hit B", "six", "seven"].join("\n") + "\n" } });
+    const r = await h.call("grep", { pattern: "hit", context: 2 });
+    expect(r.json.matches).toEqual([
+      { path: "a.ts", line_number: 3, text: "hit A", before: ["one", "two"], after: ["four", "hit B"] },
+      { path: "a.ts", line_number: 5, text: "hit B", before: ["hit A", "four"], after: ["six", "seven"] },
+    ]);
+    const edges = await h.call("grep", { pattern: "one|seven", context_before: 1, context_after: 0 });
+    expect(edges.json.matches).toEqual([{ path: "a.ts", line_number: 1, text: "one", before: [] }, { path: "a.ts", line_number: 7, text: "seven", before: ["six"] }]);
+  });
+
+  it("lists matching files newest first, or counts matching lines per file", async () => {
+    const h = harness({ files: { "old.ts": "todo\ntodo\n", "new.ts": "todo\n", "none.ts": "nothing\n" } });
+    const now = Date.now() / 1000;
+    utimesSync(path.join(h.root, "old.ts"), now - 200, now - 200);
+    utimesSync(path.join(h.root, "new.ts"), now - 100, now - 100);
+    expect((await h.call("grep", { pattern: "todo", output: "files" })).json).toMatchObject({ output: "files", files: ["new.ts", "old.ts"], returned: 2 });
+    expect((await h.call("grep", { pattern: "todo", output: "count", sort: "path" })).json.counts).toEqual([{ path: "new.ts", count: 1 }, { path: "old.ts", count: 2 }]);
+    expect((await h.call("grep", { pattern: "todo", output: "count", path: "old.ts" })).json.counts).toEqual([{ path: "old.ts", count: 2 }]);
+  });
+
+  it("matches across lines when asked, and says so when a pattern needs it", async () => {
+    const h = harness({ files: { "a.ts": "function go(\n  x,\n) {}\n" } });
+    const r = await h.call("grep", { pattern: "go\\(\\n\\s+x", multiline: true });
+    expect(r.json.matches).toEqual([{ path: "a.ts", line_number: 1, end_line: 2, text: "function go(\n  x," }]);
+    const plain = await h.call("grep", { pattern: "go\\(\\n" });
+    expect(plain.json.error).toMatchObject({ code: "invalid_pattern", correction: "To match across lines, set multiline: true." });
+  });
+
+  it("filters by file type, and names an unknown type", async () => {
+    const h = harness({ files: { "a.py": "needle\n", "b.ts": "needle\n", "c.md": "needle\n" } });
+    expect((await h.call("grep", { pattern: "needle", type: "py" })).json.matches.map((m: any) => m.path)).toEqual(["a.py"]);
+    expect((await h.call("grep", { pattern: "needle", glob: "!*.md", sort: "path" })).json.matches.map((m: any) => m.path)).toEqual(["a.py", "b.ts"]);
+    expect((await h.call("grep", { pattern: "needle", type: "nosuchtype" })).json.error.code).toBe("invalid_type");
+  });
+
+  it("shows a window around a match deep in a long line, and keeps matches in files that are not UTF-8", async () => {
+    const h = harness({ files: { "min.js": `${"a".repeat(3000)}NEEDLE${"b".repeat(3000)}\n` } });
+    writeFileSync(path.join(h.root, "latin1.txt"), Buffer.from("caf\xe9 needle\n", "latin1"));
+    const long = (await h.call("grep", { pattern: "NEEDLE" })).json.matches[0];
+    expect(long.text).toContain("NEEDLE");
+    expect(long.text).toMatch(/^\[line truncated: \d+ characters before\] …a+NEEDLEb+… \[line truncated: \d+ more characters\]$/);
+    const latin = (await h.call("grep", { pattern: "needle" })).json.matches[0];
+    expect(latin).toMatchObject({ path: "latin1.txt", line_number: 1, encoding: "not_utf8" });
+    expect(latin.text).toContain("needle");
+  });
+
+  it("searches ignored files only when asked, and never .git", async () => {
+    const h = harness({ files: { ".gitignore": "dist/\n", "src/a.ts": "token\n", "dist/a.js": "token\n", ".git/config": "token\n" } });
+    expect((await h.call("grep", { pattern: "token" })).json.matches.map((m: any) => m.path)).toEqual(["src/a.ts"]);
+    expect((await h.call("grep", { pattern: "token", glob: "dist/**" })).json.matches).toEqual([]);
+    expect((await h.call("grep", { pattern: "token", include_ignored: true })).json.matches.map((m: any) => m.path)).toEqual(["dist/a.js", "src/a.ts"]);
+    expect((await h.call("grep", { pattern: "token", path: "dist/a.js" })).json.matches).toEqual([]);
+  });
+
+  it("stops a search that runs too long with a corrective error", async () => {
+    const slow = timed(new AbortController().signal, (signal) => new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")))), 20);
+    await expect(slow).rejects.toMatchObject({ code: "search_timeout" });
+    const user = new AbortController();
+    const cancelled = timed(user.signal, (signal) => new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("cancelled")))), 5_000);
+    user.abort();
+    await expect(cancelled).rejects.toThrow("cancelled");
   });
 });

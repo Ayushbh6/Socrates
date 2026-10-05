@@ -110,7 +110,30 @@ try {
     const second = await model.complete({ system, messages, tools: runner.definitions, maxOutputTokens: 2000, signal: AbortSignal.timeout(60000) });
     assert.equal(second.toolCalls.length, 0);
     assert(second.text.includes("synthetic-record-7392"));
-    live = { provider: model.id, servedBy: second.servedBy ?? model.id, pass: true };
+
+    // The model uses grep's newer options from their descriptions alone.
+    mkdirSync(path.join(root, "billing"), { recursive: true });
+    writeFileSync(path.join(root, "billing", "tax.ts"), "// Rates by region.\nexport function computeTax(amount: number) {\n  return amount * 0.2;\n}\n");
+    writeFileSync(path.join(root, "billing", "invoice.ts"), "import { computeTax } from './tax';\nexport const total = (a: number) => a + computeTax(a);\n");
+    writeFileSync(path.join(root, "billing", "notes.md"), "Nothing about taxes here.\n");
+    const ask = async (request: string, check: (input: Record<string, unknown>, content: string) => void) => {
+      const asked = await model.complete({ system: "Answer by calling grep exactly once with the arguments that fit the request best.", messages: [{ role: "user", content: request }], tools: runner.definitions, maxOutputTokens: 4000, signal: AbortSignal.timeout(90000) });
+      assert.equal(asked.toolCalls.length, 1, "expected one tool call");
+      assert.equal(asked.toolCalls[0]!.name, "grep");
+      const run = await dispatch(asked.toolCalls[0]!);
+      assert.equal(run.isError, false, run.content);
+      check(asked.toolCalls[0]!.input as Record<string, unknown>, run.content);
+      return asked.toolCalls[0]!.input;
+    };
+    const files = await ask("Which files mention computeTax? I only want the file paths, not the lines.", (input, content) => {
+      assert.equal(input.output, "files");
+      assert(content.includes("billing/tax.ts") && content.includes("billing/invoice.ts") && !content.includes("notes.md"));
+    });
+    const context = await ask("Show me where computeTax is defined (the line with 'export function computeTax'), with the 2 lines after it.", (input, content) => {
+      assert((input.context_after ?? input.context) === 2, `expected two lines of context: ${JSON.stringify(input)}`);
+      assert(content.includes("return amount * 0.2;"));
+    });
+    live = { provider: model.id, servedBy: second.servedBy ?? model.id, grep: { files, context }, pass: true };
   }
   const recovered = LedgerStore.open({ path: ":memory:" });
   try {

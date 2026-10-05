@@ -63,12 +63,14 @@ Find paths by filename or path pattern.
 {
   "pattern": "string",
   "path": "string | optional",
+  "sort": "modified | path | optional",
+  "include_ignored": "boolean | optional",
   "limit": "integer >= 1 | optional",
   "cursor": "string | optional"
 }
 ```
 
-`path` is the directory to search and defaults to the selected workspace. `pattern` uses one documented glob dialect: ripgrep's gitignore-style globs, where a pattern without `/` matches file names at any depth and `**` crosses directories. Results are files only, include hidden files, exclude files ignored by the workspace's `.gitignore` (whether or not the workspace is a git repository), repository metadata (`.git`), and inaccessible paths, and are returned in stable path order. The pattern filters the ignore-respecting file list, so an inclusion pattern can never bring an ignored file back. `limit` defaults to `200` and is capped by policy. `cursor` continues the exact bounded result set created by the preceding call; callers do not construct cursors.
+`path` is the directory to search and defaults to the selected workspace. `pattern` uses one documented glob dialect: ripgrep's gitignore-style globs, where a pattern without `/` matches file names at any depth, `**` crosses directories, and braces offer alternatives (`*.{ts,tsx}`). Results are files only and include hidden files. They exclude files ignored by the workspace's `.gitignore` (whether or not the workspace is a git repository), repository metadata (`.git`), Socrates' protected folders and inaccessible paths. The pattern filters the ignore-respecting file list, so an inclusion pattern can never bring an ignored file back; `include_ignored: true` lists ignored files too (such as `node_modules` or build output), but never `.git` or protected folders. `sort` defaults to `modified`, most recently modified first, as the reference harnesses do, since recent files are usually the relevant ones; `path` gives stable path order. `limit` defaults to `200` (at most `1,000`). `cursor` continues the exact bounded result set created by the preceding call; callers do not construct cursors.
 
 ```json
 {
@@ -80,7 +82,7 @@ Find paths by filename or path pattern.
 }
 ```
 
-An empty match is a successful result. A truncated result always carries `next_cursor`; Socrates never silently samples a large result because sampling makes exact repository discovery difficult to reason about.
+An empty match is a successful result, with a note that ignored files were not listed. A truncated result always carries `next_cursor`; Socrates never silently samples a large result because sampling makes exact repository discovery difficult to reason about. One listing collects at most `50,000` paths and says so when it stops there. Every search (`glob` and `grep`) stops after `60` seconds with the corrective error `search_timeout`, which says to narrow the path, type or glob; the agent's own cancellation stays a cancellation.
 
 #### 3. `grep`
 
@@ -91,22 +93,46 @@ Search file contents.
   "pattern": "string",
   "path": "string | optional",
   "glob": "string | optional",
+  "type": "string | optional",
+  "output": "content | files | count | optional",
+  "context_before": "integer 0-50 | optional",
+  "context_after": "integer 0-50 | optional",
+  "context": "integer 0-50 | optional",
+  "multiline": "boolean | optional",
   "case_sensitive": "boolean | optional",
   "literal": "boolean | optional",
+  "sort": "path | modified | optional",
+  "include_ignored": "boolean | optional",
   "limit": "integer >= 1 | optional",
   "cursor": "string | optional"
 }
 ```
 
-`pattern` is a regular expression by default, in ripgrep's Rust regex syntax (no lookaround or backreferences). `literal: true` treats it as exact text. Like `glob`, `grep` searches hidden files and skips `.gitignore`-ignored files and `.git`. `case_sensitive` defaults to `true`; the tool never uses an implicit smart-case rule. `path` may be one file or directory and defaults to the selected workspace. `glob` is one inclusion filter such as `*.ts` or `**/*.test.ts`, applied the same way as `glob`'s pattern, so it cannot reinclude ignored files. `limit` defaults to `100` matches and is capped by policy. `cursor` continues the stable bounded result set from the preceding call.
+`pattern` is a regular expression by default, in ripgrep's Rust regex syntax (no lookaround or backreferences). `literal: true` treats it as exact text, and `multiline: true` lets it span lines (`.` then matches newlines too); a pattern that needs it without asking fails with that correction. `case_sensitive` defaults to `true`; the tool never uses an implicit smart-case rule. `path` may be one file or directory and defaults to the selected workspace.
+
+**Filters:**
+- `type` is a ripgrep file type (`ts`, `py`, `rust`, `go`, `md`, …); an unknown one is the corrective error `invalid_type`.
+- `glob` is one filter applied the same way as `glob`'s pattern, with braces for alternatives or a leading `!` to exclude (`!**/fixtures/**`).
+- Like `glob`, `grep` searches hidden files and skips `.gitignore`-ignored files, `.git` and protected folders. Neither a filter nor an explicit file brings an ignored file back: a file named as `path` is searched only if the ignore-respecting listing from the workspace root includes it. `include_ignored: true` searches ignored files too.
+
+`output` chooses the shape:
+
+- **`content`** (the default): each matching line with its path and line number, in path order, so a file's matches stay together. `context_before` and `context_after` (or `context` for both) add up to `50` lines around each match as `before` and `after`. A line between two close matches is context for both, so each match reads on its own. A multiline match also carries `end_line`.
+- **`files`**: only the paths of files that match, most recently modified first.
+- **`count`**: each matching file with its number of matching lines, most recently modified first.
+
+`sort` overrides the order.
 
 ```json
 {
+  "output": "content",
   "matches": [
     {
       "path": "src/server.ts",
       "line_number": 84,
-      "text": "const server = await startServer()"
+      "text": "const server = await startServer()",
+      "before": ["// Start once configuration is loaded."],
+      "after": ["server.listen(port)"]
     }
   ],
   "returned": 1,
@@ -115,7 +141,9 @@ Search file contents.
 }
 ```
 
-Returned lines and paths are individually bounded. No match is a successful empty result; an invalid expression is a corrective error. The agent uses `read` for surrounding context instead of asking `grep` to become a second file reader.
+`files` returns `files: ["src/server.ts"]` and `count` returns `counts: [{ "path": "src/server.ts", "count": 3 }]` in place of `matches`. `limit` defaults to `100` and allows at most `500` matches or `1,000` files per page; `cursor` continues the stable bounded result set from the preceding call. One search collects at most `5,000` matches or `50,000` files and says so when it stops there.
+
+Returned lines are bounded at `500` characters. A longer line (a minified file, say) shows a window that contains the match, marked with how much was cut before and after it, so a match at column 3,000 is still visible. A multiline match is shown up to `2,000` characters. A file that is not UTF-8 is still searched: its lines are shown with replacement characters and marked `encoding: "not_utf8"`. Binary files are skipped. No match is a successful empty result, with a note that ignored files were not searched; an invalid expression is a corrective error.
 
 `glob` and `grep` remain separate because path discovery and content search are simple, different operations used consistently across the reference harnesses.
 

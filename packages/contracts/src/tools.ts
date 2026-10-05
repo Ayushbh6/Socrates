@@ -20,20 +20,35 @@ export const ReadInput = z.strictObject({
   limit: z.number().int().min(1).optional().describe("Maximum lines. Default 2000."),
 });
 
+const SearchSort = z.enum(["path", "modified"]);
+const IncludeIgnored = z.boolean().optional().describe("Also list files .gitignore excludes, such as node_modules or build output. Default false; .git is never searched.");
+
 export const GlobInput = z.strictObject({
-  pattern: z.string().min(1).max(1000).describe('Glob such as "**/*.ts" or "src/**/index.ts" (ripgrep/gitignore glob dialect).'),
+  pattern: z.string().min(1).max(1000).describe('Glob such as "**/*.ts", "src/**/index.ts" or "*.{ts,tsx}" (ripgrep/gitignore glob dialect).'),
   path: Path.optional().describe("Directory to search. Defaults to the workspace root."),
+  sort: SearchSort.optional().describe('"modified" (newest first, the default) or "path".'),
+  include_ignored: IncludeIgnored,
   limit: z.number().int().min(1).optional().describe("Maximum paths per page. Default 200."),
   cursor: Cursor.optional().describe("next_cursor from the preceding identical call."),
 });
 
+const ContextLines = z.number().int().min(0).max(50);
+
 export const GrepInput = z.strictObject({
   pattern: z.string().min(1).max(1000).describe("Regular expression (Rust regex syntax), or exact text with literal: true."),
   path: Path.optional().describe("File or directory to search. Defaults to the workspace root."),
-  glob: z.string().min(1).max(1000).optional().describe('One inclusion filter such as "*.ts" or "**/*.test.ts".'),
+  glob: z.string().min(1).max(1000).optional().describe('One file filter such as "*.ts", "**/*.test.ts", "*.{ts,tsx}", or an exclusion such as "!**/fixtures/**".'),
+  type: z.string().regex(/^[A-Za-z0-9_+-]{1,40}$/).optional().describe('A ripgrep file type such as "ts", "py", "rust", "go", "md".'),
+  output: z.enum(["content", "files", "count"]).optional().describe('"content" (matching lines, the default), "files" (paths of files that match), or "count" (matching lines per file).'),
+  context_before: ContextLines.optional().describe("Lines to show before each match (content only)."),
+  context_after: ContextLines.optional().describe("Lines to show after each match (content only)."),
+  context: ContextLines.optional().describe("Lines to show before and after each match; context_before and context_after override it."),
+  multiline: z.boolean().optional().describe("Let the pattern span lines (. matches newlines too). Default false."),
   case_sensitive: z.boolean().optional().describe("Default true."),
   literal: z.boolean().optional().describe("Treat pattern as exact text. Default false."),
-  limit: z.number().int().min(1).optional().describe("Maximum matches per page. Default 100."),
+  sort: SearchSort.optional().describe('"path" (the default for content) or "modified" (newest first, the default for files and count).'),
+  include_ignored: IncludeIgnored,
+  limit: z.number().int().min(1).optional().describe("Maximum matches (content) or files (files, count) per page. Default 100."),
   cursor: Cursor.optional().describe("next_cursor from the preceding identical call."),
 });
 
