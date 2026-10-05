@@ -1223,7 +1223,7 @@ When the trigger fires, the harness first compacts completed history:
 2. Every completed turn older than the window, together with the prior active checkpoint when one exists, becomes the compacted span.
 3. The compacted span is sent to one dedicated compactor model call, which produces the new history checkpoint.
 
-This is the only LLM call compaction ever makes; it is a bounded request, not a second agent. The compactor is the working agent's model unless the application configures another: copying unanswered requests verbatim out of a long span needs the stronger model. A span that would itself reach the ceiling is not sent; the mechanical fallback below applies.
+This is the only LLM call compaction ever makes; it is a bounded request, not a second agent. The compactor is the working agent's model unless the application configures another (the server's `compactor` setting, `server.md`, "Settings"): copying unanswered requests verbatim out of a long span needs the stronger model. A span that would itself reach the ceiling is not sent; the mechanical fallback below applies.
 
 History is a property of the task, not of one chat: it is the newest checkpoint or capsule followed by every ended turn of the task after the turns it covers, across the task's chain of chats. Turns omitted by a failed compaction (below) are part of the next span even though they are not shown.
 

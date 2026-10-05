@@ -18,8 +18,8 @@ class Socket {
   send(data: string) { this.sent.push(JSON.parse(data)); }
   receive(data: object) { this.onmessage?.({ data: JSON.stringify(data) }); }
 }
-const settings: Settings = { chat: null, router: null, embeddings: {provider:'ollama', model:null, url:null}, access: {scope:'folders',folders:[],approvals:'ask'}, timeZone:null, workingFolder:null, profile:{name:null,onboarded:true} };
-const status: Status = { ready:true, setup:[], home:'/test', access:settings.access, profile:settings.profile, models:{chat:null,router:null}, embeddings:{...settings.embeddings,state:'ready',detail:null,index:null}, timeZone:'UTC', workingFolder:null, busy:false, lanes:[], seq:100 };
+const settings: Settings = { chat: null, router: null, compactor: null, embeddings: {provider:'ollama', model:null, url:null}, access: {scope:'folders',folders:[],approvals:'ask'}, timeZone:null, workingFolder:null, profile:{name:null,onboarded:true} };
+const status: Status = { ready:true, setup:[], home:'/test', access:settings.access, profile:settings.profile, models:{chat:null,router:null,compactor:null}, embeddings:{...settings.embeddings,state:'ready',detail:null,index:null}, timeZone:'UTC', workingFolder:null, busy:false, lanes:[], seq:100 };
 const live = (seq = 100, options = {}) => ({ type:'state', ...status, seq, queue:[], approvals:[], settings, ...options });
 const snapshot: History = { seq:200, next:null, items:[{ id:'message',seq:10,throughSeq:200,at:'2026-10-04',message:'Still working',unrouted:false,question:null,activities:[],parts:[{turnId:'turn',projectTurn:1,status:'in_progress',goal:{number:1,title:'Goal'},task:{number:1,title:'Task'},lane:null,handedOff:false,answer:null,interrupted:null,toolCalls:[]}] }] };
 

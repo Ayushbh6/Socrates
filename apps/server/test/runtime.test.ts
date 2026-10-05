@@ -15,7 +15,7 @@ describe("the runtime", () => {
     expect(rt.setup).toEqual([expect.stringContaining("Add an API key")]);
     await rt.setKey("GEMINI_API_KEY", "test-key");
     expect(rt.setup).toEqual([]);
-    expect(rt.models).toEqual({ chat: { provider: "gemini", model: "gemini-3.8-flash", source: "detected", vision: true }, router: { provider: "gemini", model: "gemini-3.8-flash", source: "detected" } });
+    expect(rt.models).toEqual({ chat: { provider: "gemini", model: "gemini-3.8-flash", source: "detected", vision: true }, router: { provider: "gemini", model: "gemini-3.8-flash", source: "detected" }, compactor: null });
     expect(rt.socrates).not.toBeNull();
   });
 

@@ -53,6 +53,7 @@ const ProfilePatch = z.object({ name: Profile.shape.name.unwrap().nullable().opt
  * The user's choices (architecture/server.md, "Settings"). API keys are not
  * settings: they live in the data folder's `.env` and are never returned.
  * - chat / router: null picks the first provider with a key, and its defaults;
+ * - compactor: the model that writes history checkpoints when a long turn's context is compacted; null uses the chat model;
  *   chat.effort: the thinking level, which applies to the next model request without a restart;
  * - embeddings: local Ollama with embeddinggemma unless changed;
  * - timeZone: null follows the Mac;
@@ -63,6 +64,7 @@ const ProfilePatch = z.object({ name: Profile.shape.name.unwrap().nullable().opt
 export const Settings = z.object({
   chat: ChatChoice.nullable().default(null),
   router: ModelChoice.nullable().default(null),
+  compactor: ModelChoice.nullable().default(null),
   embeddings: z.object({
     provider: z.enum(["ollama", "openrouter", "openai", "custom"]),
     model: z.string().trim().min(1).max(200).nullable(),

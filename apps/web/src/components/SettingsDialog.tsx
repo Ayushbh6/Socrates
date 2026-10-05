@@ -80,10 +80,12 @@ function useModelList(provider: string | undefined): ListedModel[] {
 function Models({ app, providers }: { app: AppState; providers: Provider[] }) {
   const [chat, setChat] = useState<ModelChoice | null>(app.settings!.chat);
   const [router, setRouter] = useState<ModelChoice | null>(app.settings!.router);
+  const [compactor, setCompactor] = useState<ModelChoice | null>(app.settings!.compactor);
   const { busy, save, feedback } = useSave();
   const inUse = app.status!.models;
   const chatModels = useModelList(chat?.provider);
   const routerModels = useModelList(router?.provider);
+  const compactorModels = useModelList(compactor?.provider);
   const pick = (value: string, kind: "main" | "router", set: (c: ModelChoice | null) => void) => {
     const provider = providers.find((p) => p.name === value);
     set(provider ? { provider: provider.name, model: provider[kind] } : null);
@@ -98,21 +100,24 @@ function Models({ app, providers }: { app: AppState; providers: Provider[] }) {
         <option value="">{auto}</option>
         {providers.map((p) => <option key={p.name} value={p.name}>{PROVIDER_LABELS[p.name] ?? p.name}</option>)}
       </select>
-      <input value={choice?.model ?? ""} disabled={!choice} placeholder="the provider's default" onChange={(e) => choice && set(typed(choice, e.target.value))} aria-label={`${label} model`} spellCheck={false} list={`models-${kind}`} />
-      <datalist id={`models-${kind}`}>{listed.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</datalist>
+      <input value={choice?.model ?? ""} disabled={!choice} placeholder="the provider's default" onChange={(e) => choice && set(typed(choice, e.target.value))} aria-label={`${label} model`} spellCheck={false} list={`models-${label}`} />
+      <datalist id={`models-${label}`}>{listed.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</datalist>
     </div>
   );
   return (
     <Section title="Models">
       <p className="settings-hint">
         In use: {inUse.chat ? `${inUse.chat.provider} · ${inUse.chat.model}` : "none yet"}{inUse.chat?.source === "detected" ? " (picked from your keys)" : ""}
-        {inUse.router ? `; routing with ${inUse.router.model}` : ""}.
+        {inUse.router ? `; routing with ${inUse.router.model}` : ""}
+        {inUse.compactor ? `; compaction with ${inUse.compactor.model}` : ""}.
       </p>
       {row("Chat", chat, "main", setChat, "Automatic: the first provider with a key", chatModels)}
       {row("Routing", router, "router", setRouter, "Automatic: the chat provider's router model", routerModels)}
+      {row("Compaction", compactor, "main", setCompactor, "Automatic: the chat model", compactorModels)}
+      <p className="settings-hint">Compaction is the call that summarizes an old part of a long task so the work can go on. It copies the user's open requests word for word, so a strong model suits it; by default it is the chat model.</p>
       <div className="settings-actions">
         {feedback}
-        <button type="button" className="solid-button" disabled={busy || !!(chat && !chat.model.trim()) || !!(router && !router.model.trim())} onClick={() => save(() => store.saveSettings({ chat, router }))}>Save models</button>
+        <button type="button" className="solid-button" disabled={busy || !!(chat && !chat.model.trim()) || !!(router && !router.model.trim()) || !!(compactor && !compactor.model.trim())} onClick={() => save(() => store.saveSettings({ chat, router, compactor }))}>Save models</button>
       </div>
     </Section>
   );

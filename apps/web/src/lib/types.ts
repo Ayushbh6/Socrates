@@ -55,7 +55,7 @@ export interface Status {
   setup: string[];
   access: Access;
   profile: Profile;
-  models: { chat: ModelInUse | null; router: ModelInUse | null };
+  models: { chat: ModelInUse | null; router: ModelInUse | null; /** null: compaction uses the chat model. */ compactor: ModelInUse | null };
   embeddings: Embeddings & { state: "ready" | "unavailable"; detail: string | null; index: { documents: number } | null };
   timeZone: string;
   busy: boolean;
@@ -80,6 +80,8 @@ export interface ModelChoice {
 export interface Settings {
   chat: ModelChoice | null;
   router: ModelChoice | null;
+  /** The model that writes history checkpoints when a long turn is compacted; null uses the chat model. */
+  compactor: ModelChoice | null;
   embeddings: Embeddings;
   timeZone: string | null;
   workingFolder: string | null;

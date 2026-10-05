@@ -10,11 +10,15 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 
 2. **"The agent does not know my name. That was the whole point."** The name was only used for the greeting; I had listed sending it to the model as a decision for you, when it was the point of asking.
 
+3. **"Add an option to select the model for the compaction call."** The compaction summary is also an LLM call, so it gets its own model choice in the settings.
+
 ## Changed
 
 1. **Onboarding page** (`#/onboarding`): name (optional), a row per provider for the API key (one is enough; saved keys show a check and are never shown again), and optional folders (the first becomes the project folder). **Start chatting** needs a key, saves the name and opens the chat. `#/welcome` shows **Get started** for a new user and **Chat with Socrates** (with "Welcome back, <name>.") afterwards; `#/chat` sends anyone not onboarded to `#/onboarding`. New `profile` setting (`{ name, onboarded }`), applied without a restart.
 2. **Folders added or removed in the header count from the next message.** This already worked (the policy is read at every tool call); it now has a test that adds a folder between two messages and removes it again.
 3. **The agent knows the user's name.** A `<USER>` block ("The user's name is Ada.") opens the agent's context whenever a name is set; it is read when each message starts, so a name given or changed mid-chat counts from the next message. The system prompt says to use it the way a person would and never to guess one (the agent had guessed "Aparajit Bhattacharya" from a folder path).
+
+4. **Compaction model setting.** Settings > Models has a Compaction row beside Chat and Routing: automatic (the chat model, as before) or a provider and model; choosing a provider fills in its strong default (for DeepSeek, `deepseek-v4-pro`). It is the `compactor` setting, reported in the status as `models.compactor`, and "In use" in the settings says which model compacts.
 
 ## Suggested
 
@@ -25,3 +29,4 @@ Open since before the trial:
 - **Relative paths in an MCP server resolve against Socrates' working directory**, which put a screenshot in the repository root during the gold eval. Say so in the MCP documentation and default the server's working directory to the project folder.
 - **The first message can wait about 25 seconds on routing** with DeepSeek Flash as the router. The "Reading your message" line makes the wait visible; routing itself is slower than it needs to be.
 - **An existing install that already has a key still sees onboarding once**, because the flag starts false. The page shows its keys as saved, so it is one click.
+- **Two Anthropic and two Gemini key rows in settings** (`ANTHROPIC_API_KEY` and a second name; `GEMINI_API_KEY` and `GOOGLE_API_KEY`): one row per provider, taking either name, would be clearer.

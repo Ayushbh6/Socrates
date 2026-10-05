@@ -70,7 +70,8 @@ export class Runtime {
   settings: Settings;
   /** What the user must still do before Socrates takes messages. */
   setup: string[] = [];
-  models: { chat: ModelInUse | null; router: ModelInUse | null } = { chat: null, router: null };
+  /** `compactor` is null when compaction uses the chat model. */
+  models: { chat: ModelInUse | null; router: ModelInUse | null; compactor: ModelInUse | null } = { chat: null, router: null, compactor: null };
   embeddings: { state: "ready" | "unavailable"; detail: string | null } = { state: "unavailable", detail: null };
   private retrieval: Retrieval | null = null;
   private catalog: InstalledCatalog | null = null;
@@ -341,7 +342,7 @@ export class Runtime {
 
     const chat = this.chatChoice(env);
     if (!chat) {
-      this.models = { chat: null, router: null };
+      this.models = { chat: null, router: null, compactor: null };
       this.setup.push(`Add an API key (${DETECTION_ORDER.map((p) => PROVIDER_DEFAULTS[p].keys[0]).join(", ")}) or choose a chat model.`);
       return;
     }
@@ -354,14 +355,17 @@ export class Runtime {
       (this.deps.detectEfforts ?? detectEfforts)(chat.provider, chat.model, env),
     ]);
     this.deps.signal?.throwIfAborted();
-    this.models = { chat: { ...chat, vision, ...(efforts.levels.length ? { effort: { ...efforts, current: null } } : {}) }, router };
+    const compactor: ModelInUse | null = this.settings.compactor ? { ...this.settings.compactor, source: "settings" } : null;
+    this.models = { chat: { ...chat, vision, ...(efforts.levels.length ? { effort: { ...efforts, current: null } } : {}) }, router, compactor };
     if (this.models.chat?.effort) this.models.chat.effort.current = this.effortInUse();
     const build = this.deps.makeModel ?? makeModel;
     let model: ModelClient;
     let routerModel: ModelClient;
+    let compactorModel: ModelClient | null = null;
     try {
       model = withEffort(build(chat.provider, chat.model, env, { vision }), () => this.effortInUse(), () => this.models.chat?.effort?.maxOutputTokens);
       routerModel = build(router.provider, router.model, env);
+      if (compactor) compactorModel = build(compactor.provider, compactor.model, env);
     } catch (error) {
       this.setup.push(redact(error instanceof ModelError && error.kind === "authentication" ? `${error.message} Add it in settings.` : `The chat model cannot start: ${message(error)}`, env));
       return;
@@ -370,6 +374,7 @@ export class Runtime {
       store: this.store,
       model,
       routerModel,
+      ...(compactorModel ? { compactorModel } : {}),
       timeZone: this.timeZone,
       // Every approval comes from the message that asked (architecture/server.md, "Approvals").
       approve: async () => false,

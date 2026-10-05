@@ -47,6 +47,7 @@ Settings and keys can change only while Socrates is idle (no main-conversation m
 |---|---|---|
 | `chat` | `null` | `{ provider, model, effort? }` of the working agent; `null` detects it from the keys. `effort` is its thinking level (`agent-harness.md`, "Thinking levels"); `null` or absent is Socrates' default for the model |
 | `router` | `null` | `{ provider, model }` of the Goal Router; `null` uses the chat provider's router default |
+| `compactor` | `null` | `{ provider, model }` of the model that writes history checkpoints when a long turn is compacted (`agent-harness.md`, "Context and compaction"); `null` uses the chat model. Changing it rebuilds Socrates, like the chat and router models; `/api/status` reports it as `models.compactor` (null when it is the chat model) |
 | `embeddings` | Ollama, `embeddinggemma` | `{ provider, model, url }` as in `agent-harness.md`, "Embeddings and hybrid retrieval" |
 | `timeZone` | `null` | an IANA time zone; `null` follows the machine |
 | `workingFolder` | `null` | the workspace new work is bound to; choosing it adds its folder to `access.folders` |
