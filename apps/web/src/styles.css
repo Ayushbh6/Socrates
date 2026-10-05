@@ -335,6 +335,8 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .sidebar-item small { color: var(--faint); font-size: 0.72rem; }
 .sidebar-lane { display: flex; align-items: center; }
 .question-item { display: grid; }
+.question-item-foot { display: flex; align-items: baseline; justify-content: space-between; gap: 0.6rem; min-width: 0; }
+.question-item-foot time { flex: none; margin-left: auto; color: var(--faint); font-size: 0.7rem; font-variant-numeric: tabular-nums; }
 .question-item-text { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-height: 1.4; }
 .sidebar-empty { padding: 0 0.6rem; color: var(--faint); font-size: 0.82rem; }
 .lane-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--faint); opacity: 0.6; }

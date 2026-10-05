@@ -12,6 +12,8 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 
 3. **"Add an option to select the model for the compaction call."** The compaction summary is also an LLM call, so it gets its own model choice in the settings.
 
+4. **Two sidebar things.** Each question in the sidebar should show its time and date at the bottom right. And while an earlier question is shown, sending from the composer must still append after the last message, continue the conversation as normal, and take the canvas to the current question.
+
 ## Changed
 
 1. **Onboarding page** (`#/onboarding`): name (optional), a row per provider for the API key (one is enough; saved keys show a check and are never shown again), and optional folders (the first becomes the project folder). **Start chatting** needs a key, saves the name and opens the chat. `#/welcome` shows **Get started** for a new user and **Chat with Socrates** (with "Welcome back, <name>.") afterwards; `#/chat` sends anyone not onboarded to `#/onboarding`. New `profile` setting (`{ name, onboarded }`), applied without a restart.
@@ -19,6 +21,9 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 3. **The agent knows the user's name.** A `<USER>` block ("The user's name is Ada.") opens the agent's context whenever a name is set; it is read when each message starts, so a name given or changed mid-chat counts from the next message. The system prompt says to use it the way a person would and never to guess one (the agent had guessed "Aparajit Bhattacharya" from a folder path).
 
 4. **Compaction model setting.** Settings > Models has a Compaction row beside Chat and Routing: automatic (the chat model, as before) or a provider and model; choosing a provider fills in its strong default (for DeepSeek, `deepseek-v4-pro`). It is the `compactor` setting, reported in the status as `models.compactor`, and "In use" in the settings says which model compacts.
+
+5. **Time and date in the sidebar.** Each question shows when it was asked at the bottom right ("Oct 5, 7:35 PM", in the browser's own format).
+6. **Sending from an earlier question.** This already worked (sending clears the choice, so the message is appended after the last question and the canvas follows it); I checked it live with DeepSeek Flash, idle and while main was busy, and the choice of what the canvas shows is now one tested function (`viewedExchange`).
 
 ## Suggested
 

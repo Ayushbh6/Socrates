@@ -395,3 +395,20 @@ export function conversationBusy(live: LiveState | null, conversation: string): 
 export function sendTarget(conversation: string, mainBusy: boolean): "send" | "queue" {
   return conversation === "main" && mainBusy ? "queue" : "send";
 }
+
+/**
+ * The question the Flow canvas shows: the one chosen in the sidebar while it
+ * exists, else a message just sent to a new lane, else the newest. Sending
+ * clears the choice, so a message written while an earlier question is shown
+ * is appended after the last one, and the canvas follows it.
+ */
+export function viewedExchange(list: Exchange[], selected: string | null, pendingLane: Exchange | null = null): Exchange | null {
+  return pendingLane ?? (selected ? list.find((e) => e.key === selected) : null) ?? list.at(-1) ?? null;
+}
+
+/** When a question was asked, for the sidebar: "Oct 5, 7:35 PM". */
+export function asked(at: string, locale?: string, timeZone?: string): string {
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(locale, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", ...(timeZone ? { timeZone } : {}) });
+}

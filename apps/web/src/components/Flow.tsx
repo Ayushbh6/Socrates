@@ -1,7 +1,7 @@
 import { Menu, X } from "lucide-react";
 import { LayoutGroup } from "motion/react";
 import { type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
-import { currentRoute, orbDocked, orbState } from "../lib/model";
+import { currentRoute, orbDocked, orbState, viewedExchange } from "../lib/model";
 import { useFollow } from "../lib/follow";
 import { type AppState, store } from "../lib/store";
 import { AccessMenu } from "./AccessMenu";
@@ -46,7 +46,7 @@ export function Flow({ app, mode, onMode, onSettings }: { app: AppState; mode: M
 
   const list = app.model.conversations[conversation] ?? [];
   const pendingLane = following ? app.model.pending.find((e) => e.sendId === following) ?? null : null;
-  const exchange = pendingLane ?? (selected ? list.find((e) => e.key === selected) : null) ?? list.at(-1) ?? null;
+  const exchange = viewedExchange(list, selected, pendingLane);
   // Approvals belong to the work happening now: the newest question of this conversation.
   const latest = exchange !== null && (exchange === list.at(-1) || exchange === pendingLane);
   const approvals = latest ? (app.model.live?.approvals ?? []).filter((a) => a.conversation === conversation) : [];

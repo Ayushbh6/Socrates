@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type Model, currentRoute, emptyModel, orbDocked, orbState, reduce, replayFrom, sendTarget, workLine } from "../src/lib/model";
+import { type Model, asked, currentRoute, emptyModel, orbDocked, orbState, reduce, replayFrom, sendTarget, viewedExchange, workLine } from "../src/lib/model";
 import type { Activity, ActivityBody, HistoryItem, ServerMessage } from "../src/lib/types";
 
 let seq = 100;
@@ -285,5 +285,33 @@ describe("attachments on questions", () => {
     expect(run(emptyModel(), act("main", { kind: "message", text: "Look", attachments: [image] })).conversations.main![0]!.attachments).toEqual([image]);
     const loaded = reduce(emptyModel(), { type: "history", conversation: "main", items: [item({ attachments: [image] })] });
     expect(loaded.conversations.main![0]!.attachments).toEqual([image]);
+  });
+});
+
+describe("an earlier question and a new message", () => {
+  const fresh = () => {
+    let m = run(emptyModel(), act("main", { kind: "message", text: "First" }), act("main", { kind: "finished", turnId: "t1", status: "completed", reason: null }), act("main", { kind: "message", text: "Second" }));
+    m = reduce(m, { type: "sent", id: "c9", text: "Third, written while the first is shown", to: "main", at });
+    return m.conversations.main!;
+  };
+
+  it("is appended after the last question however the canvas is placed, and the canvas follows it once the choice is cleared", () => {
+    const list = fresh();
+    expect(list.map((e) => e.message)).toEqual(["First", "Second", "Third, written while the first is shown"]);
+    // An earlier question stays on the canvas while it is chosen, and the newest while nothing is.
+    expect(viewedExchange(list, list[0]!.key)?.message).toBe("First");
+    expect(viewedExchange(list, null)?.message).toBe("Third, written while the first is shown");
+    // A choice that no longer exists, or a message sent to a new lane, wins as before.
+    expect(viewedExchange(list, "gone")?.message).toBe("Third, written while the first is shown");
+    expect(viewedExchange(list, list[0]!.key, list[1]!)?.message).toBe("Second");
+    expect(viewedExchange([], null)).toBeNull();
+  });
+});
+
+describe("when a question was asked", () => {
+  it("reads as date and time, and as nothing for a time it cannot read", () => {
+    expect(asked("2026-10-05T19:35:00Z", "en-US", "UTC")).toBe("Oct 5, 7:35 PM");
+    expect(asked("2026-10-04T08:05:00Z", "en-US", "UTC")).toBe("Oct 4, 8:05 AM");
+    expect(asked("not a time")).toBe("");
   });
 });

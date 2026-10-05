@@ -1,7 +1,7 @@
 import { X } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect } from "react";
-import type { Exchange } from "../lib/model";
+import { type Exchange, asked } from "../lib/model";
 import { type AppState, store } from "../lib/store";
 
 function day(at: string): string {
@@ -86,7 +86,10 @@ export function Sidebar({ app, open, conversation, selected, onClose, onConversa
                       onClick={() => onSelect(e.key === latest ? null : e.key)}
                     >
                       <span className="question-item-text">{e.message.trim() || imagesOnly(e.attachments.length)}</span>
-                      <small>{e.route ? `g${e.route.goal.number}/t${e.route.task.number}` : e.question ? "question" : ""}{e.state === "working" || e.state === "sending" ? " · working" : e.state === "stopped" ? " · stopped" : ""}</small>
+                      <span className="question-item-foot">
+                        <small>{e.route ? `g${e.route.goal.number}/t${e.route.task.number}` : e.question ? "question" : ""}{e.state === "working" || e.state === "sending" ? " · working" : e.state === "stopped" ? " · stopped" : ""}</small>
+                        <time dateTime={e.at}>{asked(e.at)}</time>
+                      </span>
                     </button>
                   ))}
                 </div>
