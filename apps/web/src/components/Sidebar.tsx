@@ -1,17 +1,8 @@
 import { X } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect } from "react";
-import { type Exchange, asked } from "../lib/model";
+import { type Exchange, asked, dayLabel } from "../lib/model";
 import { type AppState, store } from "../lib/store";
-
-function day(at: string): string {
-  const date = new Date(at);
-  const today = new Date();
-  const yesterday = new Date(today.getTime() - 86_400_000);
-  if (date.toDateString() === today.toDateString()) return "Today";
-  if (date.toDateString() === yesterday.toDateString()) return "Yesterday";
-  return date.toLocaleDateString(undefined, { day: "numeric", month: "long" });
-}
 
 /** Earlier questions of the conversation on the canvas, newest first, and the lanes beside main. */
 export function Sidebar({ app, open, conversation, selected, onClose, onConversation, onSelect }: {
@@ -35,7 +26,7 @@ export function Sidebar({ app, open, conversation, selected, onClose, onConversa
   const latest = exchanges[0]?.key ?? null;
   const groups: { day: string; items: Exchange[] }[] = [];
   for (const e of exchanges) {
-    const d = day(e.at);
+    const d = dayLabel(e.at);
     if (groups.at(-1)?.day !== d) groups.push({ day: d, items: [] });
     groups.at(-1)!.items.push(e);
   }

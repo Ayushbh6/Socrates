@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type Model, asked, currentRoute, emptyModel, orbDocked, orbState, reduce, replayFrom, sendTarget, viewedExchange, workLine } from "../src/lib/model";
+import { type Model, asked, currentRoute, dayLabel, emptyModel, orbDocked, orbState, reduce, replayFrom, sendTarget, viewedExchange, workLine } from "../src/lib/model";
 import type { Activity, ActivityBody, HistoryItem, ServerMessage } from "../src/lib/types";
 
 let seq = 100;
@@ -309,9 +309,19 @@ describe("an earlier question and a new message", () => {
 });
 
 describe("when a question was asked", () => {
-  it("reads as date and time, and as nothing for a time it cannot read", () => {
-    expect(asked("2026-10-05T19:35:00Z", "en-US", "UTC")).toBe("Oct 5, 7:35 PM");
-    expect(asked("2026-10-04T08:05:00Z", "en-US", "UTC")).toBe("Oct 4, 8:05 AM");
+  it("reads as the time of day, and as nothing for a time it cannot read", () => {
+    expect(asked("2026-10-05T19:35:00Z", "en-US", "UTC")).toBe("7:35 PM");
+    expect(asked("2026-10-04T08:05:00Z", "en-US", "UTC")).toBe("8:05 AM");
     expect(asked("not a time")).toBe("");
+  });
+
+  it("groups by day: Today, Yesterday, then the date", () => {
+    const now = new Date(2026, 9, 6, 12, 0);
+    const at = (y: number, m: number, d: number) => new Date(y, m, d, 9, 30).toISOString();
+    expect(dayLabel(at(2026, 9, 6), now, "en-GB")).toBe("Today");
+    expect(dayLabel(at(2026, 9, 5), now, "en-GB")).toBe("Yesterday");
+    expect(dayLabel(at(2026, 9, 4), now, "en-GB")).toBe("4 October");
+    expect(dayLabel(at(2025, 11, 31), now, "en-GB")).toBe("31 December 2025");
+    expect(dayLabel("not a time", now)).toBe("");
   });
 });

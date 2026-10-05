@@ -406,9 +406,20 @@ export function viewedExchange(list: Exchange[], selected: string | null, pendin
   return pendingLane ?? (selected ? list.find((e) => e.key === selected) : null) ?? list.at(-1) ?? null;
 }
 
-/** When a question was asked, for the sidebar: "Oct 5, 7:35 PM". */
+/** The time of day a question was asked, for its row in the sidebar: "7:35 PM". */
 export function asked(at: string, locale?: string, timeZone?: string): string {
   const date = new Date(at);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleString(locale, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", ...(timeZone ? { timeZone } : {}) });
+  return date.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit", ...(timeZone ? { timeZone } : {}) });
+}
+
+/** The sidebar's heading for the day a question was asked: Today, Yesterday, then "4 October" (with the year when it is not this one). */
+export function dayLabel(at: string, now: Date = new Date(), locale?: string): string {
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime())) return "";
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (date.toDateString() === now.toDateString()) return "Today";
+  if (date.toDateString() === yesterday.toDateString()) return "Yesterday";
+  return date.toLocaleDateString(locale, { day: "numeric", month: "long", ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }) });
 }
