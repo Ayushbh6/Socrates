@@ -13,7 +13,7 @@ It is built in two changes:
 
 ## Look
 
-Socrates 0.1's colours and type: cream (`#f9f8f4`), teal (`#159f9f`), the dotted canvas, Geist, and the serif gradient name. The canvas is open and calm: no borders or dividers anywhere. Floating controls sit at the top, the composer is the only footer, and depth comes from soft shadows and blur. Movement respects the system's reduced-motion setting.
+Socrates 0.1's colours and type: cream (`#f9f8f4`), teal (`#159f9f`), the dotted canvas, Geist, and the serif gradient name. The canvas is open and calm: no borders or dividers anywhere. Floating controls sit at the top, the composer is the only footer, and depth comes from soft shadows and blur. Movement respects the system's reduced-motion setting. The tab icon is the Socrates logo (the teal profile, `apps/web/public`), served from `dist` like the rest of the page.
 
 ## Welcome and onboarding
 

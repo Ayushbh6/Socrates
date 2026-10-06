@@ -14,6 +14,18 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 
 4. **Two sidebar things.** Each question in the sidebar should show its time and date at the bottom right. And while an earlier question is shown, sending from the composer must still append after the last message, continue the conversation as normal, and take the canvas to the current question.
 
+5. **"The favicon on the URL is empty."** Put the actual Socrates image in the browser tab.
+
+6. **Both sticky notes should expand.** The task note even says "Open" but does nothing when clicked. Decide what each shows when expanded.
+
+7. **Full observability and evals of how the agent works** (the user's top priority, to be tested live): exactly what context each request receives, how the goal router and the working agent behave, and concrete proof that automatic context switching and memory management work, available at any time (a dashboard or similar). Per request: the body sent, total cost, tokens per second, and all metadata the provider returns.
+
+8. **Prompt caching must be proven high.** Hard numbers on cache reads against writes and uncached prompt, per request, per turn and overall, so the efficiency can be checked and regressions seen.
+
+9. **Memory and personalisation, so the agent never forgets.** The agent has `context_retrieve`, but needs a proper memory system too: simple, working, not over-engineered.
+
+10. **The standard-mode UI is not good enough yet, and the move from standard to flow was never designed.** Flow to standard was discussed in depth. Open case: someone starts a goal in standard mode (like a ChatGPT project, with the + button), chats there, then switches to flow. The user's leaning: the goal keeps the name the user gave it (like a project name), and the question-and-answer pairs are grouped into conversations by context. Do not re-split every pair in the project into tasks by similarity: that would be a mess.
+
 ## Changed
 
 1. **Onboarding page** (`#/onboarding`): name (optional), a row per provider for the API key (one is enough; saved keys show a check and are never shown again), and optional folders (the first becomes the project folder). **Start chatting** needs a key, saves the name and opens the chat. `#/welcome` shows **Get started** for a new user and **Chat with Socrates** (with "Welcome back, <name>.") afterwards; `#/chat` sends anyone not onboarded to `#/onboarding`. New `profile` setting (`{ name, onboarded }`), applied without a restart.
@@ -24,6 +36,7 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 
 5. **Time and date in the sidebar.** Questions are grouped under one heading per day (Today, Yesterday, then the date), and each row shows only the time it was asked at the bottom right ("7:35 PM", in the browser's own format). The first version repeated the date on every row; you preferred the day headings.
 6. **Sending from an earlier question.** This already worked (sending clears the choice, so the message is appended after the last question and the canvas follows it); I checked it live with DeepSeek Flash, idle and while main was busy, and the choice of what the canvas shows is now one tested function (`viewedExchange`).
+7. **Tab icon.** The browser tab shows the Socrates logo (64 px favicon, 512 px icon and a 180 px Apple touch icon, made from the teal profile logo).
 
 ## Suggested
 
