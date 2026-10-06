@@ -81,7 +81,7 @@ describe("drafts from the agent loop", () => {
     expect(w.store.listEvents({ turnId }).map((e) => e.type)).not.toContain("draft");
   });
 
-  it("starts a new draft for a retried request and for the repair", async () => {
+  it("starts a new draft for a retried request, but keeps repair off the visible stream", async () => {
     const w = await world();
     const { seen, result } = drafts(w, [
       (request) => {
@@ -92,12 +92,51 @@ describe("drafts from the agent loop", () => {
       final({ full_answer: "All done." }),
     ]);
     await result;
-    // One draft per request: the failed attempt, the first reply (rejected as a final answer), then the repair.
+    // The failed attempt and retried reply stream; the validated repair is saved once.
     const last = (call: number) => seen.filter((d) => d.call === call).at(-1);
-    expect([...new Set(seen.map((d) => d.call))]).toEqual([1, 2, 3]);
+    expect([...new Set(seen.map((d) => d.call))]).toEqual([1, 2]);
     expect(last(1)).toMatchObject({ kind: "narration", text: "Half a thought" });
     expect(last(2)).toMatchObject({ kind: "narration", text: "All done, the server works." });
-    expect(last(3)).toMatchObject({ kind: "answer", text: "All done." });
+    expect(last(3)).toBeUndefined();
+    expect(w.store.listEvents({ type: "assistant_response" }).at(-1)!.payload).toMatchObject({ text: "All done." });
+  });
+
+  it("keeps a candidate visible while repairing hidden metadata, with thinking and both calls recorded", async () => {
+    const w = await world();
+    const { seen, result } = drafts(w, [
+      final({ full_answer: "First candidate.", continuation_note: "word ".repeat(400) }),
+      { ...final({ full_answer: "Corrected answer." }), reasoning: "Shortening the hidden note." },
+    ]);
+    expect(await result).toMatchObject({ kind: "answered", text: "Corrected answer." });
+    expect(seen.filter(d => d.kind === "answer").at(-1)).toMatchObject({ call: 1, text: "First candidate." });
+    expect(seen.filter(d => d.call === 2).every(d => d.kind === "thinking")).toBe(true);
+    expect(seen.filter(d => d.call === 2).at(-1)).toMatchObject({ kind: "thinking", text: "Shortening the hidden note." });
+    expect(w.store.listEvents({ type: "agent_message" }).map(e => (e.payload as { phase: string }).phase)).toEqual(["work", "repair"]);
+    expect(w.store.listEvents({ type: "assistant_response" }).map(e => (e.payload as { text: string }).text)).toEqual(["Started.", "Corrected answer."]);
+  });
+
+  it("preserves the visible candidate when stopped during a repair, ignoring late repair text", async () => {
+    const w = await world();
+    const controller = new AbortController();
+    let late: ((text: string) => void) | undefined;
+    const { socrates } = w.socrates([continueTask()], [
+      final({ full_answer: "Visible candidate.", continuation_note: "word ".repeat(400) }),
+      request => {
+        late = request.onText;
+        request.onText?.('{"full_answer":"Invisible repair');
+        controller.abort();
+        return final({ full_answer: "Never saved." });
+      },
+    ]);
+    const seen: Draft[] = [];
+    const result = await socrates.handle("Go.", { signal: controller.signal, onDraft: (_id, draft) => seen.push(draft) });
+    const count = seen.length;
+    late?.(" after stop");
+    expect(seen).toHaveLength(count);
+    expect(seen.filter(d => d.kind === "answer").at(-1)!.text).toBe("Visible candidate.");
+    const turnId = result.kind === "answered" ? result.parts[0]!.turn.id : "";
+    expect(w.store.interruption(turnId)).toMatchObject({ partial_answer: "Visible candidate." });
+    expect(w.store.listEvents({ type: "assistant_response" })).toHaveLength(1);
   });
 
   it("keeps the turn going when something watching the drafts fails", async () => {
@@ -206,4 +245,3 @@ describe("drafts from the agent loop", () => {
     expect(saved).toEqual(["I should read the file first.", "Now I can answer."]);
   });
 });
-

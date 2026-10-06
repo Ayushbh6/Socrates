@@ -184,6 +184,9 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
       const request = ++requests;
       const onDraft = input.onDraft;
       const onText = onDraft ? streamDrafts((draft) => {
+        // Repair corrects a candidate already shown. Keep provider streaming
+        // and recording, but publish the validated result once at completion.
+        if (phase === "repair") return;
         if (draft.kind === "answer") partial = draft.text;
         onDraft(draft);
       }, request) : undefined;
@@ -195,7 +198,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
           system: input.system, messages: withRollingBreakpoint(messages), tools,
           toolChoice: phase === "work" ? "auto" : "none", maxOutputTokens: input.maxOutputTokens ?? 16_000, signal,
           trace: { ...input.trace, role: phase, goalId: scope.binding.goalId, taskId: scope.binding.taskId, chatId: scope.binding.chatId, turnId: scope.binding.turnId, step: request },
-          // Every request, a retry included, is its own draft.
+          // Work and retries each have a draft; repair never replays the answer.
           ...(onText ? { onText: (text: string) => {
             if (live()) onText(text);
           } } : {}),

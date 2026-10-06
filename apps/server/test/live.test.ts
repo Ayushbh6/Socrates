@@ -279,6 +279,57 @@ describe("drafts of a reply that is arriving", () => {
   }
   const drafts = (p: { received: Record<string, any>[] }) => p.received.filter((m) => m.type === "draft");
 
+  it("keeps the first answer during a hidden-field repair and reconnect, then publishes the validated result once", async () => {
+    const finishCandidate = gate();
+    const repairing = gate();
+    const finishRepair = gate();
+    let calls = 0;
+    const candidate = "Checkout checked.";
+    const corrected = "Checkout checked and verified.";
+    const { page, rt } = await liveServer(new Responder("r", () => createGoal("Shop", "Check checkout")), new Responder("a", async (_m, request) => {
+      if (++calls === 1) {
+        const text = final({ full_answer: candidate, continuation_note: "word ".repeat(400) }).text;
+        request.onText?.(text);
+        await finishCandidate.opened;
+        return { text };
+      }
+      expect(request.trace?.role).toBe("repair");
+      expect(request.toolChoice).toBe("none");
+      request.onReasoning?.("Shortening the hidden note.");
+      request.onText?.('{"full_answer":"Checkout');
+      repairing.open();
+      await finishRepair.opened;
+      const text = final({ full_answer: corrected }).text;
+      request.onText?.(' checked and verified."}');
+      return { text };
+    }));
+    const p = await page();
+    p.send({ type: "hello" });
+    await p.next(m => m.type === "state");
+    p.send({ type: "send", id: "repair", text: "Check checkout.", to: "main" });
+    expect(await p.next(m => m.type === "draft" && m.kind === "answer" && m.call === 1)).toMatchObject({ text: candidate });
+    finishCandidate.open();
+    await repairing.opened;
+    await p.next(m => m.type === "draft" && m.kind === "thinking" && m.call === 2);
+    const late = await page();
+    late.send({ type: "hello" });
+    await late.next(m => m.type === "state");
+    expect(await late.next(m => m.type === "draft" && m.kind === "answer")).toMatchObject({ call: 1, text: candidate });
+    finishRepair.open();
+    await p.next(isResult("repair"));
+    await late.next(isResult("repair"));
+    for (const viewer of [p, late]) {
+      // next() consumed each viewer's candidate; no replacement stream follows.
+      expect(drafts(viewer).filter(m => m.kind === "answer")).toEqual([]);
+      expect(viewer.received.filter(m => m.type === "activity" && m.kind === "answer")).toHaveLength(1);
+    }
+    expect(rt.store.listEvents({ type: "assistant_response" }).map(e => (e.payload as { text: string }).text)).toEqual([corrected]);
+    await rt.flushCalls();
+    const recorded = rt.calls!.list({ limit: 100 }).filter(c => c.role !== "embedding");
+    expect(recorded.map(c => c.role).sort()).toEqual(["repair", "router", "work"]);
+    expect(recorded.find(c => c.role === "repair")).toMatchObject({ streamed: true, ok: true, firstTokenMs: expect.any(Number) });
+  });
+
   it("sends the readable part of a reply as it arrives, to a page that joins late too, and never after the saved answer", async () => {
     const hold = gate();
     const { page, rt } = await liveServer(new Responder("r", () => createGoal("Shop", "Fix checkout")), slowAgent(hold, "Checkout fixed."));

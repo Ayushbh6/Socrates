@@ -139,7 +139,7 @@ function RowDetail({ db, table, rowid, onClose, onCall }: { db: string; table: s
   }, [onClose]);
   const r = row.data;
   return (
-    <aside className="row-detail" aria-label="Row">
+    <aside className="db-row-detail" aria-label="Row">
       <header>
         <h4>{table} <small>row {rowid}</small></h4>
         <button type="button" className="icon-button" onClick={onClose} aria-label="Close the row"><X aria-hidden /></button>

@@ -58,6 +58,8 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 
 14. **Live Gemini run and Inspect reconciliation** (asked: 14). Ran the exact read-only folder-description prompt once with Gemini 3.8 Flash. It created g1 “Workspace exploration and inspection” and completed t1 “Describe workspace folder contents” with two globs and two read-only terminal commands. Reconciled six model calls: 40,256 input, 800 output, 10,554 cached tokens and $0.02606805 estimated cost. Fixed Gemini price identity, measurement weighting, call chronology, mutable request snapshots, trace context changes and rolling chart cutoffs. Browser checks at desktop, medium and phone widths; typecheck, build and all 771 tests passed. See `docs/reviews/notes-inspect-e2e-2026-10-06.md` for evidence and the generated answer's content limitation.
 
+15. **Search overlay and repeated answer stream** (2026-10-07). Reproduced a shared CSS class turning “in Work” into the Database's 576-pixel fixed drawer; the drawer now has its own class. Confirmed the recorded final answer was streamed again by a hidden-anchor metadata repair; repair text now stays private until the validated answer is saved once, while its complete call, usage, timings and thinking remain inspectable. Verified Flow, Standard, phone width, the real Database drawer, reconnect and Stop during repair. Typecheck, build and all 774 tests passed; V2 history retained and the app restarted. See `docs/reviews/display-stream-fixes-2026-10-07.md`.
+
 ## Suggested
 
 From the observability phase:

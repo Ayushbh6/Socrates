@@ -162,6 +162,8 @@ describe("the model-call log", () => {
     await first.rt.socrates!.handle("Fix the checkout in my shop.");
     await first.rt.flushCalls();
     expect(first.rt.calls!.list({ role: "router" })).toHaveLength(1);
+    // Close the live hub before its ledger, as the executable does on restart.
+    await first.app.close();
     await first.rt.close();
     // Thirty-one days later (the test clock stands at 2026-10-04).
     const later = await server(config, { ...observed().deps, clock: { now: () => new Date("2026-11-10T00:00:00Z") } });
