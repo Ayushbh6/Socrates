@@ -63,6 +63,17 @@ The familiar harness layout, for following everything at once. The switch in eit
 - **Lanes** on the right, one panel each, stacked: the lane's task and state (working, waiting for you, idle), its whole conversation, and its own small composer that sends to that lane. Stop a working lane or close an idle one from its head. A message sent to a new lane shows in a "New lane" panel until the server names its lane.
 - On narrower screens the panels stack and the page scrolls.
 
+## Inspect
+
+`#/inspect`, opened by the activity icon beside settings in either header (`#/inspect/<message id>` opens one question). It needs no onboarding: it only reads what Socrates recorded (`observability.md`). It refreshes every few seconds, every second or two while Socrates works, so it can be watched during a question.
+
+- **Totals** for a range (24 hours, 7 days, 30 days, all): what was spent (and how many calls have no price), the working agent's cache hit rate and every call's, tokens in and out, generation speed and time to the first token. Cache rates of 80% and more read green; under 40% amber.
+- **Prices:** each model that made calls with the price in force and where it came from (the user's own, or OpenRouter's list price). A model with no price says its calls are not in the cost and offers **Set a price**: dollars per million tokens for input, cached input and output.
+- **By model:** per role (agent, router, compaction, embeddings) and model: calls, prompt tokens, cache hit, output tokens, speed, first token, cost.
+- **Questions** (left): the day's messages, each with whether it switched the work (**New goal**, **New task**, **Switched task**, **Switched goal**, or **Asked back**), its calls, cost, cache hit and time.
+- **The question** (right): the message; **Where it went**, with the place the work stood before and after, the router's route, its reason, how many attempts and ledger queries it took, and any compaction the turn went through with its size before and after; and **Model calls**, one row per call in order, with its prompt as a bar (cached, written, fresh), output (and thinking) tokens, first token, speed, time and cost.
+- **A call** opens in a drawer: its numbers; **What it was given** (the system prompt, the tool definitions, then the context message cut into its named blocks with their sizes and the cache breakpoints, then the rest of the conversation of the turn); **What it said** (thinking, text, tool calls); and **Provider details** (the model that served it, finish reason, the settings sent, and everything the provider returned, usage included, as it came).
+
 ## Tool output
 
 Every tool call opens to its live preview; **Open the full output** shows the complete recorded output (`GET /api/evidence`) in a dialog: a file change as its diff with additions and removals coloured, a structured result as tidy JSON, and anything else as recorded, with long lines wrapped or not. It says when the output was cut at 200,000 characters or when a command printed more than Socrates keeps.

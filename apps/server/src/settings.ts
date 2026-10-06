@@ -49,6 +49,15 @@ export type Profile = z.infer<typeof Profile>;
 /** A change to the profile: only the fields sent (a default here would reset the others). */
 const ProfilePatch = z.object({ name: Profile.shape.name.unwrap().nullable().optional(), onboarded: z.boolean().optional() }).strict();
 
+/** What a model costs, in US dollars per million tokens; where cache prices are null, input tokens' price applies. */
+export const PriceSetting = z.object({
+  input: z.number().min(0).max(100_000),
+  cachedInput: z.number().min(0).max(100_000).nullable().default(null),
+  cacheWrite: z.number().min(0).max(100_000).nullable().default(null),
+  output: z.number().min(0).max(100_000),
+}).strict();
+export type PriceSetting = z.infer<typeof PriceSetting>;
+
 /**
  * The user's choices (architecture/server.md, "Settings"). API keys are not
  * settings: they live in the data folder's `.env` and are never returned.
@@ -59,7 +68,8 @@ const ProfilePatch = z.object({ name: Profile.shape.name.unwrap().nullable().opt
  * - timeZone: null follows the Mac;
  * - workingFolder: the workspace new work is bound to, or null; choosing it adds its folder to `access`;
  * - access: where Socrates may work and when it asks; by default only the user's folders, asking first;
- * - profile: the user's name and whether onboarding is done.
+ * - profile: the user's name and whether onboarding is done;
+ * - prices: what a model costs, by its id ("deepseek:deepseek-flash"), over the list prices Socrates looks up.
  */
 export const Settings = z.object({
   chat: ChatChoice.nullable().default(null),
@@ -77,6 +87,7 @@ export const Settings = z.object({
   workingFolder: z.string().min(1).nullable().default(null),
   access: Access.default({ scope: "folders", folders: [], approvals: "ask" }),
   profile: Profile.default({ name: null, onboarded: false }),
+  prices: z.record(z.string().min(1).max(250), PriceSetting).default({}),
 }).strict();
 export type Settings = z.infer<typeof Settings>;
 

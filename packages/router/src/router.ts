@@ -81,6 +81,9 @@ interface Budget {
   ledgerQueries: number;
   messages: ModelMessage[];
   errors: string[];
+  /** Who the routing requests are for, and how many have been sent. */
+  trace: { userEventId: string; laneId: string | null };
+  requests: number;
 }
 
 /**
@@ -128,7 +131,7 @@ export class GoalRouter {
     // Lanes are shown with their selectors, so routing to a lane's task needs no ledger query.
     for (const n of ctx.laneSelectors.goals) seen.goals.add(n);
     for (const t of ctx.laneSelectors.tasks) seen.tasks.add(t);
-    const budget: Budget = { ledgerQueries: 0, errors: [], messages: [{ role: "user", content: ctx.input }] };
+    const budget: Budget = { ledgerQueries: 0, errors: [], messages: [{ role: "user", content: ctx.input }], trace: { userEventId: userEvent.id, laneId }, requests: 0 };
 
     let attempts = 1;
     let escalated = false;
@@ -181,6 +184,7 @@ export class GoalRouter {
           tools,
           maxOutputTokens: 8_000,
           temperature: 0,
+          trace: { role: "router", userEventId: budget.trace.userEventId, laneId: budget.trace.laneId, step: ++budget.requests },
           ...(signal ? { signal } : {}),
         });
         response = signal ? await abortable(completion, signal) : await completion;

@@ -1553,6 +1553,7 @@ Further rules:
 - Keep full Skill instructions out of the prompt until activated.
 - Preserve provider prompt-cache handles when the API supports them, without making the core depend on them.
 - Breakpoints are marked in the normalized request and placed at four points, the most explicit-breakpoint providers accept: after the system prompt and tools, after the last Q&A-only turn, after turn N−1, and on the newest message (rolling, so every step reuses everything before it). Each completed turn is its own part, so a provider's prefix lookback also lands on turn boundaries. Providers that cache prefixes automatically ignore the markers; the byte-stability of everything before the in-flight turn is what makes their caches hit.
+- How well this works is measured on every call, not assumed: the provider's cache-read tokens are recorded with each request, the inspect page shows the hit rate per call, question and day, and `pnpm eval:cache` fails when a real model's later steps fall under a floor (`observability.md`). The system prompt and the ten tool definitions are about 6,000 tokens of every request, which is why they are the first thing in the prefix.
 - Compaction replaces content only in the dynamic suffix, never in the stable prefix. A history checkpoint, once written, is frozen text: it does not change between steps of the same turn, so the post-compaction prompt remains cache-stable from that point forward.
 
 ## Embeddings and hybrid retrieval

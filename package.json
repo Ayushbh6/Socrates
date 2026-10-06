@@ -25,6 +25,7 @@
     "eval:server-core": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx apps/server/eval/run-server-core-e2e.ts",
     "eval:provider": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/providers/eval/run-provider-smoke.ts",
     "eval:gold": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx apps/server/eval/run-gold-eval.ts",
+    "eval:cache": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx apps/server/eval/run-cache-eval.ts",
     "eval:vision": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/providers/eval/run-vision-smoke.ts"
   },
   "devDependencies": {

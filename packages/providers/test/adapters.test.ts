@@ -52,6 +52,12 @@ describe("AnthropicModel", () => {
     usage: { input_tokens: 100, output_tokens: 20, cache_creation_input_tokens: 30, cache_read_input_tokens: 500 },
   };
 
+  it("returns the provider's own response id, finish reason and usage whole", async () => {
+    const client = new Anthropic({ apiKey: "test", maxRetries: 0, fetch: fakeFetch(200, reply, []) });
+    const res = await new AnthropicModel({ model: "claude-opus-5-5", client }).complete({ system: "s", messages: [{ role: "user", content: "hi" }] });
+    expect(res.meta).toMatchObject({ id: "msg_1", model: "claude-opus-5-5", stop_reason: "end_turn", usage: { input_tokens: 100, output_tokens: 20, cache_creation_input_tokens: 30, cache_read_input_tokens: 500 } });
+  });
+
   it("replays raw content, groups tool results, and normalizes usage", async () => {
     const captured: Captured[] = [];
     const client = new Anthropic({ apiKey: "test", maxRetries: 0, fetch: fakeFetch(200, reply, captured) });
@@ -149,6 +155,17 @@ describe("OpenAICompatibleModel", () => {
     expect(res.toolCalls).toEqual([{ id: "call_9", name: "ledger_query", input: { match: "x" } }]);
     expect(res.stopReason).toBe("tool_use");
     expect(res.usage).toEqual({ promptTokens: 50, outputTokens: 5, cacheReadTokens: 10, cacheWriteTokens: 0 });
+    // What the provider said besides the answer, for inspection.
+    expect(res.meta).toEqual({ id: "c1", model: "deepseek-chat", finish_reason: "tool_calls", usage: { prompt_tokens: 50, completion_tokens: 5, total_tokens: 55, prompt_tokens_details: { cached_tokens: 10 } } });
+  });
+
+  it("reports the part of the output spent thinking, and keeps the provider's cache fields", async () => {
+    const completion = { id: "c2", object: "chat.completion", created: 0, model: "deepseek-v4-pro", system_fingerprint: "fp_1", choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "ok" } }],
+      usage: { prompt_tokens: 100, completion_tokens: 40, total_tokens: 140, prompt_tokens_details: { cached_tokens: 64 }, completion_tokens_details: { reasoning_tokens: 25 }, prompt_cache_hit_tokens: 64, prompt_cache_miss_tokens: 36 } };
+    const client = new OpenAI({ apiKey: "test", maxRetries: 0, fetch: fakeFetch(200, completion, []) });
+    const res = await new OpenAICompatibleModel({ model: "deepseek-v4-pro", provider: "deepseek", client }).complete({ system: "s", messages: [{ role: "user", content: "hi" }] });
+    expect(res.usage).toEqual({ promptTokens: 100, outputTokens: 40, cacheReadTokens: 64, cacheWriteTokens: 0, reasoningTokens: 25 });
+    expect(res.meta).toMatchObject({ system_fingerprint: "fp_1", usage: { prompt_cache_hit_tokens: 64, prompt_cache_miss_tokens: 36 } });
   });
 });
 
@@ -209,7 +226,9 @@ describe("Gemini Interactions", () => {
     expect((captured[1]!.body.input as unknown[]).at(-1)).toMatchObject({type: "function_result", call_id: "call1", is_error: true});
     expect(first.raw?.content).toEqual(steps);
     expect(second.toolCalls).toEqual([{id: "call1", name: "ledger_query", input: {match: "German"}}]);
-    expect(first.usage).toEqual({promptTokens: 80, outputTokens: 30, cacheReadTokens: 50, cacheWriteTokens: 0});
+    // Thinking tokens count toward the output, and are reported on their own.
+    expect(first.usage).toEqual({promptTokens: 80, outputTokens: 30, cacheReadTokens: 50, cacheWriteTokens: 0, reasoningTokens: 20});
+    expect(first.meta).toEqual({model: "gemini-3.8-flash", status: "requires_action", usage: {total_input_tokens: 80, total_output_tokens: 10, total_thought_tokens: 20, total_cached_tokens: 50}});
   });
 
   it("keeps foreign signatures out of Gemini requests", async () => {

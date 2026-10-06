@@ -104,6 +104,29 @@ export interface ModelRequest {
   onReasoning?: (delta: string) => void;
   /** The thinking level for this request; without it the client's own default applies. Only levels the model accepts. */
   effort?: Effort;
+  /** Who is asking and for which message, so the call can be recorded and found again. Providers ignore it. */
+  trace?: CallTrace;
+}
+
+/** Which part of Socrates makes a model call. */
+export const CALL_ROLES = ["router", "work", "wrap_up", "repair", "compaction", "embedding", "other"] as const;
+export type CallRole = (typeof CALL_ROLES)[number];
+
+/**
+ * What a model call is for (architecture/observability.md). Only the ids
+ * known at the call site are set: the router has the message but no turn yet.
+ */
+export interface CallTrace {
+  role: CallRole;
+  /** The user message this call works on. */
+  userEventId?: string | null;
+  turnId?: string | null;
+  laneId?: string | null;
+  goalId?: string | null;
+  taskId?: string | null;
+  chatId?: string | null;
+  /** The nth request of this role for this message or turn, from 1. */
+  step?: number;
 }
 
 /**
@@ -116,6 +139,8 @@ export interface ModelUsage {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /** The part of `outputTokens` spent thinking, when the provider says. */
+  reasoningTokens?: number;
 }
 
 export type StopReason = "end" | "tool_use" | "max_tokens" | "refusal" | "other";
@@ -135,6 +160,12 @@ export interface ModelResponse {
    * model (the raw content carries what the provider needs).
    */
   reasoning?: string;
+  /**
+   * What the provider said about the request beyond the normalized fields: its
+   * response id, served model, finish reason and its own usage object whole.
+   * For inspection only; nothing depends on its shape.
+   */
+  meta?: Record<string, unknown>;
 }
 
 export interface ModelClient {

@@ -1,3 +1,4 @@
+import type { CallDetail, PriceRow, QuestionDetail, QuestionRow, Range, Summary } from "./observe";
 import type { Access, AttachmentView, Evidence, Folders, GoalView, History, ListedModel, Provider, Settings, Status } from "./types";
 
 export class ApiError extends Error {
@@ -44,6 +45,11 @@ export const api = {
   folders: (path?: string) => call<Folders>("GET", `/api/folders${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   addWorkspace: (path: string) => call<{ id: string; name: string; path: string }>("POST", "/api/workspaces", { path }),
   thinking: (seq: number) => call<{ seq: number; text: string }>("GET", `/api/thinking?seq=${seq}`),
+  observeSummary: (range: Range) => call<Summary>("GET", `/api/observe/summary?range=${range}`),
+  observePrices: () => call<PriceRow[]>("GET", "/api/observe/prices"),
+  observeQuestions: (range: Range, before?: string) => call<{ questions: QuestionRow[]; next: string | null }>("GET", `/api/observe/questions?range=${range}${before ? `&before=${encodeURIComponent(before)}` : ""}`),
+  observeQuestion: (id: string) => call<QuestionDetail>("GET", `/api/observe/questions/${encodeURIComponent(id)}`),
+  observeCall: (id: string) => call<CallDetail>("GET", `/api/observe/calls/${encodeURIComponent(id)}`),
   evidence: (task: string, handle: string) => call<Evidence>("GET", `/api/evidence?task=${encodeURIComponent(task)}&handle=${encodeURIComponent(handle)}`),
 };
 

@@ -7,6 +7,7 @@ The design lives in [`architecture/`](architecture):
 - [`agent-harness.md`](architecture/agent-harness.md): tools, the agent loop, context layout, compaction, caching.
 - [`Goal-router.md`](architecture/Goal-router.md): goals, tasks, routing, the ledger, rollover.
 - [`server.md`](architecture/server.md): the local app server: data folder, settings and keys, startup, security, and its API.
+- [`observability.md`](architecture/observability.md): every model call recorded (request, reply, timing, cache, cost), the inspect page, and the live cache evaluation.
 - [`web.md`](architecture/web.md): the web app: the welcome page, flow mode (the orb, the notes, the question sidebar, the composer), standard mode (goals, main and lane panels), approvals, tool output, settings, and how it stays in sync.
 
 ## Packages
@@ -67,6 +68,7 @@ SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:capabilities # installed Skil
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:gold   # the gold standard: DeepSeek Flash and GLM 5.3 Flash each build a mockup from its picture alone (interactive terminal, packages, dev server, Playwright MCP screenshots); everything lands in .socrates/evals/gold, which `pnpm eval:gold --clean` deletes
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:embeddings   # meaning-based retrieval with local Ollama embeddinggemma
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:lanes        # parallel lanes beside the main conversation
+SOCRATES_ENV_FILE=/absolute/path/to/.env SOCRATES_PROVIDER=deepseek pnpm eval:cache # three connected messages on a real model; prints each call's cache hit, speed and cost and fails when later steps do not hit the cache
 ```
 
 `eval:compaction` shrinks the context budgets so a few real turns cross the compaction trigger: it checks that a history checkpoint carries an unanswered question verbatim and that the agent answers it afterwards, that rollover continues a turn in a linked chat, that a restart keeps the work, that no request reaches the ceiling, and that every projection replays from events. Ceiling checks cover calibrated worker and compactor requests, including native replay content. The [compaction-stage closure report](docs/reviews/compaction-stage-closure.md) records the six review fixes and their regression coverage.

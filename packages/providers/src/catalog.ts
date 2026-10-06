@@ -34,16 +34,18 @@ const SOCRATES_DEFAULT: Partial<Record<string, Effort>> = { gemini: "low", deeps
 const LIST_TTL_MS = 10 * 60_000;
 const LIST_TIMEOUT_MS = 10_000;
 
-interface OpenRouterEntry {
+export interface OpenRouterEntry {
   id: string;
   name?: string;
+  /** US dollars per token, as decimal strings. */
+  pricing?: { prompt?: string; completion?: string; input_cache_read?: string; input_cache_write?: string };
   supported_parameters?: string[];
   reasoning?: { mandatory?: boolean; supported_efforts?: string[] | null; default_effort?: string | null } | null;
   architecture?: { input_modalities?: unknown };
   top_provider?: { max_completion_tokens?: number | null };
 }
 
-interface DeepSeekEntry {
+export interface DeepSeekEntry {
   id: string;
   name?: string;
   input_modalities?: unknown;

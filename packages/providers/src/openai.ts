@@ -110,8 +110,10 @@ export class OpenAICompatibleModel implements ModelClient {
         outputTokens: usage?.completion_tokens ?? 0,
         cacheReadTokens: cached,
         cacheWriteTokens: 0,
+        ...(usage?.completion_tokens_details?.reasoning_tokens ? { reasoningTokens: usage.completion_tokens_details.reasoning_tokens } : {}),
       },
       servedBy: completion.model,
+      meta: { id: completion.id, model: completion.model, finish_reason: choice?.finish_reason ?? null, ...(completion.system_fingerprint ? { system_fingerprint: completion.system_fingerprint } : {}), ...(completion.service_tier ? { service_tier: completion.service_tier } : {}), usage: usage ?? null },
       ...(message ? { raw: { provider: this.id, content: structuredClone(message) } } : {}),
       ...(reasoningOf(message) ? { reasoning: reasoningOf(message) } : {}),
     };
@@ -143,7 +145,7 @@ export class OpenAICompatibleModel implements ModelClient {
   }
 }
 
-type Completion = Pick<OpenAI.Chat.ChatCompletion, "model" | "usage"> & {
+type Completion = Pick<OpenAI.Chat.ChatCompletion, "model" | "usage"> & Partial<Pick<OpenAI.Chat.ChatCompletion, "id" | "system_fingerprint" | "service_tier">> & {
   choices: { finish_reason: string | null; message: OpenAI.Chat.ChatCompletionMessage }[];
 };
 
@@ -182,6 +184,9 @@ export class ChatReply {
   private text = "";
   private finish: string | null = null;
   private model = "";
+  private id: string | undefined;
+  private fingerprint: string | undefined;
+  private tier: OpenAI.Chat.ChatCompletion["service_tier"];
   private usage: OpenAI.CompletionUsage | undefined;
   private readonly extra: Record<string, unknown> = {};
   private readonly calls: { id: string; name: string; args: string }[] = [];
@@ -194,6 +199,9 @@ export class ChatReply {
   /** Take one chunk; returns the text and the readable reasoning it carried. */
   add(chunk: OpenAI.Chat.ChatCompletionChunk): { text: string; reasoning: string } {
     if (chunk.model) this.model = chunk.model;
+    if (chunk.id) this.id = chunk.id;
+    if (chunk.system_fingerprint) this.fingerprint = chunk.system_fingerprint;
+    if (chunk.service_tier) this.tier = chunk.service_tier;
     if (chunk.usage) this.usage = chunk.usage;
     const choice = chunk.choices?.[0];
     if (!choice) return { text: "", reasoning: "" };
@@ -223,7 +231,7 @@ export class ChatReply {
   completion(): Completion {
     const tool_calls = this.calls.filter(Boolean).map((c) => ({ id: c.id, type: "function" as const, function: { name: c.name, arguments: c.args } }));
     const message = { role: "assistant", content: this.text || null, ...this.extra, ...(tool_calls.length ? { tool_calls } : {}) } as OpenAI.Chat.ChatCompletionMessage;
-    return { model: this.model, ...(this.usage ? { usage: this.usage } : {}), choices: [{ finish_reason: this.finish, message }] };
+    return { model: this.model, ...(this.id ? { id: this.id } : {}), ...(this.fingerprint ? { system_fingerprint: this.fingerprint } : {}), ...(this.tier ? { service_tier: this.tier } : {}), ...(this.usage ? { usage: this.usage } : {}), choices: [{ finish_reason: this.finish, message }] };
   }
 
   private mergeDetails(chunk: unknown[]): void {

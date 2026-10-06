@@ -1,4 +1,4 @@
-import { type FinalAnswer, type ImageData, type ModelClient, ModelError, type ModelMessage, type ModelResponse, type TextPart, type ToolCall, type ToolDefinition, type TurnStop } from "@socrates/contracts";
+import { type CallTrace, type FinalAnswer, type ImageData, type ModelClient, ModelError, type ModelMessage, type ModelResponse, type TextPart, type ToolCall, type ToolDefinition, type TurnStop } from "@socrates/contracts";
 import type { TokenCalibration } from "@socrates/providers";
 import { abortable } from "@socrates/shared";
 import type { ActiveCapabilities, CallScope, ToolRunner } from "@socrates/tools";
@@ -71,6 +71,8 @@ export interface RunInput {
    */
   compact?: Compact;
   maxOutputTokens?: number;
+  /** The message and lane these requests are made for, recorded with each call (architecture/observability.md). */
+  trace?: Pick<CallTrace, "userEventId" | "laneId">;
   /** Delays before retrying a transient provider failure; one retry per entry. */
   retryDelaysMs?: number[];
   now?: () => number;
@@ -192,6 +194,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
         const response = await abortable(model.complete({
           system: input.system, messages: withRollingBreakpoint(messages), tools,
           toolChoice: phase === "work" ? "auto" : "none", maxOutputTokens: input.maxOutputTokens ?? 16_000, signal,
+          trace: { ...input.trace, role: phase, goalId: scope.binding.goalId, taskId: scope.binding.taskId, chatId: scope.binding.chatId, turnId: scope.binding.turnId, step: request },
           // Every request, a retry included, is its own draft.
           ...(onText ? { onText: (text: string) => {
             if (live()) onText(text);

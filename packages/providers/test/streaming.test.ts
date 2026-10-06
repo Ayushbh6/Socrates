@@ -209,7 +209,7 @@ describe("Gemini Interactions streaming", () => {
     expect(res.text).toBe("Checking it.");
     expect(res.toolCalls).toEqual([{ id: "call_7", name: "read_file", input: { path: "a.txt" } }]);
     expect(res.stopReason).toBe("tool_use");
-    expect(res.usage).toEqual({ promptTokens: 60, outputTokens: 22, cacheReadTokens: 5, cacheWriteTokens: 0 });
+    expect(res.usage).toEqual({ promptTokens: 60, outputTokens: 22, cacheReadTokens: 5, cacheWriteTokens: 0, reasoningTokens: 3 });
     expect(res.raw!.content).toEqual([
       { type: "thought", signature: "sig-a" },
       { type: "model_output", content: [{ type: "text", text: "Checking it." }] },

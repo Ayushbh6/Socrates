@@ -316,7 +316,10 @@ async function summarize<T>(
       return { ok: false, errors: ["The summarizer request reaches the calibrated context ceiling; it was not sent."] };
     }
     try {
-      const response = await abortable(options.model.complete({ system, messages, maxOutputTokens: SUMMARY_OUTPUT_TOKENS, signal }), signal);
+      const response = await abortable(options.model.complete({
+        system, messages, maxOutputTokens: SUMMARY_OUTPUT_TOKENS, signal,
+        trace: { role: "compaction", userEventId: options.turn.userEventId, laneId: options.turn.laneId, turnId: options.turn.id, ...(options.turn.goalId ? { goalId: options.turn.goalId } : {}), ...(options.turn.taskId ? { taskId: options.turn.taskId } : {}), ...(options.turn.chatId ? { chatId: options.turn.chatId } : {}), step: attempt + 1 },
+      }), signal);
       options.runtime.recordUsage(response.usage);
       options.runtime.calibration.observe(options.model.id, size, response.usage);
       if (signal.aborted) return "cancelled";

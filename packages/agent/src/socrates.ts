@@ -603,6 +603,7 @@ export class Socrates {
       ...(options.onDraft ? { onDraft: (draft: Draft) => options.onDraft!(turn.id, draft) } : {}),
       onResponse: (response, phase) => store.appendEvent("agent_message", { response, phase }, { goal_id: goal.id, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id }),
       ...(this.options.maxOutputTokens ? { maxOutputTokens: this.options.maxOutputTokens } : {}),
+      trace: { userEventId: turn.userEventId, laneId: turn.laneId },
       ...(this.options.retryDelaysMs ? { retryDelaysMs: this.options.retryDelaysMs } : {}),
       ...(this.options.now ? { now: this.options.now } : {}),
     });

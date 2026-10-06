@@ -13,6 +13,8 @@ export interface ServerConfig {
   port: number;
   dbPath: string;
   indexPath: string;
+  /** Every model call, kept apart from the ledger (architecture/observability.md). */
+  callsPath: string;
   settingsPath: string;
   keysPath: string;
   logPath: string;
@@ -31,6 +33,7 @@ export function resolveConfig(env: Record<string, string | undefined> = process.
     port,
     dbPath: path.join(home, "ledger.db"),
     indexPath: path.join(home, "ledger.db.lance"),
+    callsPath: path.join(home, "calls.db"),
     settingsPath: path.join(home, "settings.json"),
     keysPath: path.join(home, ".env"),
     logPath: path.join(home, "logs", "server.log"),
@@ -52,7 +55,7 @@ export function prepareHome(config: ServerConfig): void {
     throw new Error("Choose a dedicated data folder with SOCRATES_HOME, not your home folder or its ancestors.");
   }
   assertSeparateFromClassic(home);
-  for (const relative of ["logs", "logs/server.log", "logs/server.log.1", "ledger.db", "ledger.db-wal", "ledger.db-shm", "ledger.db.lance", "settings.json", ".env", "mcp.json", "skills", ".server-lock.db", ".server-lock.db-journal"]) {
+  for (const relative of ["logs", "logs/server.log", "logs/server.log.1", "ledger.db", "ledger.db-wal", "ledger.db-shm", "ledger.db.lance", "calls.db", "calls.db-wal", "calls.db-shm", "settings.json", ".env", "mcp.json", "skills", ".server-lock.db", ".server-lock.db-journal"]) {
     const file = path.join(home, relative);
     try {
       if (lstatSync(file).isSymbolicLink()) throw new Error(`${file} must not be a symbolic link. Choose a separate data folder.`);

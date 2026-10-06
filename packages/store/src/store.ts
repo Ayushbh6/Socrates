@@ -1186,6 +1186,11 @@ export class LedgerStore {
     return this.all("SELECT * FROM turns WHERE user_event_id = ? ORDER BY project_turn", userEventId).map(toTurn);
   }
 
+  /** The task turn before this one in the same conversation (the main one or one lane): where the work stood before this message. */
+  previousTurn(turn: Turn): Turn | null {
+    return this.all("SELECT * FROM turns WHERE project_turn < ? AND lane_id IS ? AND kind = 'task' ORDER BY project_turn DESC LIMIT 1", turn.projectTurn, turn.laneId).map(toTurn)[0] ?? null;
+  }
+
   /** Store a visible answer. Each compound part records its own, shown together in part order. */
   recordResponse(text: string, refs: EventRefs = {}): StoredEvent<"assistant_response"> {
     return this.appendEvent("assistant_response", { text }, refs);

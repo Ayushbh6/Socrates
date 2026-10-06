@@ -17,6 +17,7 @@ Everything lives in one folder, `~/.socrates-v2` unless `SOCRATES_HOME` names an
 |---|---|
 | `ledger.db` | the event log and ledger |
 | `ledger.db.lance` | the embedding index |
+| `calls.db` | every model call, kept apart from the ledger and forgotten after 30 days (`observability.md`) |
 | `settings.json` | the user's choices (see "Settings") |
 | `attachments/` | images the user attached to messages, named by content hash (see "Attachments") |
 | `.env` | API keys, mode `600` |
@@ -52,9 +53,10 @@ Settings and keys can change only while Socrates is idle (no main-conversation m
 | `timeZone` | `null` | an IANA time zone; `null` follows the machine |
 | `workingFolder` | `null` | the workspace new work is bound to; choosing it adds its folder to `access.folders` |
 | `access` | my folders, none yet; ask first | `{ scope, folders, approvals }`: where Socrates may work and when it asks (see "Access") |
+| `prices` | none | what a model costs, by client id such as `deepseek:deepseek-flash`: `{ input, cachedInput, cacheWrite, output }` in US dollars per million tokens, over the list prices Socrates looks up (`observability.md`, "Cost"); applies to the next call without a rebuild |
 | `profile` | no name, not onboarded | `{ name, onboarded }`: the user's name (up to 80 characters, or null) and whether they finished onboarding (`web.md`, "Welcome and onboarding"); also in `/api/status`; the name reaches the working agent as `<USER>` from the next message |
 
-A change sends only the fields that change; the others keep their values, inside `access` and `profile` too. Three kinds of change apply at once, even while Socrates works, and only a rebuild in progress refuses them: `access`, `profile`, and a `chat` that names the chat model already running (a new thinking level, or the detected model now chosen). The level applies to the next model request; one the model does not accept is refused with a message listing its levels. Every other change, including another chat model, rebuilds Socrates and is refused with `busy` while it works.
+A change sends only the fields that change; the others keep their values, inside `access` and `profile` too. Three kinds of change apply at once, even while Socrates works, and only a rebuild in progress refuses them: `access`, `profile` and `prices`, and a `chat` that names the chat model already running (a new thinking level, or the detected model now chosen). The level applies to the next model request; one the model does not accept is refused with a message listing its levels. Every other change, including another chat model, rebuilds Socrates and is refused with `busy` while it works.
 
 **Keys** are not settings. They live in the data folder's `.env`, which holds only known key names (each provider's keys and `SOCRATES_EMBEDDINGS_API_KEY`) and is written atomically with mode `600`, preserving literal backslashes. Keys there take precedence over the process environment. The API never returns a key, only its effective presence, including inherited keys. Deleting a stored key restores any inherited value of the same name. Provider diagnostics and setup messages redact secrets. Embedding URLs must be HTTP or HTTPS base URLs without embedded credentials, query parameters or fragments.
 
@@ -108,6 +110,7 @@ API responses are JSON. A failure, including an unknown route, is `{ "error": { 
 | `GET /api/attachments/:id` | one stored image, for the page to show |
 | `GET /api/evidence?task=gN/tN&handle=eN` | the complete retained tool recording, bounded to 200,000 characters, with truncation and output-loss flags |
 | `GET`, `POST /api/workspaces` | the workspaces; `POST { path }` adds one |
+| `GET /api/observe/…` | the model-call log joined with the ledger, for the inspect page: `summary`, `questions`, `questions/:id`, `calls/:id`, `prices` (`observability.md`); `unavailable` (503) when the log could not be opened |
 | `GET /api/folders?path=` | a folder's visible subfolders (default: the home folder), for choosing a workspace |
 
 ## History

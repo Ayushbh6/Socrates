@@ -87,6 +87,8 @@ export interface Settings {
   workingFolder: string | null;
   access: Access;
   profile: Profile;
+  /** What a model costs, in US dollars per million tokens, by model id; over the list prices Socrates looks up. */
+  prices: Record<string, { input: number; cachedInput: number | null; cacheWrite: number | null; output: number }>;
 }
 
 /** A model provider, its default models and the keys it reads. */

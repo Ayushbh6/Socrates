@@ -17,6 +17,7 @@ export interface GeminiInteractionsOptions {
 
 type Step = Record<string, unknown> & { type: string };
 interface Interaction {
+  id?: string;
   model?: string;
   status: string;
   steps?: Step[];
@@ -110,9 +111,10 @@ export class GeminiInteractionsModel implements ModelClient {
     return {
       text, toolCalls,
       stopReason: toolCalls.length ? "tool_use" : interaction.status === "incomplete" ? "max_tokens" : "end",
-      usage: { promptTokens: u?.total_input_tokens ?? 0, outputTokens: (u?.total_output_tokens ?? 0) + (u?.total_thought_tokens ?? 0), cacheReadTokens: u?.total_cached_tokens ?? 0, cacheWriteTokens: 0 },
+      usage: { promptTokens: u?.total_input_tokens ?? 0, outputTokens: (u?.total_output_tokens ?? 0) + (u?.total_thought_tokens ?? 0), cacheReadTokens: u?.total_cached_tokens ?? 0, cacheWriteTokens: 0, ...(u?.total_thought_tokens ? { reasoningTokens: u.total_thought_tokens } : {}) },
       raw: { provider: this.id, content: structuredClone(steps) },
       ...(interaction.model ? { servedBy: interaction.model } : {}),
+      meta: { ...(interaction.id ? { id: interaction.id } : {}), ...(interaction.model ? { model: interaction.model } : {}), status: interaction.status, usage: u ?? null },
       ...(reasoning.trim() ? { reasoning } : {}),
     };
   }

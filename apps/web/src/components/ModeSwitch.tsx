@@ -1,4 +1,4 @@
-import { Settings as Gear } from "lucide-react";
+import { Activity, Settings as Gear } from "lucide-react";
 
 export type Mode = "flow" | "standard";
 
@@ -27,6 +27,9 @@ export function ModeSwitch({ mode, onMode, onSettings }: { mode: Mode; onMode: (
           </button>
         ))}
       </div>
+      <a className="icon-button" href="#/inspect" aria-label="Inspect" title="Inspect: cost, cache and every model call">
+        <Activity aria-hidden />
+      </a>
       <button type="button" className="icon-button" onClick={onSettings} aria-label="Settings" title="Settings">
         <Gear aria-hidden />
       </button>

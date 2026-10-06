@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { Flow } from "./components/Flow";
+import { Inspect } from "./components/Inspect";
 import { type Mode, saveMode, storedMode } from "./components/ModeSwitch";
 import { Onboarding } from "./components/Onboarding";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { Standard } from "./components/Standard";
 import { Welcome } from "./components/Welcome";
+import { inspectTarget } from "./lib/observe";
 import { store, useApp } from "./lib/store";
 
 export type Route = "welcome" | "onboarding" | "chat";
@@ -25,11 +27,12 @@ export function needsOnboarding(status: { ready: boolean; setup: string[]; profi
 export function App() {
   const app = useApp();
   const [route, setRoute] = useState(() => routeOf(location.hash));
+  const [hash, setHash] = useState(() => location.hash);
   const [mode, setMode] = useState<Mode>(storedMode);
   const [settings, setSettings] = useState(false);
   useEffect(() => {
     void store.start();
-    const follow = () => setRoute(routeOf(location.hash));
+    const follow = () => { setRoute(routeOf(location.hash)); setHash(location.hash); };
     window.addEventListener("hashchange", follow);
     return () => window.removeEventListener("hashchange", follow);
   }, []);
@@ -42,6 +45,9 @@ export function App() {
     saveMode(next);
     setMode(next);
   };
+  // The inspect page needs no onboarding: it only reads what Socrates has recorded.
+  const inspecting = inspectTarget(hash);
+  if (inspecting && app.status) return <Inspect app={app} question={inspecting.question} />;
   if (route === "chat" && app.status && !blocked) {
     const props = { app, mode, onMode: changeMode, onSettings: () => setSettings(true) };
     return (

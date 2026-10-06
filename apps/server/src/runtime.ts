@@ -3,11 +3,11 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { type LaneState, Socrates, interruptUnfinishedTurns } from "@socrates/agent";
 import { InstalledCatalog } from "@socrates/capabilities";
-import { type Effort, type EmbeddingClient, type ModelClient, ModelError } from "@socrates/contracts";
-import { type EffortLevels, type ListedModel, PROVIDER_DEFAULTS, type Provider, detectEfforts, detectVision, listModels, makeEmbedder, makeModel } from "@socrates/providers";
+import { type CallRecord, type Effort, type EmbeddingClient, type ModelClient, ModelError } from "@socrates/contracts";
+import { type EffortLevels, type ListedModel, PROVIDER_DEFAULTS, type Price, type Provider, costOf, detectEfforts, detectVision, listModels, listPrice, makeEmbedder, makeModel, reportedCost, splitModelId, withRecording } from "@socrates/providers";
 import { Retrieval } from "@socrates/retrieval";
-import { abortable, type Clock } from "@socrates/shared";
-import { LedgerStore, type Workspace } from "@socrates/store";
+import { abortable, type Clock, newId } from "@socrates/shared";
+import { CallLog, LedgerStore, type Workspace } from "@socrates/store";
 import { type AccessPolicy, canReadAutomatically } from "@socrates/tools";
 import { type ServerConfig, prepareHome } from "./config";
 import { readKeys, writeKey } from "./keys";
@@ -32,6 +32,9 @@ export interface ModelInUse {
   effort?: EffortLevels & { current: Effort | null };
 }
 
+/** How long the call log keeps a call (architecture/observability.md, "Keeping and forgetting"). */
+export const CALL_RETENTION_DAYS = 30;
+
 /** Replaceable for tests; production uses the real providers. */
 export interface RuntimeDeps {
   makeModel?: (provider: string, model: string, env: Record<string, string | undefined>, options?: { vision?: boolean }) => ModelClient;
@@ -42,6 +45,8 @@ export interface RuntimeDeps {
   /** The thinking levels a model accepts; production asks the provider's model list. */
   detectEfforts?: (provider: string, model: string, env: Record<string, string | undefined>) => Promise<EffortLevels>;
   makeEmbedder?: (env: Record<string, string | undefined>) => EmbeddingClient;
+  /** A model's list price; production reads OpenRouter's public list. */
+  listPrice?: (provider: string, model: string, env: Record<string, string | undefined>) => Promise<Price | null>;
   clock?: Clock;
   /** The process environment; keys in the data folder override it. */
   env?: Record<string, string | undefined>;
@@ -79,12 +84,17 @@ export class Runtime {
   private changePending: Promise<unknown> | null = null;
   private closing: Promise<void> | null = null;
   private readonly changeListeners = new Set<() => void>();
+  /** Calls whose price is still being looked up before they are saved. */
+  private readonly savingCalls = new Set<Promise<void>>();
+  private readonly prices = new Map<string, { at: number; price: Promise<Price | null> }>();
   /** Socrates' own data and Socrates 0.1's: no tool reads or changes them in any mode. */
   private readonly protectedFolders: string[];
 
   private constructor(
     readonly config: ServerConfig,
     readonly store: LedgerStore,
+    /** Every model call; null when its file could not be opened (Socrates works without it). */
+    readonly calls: CallLog | null,
     /** Turns found unfinished at startup and interrupted. */
     readonly recovered: number,
     private readonly deps: RuntimeDeps,
@@ -120,7 +130,17 @@ export class Runtime {
       store = LedgerStore.open({ path: config.dbPath, ...(deps.clock ? { clock: deps.clock } : {}) });
       const recovered = interruptUnfinishedTurns(store).length;
       if (recovered) log(`interrupted ${recovered} turn(s) left running when Socrates last stopped`);
-      runtime = new Runtime(config, store, recovered, deps, log, unlock, settings);
+      let calls: CallLog | null = null;
+      try {
+        calls = CallLog.open(config.callsPath);
+        const forgotten = calls.prune(new Date((deps.clock?.now() ?? new Date()).getTime() - CALL_RETENTION_DAYS * 86_400_000).toISOString());
+        if (forgotten) log(`forgot ${forgotten} model call(s) older than ${CALL_RETENTION_DAYS} days`);
+      } catch (error) {
+        log(`the call log is unavailable: ${message(error)}`);
+        calls?.close();
+        calls = null;
+      }
+      runtime = new Runtime(config, store, calls, recovered, deps, log, unlock, settings);
       await runtime.start();
       return runtime;
     } catch (error) {
@@ -247,7 +267,7 @@ export class Runtime {
     // The chat model already running, perhaps with another thinking level: no rebuild.
     const inUse = this.models.chat;
     const sameChat = !!this.socrates && !!next.chat && !!inUse && next.chat.provider === inUse.provider && next.chat.model === inUse.model;
-    if (Object.keys(sent).every((key) => key === "access" || key === "profile" || (key === "chat" && sameChat))) {
+    if (Object.keys(sent).every((key) => key === "access" || key === "profile" || key === "prices" || (key === "chat" && sameChat))) {
       const effort = next.chat?.effort;
       if (sameChat && effort && !inUse!.effort?.levels.includes(effort)) {
         const levels = inUse!.effort?.levels ?? [];
@@ -290,6 +310,8 @@ export class Runtime {
       try {
         await this.stop();
       } finally {
+        await this.flushCalls();
+        try { this.calls?.close(); } catch {}
         try { this.store.close(); } finally { this.unlock(); }
       }
     })();
@@ -363,9 +385,11 @@ export class Runtime {
     let routerModel: ModelClient;
     let compactorModel: ModelClient | null = null;
     try {
-      model = withEffort(build(chat.provider, chat.model, env, { vision }), () => this.effortInUse(), () => this.models.chat?.effort?.maxOutputTokens);
-      routerModel = build(router.provider, router.model, env);
-      if (compactor) compactorModel = build(compactor.provider, compactor.model, env);
+      // Recording sits inside the thinking level, so a call is saved as it was sent.
+      const recorded = (client: ModelClient) => withRecording(client, (call) => this.saveCall(call, env));
+      model = withEffort(recorded(build(chat.provider, chat.model, env, { vision })), () => this.effortInUse(), () => this.models.chat?.effort?.maxOutputTokens);
+      routerModel = recorded(build(router.provider, router.model, env));
+      if (compactor) compactorModel = recorded(build(compactor.provider, compactor.model, env));
     } catch (error) {
       this.setup.push(redact(error instanceof ModelError && error.kind === "authentication" ? `${error.message} Add it in settings.` : `The chat model cannot start: ${message(error)}`, env));
       return;
@@ -406,13 +430,17 @@ export class Runtime {
       const embedder: EmbeddingClient = {
         id: client.id,
         embed: async (texts, purpose, signal) => {
+          const startedAt = new Date();
+          const t0 = performance.now();
           try {
             const vectors = await client.embed(texts, purpose, signal);
             signal?.throwIfAborted();
             this.embeddings = { state: "ready", detail: null };
+            this.saveEmbedding(client.id, purpose, texts, startedAt, performance.now() - t0, vectors[0]?.length ?? 0, null, env);
             return vectors;
           } catch (error) {
             if (!signal?.aborted) this.embeddings = { state: "unavailable", detail: `${redact(message(error), env)} Memory search uses keywords only.` };
+            this.saveEmbedding(client.id, purpose, texts, startedAt, performance.now() - t0, 0, error, env);
             throw error;
           }
         },
@@ -428,6 +456,70 @@ export class Runtime {
       this.embeddings = { state: "unavailable", detail: `${redact(message(error), env)} Memory search uses keywords only.` };
       this.log(`embeddings unavailable: ${message(error)}`);
     }
+  }
+
+  /**
+   * Save a finished call with its price (architecture/observability.md,
+   * "Cost"): what the provider reported, else the user's price for the model,
+   * else its list price. Saving waits for a price lookup, so it never delays
+   * the call; a failure to save never reaches it.
+   */
+  private saveCall(call: CallRecord, env: Record<string, string | undefined>): void {
+    const calls = this.calls;
+    if (!calls) return;
+    const saving: Promise<void> = (async () => {
+      let saved = call;
+      try {
+        if (call.response) {
+          const reported = reportedCost(call.response.meta);
+          const price = reported === null ? this.settings.prices[call.model] ?? (await this.priceOf(call.model, env)) : null;
+          const cost = reported !== null ? { usd: reported, source: "reported" as const } : price ? { usd: costOf(call.response.usage, price), source: "price" as const } : null;
+          saved = { ...call, cost };
+        }
+      } catch {}
+      try { calls.record(saved); } catch (error) { this.log(`could not save a model call: ${message(error)}`); }
+    })().finally(() => this.savingCalls.delete(saving));
+    this.savingCalls.add(saving);
+  }
+
+  /** The price in force for each model that has made calls: the user's own, else its list price, else none. */
+  async priceTable(): Promise<{ model: string; source: "settings" | "list" | null; price: Price | null }[]> {
+    const env = this.env();
+    const models = [...new Set((this.calls?.breakdown() ?? []).filter((r) => r.role !== "embedding").map((r) => r.model))];
+    return Promise.all(models.map(async (model) => {
+      const own = this.settings.prices[model];
+      if (own) return { model, source: "settings" as const, price: own };
+      const listed = await this.priceOf(model, env);
+      return { model, source: listed ? ("list" as const) : null, price: listed };
+    }));
+  }
+
+  /** Every call made so far is saved (tests and shutdown wait for it). */
+  async flushCalls(): Promise<void> {
+    while (this.savingCalls.size) await Promise.allSettled([...this.savingCalls]);
+  }
+
+  /** A model's list price, looked up once an hour (a miss is tried again after a minute). */
+  private priceOf(id: string, env: Record<string, string | undefined>): Promise<Price | null> {
+    const known = this.prices.get(id);
+    if (known && Date.now() - known.at < 3_600_000) return known.price;
+    const [provider, model] = splitModelId(id);
+    const price = (this.deps.listPrice ?? listPrice)(provider, model, env).catch(() => null);
+    this.prices.set(id, { at: Date.now(), price });
+    void price.then((found) => { if (!found) setTimeout(() => { if (this.prices.get(id)?.price === price) this.prices.delete(id); }, 60_000).unref(); });
+    return price;
+  }
+
+  /** Embedding calls are logged too, without tokens: what was embedded, how long it took and whether it worked. */
+  private saveEmbedding(model: string, purpose: string, texts: string[], startedAt: Date, ms: number, dimensions: number, error: unknown, env: Record<string, string | undefined>): void {
+    const preview = texts.slice(0, 5).map((t) => (t.length > 300 ? `${t.slice(0, 300)}…` : t)).join("\n---\n");
+    this.saveCall({
+      id: newId("call"), startedAt: startedAt.toISOString(), model, servedBy: null, trace: { role: "embedding" }, streamed: false,
+      request: { system: purpose, messages: [{ role: "user", content: `${texts.length} text${texts.length === 1 ? "" : "s"}\n${preview}` }], tools: [], toolChoice: "auto", maxOutputTokens: null, temperature: null, effort: null },
+      response: error ? null : { text: "", toolCalls: [], reasoning: null, stopReason: "end", usage: { promptTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, meta: { texts: texts.length, dimensions } },
+      error: error ? { kind: error instanceof ModelError ? error.kind : "unexpected", status: error instanceof ModelError ? error.status ?? null : null, message: redact(message(error), env) } : null,
+      ms: Math.round(ms), firstTokenMs: null, tokensPerSecond: null, cost: null,
+    }, env);
   }
 
   private chatChoice(env: Record<string, string | undefined>): ModelInUse | null {

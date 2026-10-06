@@ -37,8 +37,15 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 5. **Time and date in the sidebar.** Questions are grouped under one heading per day (Today, Yesterday, then the date), and each row shows only the time it was asked at the bottom right ("7:35 PM", in the browser's own format). The first version repeated the date on every row; you preferred the day headings.
 6. **Sending from an earlier question.** This already worked (sending clears the choice, so the message is appended after the last question and the canvas follows it); I checked it live with DeepSeek Flash, idle and while main was busy, and the choice of what the canvas shows is now one tested function (`viewedExchange`).
 7. **Tab icon.** The browser tab shows the Socrates logo (64 px favicon, 512 px icon and a 180 px Apple touch icon, made from the teal profile logo).
+8. **Observability, and the cache measured** (asked: 7, 8). Every model call is now recorded in `calls.db` with the exact request, the reply, everything the provider returned (its usage object whole), time to first token, speed, and a cost; calls are kept 30 days. The activity icon in the header opens **Inspect** (`#/inspect`): totals and cache hit rates for 24 hours, 7 days, 30 days or all; a breakdown by model; each question with whether it switched the work (new goal, new task, switched task or goal, asked back) and the router's reason; each question's calls with a bar of what the cache served; and, for any call, the exact context it was given, cut into its blocks. Prices come from OpenRouter's list or your own (**Set a price**). `pnpm eval:cache` runs a real model through three connected messages and fails when later steps do not hit the cache; its first numbers (DeepSeek, `deepseek-v4-pro`) are in `docs/reviews/cache-eval-2026-10-06.md`.
 
 ## Suggested
+
+From the observability phase:
+
+- **The fixed part of every request is about 6,000 tokens**: the system prompt (1.6k) and the ten tool definitions (4.6k). An early step of a task carries under 1,000 tokens that are about the question itself. The cache serves the fixed part when the provider's cache cooperates, but shorter tool descriptions would shrink every request, cached or not.
+- **A first message that names a project Socrates has never heard of makes the router ask where to look** ("In the cache fixture project…"), even with a working folder set. A message that merely says what to do goes straight through.
+- **The router's reasoning and the agent's first step can miss the provider's cache** on a prefix identical to an earlier request (DeepSeek's cache is best effort). The page shows it as a cold row among warm ones; nothing in the prompt layout causes it.
 
 Open since before the trial:
 

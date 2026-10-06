@@ -13,7 +13,8 @@ import { AttachmentError, findAttachment, storeAttachment, viewOf } from "./atta
 import { describeCall } from "./calls";
 import { KEY_NAMES, KeyError } from "./keys";
 import { LiveHub } from "./live";
-import { type Runtime, RuntimeBusyError, SettingsError } from "./runtime";
+import { CALL_RETENTION_DAYS, type Runtime, RuntimeBusyError, SettingsError } from "./runtime";
+import * as observe from "./observe";
 import { guard, problem, sameSecret, sessionCookie } from "./security";
 import { FolderError, conversationHistory, goalsView, listFolders, workspaceFolder, workspaceFor } from "./views";
 
@@ -206,6 +207,32 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
       truncated: content !== null && content.length > EVIDENCE_MAX_CHARS,
       outputLost: output?.output_lost === true,
     };
+  });
+
+  // Every model call and what it cost (architecture/observability.md).
+  const calls = () => runtime.calls;
+  const unavailable = (reply: { code(n: number): { send(body: unknown): unknown } }) => reply.code(503).send(problem("unavailable", "The model-call log could not be opened; Socrates works without it. Details are in the server log."));
+  const Range = z.enum(Object.keys(observe.RANGES) as [observe.Range, ...observe.Range[]]).default("24h");
+  app.get("/api/observe/summary", async (request, reply) => {
+    const { range } = z.object({ range: Range }).strict().parse(request.query);
+    const log = calls();
+    return log ? observe.summary(log, range, new Date(), CALL_RETENTION_DAYS) : unavailable(reply);
+  });
+  app.get("/api/observe/prices", async () => runtime.priceTable());
+  app.get("/api/observe/questions", async (request, reply) => {
+    const query = z.object({ range: Range, before: z.string().max(40).optional(), limit: z.coerce.number().int().min(1).max(200).default(30) }).strict().parse(request.query);
+    const log = calls();
+    return log ? observe.questions(log, runtime.store, { range: query.range, limit: query.limit, now: new Date(), ...(query.before ? { before: query.before } : {}) }) : unavailable(reply);
+  });
+  app.get("/api/observe/questions/:id", async (request, reply) => {
+    const log = calls();
+    if (!log) return unavailable(reply);
+    return observe.question(log, runtime.store, (request.params as { id: string }).id) ?? reply.code(404).send(problem("not_found", "There is no such message."));
+  });
+  app.get("/api/observe/calls/:id", async (request, reply) => {
+    const log = calls();
+    if (!log) return unavailable(reply);
+    return observe.callView(log, (request.params as { id: string }).id) ?? reply.code(404).send(problem("not_found", "There is no such call."));
   });
 
   app.get("/api/folders", async (request) => listFolders(z.object({ path: z.string().optional() }).strict().parse(request.query).path));

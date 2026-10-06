@@ -35,7 +35,8 @@ describe("the compaction model", () => {
     expect(saved.statusCode).toBe(200);
     expect(saved.json().compactor).toEqual({ provider: "deepseek", model: "deepseek-v4-pro" });
     expect(first.built).toContain("deepseek:deepseek-v4-pro");
-    expect(compactorOf(rt)).toBe(first.made.get("deepseek:deepseek-v4-pro"));
+    // The model is wrapped to record its calls, so it is known by its id.
+    expect(compactorOf(rt)?.id).toBe(first.made.get("deepseek:deepseek-v4-pro")!.id);
     expect((await request("GET", "/api/status")).json().models.compactor).toEqual({ provider: "deepseek", model: "deepseek-v4-pro", source: "settings" });
     await rt.close();
     const again = await server(config, { makeModel: recorder().makeModel });

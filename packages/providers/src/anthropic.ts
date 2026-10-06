@@ -121,6 +121,7 @@ export class AnthropicModel implements ModelClient {
       },
       raw: { provider: PROVIDER, content: message.content },
       servedBy: message.model,
+      meta: { id: message.id, model: message.model, stop_reason: message.stop_reason, ...(message.stop_sequence ? { stop_sequence: message.stop_sequence } : {}), usage: u },
       ...(thinking.length ? { reasoning: thinking.join("\n\n") } : {}),
     };
   }
