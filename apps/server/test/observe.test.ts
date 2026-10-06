@@ -1,11 +1,11 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { ModelClient, ModelUsage } from "@socrates/contracts";
 import { ScriptedModel } from "@socrates/providers";
 import { describe, expect, it } from "vitest";
 import { final } from "../../../packages/agent/test/helpers";
 import { continueTask, createGoal } from "../../../packages/router/test/helpers";
-import { SCRIPTED, home, server } from "./helpers";
+import { SCRIPTED, home, server, tempDir } from "./helpers";
 
 /** A scripted model whose replies report this usage and provider metadata, the way a provider's would. */
 function metered(inner: ScriptedModel, usage: ModelUsage, meta: Record<string, unknown> = { id: "resp_1" }): ModelClient {
@@ -163,5 +163,141 @@ describe("the model-call log", () => {
     const later = await server(config, { ...observed().deps, clock: { now: () => new Date("2026-11-10T00:00:00Z") } });
     // Only what the restart itself made (its embedding probe) remains.
     expect(later.rt.calls!.list().map((c) => c.role)).toEqual(["embedding"]);
+  });
+});
+
+describe("the trace of a message", () => {
+  it("lists what happened in order: the message, the router, its decision, the agent's steps with their tool results, and the answer", async () => {
+    const folder = path.join(tempDir(), "shop");
+    mkdirSync(folder);
+    writeFileSync(path.join(folder, "notes.txt"), "the vault code is ORBIT-6382\n");
+    const router = new ScriptedModel("test:router", [createGoal("Shop", "Read the notes")]);
+    const chat = new ScriptedModel("test:chat", [
+      { toolCalls: [{ name: "read", input: { path: path.join(folder, "notes.txt") } }], reasoning: "I should read the notes first." },
+      final({ full_answer: "The code is ORBIT-6382." }),
+    ]);
+    const { rt, request } = await server(home({ settings: SCRIPTED }), { makeModel: (_p, model) => metered(model === "router" ? router : chat, USAGE), listPrice: async () => PRICE });
+    const workspace = rt.store.createWorkspace("shop", folder);
+    await rt.updateSettings({ workingFolder: workspace.id });
+    const result = await rt.socrates!.handle("What is the vault code in my notes?");
+    expect(result.kind).toBe("answered");
+    await rt.flushCalls();
+    const [q] = (await request("GET", "/api/observe/questions?range=all")).json().questions;
+
+    const trace = (await request("GET", `/api/observe/questions/${q.userEventId}/trace`)).json();
+    expect(trace.items.map((i: { kind: string }) => i.kind)).toEqual(["user", "call", "routing", "turn", "call", "call", "answer"]);
+    expect(trace.items[0]).toMatchObject({ kind: "user", text: "What is the vault code in my notes?", lane: null });
+    const [, routerCall, routing, turn, first, second, answer] = trace.items;
+    expect(routerCall).toMatchObject({ group: "router", call: { role: "router" } });
+    expect(routerCall.context.map((b: { name: string }) => b.name)).toEqual(expect.arrayContaining(["RECENT_EXACT_HISTORY", "KNOWN_GOALS", "CURRENT_USER_MESSAGE"]));
+    expect(routing).toMatchObject({ routing: { attempts: 1 } });
+    expect(turn.part).toMatchObject({ move: "new_goal", to: { task: { title: "Read the notes" } } });
+
+    // The first agent step: its context in blocks, its thinking, and the read it called with the file as the tool answered.
+    expect(first).toMatchObject({ group: "turn", reasoning: "I should read the notes first.", entered: [], rebuilt: false });
+    expect(first.context.map((b: { name: string }) => b.name)).toEqual(expect.arrayContaining(["GOAL", "CURRENT_TASK", "CURRENT_USER_MESSAGE"]));
+    expect(first.toolCalls).toHaveLength(1);
+    expect(first.toolCalls[0]).toMatchObject({ name: "read", result: { isError: false } });
+    expect(first.toolCalls[0].result.content).toContain("ORBIT-6382");
+    // The second step was sent its own reply back and the tool's result, and nothing else.
+    expect(second.context).toBeNull();
+    expect(second.entered.map((e: { label: string }) => e.label)).toEqual(["its own reply, sent back", "tool result · read"]);
+    expect(second.entered[1].text).toContain("ORBIT-6382");
+    expect(second.entered.every((e: { tokens: number }) => e.tokens > 0)).toBe(true);
+    expect(answer).toMatchObject({ kind: "answer", status: "completed", text: "The code is ORBIT-6382." });
+    expect((await request("GET", "/api/observe/questions/evt_nope/trace")).statusCode).toBe(404);
+  });
+});
+
+describe("the charts' series", () => {
+  it("covers the range with its buckets and sums the model calls into them", async () => {
+    const { deps } = observed();
+    const { rt, request } = await server(home({ settings: SCRIPTED }), deps);
+    await rt.socrates!.handle("Fix the checkout in my shop.");
+    await rt.flushCalls();
+    const s = (await request("GET", "/api/observe/series?range=24h")).json();
+    expect(s.bucketMs).toBe(3_600_000);
+    expect(s.at.length).toBeGreaterThanOrEqual(24);
+    const roles = new Map<string, number>();
+    for (const b of s.buckets) roles.set(b.role, (roles.get(b.role) ?? 0) + b.calls);
+    expect([...roles]).toEqual(expect.arrayContaining([["router", 1], ["work", 1]]));
+    expect(s.buckets.some((b: { role: string }) => b.role === "embedding")).toBe(false);
+    expect((await request("GET", "/api/observe/series?range=1y")).statusCode).toBe(400);
+    const recent = (await request("GET", "/api/observe/recent?limit=50")).json() as { role: string }[];
+    expect(recent.map((c) => c.role)).toEqual(expect.arrayContaining(["router", "work", "embedding"]));
+    expect((await request("GET", "/api/observe/recent?limit=2")).json()).toHaveLength(2);
+    const costly = (await request("GET", "/api/observe/costly?range=all")).json();
+    expect(costly).toHaveLength(1);
+    expect(costly[0]).toMatchObject({ message: "Fix the checkout in my shop." });
+  });
+});
+
+describe("the database view", () => {
+  it("counts the databases, tables and records, and the files beside them", async () => {
+    const { deps } = observed();
+    const { rt, request } = await server(home({ settings: SCRIPTED }), deps);
+    await rt.socrates!.handle("Fix the checkout in my shop.");
+    await rt.flushCalls();
+    const data = (await request("GET", "/api/observe/db")).json();
+    expect(data.databases.map((d: { id: string }) => d.id)).toEqual(["ledger", "calls"]);
+    const ledger = data.databases[0];
+    const events = ledger.tables.find((t: { name: string }) => t.name === "events");
+    expect(events).toMatchObject({ kind: "table" });
+    expect(events.rows).toBe(rt.store.latestEventSeq());
+    expect(ledger.tables.find((t: { name: string }) => t.name === "ledger_fts")).toMatchObject({ kind: "virtual" });
+    expect(ledger.tables.find((t: { name: string }) => t.name === "ledger_fts_data")).toMatchObject({ kind: "internal" });
+    expect(ledger.records).toBe(ledger.tables.filter((t: { kind: string }) => t.kind !== "internal").reduce((n: number, t: { rows: number }) => n + t.rows, 0));
+    expect(data.totals.databases).toBe(2);
+    expect(data.totals.tables).toBe(data.databases.reduce((n: number, d: { tables: { kind: string }[] }) => n + d.tables.filter((t) => t.kind !== "internal").length, 0));
+    expect(data.totals.records).toBeGreaterThan(events.rows);
+    expect(data.files.map((f: { name: string }) => f.name)).toEqual(expect.arrayContaining(["ledger.db.lance", "logs"]));
+  });
+
+  it("pages, orders and searches a table, and opens one row whole", async () => {
+    const { deps } = observed();
+    const { rt, request } = await server(home({ settings: SCRIPTED }), deps);
+    await rt.socrates!.handle("Fix the checkout in my shop.");
+    await rt.flushCalls();
+    const page = (await request("GET", "/api/observe/db/ledger/events?limit=3&order=seq&dir=asc")).json();
+    expect(page.columns.map((c: { name: string }) => c.name)).toEqual(["seq", "id", "type", "at", "goal_id", "task_id", "chat_id", "turn_id", "payload"]);
+    expect(page.rows).toHaveLength(3);
+    expect(page.rows.map((r: unknown[]) => r[0])).toEqual([1, 2, 3]);
+    expect(page.total).toBe(rt.store.latestEventSeq());
+    const found = (await request("GET", "/api/observe/db/ledger/events?q=Fix%20the%20checkout&limit=10")).json();
+    expect(found.matched).toBeGreaterThan(0);
+    expect(found.matched).toBeLessThan(found.total);
+    expect(found.rows.some((r: unknown[]) => r[2] === "user_message")).toBe(true);
+    // A search for text with LIKE wildcards in it is a search for that text.
+    expect((await request("GET", "/api/observe/db/ledger/events?q=%25&limit=5")).json().matched).toBe(0);
+    const whole = (await request("GET", `/api/observe/db/ledger/events/${page.ids[0]}`)).json();
+    expect(whole.values[0]).toBe(1);
+    expect(whole.columns).toHaveLength(whole.values.length);
+  });
+
+  it("opens the compressed parts of a request as the text they hold", async () => {
+    const { deps } = observed();
+    const { rt, request } = await server(home({ settings: SCRIPTED }), deps);
+    await rt.socrates!.handle("Fix the checkout in my shop.");
+    await rt.flushCalls();
+    const blobs = (await request("GET", "/api/observe/db/calls/blobs?limit=200")).json();
+    const data = blobs.columns.findIndex((c: { name: string }) => c.name === "data");
+    expect(blobs.rows.some((r: string[]) => String(r[data]).startsWith("‹compressed"))).toBe(true);
+    const index = blobs.rows.findIndex((r: string[]) => String(r[data]).includes("Fix the checkout"));
+    expect(index).toBeGreaterThanOrEqual(0);
+    const whole = (await request("GET", `/api/observe/db/calls/blobs/${blobs.ids[index]}`)).json();
+    expect(String(whole.values[data])).toContain("Fix the checkout in my shop.");
+  });
+
+  it("opens only the two databases, and only tables and columns they list", async () => {
+    const { request } = await server(home({ settings: SCRIPTED }), observed().deps);
+    expect((await request("GET", "/api/observe/db/keys/events")).statusCode).toBe(404);
+    expect((await request("GET", "/api/observe/db/ledger/no_such_table")).statusCode).toBe(400);
+    expect((await request("GET", `/api/observe/db/ledger/${encodeURIComponent('events"; DROP TABLE events; --')}`)).statusCode).toBe(400);
+    // An order that is not a column is ignored, not put in the query.
+    const page = await request("GET", `/api/observe/db/ledger/events?order=${encodeURIComponent("seq; DROP TABLE events")}`);
+    expect(page.statusCode).toBe(200);
+    expect((await request("GET", "/api/observe/db/ledger/events/1abc")).statusCode).toBe(404);
+    expect((await request("GET", "/api/observe/db/ledger/events/999999")).statusCode).toBe(404);
+    expect((await request("GET", "/api/observe/db/ledger/events?limit=9999")).statusCode).toBe(400);
   });
 });

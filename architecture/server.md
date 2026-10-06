@@ -110,7 +110,7 @@ API responses are JSON. A failure, including an unknown route, is `{ "error": { 
 | `GET /api/attachments/:id` | one stored image, for the page to show |
 | `GET /api/evidence?task=gN/tN&handle=eN` | the complete retained tool recording, bounded to 200,000 characters, with truncation and output-loss flags |
 | `GET`, `POST /api/workspaces` | the workspaces; `POST { path }` adds one |
-| `GET /api/observe/…` | the model-call log joined with the ledger, for the inspect page: `summary`, `questions`, `questions/:id`, `calls/:id`, `prices` (`observability.md`); `unavailable` (503) when the log could not be opened |
+| `GET /api/observe/…` | the model-call log joined with the ledger, for the inspect console: `summary`, `series`, `recent`, `costly`, `questions`, `questions/:id`, `questions/:id/trace`, `calls/:id`, `prices`; and a read-only look into the ledger and call databases: `db`, `db/:db/:table`, `db/:db/:table/:rowid` (`observability.md`). `unavailable` (503) when the call log could not be opened |
 | `GET /api/folders?path=` | a folder's visible subfolders (default: the home folder), for choosing a workspace |
 
 ## History

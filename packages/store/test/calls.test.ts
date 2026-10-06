@@ -49,6 +49,20 @@ describe("the call log", () => {
     expect(log.get(log.list({ limit: 1 })[0]!.id)!.request.messages).toHaveLength(40);
   });
 
+  it("keeps breakpoints apart from the messages, so a context that only moved its breakpoint is the same context", () => {
+    const first = (cache: boolean) => ({ role: "user" as const, content: [{ text: "context\n", cache }, { text: "more\n" }] });
+    const tool = { role: "tool" as const, toolCallId: "t1", toolName: "read", content: "result" };
+    const a = call({ request: { ...call().request, messages: [first(true)] } });
+    const b = call({ request: { ...call().request, messages: [first(false), { ...tool, cache: true }] } });
+    log.record(a);
+    log.record(b);
+    expect(log.firstHash(a.id)).toBe(log.firstHash(b.id));
+    // Read back, each carries the breakpoints it was sent with.
+    expect(log.get(a.id)!.request.messages).toEqual([first(true)]);
+    expect(log.get(b.id)!.request.messages).toEqual([{ role: "user", content: [{ text: "context\n" }, { text: "more\n" }] }, { ...tool, cache: true }]);
+    expect(log.messagesFrom(b.id, 1).messages).toEqual([{ ...tool, cache: true }]);
+  });
+
   it("keeps the type and size of an image, not its bytes", () => {
     const picture = { mediaType: "image/png" as const, data: "A".repeat(4000) };
     const saved = call({ request: { ...call().request, messages: [{ role: "user", content: "look", images: [picture] }] } });
@@ -75,6 +89,32 @@ describe("the call log", () => {
     const t = log.totals();
     expect(t).toMatchObject({ calls: 2, failed: 0, promptTokens: 4000, outputTokens: 400, cacheReadTokens: 800, cacheHitRate: 0.2, costUsd: 0.01, priced: 1, ms: 4000, tokensPerSecond: 50, firstTokenMs: 1000 });
     expect(log.totals("2027-01-01")).toMatchObject({ calls: 0, cacheHitRate: null, tokensPerSecond: null });
+  });
+
+  it("counts a call the user stopped apart from one that failed", () => {
+    log.record(call({ response: null, error: { kind: "aborted", status: null, message: "Request aborted." }, cost: null }));
+    log.record(call({ response: null, error: { kind: "server", status: 500, message: "boom" }, cost: null }));
+    expect(log.totals()).toMatchObject({ calls: 2, failed: 1, stopped: 1 });
+  });
+
+  it("sums model calls per bucket and role for the charts, leaving embeddings out", () => {
+    log.record(call({}, "2026-10-06T10:05:00.000Z"));
+    log.record(call({}, "2026-10-06T10:55:00.000Z"));
+    log.record(call({ trace: { role: "router", userEventId: "evt_a" } }, "2026-10-06T10:30:00.000Z"));
+    log.record(call({ trace: { role: "work", userEventId: "evt_b" } }, "2026-10-06T12:10:00.000Z"));
+    log.record(call({ trace: { role: "embedding" } }, "2026-10-06T10:10:00.000Z"));
+    const rows = log.series("2026-10-06T00:00:00.000Z", 3_600_000).map((r) => [r.at, r.role, r.calls]);
+    expect(rows).toEqual([["2026-10-06T10:00:00.000Z", "router", 1], ["2026-10-06T10:00:00.000Z", "work", 2], ["2026-10-06T12:00:00.000Z", "work", 1]]);
+  });
+
+  it("returns just a call's reply, and the messages it added after the first few", () => {
+    const messages = [{ role: "user" as const, content: "a" }, { role: "assistant" as const, content: "b" }, { role: "user" as const, content: "c" }];
+    const saved = call({ request: { ...call().request, messages } });
+    log.record(saved);
+    expect(log.response(saved.id)).toMatchObject({ text: "hi", reasoning: "thinking" });
+    expect(log.messagesFrom(saved.id, 1).messages).toEqual(messages.slice(1));
+    expect(log.firstHash(saved.id)).toBe(log.messagesFrom(saved.id, 0).firstHash);
+    expect(log.response("nope")).toBeNull();
   });
 
   it("breaks the numbers down by role and model", () => {

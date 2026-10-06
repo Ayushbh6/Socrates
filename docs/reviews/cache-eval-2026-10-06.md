@@ -46,6 +46,10 @@ In this run the router asked back once on the first message (the eval answers it
 
 Agent, first step of a message: 55% (3 calls). Agent, later steps: **93%** (5 calls). Router: 69%. Everything: 73% of 90,726 prompt tokens, **$0.00755**.
 
+## Run 3
+
+Run once more after the console was built (same fixture, streamed): the working agent's first step of a message hit **82%** (3 calls), later steps **92%** (6), the router **92%**, everything 86% of 105,339 prompt tokens, **$0.0061**. Across the three runs the first step of a message hit 28%, 55% and 82%: how much of the cold start the provider serves varies from run to run.
+
 ## What the numbers say
 
 - **The cache works where it should.** Later steps of a task, which repeat everything before them, are served from the provider's cache 93–94% of the time, and the router's long fixed prompt 83–99% of the time once it is warm.

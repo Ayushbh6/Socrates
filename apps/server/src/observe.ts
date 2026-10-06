@@ -1,6 +1,6 @@
 import type { EventPayloads, ModelMessage, TextPart } from "@socrates/contracts";
 import { countTokens } from "@socrates/shared";
-import type { CallBreakdown, CallDetail, CallLog, CallRow, CallTotals, LedgerStore, Turn } from "@socrates/store";
+import type { CallBreakdown, CallBucket, CallDetail, CallLog, CallRow, CallTotals, LedgerStore, Turn } from "@socrates/store";
 
 /**
  * What the inspect page shows (architecture/observability.md): the call log
@@ -40,7 +40,7 @@ export function summary(log: CallLog, range: Range, now: Date, retentionDays: nu
     const streamed = rows.filter((r) => r.firstTokenMs !== null);
     const weighted = (set: CallBreakdown[], f: (r: CallBreakdown) => number) => set.reduce((n, r) => n + f(r) * r.calls, 0) / Math.max(1, set.reduce((n, r) => n + r.calls, 0));
     return {
-      calls: sum((r) => r.calls), failed: sum((r) => r.failed), promptTokens: prompt, outputTokens: sum((r) => r.outputTokens),
+      calls: sum((r) => r.calls), failed: sum((r) => r.failed), stopped: sum((r) => r.stopped), promptTokens: prompt, outputTokens: sum((r) => r.outputTokens),
       cacheReadTokens: sum((r) => r.cacheReadTokens), cacheWriteTokens: sum((r) => r.cacheWriteTokens),
       cacheHitRate: prompt > 0 ? sum((r) => r.cacheReadTokens) / prompt : null,
       costUsd: sum((r) => r.costUsd), priced: sum((r) => r.priced), ms: sum((r) => r.ms),
@@ -53,8 +53,8 @@ export function summary(log: CallLog, range: Range, now: Date, retentionDays: nu
     totals: log.totals(since),
     work: add(byModel.filter((r) => r.role === "work" || r.role === "wrap_up" || r.role === "repair")),
     byModel,
-    unpriced: [...new Set(byModel.filter((r) => r.role !== "embedding" && r.priced < r.calls - r.failed).map((r) => r.model))],
-    unpricedCalls: byModel.filter((r) => r.role !== "embedding").reduce((n, r) => n + Math.max(0, r.calls - r.failed - r.priced), 0),
+    unpriced: [...new Set(byModel.filter((r) => r.role !== "embedding" && r.priced < r.calls - r.failed - r.stopped).map((r) => r.model))],
+    unpricedCalls: byModel.filter((r) => r.role !== "embedding").reduce((n, r) => n + Math.max(0, r.calls - r.failed - r.stopped - r.priced), 0),
     storedBytes: log.storedBytes(),
     retentionDays,
   };
@@ -171,6 +171,15 @@ export function questions(log: CallLog, store: LedgerStore, options: { range: Ra
   return { questions: out, next: rows.length === options.limit ? rows.at(-1)!.startedAt : null };
 }
 
+/** The questions that cost the most in a range, dearest first. */
+export function costly(log: CallLog, store: LedgerStore, range: Range, now: Date): QuestionSummary[] {
+  const since = sinceOf(range, now);
+  return log.questions({ limit: 8, sort: "cost", ...(since ? { since } : {}) }).flatMap((row) => {
+    const base = questionOf(store, row.userEventId);
+    return base ? [{ ...row, ...base }] : [];
+  });
+}
+
 export function question(log: CallLog, store: LedgerStore, userEventId: string): QuestionDetail | null {
   const base = questionOf(store, userEventId);
   if (!base) return null;
@@ -211,6 +220,13 @@ export interface CallView extends CallDetail {
   sizes: { system: number; tools: number; messages: MessageSize[] };
 }
 
+/** What a stretch of text between blocks is, by how it starts: a turn of the task's history, or a note. */
+function plainName(text: string): string | null {
+  const first = text.trim().split("\n", 1)[0] ?? "";
+  const turn = /^\[TURN (\d+)/.exec(first);
+  return turn ? `HISTORY · TURN ${turn[1]}` : null;
+}
+
 const BLOCK = /<([A-Z][A-Z_]+)(?:\s[^>]*)?>\n[\s\S]*?\n<\/\1>/g;
 
 /** A context part cut into its top-level `<NAME>…</NAME>` blocks and the text between them. */
@@ -219,7 +235,7 @@ export function blocksOf(parts: TextPart[]): ContextBlock[] {
   for (const part of parts) {
     const found: ContextBlock[] = [];
     let at = 0;
-    const plain = (text: string) => { if (text.trim()) found.push({ name: null, tokens: countTokens(text), text: text.trim(), cacheAfter: false }); };
+    const plain = (text: string) => { if (text.trim()) found.push({ name: plainName(text), tokens: countTokens(text), text: text.trim(), cacheAfter: false }); };
     for (const match of part.text.matchAll(BLOCK)) {
       plain(part.text.slice(at, match.index));
       found.push({ name: match[1]!, tokens: countTokens(match[0]), text: match[0], cacheAfter: false });
@@ -248,4 +264,140 @@ export function callView(log: CallLog, id: string): CallView | null {
       messages: call.request.messages.map((m, index) => ({ index, role: m.role, tokens: countTokens(m.role === "assistant" ? `${m.content}${JSON.stringify(m.toolCalls ?? [])}` : textOf(m)) })),
     },
   };
+}
+
+/** The time series behind the overview charts: model calls per bucket and role, with empty stretches present. */
+export interface Series {
+  range: Range;
+  bucketMs: number;
+  /** Bucket starts, oldest first, covering the range. */
+  at: string[];
+  buckets: CallBucket[];
+}
+
+const BUCKETS: Record<Range, number> = { "24h": 3_600_000, "7d": 6 * 3_600_000, "30d": 86_400_000, all: 86_400_000 };
+
+export function series(log: CallLog, range: Range, now: Date): Series {
+  const bucketMs = BUCKETS[range];
+  const since = sinceOf(range, now);
+  const first = since ?? log.list({ limit: 1_000 }).at(-1)?.startedAt ?? now.toISOString();
+  const start = Math.floor(new Date(first).getTime() / bucketMs) * bucketMs;
+  const end = Math.floor(now.getTime() / bucketMs) * bucketMs;
+  // A year of days is the most a chart can hold.
+  const from = Math.max(start, end - 364 * 86_400_000);
+  const at: string[] = [];
+  for (let t = from; t <= end; t += bucketMs) at.push(new Date(t).toISOString());
+  return { range, bucketMs, at, buckets: log.series(new Date(from).toISOString(), bucketMs) };
+}
+
+/** What entered a call's context since the call before it. */
+export interface Entered {
+  role: ModelMessage["role"];
+  /** "tool result · read", "its own reply, sent back", "user"… */
+  label: string;
+  tokens: number;
+  text: string;
+}
+
+export interface TraceCall {
+  kind: "call";
+  at: string;
+  call: CallRow;
+  /** The router's requests, or a turn's. */
+  group: "router" | "turn";
+  turnId: string | null;
+  reasoning: string | null;
+  text: string;
+  toolCalls: { id: string; name: string; input: unknown; result: { content: string; isError: boolean } | null }[];
+  /** The messages added since the call before it in its group, in the order sent. */
+  entered: Entered[];
+  /** True when compaction rewrote the context between the two calls: everything entered anew. */
+  rebuilt: boolean;
+  /** The first call of a group: the context message cut into its blocks. */
+  context: ContextBlock[] | null;
+}
+
+export type TraceItem =
+  | { kind: "user"; at: string; text: string; attachments: string[]; lane: number | null }
+  | TraceCall
+  | { kind: "routing"; at: string; routing: NonNullable<QuestionDetail["routing"]>; clarification: string | null }
+  | { kind: "turn"; at: string; part: PartView }
+  | { kind: "compaction"; at: string; turnId: string; compaction: EventPayloads["compaction_recorded"] }
+  | { kind: "answer"; at: string; turnId: string; status: Turn["status"]; text: string | null; stopped: string | null };
+
+const enteredLabel = (m: ModelMessage): string =>
+  m.role === "tool" ? `tool result · ${m.toolName}${m.isError ? " (error)" : ""}` : m.role === "assistant" ? "its own reply, sent back" : "the harness asked";
+
+/** A message as a model saw it: its text, and for a reply its tool calls. */
+const messageText = (m: ModelMessage): string =>
+  m.role === "assistant" && m.toolCalls?.length ? `${m.content}\n${m.toolCalls.map((t) => `→ ${t.name}(${JSON.stringify(t.input)})`).join("\n")}`.trim() : textOf(m);
+
+/**
+ * Everything that happened for one message, in order: the message, each router
+ * request with its thinking, tool calls and their results, the decision, then
+ * per part the working agent's steps (what entered its context, what it
+ * thought, said and called, and what the tools answered), any compaction, and
+ * the answer. Reads the call log and the ledger; nothing here is inferred
+ * beyond joining the two.
+ */
+export function trace(log: CallLog, store: LedgerStore, userEventId: string): { question: QuestionDetail["question"]; items: TraceItem[] } | null {
+  const detail = question(log, store, userEventId);
+  const event = store.getEvent(userEventId);
+  if (!detail || !event) return null;
+  const payload = event.payload as EventPayloads["user_message"];
+  const items: TraceItem[] = [{ kind: "user", at: event.at, text: payload.text, attachments: (payload.attachments ?? []).map((a) => a.name), lane: detail.question.lane }];
+
+  // Group the calls: the router's together, then each turn's.
+  const groups = new Map<string, CallRow[]>();
+  for (const c of detail.calls) {
+    const key = c.role === "router" ? "router" : c.turnId ?? "other";
+    groups.set(key, [...(groups.get(key) ?? []), c]);
+  }
+  const callsOf = (key: string, group: "router" | "turn"): TraceCall[] => {
+    const rows = groups.get(key) ?? [];
+    const raw: ModelMessage[][] = [];
+    const out: TraceCall[] = rows.map((row, i) => {
+      const before = rows[i - 1];
+      const rebuilt = before !== undefined && log.firstHash(row.id) !== log.firstHash(before.id);
+      const fresh = before === undefined || rebuilt;
+      const messages = fresh ? [] : log.messagesFrom(row.id, before.messageCount).messages;
+      raw.push(messages);
+      const response = log.response(row.id);
+      const first = fresh ? log.messagesFrom(row.id, 0).messages[0] : undefined;
+      return {
+        kind: "call", at: row.startedAt, call: row, group, turnId: row.turnId, reasoning: response?.reasoning ?? null, text: response?.text ?? "",
+        toolCalls: (response?.toolCalls ?? []).map((t) => ({ id: t.id, name: t.name, input: t.input, result: null })),
+        entered: messages.map((m) => ({ role: m.role, label: enteredLabel(m), tokens: countTokens(messageText(m)), text: messageText(m) })),
+        rebuilt: rebuilt && before !== undefined,
+        context: fresh ? (first?.role === "user" ? blocksOf(typeof first.content === "string" ? [{ text: first.content }] : first.content) : []) : null,
+      };
+    });
+    // A tool call's result is the tool message that entered the next call's context.
+    out.forEach((c, i) => {
+      const later = raw[i + 1] ?? [];
+      for (const t of c.toolCalls) {
+        const found = later.find((m) => m.role === "tool" && m.toolCallId === t.id);
+        if (found && found.role === "tool") t.result = { content: found.content, isError: found.isError === true };
+      }
+    });
+    return out;
+  };
+
+  items.push(...callsOf("router", "router"));
+  if (detail.routing || detail.clarification) items.push({ kind: "routing", at: detail.calls.filter((c) => c.role === "router").at(-1)?.startedAt ?? event.at, routing: detail.routing ?? { model: "", attempts: 0, escalated: false, fallback: null, ledgerQueries: 0, reason: "", decision: null, validationErrors: [] }, clarification: detail.clarification });
+
+  for (const part of detail.parts) {
+    const turn = store.requireTurn(part.turnId);
+    const stamp = store.getEvent(turn.userEventId)?.at ?? event.at;
+    const turnItems: TraceItem[] = [...callsOf(part.turnId, "turn"), ...part.compactions.map((c, i): TraceItem => ({ kind: "compaction", at: store.listEvents({ turnId: part.turnId, type: "compaction_recorded" })[i]?.at ?? stamp, turnId: part.turnId, compaction: c }))];
+    turnItems.sort((a, b) => a.at.localeCompare(b.at));
+    const response = turn.responseEventId ? store.getEvent(turn.responseEventId) : null;
+    const interruption = store.interruption(turn.id);
+    items.push({ kind: "turn", at: turnItems[0]?.at ?? stamp, part }, ...turnItems, {
+      kind: "answer", at: response?.at ?? stamp, turnId: part.turnId, status: turn.status,
+      text: response ? (response.payload as EventPayloads["assistant_response"]).text : interruption?.partial_answer ?? null,
+      stopped: interruption ? interruption.reason : null,
+    });
+  }
+  return { question: detail.question, items };
 }

@@ -111,7 +111,10 @@ export interface CallDetail extends CallRow {
 
 export interface CallTotals {
   calls: number;
+  /** Calls that ended in an error. */
   failed: number;
+  /** Calls the user stopped. */
+  stopped: number;
   promptTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -126,6 +129,13 @@ export interface CallTotals {
   tokensPerSecond: number | null;
   /** The average time to the first token over streamed calls. */
   firstTokenMs: number | null;
+}
+
+/** One role's calls in one stretch of time. */
+export interface CallBucket extends CallTotals {
+  /** Start of the bucket, ISO. */
+  at: string;
+  role: CallRole;
 }
 
 export interface CallBreakdown extends CallTotals {
@@ -153,7 +163,9 @@ export interface CallQuery {
 const COLUMNS = `seq, id, started_at, role, model, served_by, user_event_id, turn_id, lane_id, goal_id, task_id, chat_id, step, streamed, ok, error_kind, error_status, error_message, stop_reason,
   prompt_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, ms, first_token_ms, tokens_per_second, cost_usd, cost_source, message_count, request_bytes`;
 
-const TOTALS = `COUNT(*) AS calls, COALESCE(SUM(1 - ok), 0) AS failed,
+const TOTALS = `COUNT(*) AS calls,
+  COALESCE(SUM(CASE WHEN ok = 0 AND COALESCE(error_kind, '') <> 'aborted' THEN 1 ELSE 0 END), 0) AS failed,
+  COALESCE(SUM(CASE WHEN ok = 0 AND error_kind = 'aborted' THEN 1 ELSE 0 END), 0) AS stopped,
   COALESCE(SUM(prompt_tokens), 0) AS prompt, COALESCE(SUM(output_tokens), 0) AS output,
   COALESCE(SUM(cache_read_tokens), 0) AS cache_read, COALESCE(SUM(cache_write_tokens), 0) AS cache_write,
   COALESCE(SUM(cost_usd), 0) AS cost, COUNT(cost_usd) AS priced, COALESCE(SUM(ms), 0) AS ms,
@@ -166,6 +178,7 @@ const totalsOf = (r: Row): CallTotals => {
   return {
     calls: Number(r.calls),
     failed: Number(r.failed),
+    stopped: Number(r.stopped),
     promptTokens: prompt,
     outputTokens: Number(r.output),
     cacheReadTokens: Number(r.cache_read),
@@ -185,6 +198,44 @@ const hash = (text: string) => createHash("sha256").update(text).digest("hex").s
 function withoutImages(message: ModelMessage): unknown {
   if (message.role === "assistant" || !message.images?.length) return message;
   return { ...message, images: message.images.map((i) => ({ mediaType: i.mediaType, bytes: Math.floor((i.data.length * 3) / 4) })) };
+}
+
+/** Where a request marked prompt-cache breakpoints: a tool message, or one part of a user message. */
+type Mark = { message: number; part: number | null };
+
+/**
+ * The loop moves its breakpoint to the newest message at every step, so the
+ * flags are kept apart from the messages: with them in, the same message would
+ * be saved again at each step and two requests of one context would look
+ * different.
+ */
+function withoutMarks(messages: ModelMessage[]): { plain: unknown[]; marks: Mark[] } {
+  const marks: Mark[] = [];
+  const plain = messages.map((m, i) => {
+    if (m.role === "tool" && "cache" in m) {
+      if (m.cache) marks.push({ message: i, part: null });
+      const { cache: _cache, ...rest } = m;
+      return withoutImages(rest as ModelMessage);
+    }
+    if (m.role === "user" && typeof m.content !== "string" && m.content.some((p) => "cache" in p)) {
+      m.content.forEach((p, j) => { if (p.cache) marks.push({ message: i, part: j }); });
+      return withoutImages({ ...m, content: m.content.map(({ cache: _cache, ...rest }) => rest) });
+    }
+    return withoutImages(m);
+  });
+  return { plain, marks };
+}
+
+/** Puts the breakpoints back on messages `from` onward. */
+function withMarks(messages: ModelMessage[], from: number, marks: Mark[] | undefined): ModelMessage[] {
+  if (!marks?.length) return messages;
+  return messages.map((m, k) => {
+    const mine = marks.filter((x) => x.message === from + k);
+    if (!mine.length) return m;
+    if (m.role === "tool") return { ...m, cache: true };
+    if (m.role === "user" && typeof m.content !== "string") return { ...m, content: m.content.map((p, j) => (mine.some((x) => x.part === j) ? { ...p, cache: true } : p)) };
+    return m;
+  });
 }
 
 export class CallLog {
@@ -218,10 +269,12 @@ export class CallLog {
     };
     this.db.exec("BEGIN");
     try {
+      const { plain, marks } = withoutMarks(request.messages);
       const requestRef = {
         system: put(request.system),
         tools: put(request.tools),
-        messages: request.messages.map((m) => put(withoutImages(m))),
+        messages: plain.map((m) => put(m)),
+        marks,
         toolChoice: request.toolChoice,
         maxOutputTokens: request.maxOutputTokens,
         temperature: request.temperature,
@@ -261,16 +314,13 @@ export class CallLog {
   get(id: string): CallDetail | null {
     const row = this.db.prepare(`SELECT ${COLUMNS}, request_ref, response_ref FROM calls WHERE id = ?`).get(id) as Row | undefined;
     if (!row) return null;
-    const ref = JSON.parse(String(row.request_ref)) as { system: string; tools: string; messages: string[]; toolChoice: string; maxOutputTokens: number | null; temperature: number | null; effort: string | null };
-    const blob = <T>(key: string): T => {
-      const stored = this.db.prepare("SELECT data FROM blobs WHERE hash = ?").get(key) as { data: Uint8Array } | undefined;
-      return stored ? JSON.parse(gunzipSync(stored.data).toString("utf8")) as T : (null as T);
-    };
+    const ref = JSON.parse(String(row.request_ref)) as { system: string; tools: string; messages: string[]; marks?: Mark[]; toolChoice: string; maxOutputTokens: number | null; temperature: number | null; effort: string | null };
+    const blob = <T>(key: string): T => this.blob<T>(key);
     return {
       ...rowOf(row),
       request: {
         system: blob<string>(ref.system) ?? "",
-        messages: ref.messages.map((key) => blob<ModelMessage>(key)),
+        messages: withMarks(ref.messages.map((key) => blob<ModelMessage>(key)), 0, ref.marks),
         tools: blob<ToolDefinition[]>(ref.tools) ?? [],
         toolChoice: ref.toolChoice,
         maxOutputTokens: ref.maxOutputTokens,
@@ -298,12 +348,43 @@ export class CallLog {
   }
 
   /** User messages with calls, newest first, each with the totals of what was done for it. */
-  questions(options: { limit?: number; before?: string; since?: string } = {}): QuestionCalls[] {
+  questions(options: { limit?: number; before?: string; since?: string; sort?: "recent" | "cost" } = {}): QuestionCalls[] {
     const clauses = ["user_event_id IS NOT NULL", ...(options.since ? ["started_at >= ?"] : [])];
     const args = [...(options.since ? [options.since] : []), ...(options.before ? [options.before] : []), Math.min(options.limit ?? 50, 500)];
     const rows = this.db.prepare(`SELECT user_event_id, MIN(started_at) AS first_at, ${TOTALS} FROM calls WHERE ${clauses.join(" AND ")}
-      GROUP BY user_event_id ${options.before ? "HAVING MIN(started_at) < ?" : ""} ORDER BY first_at DESC LIMIT ?`).all(...args) as Row[];
+      GROUP BY user_event_id ${options.before ? "HAVING MIN(started_at) < ?" : ""} ORDER BY ${options.sort === "cost" ? "cost DESC, first_at DESC" : "first_at DESC"} LIMIT ?`).all(...args) as Row[];
     return rows.map((r) => ({ ...totalsOf(r), userEventId: String(r.user_event_id), startedAt: String(r.first_at) }));
+  }
+
+  /**
+   * Model calls per time bucket and role, oldest first, for charts. Embeddings
+   * are left out: they have no tokens and would only add noise.
+   */
+  series(since: string, bucketMs: number): CallBucket[] {
+    const seconds = Math.max(1, Math.round(bucketMs / 1000));
+    const rows = this.db.prepare(`SELECT (CAST(strftime('%s', started_at) AS INTEGER) / ${seconds}) * ${seconds} AS bucket, role, ${TOTALS}
+      FROM calls WHERE started_at >= ? AND role <> 'embedding' GROUP BY bucket, role ORDER BY bucket`).all(since) as Row[];
+    return rows.map((r) => ({ ...totalsOf(r), at: new Date(Number(r.bucket) * 1000).toISOString(), role: r.role as CallRole }));
+  }
+
+  /** Only a call's reply: its text, tool calls, thinking and the provider's metadata. */
+  response(id: string): CallDetail["response"] {
+    const row = this.db.prepare("SELECT response_ref FROM calls WHERE id = ?").get(id) as Row | undefined;
+    return row?.response_ref ? this.blob(String(row.response_ref)) : null;
+  }
+
+  /** A call's messages from the `from`th on, and the hash of its first, which changes when compaction rewrites the context. */
+  messagesFrom(id: string, from: number): { messages: ModelMessage[]; firstHash: string | null } {
+    const row = this.db.prepare("SELECT request_ref FROM calls WHERE id = ?").get(id) as Row | undefined;
+    if (!row) return { messages: [], firstHash: null };
+    const ref = JSON.parse(String(row.request_ref)) as { messages: string[]; marks?: Mark[] };
+    return { messages: withMarks(ref.messages.slice(from).map((key) => this.blob<ModelMessage>(key)), from, ref.marks), firstHash: ref.messages[0] ?? null };
+  }
+
+  /** The hash of a call's first message, to tell whether two calls share a context. */
+  firstHash(id: string): string | null {
+    const row = this.db.prepare("SELECT request_ref FROM calls WHERE id = ?").get(id) as Row | undefined;
+    return row ? (JSON.parse(String(row.request_ref)) as { messages: string[] }).messages[0] ?? null : null;
   }
 
   /** Forget calls started before a time, and the saved parts no remaining call has used since. Returns how many calls went. */
@@ -316,6 +397,11 @@ export class CallLog {
   /** The bytes the saved parts take, compressed. */
   storedBytes(): number {
     return Number((this.db.prepare("SELECT COALESCE(SUM(LENGTH(data)), 0) AS n FROM blobs").get() as Row).n);
+  }
+
+  private blob<T>(key: string): T {
+    const stored = this.db.prepare("SELECT data FROM blobs WHERE hash = ?").get(key) as { data: Uint8Array } | undefined;
+    return stored ? JSON.parse(gunzipSync(stored.data).toString("utf8")) as T : (null as T);
   }
 
   private filter(query: CallQuery): { where: string; args: (string | number)[] } {

@@ -11,6 +11,7 @@ export const RANGES: { id: Range; label: string }[] = [
 export interface Totals {
   calls: number;
   failed: number;
+  stopped: number;
   promptTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -229,8 +230,179 @@ export function messageText(m: Message): string {
   return `${body}${body ? "\n" : ""}${m.toolCalls.map((c) => `→ ${c.name}(${JSON.stringify(c.input)})`).join("\n")}`;
 }
 
-/** The view the address names: `#/inspect` or `#/inspect/<message id>`. */
-export function inspectTarget(hash: string): { question: string | null } | null {
-  const match = /^#\/inspect(?:\/([A-Za-z0-9_-]+))?$/.exec(hash);
-  return match ? { question: match[1] ?? null } : null;
+export type Tab = "overview" | "traces" | "data";
+
+export interface Target {
+  tab: Tab;
+  /** A message's id, in the traces. */
+  question: string | null;
+  /** A database and table, in the data view. */
+  db: string | null;
+  table: string | null;
 }
+
+/**
+ * The view the address names: `#/inspect` (the overview), `#/inspect/traces`
+ * and `#/inspect/traces/<message id>`, `#/inspect/data` and
+ * `#/inspect/data/<database>/<table>`. `#/inspect/<message id>`, from before
+ * there were tabs, opens that message's trace.
+ */
+export function inspectTarget(hash: string): Target | null {
+  const m = /^#\/inspect(?:\/(.*))?$/.exec(hash);
+  if (!m) return null;
+  const parts = (m[1] ?? "").split("/").filter(Boolean);
+  const none = { question: null, db: null, table: null };
+  const id = /^[A-Za-z0-9_-]+$/;
+  if (!parts.length || parts[0] === "overview") return parts.length <= 1 ? { tab: "overview", ...none } : null;
+  if (parts[0] === "traces") return parts.length <= 2 && (parts[1] === undefined || id.test(parts[1])) ? { tab: "traces", ...none, question: parts[1] ?? null } : null;
+  if (parts[0] === "data") return parts.length <= 3 && parts.slice(1).every((p) => id.test(p)) ? { tab: "data", ...none, db: parts[1] ?? null, table: parts[2] ?? null } : null;
+  return parts.length === 1 && id.test(parts[0]!) ? { tab: "traces", ...none, question: parts[0]! } : null;
+}
+
+/** Where a tab lives. */
+export const inspectHref = (tab: Tab, ...rest: (string | null | undefined)[]): string => `#/inspect${tab === "overview" ? "" : `/${tab}`}${rest.filter(Boolean).map((p) => `/${p}`).join("")}`;
+
+/** The chart series a call's role belongs to (embeddings are not charted). */
+export const GROUPS = ["Agent", "Router", "Compaction", "Wrap-up and repair"] as const;
+export type Group = (typeof GROUPS)[number];
+export function groupOf(role: Role): Group | null {
+  switch (role) {
+    case "work": return "Agent";
+    case "router": return "Router";
+    case "compaction": return "Compaction";
+    case "wrap_up": case "repair": return "Wrap-up and repair";
+    default: return null;
+  }
+}
+
+export interface Bucket extends Totals {
+  at: string;
+  role: Role;
+}
+
+export interface SeriesData {
+  range: Range;
+  bucketMs: number;
+  at: string[];
+  buckets: Bucket[];
+}
+
+/** One value per bucket and group, aligned to the series' time axis, zero where nothing happened. */
+export function stacked(series: SeriesData, value: (b: Bucket) => number): { groups: Group[]; rows: number[][] } {
+  const index = new Map(series.at.map((t, i) => [t, i]));
+  const groups = GROUPS.filter((g) => series.buckets.some((b) => groupOf(b.role) === g));
+  const rows = series.at.map(() => groups.map(() => 0));
+  for (const b of series.buckets) {
+    const g = groupOf(b.role);
+    const i = index.get(b.at);
+    if (g && i !== undefined) rows[i]![groups.indexOf(g)]! += value(b);
+  }
+  return { groups, rows };
+}
+
+/** Prompt tokens served from the cache, prompt tokens sent fresh, and output tokens, per bucket. */
+export function tokenRows(series: SeriesData): number[][] {
+  const index = new Map(series.at.map((t, i) => [t, i]));
+  const rows = series.at.map(() => [0, 0, 0]);
+  for (const b of series.buckets) {
+    const i = index.get(b.at);
+    if (i === undefined) continue;
+    const cached = Math.min(b.cacheReadTokens, b.promptTokens);
+    rows[i]![0]! += cached;
+    rows[i]![1]! += b.promptTokens - cached;
+    rows[i]![2]! += b.outputTokens;
+  }
+  return rows;
+}
+
+/** A value per bucket summed over every role. */
+export function totalPerBucket(series: SeriesData, value: (b: Bucket) => number): number[] {
+  const index = new Map(series.at.map((t, i) => [t, i]));
+  const out = series.at.map(() => 0);
+  for (const b of series.buckets) {
+    const i = index.get(b.at);
+    if (i !== undefined) out[i]! += value(b);
+  }
+  return out;
+}
+
+/** A ratio per bucket over some of the roles; null where the denominator is zero. */
+export function ratio(series: SeriesData, roles: Role[], top: (b: Bucket) => number, bottom: (b: Bucket) => number): (number | null)[] {
+  const index = new Map(series.at.map((t, i) => [t, i]));
+  const t = series.at.map(() => 0), d = series.at.map(() => 0);
+  for (const b of series.buckets) {
+    const i = index.get(b.at);
+    if (i !== undefined && roles.includes(b.role)) { t[i]! += top(b); d[i]! += bottom(b); }
+  }
+  return t.map((n, i) => (d[i]! > 0 ? n / d[i]! : null));
+}
+
+/** An average per bucket weighted by calls over some of the roles, from the buckets that have one. */
+export function average(series: SeriesData, roles: Role[], pick: (b: Bucket) => number | null): (number | null)[] {
+  const index = new Map(series.at.map((t, i) => [t, i]));
+  const sum = series.at.map(() => 0), n = series.at.map(() => 0);
+  for (const b of series.buckets) {
+    const i = index.get(b.at);
+    const v = pick(b);
+    if (i !== undefined && roles.includes(b.role) && v !== null) { sum[i]! += v * b.calls; n[i]! += b.calls; }
+  }
+  return sum.map((v, i) => (n[i]! > 0 ? v / n[i]! : null));
+}
+
+/** Round axis ticks from zero: 0, 50, 100 for a maximum of 87. */
+export function niceTicks(max: number, count = 4): number[] {
+  if (!(max > 0)) return [0, 1];
+  const raw = max / count;
+  const magnitude = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * magnitude).find((s) => s >= raw)!;
+  const ticks: number[] = [];
+  for (let v = 0; v < max + step * 0.999; v += step) ticks.push(Math.round(v / step) * step);
+  return ticks;
+}
+
+/** A bucket's start for an axis label: the hour for short buckets, the day for long ones. */
+export function axisLabel(at: string, bucketMs: number, locale?: string): string {
+  const d = new Date(at);
+  if (Number.isNaN(d.getTime())) return "";
+  return bucketMs < 86_400_000 ? d.toLocaleTimeString(locale, { hour: "numeric", minute: bucketMs < 3_600_000 ? "2-digit" : undefined }) : d.toLocaleDateString(locale, { day: "numeric", month: "short" });
+}
+
+export interface TraceCall {
+  kind: "call";
+  at: string;
+  call: CallRow;
+  group: "router" | "turn";
+  turnId: string | null;
+  reasoning: string | null;
+  text: string;
+  toolCalls: { id: string; name: string; input: unknown; result: { content: string; isError: boolean } | null }[];
+  entered: { role: string; label: string; tokens: number; text: string }[];
+  rebuilt: boolean;
+  context: ContextBlock[] | null;
+}
+
+export type TraceItem =
+  | { kind: "user"; at: string; text: string; attachments: string[]; lane: number | null }
+  | TraceCall
+  | { kind: "routing"; at: string; routing: NonNullable<QuestionDetail["routing"]>; clarification: string | null }
+  | { kind: "turn"; at: string; part: PartView }
+  | { kind: "compaction"; at: string; turnId: string; compaction: PartView["compactions"][number] }
+  | { kind: "answer"; at: string; turnId: string; status: string; text: string | null; stopped: string | null };
+
+export interface Trace {
+  question: QuestionDetail["question"];
+  items: TraceItem[];
+}
+
+export interface DbTable { name: string; kind: "table" | "virtual" | "internal"; rows: number; columns: number }
+export interface DbOverview { id: string; label: string; about: string; bytes: number; tables: DbTable[]; records: number }
+export interface DataOverview {
+  databases: DbOverview[];
+  totals: { databases: number; tables: number; records: number; bytes: number };
+  files: { name: string; about: string; bytes: number; files: number | null }[];
+  index: { documents: number } | null;
+}
+export interface DbColumn { name: string; type: string; primaryKey: boolean }
+export type Cell = string | number | null;
+export interface DbPage { columns: DbColumn[]; ids: (number | null)[]; rows: Cell[][]; total: number; matched: number }
+export interface DbRow { columns: DbColumn[]; values: Cell[] }

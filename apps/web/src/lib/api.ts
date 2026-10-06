@@ -1,4 +1,4 @@
-import type { CallDetail, PriceRow, QuestionDetail, QuestionRow, Range, Summary } from "./observe";
+import type { CallDetail, CallRow, DataOverview, DbPage, DbRow, PriceRow, QuestionDetail, QuestionRow, Range, SeriesData, Summary, Trace } from "./observe";
 import type { Access, AttachmentView, Evidence, Folders, GoalView, History, ListedModel, Provider, Settings, Status } from "./types";
 
 export class ApiError extends Error {
@@ -49,6 +49,14 @@ export const api = {
   observePrices: () => call<PriceRow[]>("GET", "/api/observe/prices"),
   observeQuestions: (range: Range, before?: string) => call<{ questions: QuestionRow[]; next: string | null }>("GET", `/api/observe/questions?range=${range}${before ? `&before=${encodeURIComponent(before)}` : ""}`),
   observeQuestion: (id: string) => call<QuestionDetail>("GET", `/api/observe/questions/${encodeURIComponent(id)}`),
+  observeSeries: (range: Range) => call<SeriesData>("GET", `/api/observe/series?range=${range}`),
+  observeRecent: (limit = 12) => call<CallRow[]>("GET", `/api/observe/recent?limit=${limit}`),
+  observeCostly: (range: Range) => call<QuestionRow[]>("GET", `/api/observe/costly?range=${range}`),
+  observeTrace: (id: string) => call<Trace>("GET", `/api/observe/questions/${encodeURIComponent(id)}/trace`),
+  observeData: () => call<DataOverview>("GET", "/api/observe/db"),
+  observeTable: (db: string, table: string, query: { offset: number; limit: number; q?: string; order?: string; dir?: "asc" | "desc" }) =>
+    call<DbPage>("GET", `/api/observe/db/${encodeURIComponent(db)}/${encodeURIComponent(table)}?offset=${query.offset}&limit=${query.limit}&dir=${query.dir ?? "desc"}${query.q ? `&q=${encodeURIComponent(query.q)}` : ""}${query.order ? `&order=${encodeURIComponent(query.order)}` : ""}`),
+  observeRow: (db: string, table: string, rowid: number) => call<DbRow>("GET", `/api/observe/db/${encodeURIComponent(db)}/${encodeURIComponent(table)}/${rowid}`),
   observeCall: (id: string) => call<CallDetail>("GET", `/api/observe/calls/${encodeURIComponent(id)}`),
   evidence: (task: string, handle: string) => call<Evidence>("GET", `/api/evidence?task=${encodeURIComponent(task)}&handle=${encodeURIComponent(handle)}`),
 };

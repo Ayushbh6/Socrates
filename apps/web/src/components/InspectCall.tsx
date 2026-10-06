@@ -93,6 +93,7 @@ function Context({ call }: { call: CallDetail }) {
   const total = sizes.system + sizes.tools + sizes.messages.reduce((n, m) => n + m.tokens, 0);
   return (
     <div className="context">
+      <TokenMap call={call} />
       <p className="context-sum">By our count this request holds about <b>{tokens(total)}</b> tokens: the system prompt {tokens(sizes.system)}, {request.tools.length} tool definitions {tokens(sizes.tools)}, and {request.messages.length} message{request.messages.length === 1 ? "" : "s"} {tokens(total - sizes.system - sizes.tools)}. The provider counted {tokens(call.promptTokens)}.</p>
 
       <Fold title="System prompt" meta={`${tokens(sizes.system)} tokens`}><pre>{request.system}</pre></Fold>
@@ -114,6 +115,28 @@ function Context({ call }: { call: CallDetail }) {
           <pre>{messageText(m)}</pre>
         </Fold>
       ))}
+    </div>
+  );
+}
+
+/** Where the request's tokens are: the system prompt, the tools, the context message and the rest, to scale. */
+function TokenMap({ call }: { call: CallDetail }) {
+  const { sizes } = call;
+  const first = sizes.messages[0]?.tokens ?? 0;
+  const rest = sizes.messages.slice(1).reduce((n, m) => n + m.tokens, 0);
+  const parts = [
+    { name: "System prompt", tokens: sizes.system, color: "var(--s1)" },
+    { name: "Tools", tokens: sizes.tools, color: "var(--s2)" },
+    { name: "Context message", tokens: first, color: "var(--s3)" },
+    { name: "Conversation after it", tokens: rest, color: "var(--s5)" },
+  ];
+  const total = parts.reduce((n, p) => n + p.tokens, 0) || 1;
+  return (
+    <div className="token-map">
+      <div className="map-bar" role="img" aria-label={parts.map((p) => `${p.name} ${tokens(p.tokens)}`).join(", ")}>
+        {parts.filter((p) => p.tokens > 0).map((p) => <i key={p.name} style={{ width: `${(p.tokens / total) * 100}%`, background: p.color }} title={`${p.name}: ${tokens(p.tokens)} tokens`} />)}
+      </div>
+      <ul className="legend">{parts.map((p) => <li key={p.name}><i style={{ background: p.color }} />{p.name} <b>{tokens(p.tokens)}</b> <small>{Math.round((p.tokens / total) * 100)}%</small></li>)}</ul>
     </div>
   );
 }

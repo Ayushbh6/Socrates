@@ -47,7 +47,7 @@ export function App() {
   };
   // The inspect page needs no onboarding: it only reads what Socrates has recorded.
   const inspecting = inspectTarget(hash);
-  if (inspecting && app.status) return <Inspect app={app} question={inspecting.question} />;
+  if (inspecting && app.status) return <Inspect app={app} target={inspecting} />;
   if (route === "chat" && app.status && !blocked) {
     const props = { app, mode, onMode: changeMode, onSettings: () => setSettings(true) };
     return (

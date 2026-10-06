@@ -15,6 +15,7 @@ import { KEY_NAMES, KeyError } from "./keys";
 import { LiveHub } from "./live";
 import { CALL_RETENTION_DAYS, type Runtime, RuntimeBusyError, SettingsError } from "./runtime";
 import * as observe from "./observe";
+import { DbError, browse, isDb, overview, row as dbRow } from "./dbview";
 import { guard, problem, sameSecret, sessionCookie } from "./security";
 import { FolderError, conversationHistory, goalsView, listFolders, workspaceFolder, workspaceFor } from "./views";
 
@@ -58,7 +59,7 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof z.ZodError) return reply.code(400).send(problem("invalid_request", error.issues.map((i) => `${i.path.join(".") || "request"}: ${i.message}`).join("; ")));
     if (error instanceof RuntimeBusyError) return reply.code(409).send(problem("busy", error.message));
-    if (error instanceof KeyError || error instanceof FolderError || error instanceof SettingsError || error instanceof AttachmentError) return reply.code(400).send(problem("invalid_request", error.message));
+    if (error instanceof KeyError || error instanceof FolderError || error instanceof SettingsError || error instanceof AttachmentError || error instanceof DbError) return reply.code(400).send(problem("invalid_request", error.message));
     const status = (error as { statusCode?: number }).statusCode;
     if ((error as { code?: string }).code === "FST_ERR_CTP_INVALID_JSON_BODY") return reply.code(400).send(problem("invalid_request", "The request body must be valid JSON."));
     if (status && status >= 400 && status < 500) return reply.code(status).send(problem("invalid_request", (error as Error).message));
@@ -219,6 +220,39 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
     return log ? observe.summary(log, range, new Date(), CALL_RETENTION_DAYS) : unavailable(reply);
   });
   app.get("/api/observe/prices", async () => runtime.priceTable());
+  app.get("/api/observe/series", async (request, reply) => {
+    const { range } = z.object({ range: Range }).strict().parse(request.query);
+    const log = calls();
+    return log ? observe.series(log, range, new Date()) : unavailable(reply);
+  });
+  app.get("/api/observe/recent", async (request, reply) => {
+    const { limit } = z.object({ limit: z.coerce.number().int().min(1).max(100).default(12) }).strict().parse(request.query);
+    const log = calls();
+    return log ? log.list({ limit }) : unavailable(reply);
+  });
+  app.get("/api/observe/costly", async (request, reply) => {
+    const { range } = z.object({ range: Range }).strict().parse(request.query);
+    const log = calls();
+    return log ? observe.costly(log, runtime.store, range, new Date()) : unavailable(reply);
+  });
+  app.get("/api/observe/questions/:id/trace", async (request, reply) => {
+    const log = calls();
+    if (!log) return unavailable(reply);
+    return observe.trace(log, runtime.store, (request.params as { id: string }).id) ?? reply.code(404).send(problem("not_found", "There is no such message."));
+  });
+  // A read-only look into the databases.
+  app.get("/api/observe/db", async () => overview(runtime.config, await runtime.embeddingStatus()));
+  app.get("/api/observe/db/:db/:table", async (request, reply) => {
+    const { db, table } = request.params as { db: string; table: string };
+    if (!isDb(db)) return reply.code(404).send(problem("not_found", "There is no such database."));
+    const q = z.object({ offset: z.coerce.number().int().min(0).default(0), limit: z.coerce.number().int().min(1).max(200).default(50), q: z.string().max(200).optional(), order: z.string().max(100).optional(), dir: z.enum(["asc", "desc"]).default("desc") }).strict().parse(request.query);
+    return browse(runtime.config, db, table, { offset: q.offset, limit: q.limit, dir: q.dir, ...(q.q ? { q: q.q } : {}), ...(q.order ? { order: q.order } : {}) });
+  });
+  app.get("/api/observe/db/:db/:table/:rowid", async (request, reply) => {
+    const { db, table, rowid } = request.params as { db: string; table: string; rowid: string };
+    if (!isDb(db) || !/^\d{1,15}$/.test(rowid)) return reply.code(404).send(problem("not_found", "There is no such row."));
+    return dbRow(runtime.config, db, table, Number(rowid)) ?? reply.code(404).send(problem("not_found", "There is no such row."));
+  });
   app.get("/api/observe/questions", async (request, reply) => {
     const query = z.object({ range: Range, before: z.string().max(40).optional(), limit: z.coerce.number().int().min(1).max(200).default(30) }).strict().parse(request.query);
     const log = calls();
