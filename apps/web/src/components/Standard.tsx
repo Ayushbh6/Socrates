@@ -34,7 +34,7 @@ export function Standard({ app, mode, onMode, onSettings }: { app: AppState; mod
       <section className="panel main-panel" aria-label="Main conversation">
         <div className="panel-head">
           <strong>Main</strong>
-          {route && <small>g{route.goal.number}/t{route.task.number} · {route.task.title}</small>}
+          {route && <small>{route.task.title}</small>}
           <span className="composer-space" />
           {mainBusy && <button type="button" className="quiet-button" onClick={() => store.cancel("main")}><Square aria-hidden /> Stop</button>}
         </div>

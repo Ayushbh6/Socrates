@@ -31,7 +31,7 @@ export function EvidenceViewer({ task, handle, onClose }: { task: string; handle
         <div className="modal-head">
           <div className="evidence-title">
             {evidence?.call ? <span>{evidence.call.verb} {evidence.call.target && <code>{evidence.call.target}</code>} {evidence.call.detail}</span> : <code>{evidence?.line ?? "…"}</code>}
-            <small>{task} · {handle}{evidence?.status === "error" ? " · failed" : ""}</small>
+            {evidence?.status === "error" && <small>failed</small>}
           </div>
           <div>
             <button type="button" className="icon-button" data-on={wrap} onClick={() => setWrap(!wrap)} aria-pressed={wrap} aria-label="Wrap long lines" title="Wrap long lines"><WrapText aria-hidden /></button>

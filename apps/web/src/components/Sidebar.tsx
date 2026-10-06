@@ -78,7 +78,7 @@ export function Sidebar({ app, open, conversation, selected, onClose, onConversa
                     >
                       <span className="question-item-text">{e.message.trim() || imagesOnly(e.attachments.length)}</span>
                       <span className="question-item-foot">
-                        <small>{e.route ? `g${e.route.goal.number}/t${e.route.task.number}` : e.question ? "question" : ""}{e.state === "working" || e.state === "sending" ? " · working" : e.state === "stopped" ? " · stopped" : ""}</small>
+                        <small>{e.route ? e.route.task.title : e.question ? "question" : ""}{e.state === "working" || e.state === "sending" ? " · working" : e.state === "stopped" ? " · stopped" : ""}</small>
                         <time dateTime={e.at}>{asked(e.at)}</time>
                       </span>
                     </button>

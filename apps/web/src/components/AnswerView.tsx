@@ -15,7 +15,7 @@ export function AnswerView({ exchange, approvals }: { exchange: Exchange; approv
     <div className="answer-body">
       {exchange.route && (
         <p className="answer-route">
-          g{exchange.route.goal.number} · {exchange.route.goal.title} <span>/</span> t{exchange.route.task.number} · {exchange.route.task.title}
+          {exchange.route.goal.title} <span>/</span> {exchange.route.task.title}
         </p>
       )}
       <Work exchange={exchange} />

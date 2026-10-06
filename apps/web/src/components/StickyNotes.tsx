@@ -41,7 +41,7 @@ export function StickyNotes({ goal, taskNumber }: { goal: GoalView | null; taskN
       <Note id="task" offset={offsets.task} onMove={move} onOpen={() => setExpanded("task")} eyebrow="Current task">
         {task ? (
           <>
-            <strong className="note-title">t{task.number} · {task.title}</strong>
+            <strong className="note-title">{task.title}</strong>
             <span className="note-body">{task.note ?? "No progress noted yet."}</span>
             <span className="note-meta"><Status value={task.status} /></span>
           </>
@@ -52,7 +52,7 @@ export function StickyNotes({ goal, taskNumber }: { goal: GoalView | null; taskN
       <Note id="goal" offset={offsets.goal} onMove={move} onOpen={() => setExpanded("goal")} eyebrow="Current goal">
         {goal && !goal.general ? (
           <>
-            <strong className="note-title">g{goal.number} · {goal.title}</strong>
+            <strong className="note-title">{goal.title}</strong>
             {goal.objective && <span className="note-body">{goal.objective}</span>}
             {goal.note && <span className="note-body muted">{goal.note}</span>}
             <span className="note-meta">{open} open · {done} done</span>
@@ -144,13 +144,13 @@ function ExpandedNote({ kind, goal, taskNumber, onClose }: { kind: NoteId; goal:
         </header>
         <div className="expanded-note-body">
           <h2 id="expanded-note-title">{title}</h2>
-          {goal && <p className="expanded-note-meta"><span>g{goal.number}{kind === "task" && task ? ` / t${task.number}` : ""}</span><Status value={kind === "task" && task ? task.status : goal.status} />{goal.workspace && <span>{goal.workspace}</span>}</p>}
+          {goal && <p className="expanded-note-meta"><Status value={kind === "task" && task ? task.status : goal.status} />{goal.workspace && <span>{goal.workspace}</span>}</p>}
           {kind === "task" ? task ? <TaskText task={task} /> : <p className="muted">Send a message to give Socrates a task. Its full notes will appear here.</p> : goal ? <>
             <NoteText label="Objective" text={goal.objective} fallback={goal.general ? "A general conversation, not tied to a project goal." : "No objective recorded yet."} />
             <NoteText label="Goal note" text={goal.note} fallback="No goal note recorded yet." />
             <section className="note-section"><h3>Tasks <span>{goal.tasks.filter((t) => t.status === "open").length} open · {goal.tasks.filter((t) => t.status === "completed").length} done</span></h3>
               <div className="expanded-note-tasks">{goal.tasks.map((t) => <details key={t.number} open={t.number === taskNumber}>
-                <summary><ChevronRight aria-hidden /><span><small>t{t.number}{t.number === taskNumber ? " · Current" : ""}</small>{t.title}</span><Status value={t.status} /></summary>
+                <summary><ChevronRight aria-hidden /><span>{t.number === taskNumber && <small>Current</small>}{t.title}</span><Status value={t.status} /></summary>
                 <div className="expanded-task-body"><TaskText task={t} /></div>
               </details>)}</div>
             </section>

@@ -20,7 +20,7 @@ export function GoalsPanel({ goals, route }: { goals: GoalView[]; route: Exchang
             <li key={goal.number} className="goal" data-current={current}>
               <button type="button" className="goal-head" onClick={() => setOpen({ ...open, [goal.number]: !expanded })} aria-expanded={expanded}>
                 <ChevronRight aria-hidden className="goal-chevron" />
-                <span className="goal-title">g{goal.number} · {goal.title}</span>
+                <span className="goal-title">{goal.title}</span>
                 <small>{done}/{goal.tasks.length}</small>
               </button>
               {expanded && (
@@ -34,7 +34,7 @@ export function GoalsPanel({ goals, route }: { goals: GoalView[]; route: Exchang
                         <li key={task.number} className="task" data-current={now} data-status={task.status}>
                           {task.status === "completed" ? <Check aria-label="Completed" /> : task.status === "superseded" ? <Minus aria-label="Superseded" /> : <Circle aria-label="Open" />}
                           <div>
-                            <span>t{task.number} · {task.title}</span>
+                            <span>{task.title}</span>
                             {now && task.note && <p className="goal-text muted">{task.note}</p>}
                           </div>
                         </li>
