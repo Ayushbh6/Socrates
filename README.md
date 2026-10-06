@@ -2,6 +2,8 @@
 
 A coding-agent harness built around one continuous conversation. You never create or pick chats or projects: a Goal Router decides which goal (project) and task (chat) each message belongs to, and the working agent sees only that task's context.
 
+Socrates speaks as a thoughtful working partner: curious, candid and concise, with calm competence and a little dry wit. Its fixed working-agent prompt brings that voice to both everyday conversation and technical work.
+
 The design lives in [`architecture/`](architecture):
 
 - [`agent-harness.md`](architecture/agent-harness.md): tools, the agent loop, context layout, compaction, caching.
@@ -24,7 +26,7 @@ The design lives in [`architecture/`](architecture):
 | `@socrates/retrieval` | The embedding index of Socrates' memory: LanceDB storage beside the ledger, background indexing of goals, tasks, exchanges, tool calls, capabilities and workspace files (secrets and generated files excluded), meaning search with similarity floors, and the one hybrid (reciprocal rank fusion) scoring function |
 | `@socrates/agent` | The working agent: `Socrates.handle` runs one message end to end (route, bind, agent loop per part, `FinalAnswer` validation and persistence) in the main conversation or a parallel lane, one run per task, recovery of turns a stopped process left running, context assembly in the canonical layout, three-tier history with N−1 fitting, per-turn limits, cancellation, and prompt-cache breakpoints, and compaction: history checkpoints, in-turn linearization, the failsafe, automatic rollover with handover capsules, and `<RETRIEVED_HISTORY>` |
 | `@socrates/server` (`apps/server`) | The local app server: builds the one Socrates from `~/.socrates-v2` (settings, keys, Skills, MCP servers, embedding index), interrupts turns left running at startup, and serves the session-protected HTTP API and live WebSocket on `127.0.0.1:4200`: Send, Queue and Send in a lane, live activity, per-conversation approvals, and cancel; and where Socrates may work (my folders or full access) and when it asks (ask first or work freely) |
-| `@socrates/web` (`apps/web`) | The web app the server serves: the welcome page and an onboarding page (name, API key, optional folders), flow mode with the orb and the task and goal notes, the question sidebar with lanes, the composer (Send, Queue, Send in a new lane, stop, approvals mode, the model and thinking-level pickers), the access menu and approval cards; the work behind each answer as Codex-style groups of plain-words rows (thinking timed, edits as diffs, commands with their output live, a status line while it waits); standard mode with goals, the main conversation and a panel per lane; the full tool-output viewer; and settings for models, keys, memory search, time zone and access |
+| `@socrates/web` (`apps/web`) | The web app the server serves: the welcome page and an onboarding page (name, API key, optional folders), flow mode with the orb and expandable task and goal notes, the question sidebar with lanes, the composer (Send, Queue, Send in a new lane, stop, approvals mode, the model and thinking-level pickers), the access menu and approval cards; the work behind each answer as Codex-style groups of plain-words rows (thinking timed, edits as diffs, commands with their output live, a status line while it waits); standard mode with goals, the main conversation and a panel per lane; the full tool-output viewer; and settings for models, keys, memory search, time zone and access |
 
 ## Running Socrates
 

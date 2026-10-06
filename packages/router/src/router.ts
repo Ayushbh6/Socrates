@@ -184,6 +184,9 @@ export class GoalRouter {
           tools,
           maxOutputTokens: 8_000,
           temperature: 0,
+          // Ask adapters for readable thinking when the provider exposes it;
+          // the completed reply is recorded even though routing is not streamed.
+          onReasoning: () => {},
           trace: { role: "router", userEventId: budget.trace.userEventId, laneId: budget.trace.laneId, step: ++budget.requests },
           ...(signal ? { signal } : {}),
         });

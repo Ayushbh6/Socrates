@@ -22,6 +22,8 @@ export interface Totals {
   ms: number;
   tokensPerSecond: number | null;
   firstTokenMs: number | null;
+  speedSamples?: number;
+  firstTokenSamples?: number;
 }
 
 export type Role = "router" | "work" | "wrap_up" | "repair" | "compaction" | "embedding" | "other";
@@ -149,9 +151,9 @@ export interface PriceRow {
   price: { input: number; cachedInput: number | null; cacheWrite: number | null; output: number } | null;
 }
 
-/** A model's id without the long fingerprint an embedding model's id carries. */
+/** Compact display identity; the full id remains available on the call. */
 export function shortModel(id: string): string {
-  return id.replace(/:[0-9a-f]{16,}$/, "");
+  return id.replace(/^gemini:interactions:/, "gemini:").replace(/:[0-9a-f]{16,}$/, "");
 }
 
 /** 950, 1.2k, 12k, 340k, 1.23M. */
@@ -263,7 +265,7 @@ export function inspectTarget(hash: string): Target | null {
 export const inspectHref = (tab: Tab, ...rest: (string | null | undefined)[]): string => `#/inspect${tab === "overview" ? "" : `/${tab}`}${rest.filter(Boolean).map((p) => `/${p}`).join("")}`;
 
 /** The chart series a call's role belongs to (embeddings are not charted). */
-export const GROUPS = ["Agent", "Router", "Compaction", "Wrap-up and repair"] as const;
+export const GROUPS = ["Agent", "Router", "Compaction", "Wrap-up and repair", "Other"] as const;
 export type Group = (typeof GROUPS)[number];
 export function groupOf(role: Role): Group | null {
   switch (role) {
@@ -271,6 +273,7 @@ export function groupOf(role: Role): Group | null {
     case "router": return "Router";
     case "compaction": return "Compaction";
     case "wrap_up": case "repair": return "Wrap-up and repair";
+    case "other": return "Other";
     default: return null;
   }
 }
@@ -338,13 +341,13 @@ export function ratio(series: SeriesData, roles: Role[], top: (b: Bucket) => num
 }
 
 /** An average per bucket weighted by calls over some of the roles, from the buckets that have one. */
-export function average(series: SeriesData, roles: Role[], pick: (b: Bucket) => number | null): (number | null)[] {
+export function average(series: SeriesData, roles: Role[], pick: (b: Bucket) => number | null, samples: (b: Bucket) => number = (b) => b.calls): (number | null)[] {
   const index = new Map(series.at.map((t, i) => [t, i]));
   const sum = series.at.map(() => 0), n = series.at.map(() => 0);
   for (const b of series.buckets) {
     const i = index.get(b.at);
     const v = pick(b);
-    if (i !== undefined && roles.includes(b.role) && v !== null) { sum[i]! += v * b.calls; n[i]! += b.calls; }
+    if (i !== undefined && roles.includes(b.role) && v !== null) { const count = samples(b); sum[i]! += v * count; n[i]! += count; }
   }
   return sum.map((v, i) => (n[i]! > 0 ? v / n[i]! : null));
 }
@@ -374,8 +377,9 @@ export interface TraceCall {
   group: "router" | "turn";
   turnId: string | null;
   reasoning: string | null;
+  reasoningTextTokens: number;
   text: string;
-  toolCalls: { id: string; name: string; input: unknown; result: { content: string; isError: boolean } | null }[];
+  toolCalls: { id: string; name: string; input: unknown; result: { content: string; isError: boolean; tokens: number } | null }[];
   entered: { role: string; label: string; tokens: number; text: string }[];
   rebuilt: boolean;
   context: ContextBlock[] | null;

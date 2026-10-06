@@ -14,7 +14,10 @@ const PER_MILLION = 1_000_000;
 /** The client id's provider and model: "openrouter:z-ai/glm-5.3-flash" is ["openrouter", "z-ai/glm-5.3-flash"]. */
 export function splitModelId(id: string): [string, string] {
   const at = id.indexOf(":");
-  return at < 0 ? ["", id] : [id.slice(0, at), id.slice(at + 1)];
+  if (at < 0) return ["", id];
+  const provider = id.slice(0, at);
+  const model = id.slice(at + 1);
+  return [provider, provider === "gemini" ? model.replace(/^interactions:/, "") : model];
 }
 
 /**

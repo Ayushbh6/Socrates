@@ -11,7 +11,7 @@ export function useDialog(ref: RefObject<HTMLElement | null>, onClose: () => voi
     if (!enabled || !dialog) return;
     const previous = document.activeElement;
     dialogs.push(dialog);
-    const focusable = () => [...dialog.querySelectorAll<HTMLElement>('button, input, select, textarea, a[href], [tabindex]')]
+    const focusable = () => [...dialog.querySelectorAll<HTMLElement>('button, input, select, textarea, a[href], summary, [tabindex]')]
       .filter((el) => el.tabIndex >= 0 && !el.matches(":disabled") && el.getClientRects().length > 0);
     const focus = () => (focusable()[0] ?? dialog).focus();
     focus();

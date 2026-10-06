@@ -1,11 +1,13 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { ModelClient, ModelUsage } from "@socrates/contracts";
+import type { CallRecord, ModelClient, ModelMessage, ModelUsage } from "@socrates/contracts";
+import { countTokens } from "@socrates/shared";
 import { ScriptedModel } from "@socrates/providers";
 import { describe, expect, it } from "vitest";
 import { final } from "../../../packages/agent/test/helpers";
 import { continueTask, createGoal } from "../../../packages/router/test/helpers";
 import { SCRIPTED, home, server, tempDir } from "./helpers";
+import { series as chartSeries, summary as overviewSummary } from "../src/observe";
 
 /** A scripted model whose replies report this usage and provider metadata, the way a provider's would. */
 function metered(inner: ScriptedModel, usage: ModelUsage, meta: Record<string, unknown> = { id: "resp_1" }): ModelClient {
@@ -133,6 +135,8 @@ describe("the model-call log", () => {
     // They are not in the unpriced list: an embedding model has no token price here.
     expect(s.unpriced).toEqual([]);
     expect(s.unpricedCalls).toBe(0);
+    expect(s.totals.calls).toBe(0);
+    expect(s.totals.failed).toBe(0);
   });
 
   it("answers 404 for what does not exist", async () => {
@@ -199,6 +203,8 @@ describe("the trace of a message", () => {
     expect(first.toolCalls).toHaveLength(1);
     expect(first.toolCalls[0]).toMatchObject({ name: "read", result: { isError: false } });
     expect(first.toolCalls[0].result.content).toContain("ORBIT-6382");
+    expect(first.toolCalls[0].result.tokens).toBe(countTokens(first.toolCalls[0].result.content));
+    expect(first.reasoningTextTokens).toBe(countTokens(first.reasoning));
     // The second step was sent its own reply back and the tool's result, and nothing else.
     expect(second.context).toBeNull();
     expect(second.entered.map((e: { label: string }) => e.label)).toEqual(["its own reply, sent back", "tool result · read"]);
@@ -207,9 +213,54 @@ describe("the trace of a message", () => {
     expect(answer).toMatchObject({ kind: "answer", status: "completed", text: "The code is ORBIT-6382." });
     expect((await request("GET", "/api/observe/questions/evt_nope/trace")).statusCode).toBe(404);
   });
+
+  it("shows rewritten messages of unchanged length and keeps tool results after a context update", async () => {
+    const { rt, request } = await server(home({ settings: SCRIPTED }), observed().deps);
+    await rt.socrates!.handle("Fix the checkout in my shop.");
+    await rt.flushCalls();
+    const original = rt.calls!.get(rt.calls!.list({ role: "work" })[0]!.id)!;
+    const tool = { id: "tool_read", name: "read", input: { path: "notes.txt" } };
+    const record = (id: string, messages: ModelMessage[], toolCalls: NonNullable<CallRecord["response"]>["toolCalls"]): CallRecord => ({
+      id, startedAt: id === "call_before" ? "2026-10-04T10:00:01.000Z" : "2026-10-04T10:00:02.000Z", model: "test:chat", servedBy: null,
+      trace: { role: "work", userEventId: original.userEventId, turnId: original.turnId }, streamed: false,
+      request: { ...original.request, toolChoice: "auto", messages },
+      response: { text: "", toolCalls, reasoning: null, stopReason: "tool_use", usage: USAGE, meta: null },
+      error: null, ms: 100, firstTokenMs: null, tokensPerSecond: 1000, cost: null,
+    });
+    const oldAssistant: ModelMessage = { role: "assistant", content: "Reading.", raw: { provider: "gemini", content: [{ type: "text", text: "old" }] } };
+    const newAssistant: ModelMessage = { ...oldAssistant, content: "Updated reading." };
+    const firstContext = original.request.messages[0]!;
+    rt.calls!.record(record("call_before", [firstContext, oldAssistant], [tool]));
+    rt.calls!.record(record("call_after", [firstContext, newAssistant], [tool]));
+    let trace = (await request("GET", `/api/observe/questions/${original.userEventId}/trace`)).json();
+    expect(trace.items.find((i: { call?: { id: string } }) => i.call?.id === "call_after").entered).toMatchObject([{ text: "Updated reading." }]);
+
+    const updated = record("call_updated", [{ role: "user", content: "<CURRENT_TASK>\nUpdated task\n</CURRENT_TASK>" }, newAssistant, { role: "tool", toolCallId: tool.id, toolName: "read", content: "the exact result" }], []);
+    updated.startedAt = "2026-10-04T10:00:03.000Z";
+    rt.calls!.record(updated);
+    trace = (await request("GET", `/api/observe/questions/${original.userEventId}/trace`)).json();
+    expect(trace.items.find((i: { call?: { id: string } }) => i.call?.id === "call_after").toolCalls[0].result).toMatchObject({ content: "the exact result", tokens: countTokens("the exact result") });
+    expect(trace.items.find((i: { call?: { id: string } }) => i.call?.id === updated.id)).toMatchObject({ rebuilt: true, entered: [{ text: "Updated reading." }, { text: "the exact result" }] });
+  });
 });
 
 describe("the charts' series", () => {
+  it("keeps the same rolling cutoff as the totals, even inside an hour bucket", async () => {
+    const { rt } = await server(home({ settings: SCRIPTED }), observed().deps);
+    for (const minute of [15, 45]) rt.calls!.record({
+      id: `call_${minute}`, startedAt: `2026-10-03T10:${minute}:00.000Z`, model: "test:m", servedBy: null, streamed: false, trace: { role: "other" },
+      request: { system: "", messages: [], tools: [], toolChoice: "auto", maxOutputTokens: null, temperature: null, effort: null },
+      response: { text: "ok", toolCalls: [], reasoning: null, stopReason: "end", usage: USAGE, meta: null }, error: null,
+      ms: 1000, firstTokenMs: null, tokensPerSecond: 100, cost: null,
+    });
+    const now = new Date("2026-10-04T10:30:00Z");
+    const summary = overviewSummary(rt.calls!, "24h", now, 30);
+    const series = chartSeries(rt.calls!, "24h", now);
+    expect(summary.totals.calls).toBe(1);
+    expect(series.buckets.reduce((n: number, b: { calls: number }) => n + b.calls, 0)).toBe(1);
+    expect(series.buckets[0]!.at).toBe("2026-10-03T10:00:00.000Z");
+  });
+
   it("covers the range with its buckets and sums the model calls into them", async () => {
     const { deps } = observed();
     const { rt, request } = await server(home({ settings: SCRIPTED }), deps);

@@ -129,6 +129,9 @@ export interface CallTotals {
   tokensPerSecond: number | null;
   /** The average time to the first token over streamed calls. */
   firstTokenMs: number | null;
+  /** Samples behind each average; calls without a measurement do not weigh it. */
+  speedSamples?: number;
+  firstTokenSamples?: number;
 }
 
 /** One role's calls in one stretch of time. */
@@ -169,7 +172,9 @@ const TOTALS = `COUNT(*) AS calls,
   COALESCE(SUM(prompt_tokens), 0) AS prompt, COALESCE(SUM(output_tokens), 0) AS output,
   COALESCE(SUM(cache_read_tokens), 0) AS cache_read, COALESCE(SUM(cache_write_tokens), 0) AS cache_write,
   COALESCE(SUM(cost_usd), 0) AS cost, COUNT(cost_usd) AS priced, COALESCE(SUM(ms), 0) AS ms,
-  AVG(tokens_per_second) AS tps, AVG(CASE WHEN streamed = 1 THEN first_token_ms END) AS first_token`;
+  AVG(tokens_per_second) AS tps, COUNT(tokens_per_second) AS speed_samples,
+  AVG(CASE WHEN streamed = 1 THEN first_token_ms END) AS first_token,
+  COUNT(CASE WHEN streamed = 1 THEN first_token_ms END) AS first_token_samples`;
 
 type Row = Record<string, unknown>;
 
@@ -189,6 +194,8 @@ const totalsOf = (r: Row): CallTotals => {
     ms: Number(r.ms),
     tokensPerSecond: r.tps === null ? null : Math.round(Number(r.tps) * 10) / 10,
     firstTokenMs: r.first_token === null ? null : Math.round(Number(r.first_token)),
+    speedSamples: Number(r.speed_samples),
+    firstTokenSamples: Number(r.first_token_samples),
   };
 };
 
@@ -302,13 +309,13 @@ export class CallLog {
   /** Calls, newest first. */
   list(query: CallQuery = {}): CallRow[] {
     const { where, args } = this.filter(query);
-    const rows = this.db.prepare(`SELECT ${COLUMNS} FROM calls ${where} ORDER BY seq DESC LIMIT ?`).all(...args, Math.min(query.limit ?? 100, 1_000)) as Row[];
+    const rows = this.db.prepare(`SELECT ${COLUMNS} FROM calls ${where} ORDER BY started_at DESC, seq DESC LIMIT ?`).all(...args, Math.min(query.limit ?? 100, 1_000)) as Row[];
     return rows.map(rowOf);
   }
 
   /** One message's calls, in the order they were made. */
   forQuestion(userEventId: string): CallRow[] {
-    return (this.db.prepare(`SELECT ${COLUMNS} FROM calls WHERE user_event_id = ? ORDER BY seq`).all(userEventId) as Row[]).map(rowOf);
+    return (this.db.prepare(`SELECT ${COLUMNS} FROM calls WHERE user_event_id = ? ORDER BY started_at, seq`).all(userEventId) as Row[]).map(rowOf);
   }
 
   get(id: string): CallDetail | null {
@@ -341,6 +348,11 @@ export class CallLog {
     return totalsOf(this.db.prepare(`SELECT ${TOTALS} FROM calls ${since ? "WHERE started_at >= ?" : ""}`).get(...(since ? [since] : [])) as Row);
   }
 
+  /** Model-request totals, excluding background embeddings from the overview. */
+  modelTotals(since?: string, roles?: CallRole[]): CallTotals {
+    return totalsOf(this.db.prepare(`SELECT ${TOTALS} FROM calls WHERE role <> 'embedding' ${since ? "AND started_at >= ?" : ""} ${roles?.length ? `AND role IN (${roles.map(() => "?").join(",")})` : ""}`).get(...(since ? [since] : []), ...(roles ?? [])) as Row);
+  }
+
   /** The same numbers per role and model. */
   breakdown(since?: string): CallBreakdown[] {
     const rows = this.db.prepare(`SELECT role, model, ${TOTALS} FROM calls ${since ? "WHERE started_at >= ?" : ""} GROUP BY role, model ORDER BY calls DESC`).all(...(since ? [since] : [])) as Row[];
@@ -367,6 +379,12 @@ export class CallLog {
     return rows.map((r) => ({ ...totalsOf(r), at: new Date(Number(r.bucket) * 1000).toISOString(), role: r.role as CallRole }));
   }
 
+  /** The first model request retained, without the feed's pagination limit. */
+  oldestModelStart(): string | null {
+    const row = this.db.prepare("SELECT MIN(started_at) AS at FROM calls WHERE role <> 'embedding'").get() as Row;
+    return row.at === null ? null : String(row.at);
+  }
+
   /** Only a call's reply: its text, tool calls, thinking and the provider's metadata. */
   response(id: string): CallDetail["response"] {
     const row = this.db.prepare("SELECT response_ref FROM calls WHERE id = ?").get(id) as Row | undefined;
@@ -385,6 +403,12 @@ export class CallLog {
   firstHash(id: string): string | null {
     const row = this.db.prepare("SELECT request_ref FROM calls WHERE id = ?").get(id) as Row | undefined;
     return row ? (JSON.parse(String(row.request_ref)) as { messages: string[] }).messages[0] ?? null : null;
+  }
+
+  /** Stable identities of every message, excluding the moving cache marks. */
+  messageHashes(id: string): string[] {
+    const row = this.db.prepare("SELECT request_ref FROM calls WHERE id = ?").get(id) as Row | undefined;
+    return row ? (JSON.parse(String(row.request_ref)) as { messages: string[] }).messages : [];
   }
 
   /** Forget calls started before a time, and the saved parts no remaining call has used since. Returns how many calls went. */

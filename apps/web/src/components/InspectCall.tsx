@@ -68,8 +68,8 @@ function Facts({ call: c }: { call: CallDetail }) {
       {fact("Cached", `${tokens(split.cached)} (${percent(c.promptTokens ? split.cached / c.promptTokens : null)})`)}
       {c.cacheWriteTokens > 0 && fact("Written to cache", tokens(c.cacheWriteTokens))}
       {fact("Output", `${tokens(c.outputTokens)}${c.reasoningTokens ? `, ${tokens(c.reasoningTokens)} thinking` : ""}`)}
-      {fact("First token", duration(c.firstTokenMs))}
-      {fact("Speed", speed(c.tokensPerSecond))}
+      {fact("First output", duration(c.firstTokenMs))}
+      {fact("Output rate", speed(c.tokensPerSecond))}
       {fact("Total time", duration(c.ms))}
       {fact("Cost", `${usd(c.costUsd)}${c.costSource ? ` (${c.costSource === "reported" ? "reported by the provider" : "from the price"})` : ""}`)}
       {c.error && fact("Failed", `${c.error.kind}${c.error.status ? ` ${c.error.status}` : ""}: ${c.error.message}`)}

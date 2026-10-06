@@ -26,6 +26,7 @@ describe("how the inspect numbers read", () => {
   it("drops the fingerprint from an embedding model's id", () => {
     expect(shortModel("ollama:embeddinggemma:7866d63830422cd421667c95360eaf1d8819f6f603bd2d479450e06cf01cb023")).toBe("ollama:embeddinggemma");
     expect(shortModel("deepseek:deepseek-v4-pro")).toBe("deepseek:deepseek-v4-pro");
+    expect(shortModel("gemini:interactions:gemini-3.8-flash")).toBe("gemini:gemini-3.8-flash");
     expect(shortModel("openrouter:z-ai/glm-5.3-flash:free")).toBe("openrouter:z-ai/glm-5.3-flash:free");
   });
 
@@ -70,7 +71,7 @@ describe("the chart series", () => {
   const series: SeriesData = { range: "24h", bucketMs: 3_600_000, at, buckets: [bucket(0, "work", { calls: 3, promptTokens: 1000, cacheReadTokens: 800, tokensPerSecond: 100 }), bucket(0, "router", { calls: 1, promptTokens: 200, cacheReadTokens: 100 }), bucket(2, "wrap_up", { calls: 2, promptTokens: 400, cacheReadTokens: 0, tokensPerSecond: 50 }), bucket(2, "repair", { calls: 1, promptTokens: 100, cacheReadTokens: 0, tokensPerSecond: 20 })] };
 
   it("groups roles into the series charts draw", () => {
-    expect(["work", "router", "compaction", "wrap_up", "repair", "embedding", "other"].map((r) => groupOf(r as Bucket["role"]))).toEqual(["Agent", "Router", "Compaction", "Wrap-up and repair", "Wrap-up and repair", null, null]);
+    expect(["work", "router", "compaction", "wrap_up", "repair", "embedding", "other"].map((r) => groupOf(r as Bucket["role"]))).toEqual(["Agent", "Router", "Compaction", "Wrap-up and repair", "Wrap-up and repair", null, "Other"]);
   });
 
   it("stacks a value per bucket and group, with zeros where nothing happened, and only the groups that appear", () => {
@@ -89,6 +90,11 @@ describe("the chart series", () => {
 
   it("averages weighted by calls, from the buckets that have a value", () => {
     expect(average(series, ["wrap_up", "repair"], (b) => b.tokensPerSecond)).toEqual([null, null, (50 * 2 + 20) / 3]);
+  });
+
+  it("weights timing averages by measured requests, excluding failed or unmeasured calls", () => {
+    const measured = { ...series, buckets: [bucket(0, "work", { calls: 9, tokensPerSecond: 100, speedSamples: 1 }), bucket(0, "repair", { calls: 2, tokensPerSecond: 20, speedSamples: 2 }), bucket(1, "work", { calls: 4, speedSamples: 0 })] };
+    expect(average(measured, ["work", "repair"], (b) => b.tokensPerSecond, (b) => b.speedSamples ?? 0)).toEqual([140 / 3, null, null]);
   });
 
   it("picks round axis ticks from zero", () => {

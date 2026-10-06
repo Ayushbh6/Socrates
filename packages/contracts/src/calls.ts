@@ -38,7 +38,7 @@ export interface CallRecord {
   ms: number;
   /** From sending to the first piece of text or thinking; null when not streamed. */
   firstTokenMs: number | null;
-  /** Output tokens over the time spent generating them (after the first token when streamed, else the whole call). */
+  /** Provider output tokens over the whole measured call in seconds, including hidden thinking. */
   tokensPerSecond: number | null;
   /** The call's price in US dollars, where it could be worked out. */
   cost: { usd: number; source: "reported" | "price" } | null;

@@ -103,7 +103,7 @@ API responses are JSON. A failure, including an unknown route, is `{ "error": { 
 | `GET /api/providers` | each model provider with its default chat and router models and the keys it reads, for the settings screen |
 | `GET /api/models?provider=…` | `{ models: [{ id, name? }] }`: the provider's chat models from its own list (only models that can call tools; OpenAI's and Gemini's speech, image and embedding models left out), kept for ten minutes. A provider without a key, or one that cannot be reached, is `invalid_request` with a message that never carries a key |
 | `PUT`, `DELETE /api/keys/:name` | set (`{ value }`) or remove a key |
-| `GET /api/goals` | every goal, most recently updated first, with its tasks, notes and workspace |
+| `GET /api/goals` | every goal, most recently updated first, with its objective, status, note and workspace; each task includes its title, status, objective, completion criteria, continuation note and update time |
 | `GET /api/history` | one conversation's messages (see "History") |
 | `GET /api/lanes` | open lanes with whether each is running or waiting for approval |
 | `POST /api/attachments?name=…` | store one image for a message (the body is its bytes, with its image content type); answers its id, name, format and size |

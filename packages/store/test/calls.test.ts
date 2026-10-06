@@ -97,6 +97,25 @@ describe("the call log", () => {
     expect(log.totals()).toMatchObject({ calls: 2, failed: 1, stopped: 1 });
   });
 
+  it("uses only measured samples in averages and excludes embeddings from model totals", () => {
+    log.record(call({ tokensPerSecond: 100, firstTokenMs: 200 }));
+    log.record(call({ trace: { role: "repair" }, tokensPerSecond: 300, firstTokenMs: 600 }));
+    log.record(call({ response: null, error: { kind: "server", status: 500, message: "failed" }, tokensPerSecond: null, firstTokenMs: null, cost: null }));
+    log.record(call({ trace: { role: "embedding" }, response: null, error: { kind: "server", status: 500, message: "offline" }, tokensPerSecond: null, firstTokenMs: null, cost: null }));
+    expect(log.modelTotals()).toMatchObject({ calls: 3, failed: 1, speedSamples: 2, firstTokenSamples: 2, tokensPerSecond: 200, firstTokenMs: 400 });
+    expect(log.modelTotals(undefined, ["work"])).toMatchObject({ calls: 2, speedSamples: 1, firstTokenSamples: 1, tokensPerSecond: 100, firstTokenMs: 200 });
+  });
+
+  it("orders a question's calls by request time when asynchronous price lookups save them out of order", () => {
+    const first = call({}, "2026-10-06T10:00:00.000Z");
+    const second = call({}, "2026-10-06T10:00:01.000Z");
+    log.record(second);
+    log.record(first);
+    expect(log.forQuestion("evt_a").map((c) => c.id)).toEqual([first.id, second.id]);
+    expect(log.list().map((c) => c.id)).toEqual([second.id, first.id]);
+    expect(log.oldestModelStart()).toBe(first.startedAt);
+  });
+
   it("sums model calls per bucket and role for the charts, leaving embeddings out", () => {
     log.record(call({}, "2026-10-06T10:05:00.000Z"));
     log.record(call({}, "2026-10-06T10:55:00.000Z"));

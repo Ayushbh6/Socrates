@@ -33,25 +33,10 @@ export interface Summary {
 export function summary(log: CallLog, range: Range, now: Date, retentionDays: number): Summary {
   const since = sinceOf(range, now);
   const byModel = log.breakdown(since);
-  const add = (rows: CallBreakdown[]): CallTotals => {
-    const sum = (f: (r: CallBreakdown) => number) => rows.reduce((n, r) => n + f(r), 0);
-    const prompt = sum((r) => r.promptTokens);
-    const timed = rows.filter((r) => r.tokensPerSecond !== null);
-    const streamed = rows.filter((r) => r.firstTokenMs !== null);
-    const weighted = (set: CallBreakdown[], f: (r: CallBreakdown) => number) => set.reduce((n, r) => n + f(r) * r.calls, 0) / Math.max(1, set.reduce((n, r) => n + r.calls, 0));
-    return {
-      calls: sum((r) => r.calls), failed: sum((r) => r.failed), stopped: sum((r) => r.stopped), promptTokens: prompt, outputTokens: sum((r) => r.outputTokens),
-      cacheReadTokens: sum((r) => r.cacheReadTokens), cacheWriteTokens: sum((r) => r.cacheWriteTokens),
-      cacheHitRate: prompt > 0 ? sum((r) => r.cacheReadTokens) / prompt : null,
-      costUsd: sum((r) => r.costUsd), priced: sum((r) => r.priced), ms: sum((r) => r.ms),
-      tokensPerSecond: timed.length ? Math.round(weighted(timed, (r) => r.tokensPerSecond!) * 10) / 10 : null,
-      firstTokenMs: streamed.length ? Math.round(weighted(streamed, (r) => r.firstTokenMs!)) : null,
-    };
-  };
   return {
     range,
-    totals: log.totals(since),
-    work: add(byModel.filter((r) => r.role === "work" || r.role === "wrap_up" || r.role === "repair")),
+    totals: log.modelTotals(since),
+    work: log.modelTotals(since, ["work", "wrap_up", "repair"]),
     byModel,
     unpriced: [...new Set(byModel.filter((r) => r.role !== "embedding" && r.priced < r.calls - r.failed - r.stopped).map((r) => r.model))],
     unpricedCalls: byModel.filter((r) => r.role !== "embedding").reduce((n, r) => n + Math.max(0, r.calls - r.failed - r.stopped - r.priced), 0),
@@ -280,14 +265,14 @@ const BUCKETS: Record<Range, number> = { "24h": 3_600_000, "7d": 6 * 3_600_000, 
 export function series(log: CallLog, range: Range, now: Date): Series {
   const bucketMs = BUCKETS[range];
   const since = sinceOf(range, now);
-  const first = since ?? log.list({ limit: 1_000 }).at(-1)?.startedAt ?? now.toISOString();
+  const first = since ?? log.oldestModelStart() ?? now.toISOString();
   const start = Math.floor(new Date(first).getTime() / bucketMs) * bucketMs;
   const end = Math.floor(now.getTime() / bucketMs) * bucketMs;
   // A year of days is the most a chart can hold.
   const from = Math.max(start, end - 364 * 86_400_000);
   const at: string[] = [];
   for (let t = from; t <= end; t += bucketMs) at.push(new Date(t).toISOString());
-  return { range, bucketMs, at, buckets: log.series(new Date(from).toISOString(), bucketMs) };
+  return { range, bucketMs, at, buckets: log.series(since && new Date(since).getTime() > from ? since : new Date(from).toISOString(), bucketMs) };
 }
 
 /** What entered a call's context since the call before it. */
@@ -308,10 +293,12 @@ export interface TraceCall {
   turnId: string | null;
   reasoning: string | null;
   text: string;
-  toolCalls: { id: string; name: string; input: unknown; result: { content: string; isError: boolean } | null }[];
+  toolCalls: { id: string; name: string; input: unknown; result: { content: string; isError: boolean; tokens: number } | null }[];
+  /** Local text-token estimate; readable thinking can be only a provider summary. */
+  reasoningTextTokens: number;
   /** The messages added since the call before it in its group, in the order sent. */
   entered: Entered[];
-  /** True when compaction rewrote the context between the two calls: everything entered anew. */
+  /** True when the first context message changed; compaction events are reported separately. */
   rebuilt: boolean;
   /** The first call of a group: the context message cut into its blocks. */
   context: ContextBlock[] | null;
@@ -360,12 +347,17 @@ export function trace(log: CallLog, store: LedgerStore, userEventId: string): { 
       const before = rows[i - 1];
       const rebuilt = before !== undefined && log.firstHash(row.id) !== log.firstHash(before.id);
       const fresh = before === undefined || rebuilt;
-      const messages = fresh ? [] : log.messagesFrom(row.id, before.messageCount).messages;
-      raw.push(messages);
+      const requestMessages = log.messagesFrom(row.id, 0).messages;
+      const hashes = log.messageHashes(row.id);
+      const previousHashes = before ? log.messageHashes(before.id) : [];
+      let unchanged = 0;
+      while (unchanged < hashes.length && hashes[unchanged] === previousHashes[unchanged]) unchanged++;
+      const messages = fresh ? requestMessages.slice(1) : requestMessages.slice(unchanged);
+      raw.push(requestMessages);
       const response = log.response(row.id);
-      const first = fresh ? log.messagesFrom(row.id, 0).messages[0] : undefined;
+      const first = fresh ? requestMessages[0] : undefined;
       return {
-        kind: "call", at: row.startedAt, call: row, group, turnId: row.turnId, reasoning: response?.reasoning ?? null, text: response?.text ?? "",
+        kind: "call", at: row.startedAt, call: row, group, turnId: row.turnId, reasoning: response?.reasoning ?? null, reasoningTextTokens: countTokens(response?.reasoning ?? ""), text: response?.text ?? "",
         toolCalls: (response?.toolCalls ?? []).map((t) => ({ id: t.id, name: t.name, input: t.input, result: null })),
         entered: messages.map((m) => ({ role: m.role, label: enteredLabel(m), tokens: countTokens(messageText(m)), text: messageText(m) })),
         rebuilt: rebuilt && before !== undefined,
@@ -377,7 +369,7 @@ export function trace(log: CallLog, store: LedgerStore, userEventId: string): { 
       const later = raw[i + 1] ?? [];
       for (const t of c.toolCalls) {
         const found = later.find((m) => m.role === "tool" && m.toolCallId === t.id);
-        if (found && found.role === "tool") t.result = { content: found.content, isError: found.isError === true };
+        if (found && found.role === "tool") t.result = { content: found.content, isError: found.isError === true, tokens: countTokens(found.content) };
       }
     });
     return out;

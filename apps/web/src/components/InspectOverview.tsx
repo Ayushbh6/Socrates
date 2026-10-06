@@ -7,7 +7,7 @@ import {
 import { ChartCard, HBars, Lines, type SeriesDef, StackedColumns } from "./charts";
 import { MoveChip, PromptBar, Tile, usePolled } from "./inspect-kit";
 
-const GROUP_COLORS: Record<string, string> = { Agent: "var(--s1)", Router: "var(--s2)", Compaction: "var(--s3)", "Wrap-up and repair": "var(--s4)" };
+const GROUP_COLORS: Record<string, string> = { Agent: "var(--s1)", Router: "var(--s2)", Compaction: "var(--s3)", "Wrap-up and repair": "var(--s4)", Other: "var(--s5)" };
 const ROLE_NAME: Record<string, string> = { work: "Agent", wrap_up: "Wrap-up", repair: "Repair", router: "Router", compaction: "Compaction", embedding: "Embeddings", other: "Other" };
 
 /** The overview: totals with their trends, the day's calls, tokens, cache, speed and cost over time, and what is happening now. */
@@ -30,9 +30,11 @@ export function InspectOverview({ range, ms, onCall }: { range: Range; ms: numbe
   const rows = tokenRows(sr);
   const cacheAgent = ratio(sr, [...agentRoles], (b) => b.cacheReadTokens, (b) => b.promptTokens);
   const cacheRouter = ratio(sr, ["router"], (b) => b.cacheReadTokens, (b) => b.promptTokens);
-  const speedAgent = average(sr, [...agentRoles], (b) => b.tokensPerSecond);
-  const speedRouter = average(sr, ["router"], (b) => b.tokensPerSecond);
-  const firstAgent = average(sr, [...agentRoles], (b) => b.firstTokenMs);
+  const measuredSpeeds = (b: typeof sr.buckets[number]) => b.speedSamples ?? b.calls;
+  const measuredFirsts = (b: typeof sr.buckets[number]) => b.firstTokenSamples ?? b.calls;
+  const speedAgent = average(sr, [...agentRoles], (b) => b.tokensPerSecond, measuredSpeeds);
+  const speedRouter = average(sr, ["router"], (b) => b.tokensPerSecond, measuredSpeeds);
+  const firstAgent = average(sr, [...agentRoles], (b) => b.firstTokenMs, measuredFirsts);
   const hit = (r: number | null) => (r === null ? undefined : r >= 0.8 ? "good" : r < 0.4 ? "warn" : undefined);
   const cost = totalPerBucket(sr, (b) => b.costUsd);
   const calledPerBucket = totalPerBucket(sr, (b) => b.calls);
@@ -42,12 +44,12 @@ export function InspectOverview({ range, ms, onCall }: { range: Range; ms: numbe
   return (
     <div className="overview">
       <section className="tiles" aria-label="Totals">
-        <Tile label="Spent" value={usd(t.costUsd)} sub={s.unpricedCalls ? `${s.unpricedCalls} call${s.unpricedCalls === 1 ? "" : "s"} with no price` : "list or your own prices"} tone={s.unpricedCalls ? "warn" : undefined} trend={cost} color="var(--s1)" />
+        <Tile label="Recorded cost" value={usd(s.unpricedCalls && !t.priced ? null : t.costUsd)} sub={s.unpricedCalls ? `${t.priced ? "Partial · " : ""}${s.unpricedCalls} call${s.unpricedCalls === 1 ? "" : "s"} with no price` : "reported or estimated from prices"} tone={s.unpricedCalls ? "warn" : undefined} trend={cost} color="var(--s1)" />
         <Tile label="Model calls" value={String(s.byModel.filter((r) => r.role !== "embedding").reduce((n, r) => n + r.calls, 0))} sub={`${t.failed} failed · ${t.stopped} stopped`} tone={t.failed ? "warn" : undefined} trend={calledPerBucket} color="var(--s2)" />
         <Tile label="Agent cache hit" value={percent(w.cacheHitRate)} sub={`${tokens(w.cacheReadTokens)} of ${tokens(w.promptTokens)} prompt tokens`} tone={hit(w.cacheHitRate)} trend={cacheAgent} color="var(--s3)" />
         <Tile label="Tokens in" value={tokens(t.promptTokens)} sub={`${tokens(t.outputTokens)} out · ${percent(t.cacheHitRate)} cached overall`} trend={totalPerBucket(sr, (b) => b.promptTokens)} color="var(--s1)" />
-        <Tile label="Speed" value={speed(t.tokensPerSecond)} sub="while generating" trend={speedAgent} color="var(--s5)" />
-        <Tile label="First token" value={duration(t.firstTokenMs)} sub="streamed calls" trend={firstAgent} color="var(--s4)" />
+        <Tile label="Output rate" value={speed(w.tokensPerSecond)} sub="mean of agent call rates" trend={speedAgent} color="var(--s5)" />
+        <Tile label="First output" value={duration(w.firstTokenMs)} sub="streamed text or thinking" trend={firstAgent} color="var(--s4)" />
       </section>
 
       <div className="grid-2">
@@ -66,12 +68,12 @@ export function InspectOverview({ range, ms, onCall }: { range: Range; ms: numbe
           table={{ head: ["Time", "Agent", "Router"], rows: sr.at.map((a, i) => [new Date(a).toLocaleString(), percent(cacheAgent[i] ?? null), percent(cacheRouter[i] ?? null)]) }}>
           <Lines at={sr.at} bucketMs={sr.bucketMs} series={[{ name: "Agent", color: "var(--s1)" }, { name: "Router", color: "var(--s2)" }]} values={[cacheAgent, cacheRouter]} max={1} format={(n) => percent(n)} label="Cache hit rate over time for the agent and the router" />
         </ChartCard>
-        <ChartCard title="Generation speed" note="tokens per second" series={[{ name: "Agent", color: "var(--s1)" }, { name: "Router", color: "var(--s2)" }]}
+        <ChartCard title="Output rate" note="mean output / call seconds" series={[{ name: "Agent", color: "var(--s1)" }, { name: "Router", color: "var(--s2)" }]}
           table={{ head: ["Time", "Agent", "Router"], rows: sr.at.map((a, i) => [new Date(a).toLocaleString(), speed(speedAgent[i] ?? null), speed(speedRouter[i] ?? null)]) }}>
-          <Lines at={sr.at} bucketMs={sr.bucketMs} series={[{ name: "Agent", color: "var(--s1)" }, { name: "Router", color: "var(--s2)" }]} values={[speedAgent, speedRouter]} format={(n) => String(Math.round(n))} label="Generation speed over time for the agent and the router" />
+          <Lines at={sr.at} bucketMs={sr.bucketMs} series={[{ name: "Agent", color: "var(--s1)" }, { name: "Router", color: "var(--s2)" }]} values={[speedAgent, speedRouter]} format={speed} label="Mean call output rates over time for the agent and the router" />
         </ChartCard>
-        <ChartCard title="Time to first token" note="the agent, streamed"
-          table={{ head: ["Time", "First token"], rows: sr.at.map((a, i) => [new Date(a).toLocaleString(), duration(firstAgent[i] ?? null)]) }}>
+        <ChartCard title="Time to first output" note="the agent, streamed"
+          table={{ head: ["Time", "First output"], rows: sr.at.map((a, i) => [new Date(a).toLocaleString(), duration(firstAgent[i] ?? null)]) }}>
           <Lines at={sr.at} bucketMs={sr.bucketMs} series={[{ name: "Agent", color: "var(--s1)" }]} values={[firstAgent]} format={(n) => duration(n)} label="The agent's time to first token over time" />
         </ChartCard>
       </div>
@@ -80,7 +82,7 @@ export function InspectOverview({ range, ms, onCall }: { range: Range; ms: numbe
           <h3>By model</h3>
           <div className="table-scroll">
             <table>
-              <thead><tr><th>Used for</th><th>Model</th><th>Calls</th><th>Prompt</th><th>Cached</th><th>Output</th><th>Speed</th><th>First token</th><th>Cost</th></tr></thead>
+              <thead><tr><th>Used for</th><th>Model</th><th>Calls</th><th>Prompt</th><th>Cached</th><th>Output</th><th>Output rate</th><th>First output</th><th>Cost</th></tr></thead>
               <tbody>
                 {s.byModel.map((r: Breakdown) => (
                   <tr key={`${r.role}/${r.model}`}>
@@ -207,4 +209,3 @@ function Prices({ summary }: { summary: Summary }) {
     </section>
   );
 }
-

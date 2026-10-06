@@ -28,6 +28,12 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 
 11. **A full observability console.** After the first inspect page: a self-review, then a dashboard that feels like a high-performance console for the agent, with features to inspect the database tables and columns. In one click: how many tables, how many records in total. A way to trace every single content and token that enters Socrates at any point in time: every user query, every piece of past context sent with it as history, every thinking trace, tool call, intermediate step and response, the full final response, and before all that the full router and the decisions made there, with its thinking, history and tool calls.
 
+12. **A fresh V2 start.** Clear the three old queries and all their database/search records so the user can test the current harness from the beginning. Preserve V2 keys and settings; keep Classic V1 untouched.
+
+13. **More personality in the agent's prompt.** Give Socrates its own flair: the curiosity of the philosopher with the composed competence and dry wit of Iron Man's JARVIS.
+
+14. **Expand the notes and verify a full live run.** Keep the same premium, spacious visual style. Run Gemini 3.8 Flash on the exact read-only folder-description prompt, let it finish, then visually check the notes and Inspect console and reconcile all displayed model numbers and traces with their stored records.
+
 ## Changed
 
 1. **Onboarding page** (`#/onboarding`): name (optional), a row per provider for the API key (one is enough; saved keys show a check and are never shown again), and optional folders (the first becomes the project folder). **Start chatting** needs a key, saves the name and opens the chat. `#/welcome` shows **Get started** for a new user and **Chat with Socrates** (with "Welcome back, <name>.") afterwards; `#/chat` sends anyone not onboarded to `#/onboarding`. New `profile` setting (`{ name, onboarded }`), applied without a restart.
@@ -43,6 +49,14 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 
 9. **The inspect console** (asked: 11). The page is now a console with three tabs. **Overview**: tiles with trends, charts of calls, tokens, cache hit, speed and first token over time (each with a table view), by model, where the money went, the costliest questions, a live feed of calls, prices. **Traces**: any message as a timeline, from the router's context, thinking, ledger queries and decision, through each agent step (what entered its context since the step before, its thinking, what it said, every tool call and the result the model was sent), compactions, to the answer. **Database**: databases, tables and records counted at the top, a table tree, and a grid with search, sort, paging and a row inspector that links rows to their traces and calls. Dark by default, light on request.
 10. **Found and fixed in the self-review.** The loop moves its prompt-cache breakpoint at every step, so the first message of a request differed by a flag from step to step: breakpoints are now stored apart from the messages (this also lets steps share what they store). A call you stop is counted as stopped, not failed, and no longer shows as a call with no price. The page could show one question's numbers under another's name for a moment after choosing; it now forgets the old data. The Gemini adapter reports thinking tokens on their own.
+
+11. **Socrates' voice** (asked: 13). The actual working-agent system prompt now asks for curiosity, intellectual honesty, calm competence, warmth and understated dry wit. Questions support real reasoning; clear requests get direct answers and action. Replies stay concise and technical claims stay evidence-based.
+
+12. **Fresh V2 trial data** (asked: 12, 2026-10-06). Stopped the V2 server, recreated `~/.socrates-v2/ledger.db` and `calls.db`, and cleared the derived embedding index. Retained only the configured project workspace in the new ledger so the saved folder choice still resolves. Keys, profile, models, access settings and MCP configuration stayed byte-identical; Classic data and `main` were untouched. After restart: zero user messages, history items, goals, tasks, chats, turns, lanes, evidence and checkpoints. A new startup embedding check is recorded normally. Typecheck, web build and all 765 tests passed.
+
+13. **Expandable paper notes** (asked: 6, 14). Task and goal cards open spacious paper dialogs, with full Markdown notes, objectives, task completion criteria/status and the goal's expandable task list. A separate grip preserves dragging/arrow-key movement. Focus stays within the view; Escape restores it. Compact note buttons remain available on phones, with corrected header/composer fit.
+
+14. **Live Gemini run and Inspect reconciliation** (asked: 14). Ran the exact read-only folder-description prompt once with Gemini 3.8 Flash. It created g1 “Workspace exploration and inspection” and completed t1 “Describe workspace folder contents” with two globs and two read-only terminal commands. Reconciled six model calls: 40,256 input, 800 output, 10,554 cached tokens and $0.02606805 estimated cost. Fixed Gemini price identity, measurement weighting, call chronology, mutable request snapshots, trace context changes and rolling chart cutoffs. Browser checks at desktop, medium and phone widths; typecheck, build and all 771 tests passed. See `docs/reviews/notes-inspect-e2e-2026-10-06.md` for evidence and the generated answer's content limitation.
 
 ## Suggested
 

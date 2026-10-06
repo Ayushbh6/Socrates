@@ -39,8 +39,8 @@ describe("recording model calls", () => {
     expect(call!.response).toMatchObject({ text: "ok", reasoning: null, usage, meta: { id: "r1" } });
     expect(call!.firstTokenMs).toBeGreaterThanOrEqual(70);
     expect(call!.ms).toBeGreaterThan(call!.firstTokenMs!);
-    // 200 output tokens over the time after the first token (about 80 ms).
-    expect(call!.tokensPerSecond).toBeGreaterThan(1000);
+    // Usage includes all output, so the denominator is the whole call.
+    expect(call!.tokensPerSecond).toBe(Math.round(200 / (call!.ms / 1000) * 10) / 10);
   });
 
   it("records a call that was not streamed without a time to the first token", async () => {
@@ -70,6 +70,23 @@ describe("recording model calls", () => {
     const model = withRecording({ id: "test:ok", complete: async () => reply() }, () => { throw new Error("disk full"); });
     await expect(model.complete({ system: "s", messages: [] })).resolves.toMatchObject({ text: "ok" });
   });
+
+  it("freezes nested messages, tool schemas and trace when sending, even if the caller changes them mid-call", async () => {
+    const calls: CallRecord[] = [];
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => { finish = resolve; });
+    const model = withRecording({ id: "test:snapshot", complete: async () => { await pending; return reply(); } }, (c) => calls.push(c));
+    const request: ModelRequest = { system: "s", messages: [{ role: "user", content: [{ text: "original" }] }], tools: [{ name: "read", description: "Read", inputSchema: { type: "object", properties: { path: { type: "string" } } } }], trace: { role: "work", step: 1 } };
+    const result = model.complete(request);
+    (request.messages[0]!.content as { text: string }[])[0]!.text = "changed";
+    request.tools![0]!.description = "changed";
+    request.trace!.step = 99;
+    finish();
+    await result;
+    expect(calls[0]!.request.messages[0]!.content).toEqual([{ text: "original" }]);
+    expect(calls[0]!.request.tools[0]!.description).toBe("Read");
+    expect(calls[0]!.trace.step).toBe(1);
+  });
 });
 
 describe("what a call costs", () => {
@@ -93,6 +110,7 @@ describe("what a call costs", () => {
 
   it("splits a client id at its first colon", () => {
     expect(splitModelId("openrouter:z-ai/glm-5.3-flash:free")).toEqual(["openrouter", "z-ai/glm-5.3-flash:free"]);
+    expect(splitModelId("gemini:interactions:gemini-3.8-flash")).toEqual(["gemini", "gemini-3.8-flash"]);
   });
 
   it("reads a model's price from OpenRouter's list, per million tokens", async () => {

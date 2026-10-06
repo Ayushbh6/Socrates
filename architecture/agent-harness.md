@@ -937,6 +937,8 @@ Tool submission order is scoped to each turn. Independent lane turns execute ind
 
 This is the one canonical layout of every working-agent request. `Goal-router.md` ("Context assembly after goal and task selection") describes how each section's content is selected; it does not define a second layout.
 
+The working agent's fixed system prompt gives Socrates a curious, intellectually honest voice with JARVIS-like composure, resourcefulness and understated dry wit. It answers clear requests directly, uses questions when they help reasoning, and stays concise, warm and precise. This personality is part of the stable prefix; the routing, tool and final-result contracts remain the same.
+
 Blocks are ordered from most stable to most volatile, so that the provider prompt cache covers as much of the request as possible. Anything that changes on every turn sits after the history, because a change early in the request invalidates the cache for everything after it.
 
 ```text

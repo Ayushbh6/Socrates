@@ -2,8 +2,8 @@ import type { CallRecord, CallSink, ModelClient, ModelRequest, ModelResponse } f
 import { ModelError } from "@socrates/contracts";
 import { newId } from "@socrates/shared";
 
-/** Below this, a reply arrived in one piece and its speed says nothing. */
-const MIN_GENERATION_MS = 50;
+/** Very short intervals do not give a meaningful output rate. */
+const MIN_CALL_MS = 50;
 
 /**
  * A client that hands every call it makes, finished or failed, to `sink`
@@ -21,7 +21,7 @@ export function withRecording(model: ModelClient, sink: CallSink): ModelClient {
       const t0 = performance.now();
       let firstTokenMs: number | null = null;
       const first = () => { firstTokenMs ??= Math.round(performance.now() - t0); };
-      const snapshot = {
+      const snapshot = structuredClone({
         system: request.system,
         messages: [...request.messages],
         tools: [...(request.tools ?? [])],
@@ -29,7 +29,8 @@ export function withRecording(model: ModelClient, sink: CallSink): ModelClient {
         maxOutputTokens: request.maxOutputTokens ?? null,
         temperature: request.temperature ?? null,
         effort: request.effort ?? null,
-      } satisfies CallRecord["request"];
+      } satisfies CallRecord["request"]);
+      const trace = structuredClone(request.trace ?? { role: "other" as const });
       const streamed = request.onText !== undefined;
       const sent: ModelRequest = {
         ...request,
@@ -38,14 +39,13 @@ export function withRecording(model: ModelClient, sink: CallSink): ModelClient {
       };
       const finish = (response: ModelResponse | null, error: unknown) => {
         const ms = Math.round(performance.now() - t0);
-        const generationMs = streamed && firstTokenMs !== null ? ms - firstTokenMs : ms;
         const output = response?.usage.outputTokens ?? 0;
         const record: CallRecord = {
           id: newId("call"),
           startedAt,
           model: model.id,
           servedBy: response?.servedBy ?? null,
-          trace: request.trace ?? { role: "other" },
+          trace,
           streamed,
           request: snapshot,
           response: response && {
@@ -63,7 +63,9 @@ export function withRecording(model: ModelClient, sink: CallSink): ModelClient {
           },
           ms,
           firstTokenMs: streamed ? firstTokenMs : null,
-          tokensPerSecond: output > 0 && generationMs >= MIN_GENERATION_MS ? Math.round((output / (generationMs / 1000)) * 10) / 10 : null,
+          // Usage may include hidden thinking generated before the first
+          // visible chunk. Use the whole measured request interval.
+          tokensPerSecond: output > 0 && ms >= MIN_CALL_MS ? Math.round((output / (ms / 1000)) * 10) / 10 : null,
           cost: null,
         };
         try { sink(record); } catch {}

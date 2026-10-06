@@ -74,6 +74,7 @@ function TraceView({ id, ms, onCall }: { id: string; ms: number; onCall: (id: st
   const calls = items.filter((i): i is TraceCall => i.kind === "call").map((i) => i.call);
   const prompt = sum(calls, (c) => c.promptTokens), cached = sum(calls, (c) => c.cacheReadTokens);
   const priced = calls.filter((c) => c.costUsd !== null).length;
+  const unpriced = calls.filter((c) => c.ok && c.role !== "embedding" && c.costUsd === null).length;
   // Each call's growth over the one before it in its group.
   const previous = new Map<string, number>();
   const growth = new Map<string, number | null>();
@@ -103,6 +104,7 @@ function TraceView({ id, ms, onCall }: { id: string; ms: number; onCall: (id: st
           {expand.open ? <><ChevronsDownUp aria-hidden /> Collapse all</> : <><ChevronsUpDown aria-hidden /> Expand all</>}
         </button>
       </header>
+      {unpriced > 0 && <p className="inspect-note">{unpriced} successful call{unpriced === 1 ? " has" : "s have"} no known price. The cost total is {priced ? "partial" : "unavailable"}.</p>}
       <ol className="timeline" key={expand.key} data-open={expand.open}>
         {items.map((item, i) => <li key={i} data-kind={item.kind}><i className="node" aria-hidden /><Item item={item} open={expand.open} widest={widest} growth={item.kind === "call" ? growth.get(item.call.id) ?? null : null} onCall={onCall} /></li>)}
       </ol>
@@ -178,8 +180,8 @@ function CallCard({ item, open, widest, growth, onCall }: { item: TraceCall; ope
         <div><dt>In</dt><dd>{tokens(c.promptTokens)}{growth !== null && <small> {growth >= 0 ? "+" : "−"}{tokens(Math.abs(growth))}</small>}</dd></div>
         <div><dt>Cached</dt><dd>{percent(c.promptTokens ? c.cacheReadTokens / c.promptTokens : null)}</dd></div>
         <div><dt>Out</dt><dd>{tokens(c.outputTokens)}{c.reasoningTokens ? <small> {tokens(c.reasoningTokens)} thinking</small> : null}</dd></div>
-        <div><dt>First token</dt><dd>{duration(c.firstTokenMs)}</dd></div>
-        <div><dt>Speed</dt><dd>{speed(c.tokensPerSecond)}</dd></div>
+        <div><dt>First output</dt><dd>{duration(c.firstTokenMs)}</dd></div>
+        <div><dt>Output rate</dt><dd>{speed(c.tokensPerSecond)}</dd></div>
         <div><dt>Time</dt><dd>{duration(c.ms)}</dd></div>
         <div><dt>Cost</dt><dd>{usd(c.costUsd)}</dd></div>
       </dl>
@@ -187,10 +189,10 @@ function CallCard({ item, open, widest, growth, onCall }: { item: TraceCall; ope
       {c.error && <p className="inspect-note" role="alert">{c.error.kind === "aborted" ? "Stopped before it finished." : `Failed: ${c.error.kind}${c.error.status ? ` ${c.error.status}` : ""}: ${c.error.message}`}</p>}
 
       {item.context && (
-        <Fold title={item.rebuilt ? "Context rebuilt after compaction" : "Context it was given"} meta={`${item.context.length} blocks · ${tokens(contextTokens)} tokens`} open={open}>
+        <Fold title={item.rebuilt ? "Context updated" : "Context it was given"} meta={`${item.context.length} blocks · ~${tokens(contextTokens)} text tokens`} open={open}>
           <div className="blocks">
             {item.context.map((b, i) => (
-              <Fold key={i} title={b.name ? <code className="block-name">{b.name}</code> : <span className="muted">text</span>} meta={<>{tokens(b.tokens)} tokens{b.cacheAfter ? <b className="cache-mark" title="A prompt-cache breakpoint follows this block">cache point</b> : null}</>} tone={b.name ?? "plain"}>
+              <Fold key={i} title={b.name ? <code className="block-name">{b.name}</code> : <span className="muted">text</span>} meta={<>~{tokens(b.tokens)} text tokens{b.cacheAfter ? <b className="cache-mark" title="A prompt-cache breakpoint follows this block">cache point</b> : null}</>} tone={b.name ?? "plain"}>
                 <pre>{b.text}</pre>
               </Fold>
             ))}
@@ -198,20 +200,20 @@ function CallCard({ item, open, widest, growth, onCall }: { item: TraceCall; ope
         </Fold>
       )}
       {item.entered.length > 0 && (
-        <Fold title="Entered since the last step" meta={`${item.entered.length} message${item.entered.length === 1 ? "" : "s"} · ${tokens(enteredTokens)} tokens`} open={open}>
+        <Fold title="Changed or added since the last step" meta={`${item.entered.length} message${item.entered.length === 1 ? "" : "s"} · ~${tokens(enteredTokens)} text tokens`} open={open}>
           <div className="blocks">
             {item.entered.map((e, i) => (
-              <Fold key={i} title={<span className="role" data-role={e.role}>{e.label}</span>} meta={`${tokens(e.tokens)} tokens`} tone={e.label.includes("(error)") ? "error" : undefined}>
+              <Fold key={i} title={<span className="role" data-role={e.role}>{e.label}</span>} meta={`~${tokens(e.tokens)} text tokens`} tone={e.label.includes("(error)") ? "error" : undefined}>
                 <pre>{prettyJson(e.text)}</pre>
               </Fold>
             ))}
           </div>
         </Fold>
       )}
-      {item.reasoning && <Fold title="Thinking" meta={`${tokens(Math.round(item.reasoning.length / 4))} tokens, about`} open={open}><pre className="thinking">{item.reasoning}</pre></Fold>}
+      {item.reasoning && <Fold title="Thinking shown" meta={`~${tokens(item.reasoningTextTokens)} text tokens`} open={open}><pre className="thinking">{item.reasoning}</pre></Fold>}
       {item.text.trim() && <Fold title={item.toolCalls.length ? "Said before the tools" : "Said"} open={open || !item.toolCalls.length}><pre className="said">{item.text}</pre></Fold>}
       {item.toolCalls.map((t) => (
-        <Fold key={t.id} title={<><b className="tool-name">{t.name}</b> <span className="tool-args">{summarize(t.input)}</span></>} meta={t.result ? (t.result.isError ? "error" : `${tokens(Math.round(t.result.content.length / 4))} tokens back`) : "no result recorded"} tone={t.result?.isError ? "error" : "tool"} open={open}>
+        <Fold key={t.id} title={<><b className="tool-name">{t.name}</b> <span className="tool-args">{summarize(t.input)}</span></>} meta={t.result ? (t.result.isError ? "error" : `~${tokens(t.result.tokens)} text tokens back`) : "no result in a later request"} tone={t.result?.isError ? "error" : "tool"} open={open}>
           <h5>Called with</h5>
           <pre>{JSON.stringify(t.input, null, 2)}</pre>
           <h5>The tool answered</h5>

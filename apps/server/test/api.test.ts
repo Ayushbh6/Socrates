@@ -148,7 +148,7 @@ describe("history and goals", () => {
     const { request, rt } = await server(home({ settings: SCRIPTED }), models());
     const store = rt.store;
     const goal = store.createGoal({ title: "Shop" });
-    const task = store.createTask(goal.id, { title: "Checkout" });
+    const task = store.createTask(goal.id, { title: "Checkout", objective: "Review checkout", completionCriteria: "Checkout review complete" });
     for (let i = 1; i <= HISTORY_PAGE_TURNS + 5; i++) exchange(store, task.id, `Message ${i}.`);
     const page1 = (await request("GET", "/api/history")).json();
     expect(page1.items).toHaveLength(HISTORY_PAGE_TURNS);
@@ -159,7 +159,7 @@ describe("history and goals", () => {
     expect((await request("GET", "/api/history?before=zero")).statusCode).toBe(400);
 
     expect((await request("GET", "/api/goals")).json()).toEqual([
-      expect.objectContaining({ number: goal.number, title: "Shop", workspace: null, tasks: [expect.objectContaining({ number: 1, title: "Checkout", status: "open" })] }),
+      expect.objectContaining({ number: goal.number, title: "Shop", workspace: null, tasks: [expect.objectContaining({ number: 1, title: "Checkout", status: "open", objective: "Review checkout", completionCriteria: "Checkout review complete" })] }),
     ]);
   });
 });

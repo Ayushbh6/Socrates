@@ -119,7 +119,7 @@ export interface GoalView {
   status: string;
   general: boolean;
   workspace: string | null;
-  tasks: { number: number; title: string; status: string; note: string | null }[];
+  tasks: { number: number; title: string; status: string; note: string | null; objective?: string; completionCriteria?: string | null }[];
 }
 
 export interface HistoryPart {

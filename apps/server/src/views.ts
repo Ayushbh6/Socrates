@@ -121,7 +121,7 @@ export function goalsView(store: LedgerStore) {
       general: goal.general,
       workspace: goal.workspaceId ? (store.getWorkspace(goal.workspaceId)?.name ?? null) : null,
       updatedAt: goal.updatedAt,
-      tasks: store.listTasks(goal.id).map((task) => ({ number: task.number, title: task.title, status: task.status, note: task.continuationNote, updatedAt: task.updatedAt })),
+      tasks: store.listTasks(goal.id).map((task) => ({ number: task.number, title: task.title, status: task.status, objective: task.objective, completionCriteria: task.completionCriteria, note: task.continuationNote, updatedAt: task.updatedAt })),
     }));
 }
 

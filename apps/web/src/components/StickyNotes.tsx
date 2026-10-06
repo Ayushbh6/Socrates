@@ -1,6 +1,9 @@
-import { GripHorizontal } from "lucide-react";
+import { ArrowUpRight, ChevronRight, GripHorizontal, X } from "lucide-react";
 import { type KeyboardEvent, type PointerEvent, type ReactNode, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { useDialog } from "../lib/dialog";
 import type { GoalView } from "../lib/types";
+import { Prose } from "./Prose";
 
 type NoteId = "task" | "goal";
 type Offsets = Record<NoteId, { x: number; y: number }>;
@@ -21,6 +24,7 @@ function stored(): Offsets {
 /** The two notes beside the conversation: the current task and its goal. Drag them anywhere. */
 export function StickyNotes({ goal, taskNumber }: { goal: GoalView | null; taskNumber: number | null }) {
   const [offsets, setOffsets] = useState(stored);
+  const [expanded, setExpanded] = useState<NoteId | null>(null);
   const move = (id: NoteId, x: number, y: number) =>
     setOffsets((current) => {
       const next = { ...current, [id]: { x, y } };
@@ -32,38 +36,41 @@ export function StickyNotes({ goal, taskNumber }: { goal: GoalView | null; taskN
   const done = goal ? goal.tasks.filter((t) => t.status === "completed").length : 0;
 
   return (
+    <>
     <div className="notes" aria-label="Notes">
-      <Note id="task" offset={offsets.task} onMove={move} eyebrow="Current task">
+      <Note id="task" offset={offsets.task} onMove={move} onOpen={() => setExpanded("task")} eyebrow="Current task">
         {task ? (
           <>
             <strong className="note-title">t{task.number} · {task.title}</strong>
-            <p className="note-body">{task.note ?? "No progress noted yet."}</p>
-            <span className="note-meta">{task.status === "completed" ? "Completed" : "Open"}</span>
+            <span className="note-body">{task.note ?? "No progress noted yet."}</span>
+            <span className="note-meta"><Status value={task.status} /></span>
           </>
         ) : (
-          <p className="note-body muted">Ask Socrates something and the task it works on appears here.</p>
+          <span className="note-body muted">Ask Socrates something and the task it works on appears here.</span>
         )}
       </Note>
-      <Note id="goal" offset={offsets.goal} onMove={move} eyebrow="Current goal">
+      <Note id="goal" offset={offsets.goal} onMove={move} onOpen={() => setExpanded("goal")} eyebrow="Current goal">
         {goal && !goal.general ? (
           <>
             <strong className="note-title">g{goal.number} · {goal.title}</strong>
-            {goal.objective && <p className="note-body">{goal.objective}</p>}
-            {goal.note && <p className="note-body muted">{goal.note}</p>}
+            {goal.objective && <span className="note-body">{goal.objective}</span>}
+            {goal.note && <span className="note-body muted">{goal.note}</span>}
             <span className="note-meta">{open} open · {done} done</span>
           </>
         ) : (
-          <p className="note-body muted">{goal ? "A general conversation, not tied to a goal." : "No goal yet."}</p>
+          <span className="note-body muted">{goal ? "A general conversation, not tied to a goal." : "No goal yet."}</span>
         )}
       </Note>
     </div>
+    {expanded && <ExpandedNote kind={expanded} goal={goal} taskNumber={taskNumber} onClose={() => setExpanded(null)} />}
+    </>
   );
 }
 
-function Note({ id, offset, onMove, eyebrow, children }: { id: NoteId; offset: { x: number; y: number }; onMove: (id: NoteId, x: number, y: number) => void; eyebrow: string; children: ReactNode }) {
+function Note({ id, offset, onMove, onOpen, eyebrow, children }: { id: NoteId; offset: { x: number; y: number }; onMove: (id: NoteId, x: number, y: number) => void; onOpen: () => void; eyebrow: string; children: ReactNode }) {
   const drag = useRef<{ pointer: number; x: number; y: number; from: { x: number; y: number } } | null>(null);
   const down = (e: PointerEvent<HTMLElement>) => {
-    if ((e.target as HTMLElement).closest("a, button:not(.note-grip)")) return;
+    if (!(e.target as HTMLElement).closest(".note-grip")) return;
     drag.current = { pointer: e.pointerId, x: e.clientX, y: e.clientY, from: offset };
     e.currentTarget.setPointerCapture(e.pointerId);
   };
@@ -95,8 +102,62 @@ function Note({ id, offset, onMove, eyebrow, children }: { id: NoteId; offset: {
       <button type="button" className="note-grip" aria-label={`Move the ${eyebrow.toLowerCase()} note (arrow keys)`} onKeyDown={nudge}>
         <GripHorizontal aria-hidden />
       </button>
-      <span className="note-eyebrow">{eyebrow}</span>
-      {children}
+      <button type="button" className="note-open" aria-label={`Expand ${eyebrow.toLowerCase()} note`} aria-haspopup="dialog" onClick={onOpen}>
+        <span className="note-eyebrow">{eyebrow}<ArrowUpRight aria-hidden /></span>
+        {children}
+        <span className="note-hint">View full note <ArrowUpRight aria-hidden /></span>
+      </button>
     </article>
+  );
+}
+
+function Status({ value }: { value: string }) {
+  return <span className="note-status" data-status={value}><i aria-hidden />{value === "completed" ? "Completed" : value === "superseded" ? "Superseded" : "Open"}</span>;
+}
+
+type Task = GoalView["tasks"][number];
+
+function NoteText({ label, text, fallback }: { label: string; text: string | null | undefined; fallback?: string }) {
+  if (!text && !fallback) return null;
+  return <section className="note-section"><h3>{label}</h3>{text ? <Prose text={text} animate={false} writing={false} /> : <p className="muted">{fallback}</p>}</section>;
+}
+
+function TaskText({ task }: { task: Task }) {
+  return <>
+    <NoteText label="Objective" text={task.objective} />
+    <NoteText label="Done when" text={task.completionCriteria} />
+    <NoteText label="Progress & continuation" text={task.note} fallback="No progress noted yet. This fills in as Socrates works." />
+  </>;
+}
+
+function ExpandedNote({ kind, goal, taskNumber, onClose }: { kind: NoteId; goal: GoalView | null; taskNumber: number | null; onClose: () => void }) {
+  const modal = useRef<HTMLDivElement>(null);
+  useDialog(modal, onClose);
+  const task = goal?.tasks.find((t) => t.number === taskNumber) ?? null;
+  const title = kind === "task" ? task?.title ?? "No task yet" : goal?.title ?? "No goal yet";
+  return createPortal(
+    <div className="modal-scrim note-scrim" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div ref={modal} tabIndex={-1} className="modal expanded-note" data-note={kind} role="dialog" aria-modal="true" aria-labelledby="expanded-note-title">
+        <header className="expanded-note-head">
+          <span className="note-eyebrow">{kind === "task" ? "Current task" : "Current goal"}</span>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Close expanded note"><X aria-hidden /></button>
+        </header>
+        <div className="expanded-note-body">
+          <h2 id="expanded-note-title">{title}</h2>
+          {goal && <p className="expanded-note-meta"><span>g{goal.number}{kind === "task" && task ? ` / t${task.number}` : ""}</span><Status value={kind === "task" && task ? task.status : goal.status} />{goal.workspace && <span>{goal.workspace}</span>}</p>}
+          {kind === "task" ? task ? <TaskText task={task} /> : <p className="muted">Send a message to give Socrates a task. Its full notes will appear here.</p> : goal ? <>
+            <NoteText label="Objective" text={goal.objective} fallback={goal.general ? "A general conversation, not tied to a project goal." : "No objective recorded yet."} />
+            <NoteText label="Goal note" text={goal.note} fallback="No goal note recorded yet." />
+            <section className="note-section"><h3>Tasks <span>{goal.tasks.filter((t) => t.status === "open").length} open · {goal.tasks.filter((t) => t.status === "completed").length} done</span></h3>
+              <div className="expanded-note-tasks">{goal.tasks.map((t) => <details key={t.number} open={t.number === taskNumber}>
+                <summary><ChevronRight aria-hidden /><span><small>t{t.number}{t.number === taskNumber ? " · Current" : ""}</small>{t.title}</span><Status value={t.status} /></summary>
+                <div className="expanded-task-body"><TaskText task={t} /></div>
+              </details>)}</div>
+            </section>
+          </> : <p className="muted">Socrates will choose a goal when you send your first message.</p>}
+        </div>
+        <footer className="expanded-note-foot">The latest notes from Socrates. They update as the work progresses.</footer>
+      </div>
+    </div>, document.body,
   );
 }

@@ -18,10 +18,10 @@ A request carries a `trace` (`CallTrace` in `packages/contracts`): its role, the
 
 A record holds:
 
-- **The request as it was sent**: system prompt, every message (images reduced to their type and size), the tool definitions, tool choice, output limit, temperature and thinking level. Messages are copied when the call starts, so what is saved is what was sent, whatever the caller does with its list afterwards.
+- **The normalized request at the model boundary**: system prompt, every message (images reduced to their type and size), the tool definitions, tool choice, output limit, temperature and thinking level. Messages, nested provider-native content, tools and trace are snapshotted when the call starts, so what is saved is what was sent, whatever the caller does with its list afterwards.
 - **The reply**: text, tool calls, readable thinking, stop reason, and usage normalized to prompt, output, cache-read, cache-write and thinking tokens.
 - **What the provider said beyond that** (`ModelResponse.meta`): its response id, the model that served the request, the finish reason, its fingerprint, and **its own usage object whole** (for DeepSeek this includes `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens`; for Anthropic the cache creation and read tokens; for Gemini the cached and thought token totals).
-- **Timing**: the whole call; the time to the first text or thinking (only when the reply is streamed, which the working agent's is and the router's is not); and the generation speed, output tokens over the time after the first token (the whole call when not streamed, where the speed includes the prompt being processed). A reply that arrived in under 50 ms after its first token gets no speed.
+- **Timing**: the whole call; the time to the first text or thinking (only when the reply is streamed, which the working agent's is and the router's is not); and effective output rate: provider-reported output tokens over the whole measured call in seconds. That interval includes prompt processing and any hidden thinking before visible text. It is comparable across streamed and non-streamed requests, rather than claiming to measure decoding throughput. Calls shorter than 50 ms or without output have no rate. Aggregate rates are arithmetic means over measured calls; first-output averages include only streamed calls that emitted readable text or thinking. Each average carries its sample count, so missing measurements never weigh the chart.
 - **Cost**, where it can be worked out (see below).
 - **An error** when the call failed: its kind, status and message, which never carry a key.
 
@@ -39,7 +39,7 @@ A call's cost is, in this order:
 
 1. what the provider reported in its usage (OpenRouter does when asked);
 2. the user's own price for the model, from the `prices` setting, keyed by the client id (`deepseek:deepseek-flash`) and given in US dollars per million tokens: input, cached input, output;
-3. the model's list price from OpenRouter's public model list (the provider's own models appear there under its prefix; DeepSeek's by the name its model list gives). These are list prices; a provider's own may differ, which the user's price corrects.
+3. the model's list price from OpenRouter's public model list (the provider's own models appear there under its prefix; DeepSeek's by the name its model list gives). Gemini's `interactions:` transport marker is removed for lookup. These are list prices; a provider's own may differ, which the user's price corrects.
 
 Cache reads and writes are part of the prompt tokens and cost their own rates; where a model lists none, the input rate applies. A call with no known price shows no cost, and the page says how many calls that is rather than counting them as free. The price is looked up when the call ends and saved with it, so a later price change does not rewrite history.
 
@@ -64,11 +64,13 @@ Cache reads and writes are part of the prompt tokens and cost their own rates; w
 
 **What the working agent was given** is exactly the first message of its request, whose blocks are named: `USER`, `GOAL`, `AVAILABLE_SKILLS`, `ACTIVE_CAPABILITIES`, the history of the task's chat (each turn as `HISTORY · TURN n`, or a `HISTORY_CHECKPOINT`), `GOAL_STATE`, `CURRENT_TASK`, `LANES`, `ACCESS`, `RETRIEVED_HISTORY`, `PROJECT_CONTEXT`, `CURRENT_USER_MESSAGE`. A new task starts a new chat, so its first request holds no earlier turns, only what retrieval brought in. The router's input is cut the same way (`CURRENT_TIME`, `RECENT_ACTIVITY`, `RECENT_EXACT_HISTORY`, `KNOWN_GOALS`, `LANES`, `CURRENT_USER_MESSAGE`).
 
+**Numbers and their scope.** Overview totals and chart series exclude background embeddings; embeddings remain visible in the model breakdown, latest calls and database. Rolling range cutoffs are identical for tiles and charts, even within the first time bucket. The all-time axis uses the earliest retained model request, independent of feed pagination. Calls and the feed are ordered by request start time, so asynchronous price lookup cannot reorder a trace. Context-block, tool-result and readable-thinking token sizes use the local text tokenizer and are labelled approximate. Provider usage counters are kept separately and are authoritative for reported model totals; readable thinking can be only a summary, and absent thinking is never invented. Full raw usage remains visible, including provider counters that differ from normalized or local estimates.
+
 **Failed and stopped.** A call the user stopped (the provider's `aborted`) is counted as stopped, not failed, and is neither priced nor missing a price.
 
 ### The trace
 
-`GET /api/observe/questions/:id/trace` joins the call log and the ledger into one ordered list, so every token that entered for a message can be followed:
+`GET /api/observe/questions/:id/trace` joins the call log and the ledger into one ordered list, so the recorded context and provider usage for a message can be followed:
 
 1. **the message** as the user wrote it, its lane and attachments;
 2. **each router request**: the context it was given in blocks, its thinking, what it said, the `ledger_query` calls it made and what each answered, with the tokens, time and cost of the request;
@@ -77,7 +79,7 @@ Cache reads and writes are part of the prompt tokens and cost their own rates; w
 5. **compactions** between steps, with the size before and after, and a step whose context compaction rebuilt says so and shows the new context in blocks;
 6. **the answer**: the saved final answer, or the part written before a stop.
 
-A tool's result is the tool message that entered the next step's context, so it is exactly what the model saw (cut as the harness cut it), not a second recording. A step whose first message differs from the step before it was rebuilt by compaction; breakpoints for the prompt cache move at every step, so they are stored apart from the messages and do not count as a difference.
+A tool's result is the tool message that entered the next step's context, so it is exactly what the model saw (cut as the harness cut it), not a second recording. A step whose first message differs says **Context updated** and shows the new blocks; explicit compaction events establish when compaction occurred. Changed or added messages are found by their unchanged content-hash prefix, including rewrites without a change in message count. Tool results are joined from the full next request, even if its first context message changed; breakpoints for the prompt cache move at every step, so they are stored apart from the messages and do not count as a difference.
 
 ### The database view
 
