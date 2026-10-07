@@ -325,13 +325,14 @@ export class Runtime {
    */
   nameChat(turn: Turn, answer: string): void {
     const model = this.titler;
-    if (!model || !turn.taskId || !turn.goalId) return;
+    if (!model || !turn.taskId || !turn.goalId || this.store.titleSetByUser(turn.taskId)) return;
     const before = this.store.requireTask(turn.taskId).title;
     const asked = (this.store.getEvent(turn.userEventId)?.payload as { text?: string } | undefined)?.text ?? "";
     void nameChat(model, { message: asked, answer, trace: { goalId: turn.goalId, taskId: turn.taskId, turnId: turn.id, userEventId: turn.userEventId } })
       .then((title) => {
         const task = this.store.getTask(turn.taskId!);
-        if (title && task && task.title === before && title !== before) this.store.reviseTask(task.id, { title });
+        // A name the user chose, or one that changed meanwhile, is never replaced.
+        if (title && task && task.title === before && title !== before && !this.store.titleSetByUser(task.id)) this.store.reviseTask(task.id, { title });
       })
       .catch((error) => this.log(`naming a chat failed: ${message(error)}`));
   }

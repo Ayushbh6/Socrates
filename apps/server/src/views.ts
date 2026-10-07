@@ -183,3 +183,12 @@ function folderPath(input: string): string {
   } catch {}
   throw new FolderError("That folder does not exist.");
 }
+
+/** What is archived, for the Archived list: goals, and chats whose goal is not archived, newest first. */
+export function archivedView(store: LedgerStore) {
+  const { goals, tasks } = store.listArchived();
+  return {
+    goals: goals.map((g) => ({ number: g.number, title: g.title, archivedAt: g.archivedAt!, chats: store.listTasks(g.id, { includeArchived: true }).length })),
+    tasks: tasks.map(({ task, goal }) => ({ goal: { number: goal.number, title: goal.title }, number: task.number, title: task.title, archivedAt: task.archivedAt! })),
+  };
+}

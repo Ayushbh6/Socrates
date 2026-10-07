@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chatThread, groupChats, newThread } from "../src/lib/chats";
+import { chatThread, groupChats, newThread, withoutArchived } from "../src/lib/chats";
 import type { Exchange } from "../src/lib/model";
 import type { GoalView } from "../src/lib/types";
 
@@ -57,5 +57,17 @@ describe("one chat's questions", () => {
     expect(newThread(list, "m4")).toEqual([]);
     expect(newThread([...list, ex("m5", "e", null, "sending")], "m4").map((e) => e.key)).toEqual(["m5"]);
     expect(newThread(list, null)).toHaveLength(4);
+  });
+});
+
+describe("questions of an archived chat", () => {
+  const goals = [goal(1, "Resume", [[2, "Rewrite"]])];
+
+  it("are not shown once the chat is no longer listed, but work in progress and brand-new chats are", () => {
+    const old = "2020-01-01T00:00:00Z";
+    const now = new Date().toISOString();
+    const list = [ex("a", old, [1, 1]), ex("b", old, [1, 2]), ex("c", old, [9, 1]), ex("d", now, [9, 1]), ex("e", old, [1, 1], "working"), ex("f", old, null)];
+    expect(withoutArchived(list, goals).map((e) => e.key)).toEqual(["b", "d", "e", "f"]);
+    expect(withoutArchived(list, [])).toHaveLength(6);
   });
 });

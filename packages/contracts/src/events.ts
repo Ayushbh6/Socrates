@@ -37,6 +37,15 @@ export interface EventPayloads {
   goal_note_revised: { revision: number; note: string };
   task_created: { task_number: number; title: string; objective: string; general: boolean; completion_criteria?: string | null };
   task_revised: { revision: number; status: string; continuation_note: string | null; title: string; objective: string; completion_criteria?: string | null };
+  /** The user renamed a goal. */
+  goal_renamed: { title: string };
+  /** The user renamed a task, after its `task_revised` that carries the new title; marks the name as the user's own, which nothing else changes. */
+  task_renamed: { title: string };
+  /** Archived goals and tasks are hidden everywhere but the archive; restoring brings them back. Nothing is erased. */
+  goal_archived: Record<string, never>;
+  goal_restored: Record<string, never>;
+  task_archived: Record<string, never>;
+  task_restored: Record<string, never>;
   chat_opened: { ordinal: number; continuation_of: string | null; handover_ref: string | null };
   clarification_bound: { project_turn: number; user_event_id: string };
   anchor_revised: { anchor_id: string; path: string; role: string; status: "provisional" | "active" | "superseded"; summary: string };

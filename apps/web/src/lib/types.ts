@@ -117,6 +117,12 @@ export interface ChatChoice {
   task: number | null;
 }
 
+/** What is archived (architecture/server.md, "HTTP API"). */
+export interface ArchivedView {
+  goals: { number: number; title: string; archivedAt: string; chats: number }[];
+  tasks: { goal: { number: number; title: string }; number: number; title: string; archivedAt: string }[];
+}
+
 export interface GoalView {
   number: number;
   title: string;

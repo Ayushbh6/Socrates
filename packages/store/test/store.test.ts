@@ -305,7 +305,7 @@ describe("goal objectives and task completion criteria", () => {
   it("migrates a version 1 store in place without losing rows", () => {
     const dir = mkdtempSync(join(tmpdir(), "socrates-migrate-"));
     const path = join(dir, "v1.db");
-    const v1 = SCHEMA_SQL.replace(/^\s*objective\s+TEXT,\n/m, "").replace(/^\s*completion_criteria TEXT,\n/gm, "").replace(/^\s*lane_id\s+TEXT,\n/m, "");
+    const v1 = SCHEMA_SQL.replace(/^\s*objective\s+TEXT,\n/m, "").replace(/^\s*completion_criteria TEXT,\n/gm, "").replace(/^\s*lane_id\s+TEXT,\n/m, "").replace(/,\n\s*archived_at\s+TEXT\n\);/, "\n);").replace(/^\s*archived_at\s+TEXT,\n/m, "");
     expect(v1).not.toContain("completion_criteria");
     const raw = new DatabaseSync(path);
     raw.exec(v1);
@@ -385,6 +385,8 @@ describe("tool evidence", () => {
     original.db.exec("DELETE FROM exchange_fts");
     // A version 2 store predates each turn's lane.
     original.db.exec("ALTER TABLE turns DROP COLUMN lane_id");
+    original.db.exec("ALTER TABLE goals DROP COLUMN archived_at");
+    original.db.exec("ALTER TABLE tasks DROP COLUMN archived_at");
     original.setMeta("schema_version", "2");
     original.close();
     const upgraded = LedgerStore.open({ path });
@@ -470,6 +472,8 @@ describe("lanes", () => {
     const task = original.createTask(goal.id, { title: "Old task" });
     turnIn(original, task.id, "Earlier work.");
     original.db.exec("ALTER TABLE turns DROP COLUMN lane_id");
+    original.db.exec("ALTER TABLE goals DROP COLUMN archived_at");
+    original.db.exec("ALTER TABLE tasks DROP COLUMN archived_at");
     original.db.exec("DROP TABLE lanes");
     original.setMeta("schema_version", "4");
     original.close();
@@ -557,5 +561,89 @@ describe("event listeners", () => {
     expect(restored).toEqual([]);
     rebuilt.close();
     store.close();
+  });
+});
+
+describe("renaming and archiving", () => {
+  function twoChats() {
+    const { store } = openStore();
+    const goal = store.createGoal({ title: "Website" });
+    const a = store.createTask(goal.id, { title: "Hero layout" });
+    const b = store.createTask(goal.id, { title: "Footer links" });
+    const say = (task: { id: string }, text: string, answer: string) => {
+      const message = store.recordUserMessage(text);
+      const turn = store.bindTurn({ userEventId: message.id, taskId: task.id, route: "standard" });
+      store.completeTurn(turn.id, { responseEventId: store.recordResponse(answer, { turn_id: turn.id }).id });
+    };
+    say(a, "Fix the zebrastripe hero", "Hero fixed.");
+    say(b, "Add the footer links", "Footer done.");
+    return { store, goal, a, b, say };
+  }
+
+  it("renames a goal and a task, and marks the task's name as the user's", () => {
+    const { store, goal, a, b } = twoChats();
+    expect(store.titleSetByUser(a.id)).toBe(false);
+    expect(store.renameTask(a.id, "  Hero   on phones ").title).toBe("Hero on phones");
+    expect(store.titleSetByUser(a.id)).toBe(true);
+    expect(store.titleSetByUser(b.id)).toBe(false);
+    expect(store.renameGoal(goal.id, "Company site").title).toBe("Company site");
+    expect(store.searchLedger(toFtsQuery("phones")).map((h) => h.entityId)).toEqual([a.id]);
+    expect(() => store.renameTask(a.id, "   ")).toThrow(/cannot be empty/);
+    const { goal: general, task } = store.ensureGeneral();
+    expect(() => store.renameGoal(general.id, "x")).toThrow(/general/);
+    expect(() => store.archiveTask(task.id)).toThrow(/general/);
+  });
+
+  it("hides an archived chat from lists, search, the current chat and recent exchanges, and brings it back", () => {
+    const { store, goal, a, b } = twoChats();
+    expect(store.currentBinding()?.task.id).toBe(b.id);
+    store.archiveTask(b.id);
+    expect(store.listTasks(goal.id).map((t) => t.id)).toEqual([a.id]);
+    expect(store.listTasks(goal.id, { includeArchived: true })).toHaveLength(2);
+    expect(store.searchLedger(toFtsQuery("footer"))).toEqual([]);
+    expect(store.searchExchanges({ fts: toFtsQuery("footer"), limit: 5 })).toEqual([]);
+    expect([...store.recentExchanges()].map((e) => e.userMessage)).toEqual(["Fix the zebrastripe hero"]);
+    expect(store.currentBinding()?.task.id).toBe(a.id);
+    expect(store.listArchived().tasks.map((t) => t.task.id)).toEqual([b.id]);
+    expect(store.isArchived({ taskId: b.id })).toBe(true);
+
+    store.restoreTask(b.id);
+    expect(store.listTasks(goal.id)).toHaveLength(2);
+    expect(store.searchLedger(toFtsQuery("footer")).map((h) => h.entityId)).toEqual([b.id]);
+    expect(store.currentBinding()?.task.id).toBe(b.id);
+    expect(store.listArchived().tasks).toEqual([]);
+  });
+
+  it("hides an archived goal with every chat in it, and keeps the chats' own archive separate", () => {
+    const { store, goal, a, b } = twoChats();
+    store.archiveTask(a.id);
+    store.archiveGoal(goal.id);
+    expect(store.listGoals()).toEqual([]);
+    expect(store.searchLedger(toFtsQuery("hero"))).toEqual([]);
+    expect(store.searchExchanges({ fts: toFtsQuery("footer"), limit: 5 })).toEqual([]);
+    expect(store.currentBinding()).toBeNull();
+    expect(store.tasksUpdatedSince("2000-01-01")).toEqual([]);
+    expect(store.listArchived().goals.map((g) => g.id)).toEqual([goal.id]);
+    expect(store.listArchived().tasks).toEqual([]);
+
+    store.restoreGoal(goal.id);
+    expect(store.listGoals().map((g) => g.id)).toEqual([goal.id]);
+    expect(store.listTasks(goal.id).map((t) => t.id)).toEqual([b.id]);
+    expect(store.listArchived().tasks.map((t) => t.task.id)).toEqual([a.id]);
+  });
+
+  it("replays from the event log with the same names and archive", () => {
+    const { store, goal, a, b } = twoChats();
+    store.renameTask(a.id, "Hero on phones");
+    store.renameGoal(goal.id, "Company site");
+    store.archiveTask(b.id);
+    const { store: copy } = openStore();
+    copy.restoreEvents(JSON.parse(JSON.stringify(store.listEvents())));
+    expect(copy.requireGoal(goal.id).title).toBe("Company site");
+    expect(copy.requireTask(a.id).title).toBe("Hero on phones");
+    expect(copy.titleSetByUser(a.id)).toBe(true);
+    expect(copy.listTasks(goal.id).map((t) => t.id)).toEqual([a.id]);
+    expect(copy.searchLedger(toFtsQuery("footer"))).toEqual([]);
+    expect(copy.listArchived().tasks.map((t) => t.task.id)).toEqual([b.id]);
   });
 });

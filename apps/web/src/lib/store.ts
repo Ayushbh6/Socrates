@@ -3,7 +3,7 @@ import { type SettingsPatch, api } from "./api";
 import { IMAGES_MAX, prepareImage } from "./images";
 import { LiveConnection } from "./live";
 import { type Model, type ModelEvent, emptyModel, reduce, replayFrom } from "./model";
-import type { Access, AttachmentView, ChatChoice, Command, Effort, GoalView, ServerMessage, Settings, Status } from "./types";
+import type { Access, ArchivedView, AttachmentView, ChatChoice, Command, Effort, GoalView, ServerMessage, Settings, Status } from "./types";
 
 export interface AppState {
   model: Model;
@@ -20,6 +20,8 @@ export interface AppState {
   drafts: Record<string, string>;
   /** Images waiting to go with each conversation's next message. */
   images: Record<string, PendingImage[]>;
+  /** What is archived, once its list has been opened. */
+  archived: ArchivedView | null;
 }
 
 /** An image in the composer: being stored, ready to send, or refused. */
@@ -38,7 +40,7 @@ const newId = () => `c${Date.now().toString(36)}${Math.random().toString(36).sli
 
 /** The page's one source of truth: history, the live connection, and the server's settings. */
 export class Store {
-  private state: AppState = { model: emptyModel(), status: null, settings: null, goals: [], connected: false, older: {}, error: null, drafts: {}, images: {} };
+  private state: AppState = { model: emptyModel(), status: null, settings: null, goals: [], connected: false, older: {}, error: null, drafts: {}, images: {}, archived: null };
   private readonly listeners = new Set<() => void>();
   private resume: number | null = null;
   private goalsTimer: ReturnType<typeof setTimeout> | null = null;
@@ -288,6 +290,37 @@ export class Store {
     if (message.type === "state" && this.state.settings && JSON.stringify(message.access) !== JSON.stringify(this.state.settings.access)) this.set({ settings: { ...this.state.settings, access: message.access } });
     this.dispatch({ type: "server", message });
     if (message.type === "activity" && ["ledger", "routed", "finished", "lane"].includes(message.kind)) this.refreshGoals();
+  }
+
+  /** Rename, archive and restore (standard mode's sidebar, flow mode's notes): done on the server, then the lists are read again. */
+  async renameGoal(goal: number, title: string): Promise<void> {
+    await api.renameGoal(goal, title);
+    await this.reloadGoals();
+  }
+
+  async renameChat(goal: number, task: number, title: string): Promise<void> {
+    await api.renameChat(goal, task, title);
+    await this.reloadGoals();
+  }
+
+  async archive(what: { goal: number; task?: number }): Promise<void> {
+    await (what.task === undefined ? api.archiveGoal(what.goal) : api.archiveChat(what.goal, what.task));
+    await this.reloadGoals();
+  }
+
+  async restore(what: { goal: number; task?: number }): Promise<void> {
+    await (what.task === undefined ? api.restoreGoal(what.goal) : api.restoreChat(what.goal, what.task));
+    await this.reloadGoals();
+  }
+
+  private async reloadGoals(): Promise<void> {
+    const [goals, archived] = await Promise.all([api.goals(), api.archived()]);
+    this.set({ goals, archived });
+  }
+
+  /** The archive, read when its list is opened. */
+  async loadArchived(): Promise<void> {
+    this.set({ archived: await api.archived() });
   }
 
   /** Standard mode's New goal: made on the server, then listed. */

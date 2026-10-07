@@ -444,6 +444,11 @@ export class Socrates {
     }
   }
 
+  /** Whether a task has a message running or waiting, so it should not be renamed under it or archived. */
+  taskBusy(taskId: string): boolean {
+    return this.taskLocks.has(taskId);
+  }
+
   /** A standard-mode message, bound where the user sent it: its task, or a new one in its goal. */
   private bindChosen(message: string, laneId: string | null, target: NonNullable<HandleOptions["target"]>, userEventId?: string): RoutedPart {
     return this.store.transaction(() => {
@@ -451,6 +456,7 @@ export class Socrates {
       const task = "taskId" in target ? this.store.requireTask(target.taskId) : this.store.createTask(target.goalId, { title: target.title, objective: message.trim() || target.title });
       const goal = this.store.requireGoal(task.goalId);
       if (goal.general) throw new Error("A standard-mode message cannot be sent to the general conversation.");
+      if (task.archivedAt || goal.archivedAt) throw new Error("That chat is archived; restore it first.");
       // A chosen chat that was done is taken up again.
       if (task.status === "completed") this.store.reviseTask(task.id, { status: "open" });
       const userEvent = userEventId ? this.store.getEvent(userEventId)! : this.store.recordUserMessage(message, laneId);

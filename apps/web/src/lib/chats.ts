@@ -70,3 +70,19 @@ export function newThread(exchanges: Exchange[], after: string | null): Exchange
   const from = after === null ? 0 : exchanges.findIndex((e) => e.key === after) + 1;
   return exchanges.slice(from);
 }
+
+/**
+ * The questions the page still shows: those of a chat that was archived (so is
+ * no longer listed) are left out. A question still being worked on, or one
+ * whose goal has not been listed yet, is always kept.
+ */
+export function withoutArchived(exchanges: Exchange[], goals: GoalView[]): Exchange[] {
+  if (!goals.length) return exchanges;
+  const listed = new Map(goals.map((g) => [g.number, new Set(g.tasks.map((t) => t.number))]));
+  return exchanges.filter((e) => {
+    if (!e.route || e.state === "sending" || e.state === "working") return true;
+    const tasks = listed.get(e.route.goal.number);
+    // A goal not listed at all is archived, or too new to be listed; only an old, settled question is dropped.
+    return tasks ? tasks.has(e.route.task.number) : Date.now() - Date.parse(e.at) < 60_000;
+  });
+}

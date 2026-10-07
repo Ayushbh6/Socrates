@@ -21,7 +21,7 @@
  * - `lanes` are the parallel lanes; a turn's `lane_id` is the lane it ran in,
  *   null for the main conversation.
  */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /**
  * In-place upgrades from older schema versions, keyed by the version they
@@ -40,6 +40,8 @@ ALTER TABLE task_revisions ADD COLUMN completion_criteria TEXT;
   3: "",
   // Version 5 adds lanes (created by SCHEMA_SQL) and each turn's lane.
   4: "ALTER TABLE turns ADD COLUMN lane_id TEXT;",
+  // Version 6 adds archiving: a goal or task with a time here is hidden everywhere but the archive.
+  5: "ALTER TABLE goals ADD COLUMN archived_at TEXT; ALTER TABLE tasks ADD COLUMN archived_at TEXT;",
 };
 
 export const SCHEMA_SQL = `
@@ -85,7 +87,8 @@ CREATE TABLE IF NOT EXISTS goals (
   note          TEXT,
   note_revision INTEGER NOT NULL DEFAULT 0,
   created_at    TEXT NOT NULL,
-  updated_at    TEXT NOT NULL
+  updated_at    TEXT NOT NULL,
+  archived_at   TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS goals_single_general ON goals(is_general) WHERE is_general = 1;
 
@@ -116,6 +119,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   started_at        TEXT NOT NULL,
   updated_at        TEXT NOT NULL,
   completed_at      TEXT,
+  archived_at       TEXT,
   UNIQUE (goal_id, task_number)
 );
 CREATE INDEX IF NOT EXISTS tasks_by_updated ON tasks(updated_at);

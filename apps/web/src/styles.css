@@ -484,10 +484,7 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .new-goal input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--tint); }
 .new-goal small { padding: 0 0.2rem; color: var(--danger); font-size: 0.75rem; }
 .goal-item { position: relative; }
-.goal-item > .goal-new { position: absolute; top: 0.2rem; right: 1.6rem; opacity: 0; }
-.goal-item:hover > .goal-new, .goal-item > .goal-new:focus-visible { opacity: 1; }
 .goal-row { padding-right: 2.6rem; }
-@media (hover: none) { .goal-item > .goal-new { opacity: 1; } }
 .chat-more { color: var(--faint); font-size: 0.8rem; }
 .sidebar-scrim-button { display: none; }
 .chat-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -584,3 +581,37 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* Renaming, archiving and the archive, in standard mode's sidebar */
+
+.goal-item, .chat-item { position: relative; }
+.row-actions { position: absolute; top: 50%; right: 0.3rem; display: flex; gap: 0.05rem; transform: translateY(-50%); opacity: 0; transition: opacity 120ms; }
+.goal-item > .row-actions { top: 1.2rem; right: 1.5rem; }
+.goal-item:hover > .row-actions, .chat-item:hover > .row-actions, .row-actions:focus-within { opacity: 1; }
+.row-actions .icon-button { width: 1.5rem; height: 1.5rem; background: var(--bg); }
+.row-actions .icon-button svg { width: 0.85rem; height: 0.85rem; }
+@media (hover: none) { .row-actions { opacity: 1; } }
+.rename-input { width: calc(100% - 0.4rem); margin: 0.15rem 0.2rem; padding: 0.4rem 0.6rem; border: 1px solid var(--accent); border-radius: 0.6rem; background: #fff; color: var(--text); font: inherit; font-size: 0.86rem; outline: none; box-shadow: 0 0 0 3px var(--tint); }
+.sidebar-error { margin: 0.3rem 0.6rem; color: var(--danger); font-size: 0.78rem; }
+.archive-drawer { position: sticky; bottom: -0.8rem; z-index: 1; margin: auto -0.6rem -0.8rem; padding: 0.4rem 0.6rem 0.8rem; background: #f3f2ed; }
+.archive-toggle { display: flex; align-items: center; gap: 0.5rem; width: 100%; padding: 0.55rem 0.6rem; border: 0; border-radius: 0.65rem; background: transparent; color: var(--muted); font-size: 0.82rem; text-align: left; }
+.archive-toggle:hover { background: var(--hover); }
+.archive-toggle svg { width: 0.95rem; height: 0.95rem; }
+.archive-list { max-height: 14rem; margin: 0 0 0.4rem; overflow-y: auto; padding: 0; list-style: none; }
+.archive-list li { display: flex; align-items: center; gap: 0.3rem; padding: 0.25rem 0.3rem 0.25rem 0.6rem; border-radius: 0.6rem; color: var(--muted); font-size: 0.82rem; }
+.archive-list li > span { display: flex; flex: 1; flex-direction: column; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.archive-list li > span svg { display: inline; width: 0.85rem; height: 0.85rem; margin-right: 0.4rem; vertical-align: -0.1rem; }
+.archive-list small { color: var(--faint); font-size: 0.72rem; }
+.archive-list .icon-button svg { width: 0.95rem; height: 0.95rem; }
+.toast { position: fixed; left: 50%; bottom: 1.2rem; z-index: 30; display: flex; align-items: center; gap: 0.8rem; max-width: min(28rem, calc(100vw - 2rem)); padding: 0.6rem 0.7rem 0.6rem 1rem; border-radius: 0.9rem; background: var(--button); color: #fff; font-size: 0.85rem; box-shadow: var(--shadow-float); transform: translateX(-50%); }
+.toast span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toast .quiet-button { color: #9fe3e0; }
+
+/* Renaming from the expanded note */
+
+.note-title-row { display: flex; align-items: flex-start; gap: 0.5rem; }
+.note-title-row h2 { flex: 1; min-width: 0; }
+.note-title-row .icon-button { flex: none; margin-top: 0.35rem; }
+.note-title-row .icon-button svg { width: 0.95rem; height: 0.95rem; }
+.note-title-input { flex: 1; min-width: 0; padding: 0.3rem 0.5rem; border: 1px solid var(--accent); border-radius: 0.6rem; background: #fff; color: var(--text); font-family: var(--serif); font-size: clamp(1.4rem, 3vw, 2rem); font-weight: 500; line-height: 1.2; outline: none; box-shadow: 0 0 0 3px var(--tint); }
+.note-title-error { margin: 0.4rem 0 0; color: var(--danger); font-size: 0.78rem; }

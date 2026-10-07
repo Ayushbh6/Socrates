@@ -396,10 +396,10 @@ export class LiveHub {
   private chatTarget(chat: ChatChoice, text: string, images: number): { taskId: string } | { goalId: string; title: string } {
     const store = this.runtime.store;
     const goal = chat.goal === null ? this.runtime.chatsGoal() : store.getGoalByNumber(chat.goal);
-    if (!goal || goal.general) throw new LiveError("not_found", "That goal no longer exists.");
+    if (!goal || goal.general || goal.archivedAt) throw new LiveError("not_found", "That goal no longer exists.");
     if (chat.task === null) return { goalId: goal.id, title: provisionalTitle(text, images) };
     const task = store.getTaskByNumber(goal.id, chat.task);
-    if (!task) throw new LiveError("not_found", "That chat no longer exists.");
+    if (!task || task.archivedAt) throw new LiveError("not_found", "That chat no longer exists.");
     return { taskId: task.id };
   }
 

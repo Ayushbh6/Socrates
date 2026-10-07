@@ -51,7 +51,7 @@ describe("standard mode: the user chooses the chat", () => {
     expect(router.requests.filter((r) => !naming(r))).toHaveLength(0);
 
     // The name arrives in the background.
-    await expect.poll(() => rt.store.requireTask(task!.id).title).toBe("Checkout repair");
+    await expect.poll(() => rt.store.requireTask(task!.id).title, { timeout: 5000 }).toBe("Checkout repair");
 
     p.send({ type: "send", id: "m2", text: "Now the tablet.", to: "main", chat: { goal: chats.number, task: task!.number } });
     await p.next(isResult("m2"));
@@ -125,5 +125,86 @@ describe("switching between flow and standard mode", () => {
     expect(work).toContain("What is in CoverNow?");
     expect(work).toContain("And Me?");
     expect(work).not.toContain("Critique my resume.");
+  });
+});
+
+describe("renaming and archiving chats and goals", () => {
+  async function setup() {
+    const router = new Responder("r", (_m, request) => (naming(request) ? { text: "Machine name" } : { text: "no" }));
+    const agent = new Responder("a", () => final({ full_answer: "Done." }));
+    const live = await liveServer(router, agent);
+    const call = async (method: string, url: string, body?: object) => {
+      const response = await live.app.inject({ method: method as "GET", url, headers: { authorization: `Bearer ${live.token}`, host: `127.0.0.1:${live.port}`, ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { payload: JSON.stringify(body) } : {}) });
+      return { status: response.statusCode, body: response.json() as any };
+    };
+    return { ...live, call, router, agent };
+  }
+
+  it("renames a chat and a goal; the user's name is never replaced by the namer", async () => {
+    const { page, rt, call } = await setup();
+    const p = await page();
+    p.send({ type: "hello" });
+    await p.next((m) => m.type === "state");
+    const goal = rt.store.createGoal({ title: "Website" });
+    p.send({ type: "send", id: "m1", text: "Make the hero fit on phones.", to: "main", chat: { goal: goal.number, task: null } });
+    // The user renames the chat while it is still being worked on, before the namer answers.
+    const task = await expect.poll(() => rt.store.listTasks(goal.id)[0], { timeout: 5000 }).toBeDefined().then(() => rt.store.listTasks(goal.id)[0]!);
+    expect((await call("PATCH", `/api/goals/${goal.number}/tasks/${task.number}`, { title: "Hero on phones" })).status).toBe(200);
+    await p.next(isResult("m1"));
+    await new Promise((r) => setTimeout(r, 150));
+    expect(rt.store.requireTask(task.id).title).toBe("Hero on phones");
+    expect(rt.store.titleSetByUser(task.id)).toBe(true);
+
+    expect((await call("PATCH", `/api/goals/${goal.number}`, { title: "Company site" })).body.title).toBe("Company site");
+    expect((await call("PATCH", `/api/goals/${goal.number}`, { title: "   " })).status).toBe(400);
+    expect((await call("PATCH", "/api/goals/99", { title: "x" })).status).toBe(404);
+  });
+
+  it("archives a chat and a goal out of the lists and the router's view, and restores them", async () => {
+    const { page, rt, call } = await setup();
+    const p = await page();
+    p.send({ type: "hello" });
+    await p.next((m) => m.type === "state");
+    const goal = rt.store.createGoal({ title: "Website" });
+    p.send({ type: "send", id: "m1", text: "Make the hero fit on phones.", to: "main", chat: { goal: goal.number, task: null } });
+    await p.next(isResult("m1"));
+    const task = rt.store.listTasks(goal.id)[0]!;
+
+    expect((await call("POST", `/api/goals/${goal.number}/tasks/${task.number}/archive`)).status).toBe(200);
+    expect((await call("GET", "/api/goals")).body.find((g: any) => g.number === goal.number).tasks).toEqual([]);
+    expect((await call("GET", "/api/archived")).body.tasks).toEqual([expect.objectContaining({ number: task.number, goal: { number: goal.number, title: "Website" } })]);
+
+    // An archived chat is not found, so nothing can be sent into it.
+    p.send({ type: "send", id: "m2", text: "More.", to: "main", chat: { goal: goal.number, task: task.number } });
+    expect(await p.next((m) => m.type === "error" && m.id === "m2")).toMatchObject({ code: "not_found" });
+
+    expect((await call("POST", `/api/goals/${goal.number}/tasks/${task.number}/restore`)).status).toBe(200);
+    p.send({ type: "send", id: "m3", text: "More.", to: "main", chat: { goal: goal.number, task: task.number } });
+    await p.next(isResult("m3"));
+
+    expect((await call("POST", `/api/goals/${goal.number}/archive`)).status).toBe(200);
+    expect((await call("GET", "/api/goals")).body.some((g: any) => g.number === goal.number)).toBe(false);
+    expect((await call("GET", "/api/archived")).body.goals).toEqual([expect.objectContaining({ number: goal.number, chats: 1 })]);
+    expect((await call("POST", `/api/goals/${goal.number}/restore`)).status).toBe(200);
+    expect((await call("GET", "/api/goals")).body.find((g: any) => g.number === goal.number).tasks).toHaveLength(1);
+  });
+
+  it("will not archive the Chats list, and refuses while Socrates is working in the chat", async () => {
+    const gate = new Promise<void>(() => {});
+    const router = new Responder("r", () => ({ text: "no" }));
+    const agent = new Responder("a", async () => (await gate, final()));
+    const live = await liveServer(router, agent);
+    const call = (method: string, url: string) => live.app.inject({ method: method as "POST", url, headers: { authorization: `Bearer ${live.token}`, host: `127.0.0.1:${live.port}` } });
+    const p = await live.page();
+    p.send({ type: "hello" });
+    await p.next((m) => m.type === "state");
+    p.send({ type: "send", id: "m1", text: "Take a while.", to: "main", chat: { goal: null, task: null } });
+    await p.next((m) => m.type === "accepted");
+    const chats = live.rt.chatsGoal();
+    await expect.poll(() => live.rt.store.listTasks(chats.id).length, { timeout: 5000 }).toBe(1);
+    const task = live.rt.store.listTasks(chats.id)[0]!;
+    await expect.poll(async () => (await call("POST", `/api/goals/${chats.number}/tasks/${task.number}/archive`)).statusCode, { timeout: 5000 }).toBe(409);
+    expect((await call("POST", `/api/goals/${chats.number}/archive`)).statusCode).toBe(400);
+    live.rt.socrates!.close().catch(() => {});
   });
 });

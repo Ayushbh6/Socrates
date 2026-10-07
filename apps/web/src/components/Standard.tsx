@@ -1,6 +1,6 @@
 import { PanelLeft, Square, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { chatThread, chatTitle, groupChats, newThread } from "../lib/chats";
+import { chatThread, chatTitle, groupChats, newThread, withoutArchived } from "../lib/chats";
 import { conversationBusy, currentRoute } from "../lib/model";
 import { type AppState, store } from "../lib/store";
 import type { ChatChoice, Lane } from "../lib/types";
@@ -8,7 +8,7 @@ import { AccessMenu } from "./AccessMenu";
 import { Composer } from "./Composer";
 import { type Mode, ModeSwitch } from "./ModeSwitch";
 import { Notices } from "./Notices";
-import { StandardSidebar } from "./StandardSidebar";
+import { StandardSidebar, type Target } from "./StandardSidebar";
 import { Thread } from "./Thread";
 
 /**
@@ -26,7 +26,8 @@ type View = null | { chat: { goal: number; task: number; chat: number } } | { fr
  */
 export function Standard({ app, mode, onMode, onSettings }: { app: AppState; mode: Mode; onMode: (mode: Mode) => void; onSettings: () => void }) {
   const lanes = app.model.live?.lanes ?? app.status?.lanes ?? [];
-  const main = app.model.conversations.main ?? [];
+  const everything = app.model.conversations.main;
+  const main = useMemo(() => withoutArchived(everything ?? [], app.goals), [everything, app.goals]);
   const side = lanes.length > 0 || app.model.pending.length > 0;
   const mainBusy = conversationBusy(app.model.live, "main");
   const [view, setView] = useState<View>(null);
@@ -55,6 +56,20 @@ export function Standard({ app, mode, onMode, onSettings }: { app: AppState; mod
   const target: ChatChoice = route && !fresh ? { goal: route.goal.number, task: route.task.number } : { goal: fresh?.goal ?? null, task: null };
   const narrow = () => window.innerWidth < 900;
 
+  // Archiving says so for a few seconds, with a way back.
+  const [toast, setToast] = useState<{ text: string; undo: () => void } | null>(null);
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 8_000);
+    return () => clearTimeout(timer);
+  }, [toast]);
+  const archive = async (what: Target, title: string) => {
+    await store.archive(what);
+    // The open chat (or one in the archived goal) is gone; the view follows the newest remaining chat.
+    if (route && route.goal.number === what.goal && (what.task === undefined || what.task === route.task.number)) setView(null);
+    setToast({ text: `Archived “${title}”`, undo: () => { setToast(null); void store.restore(what); } });
+  };
+
   return (
     <div className="standard" data-lanes={side} data-sidebar={sidebar}>
       {sidebar && (
@@ -64,6 +79,11 @@ export function Standard({ app, mode, onMode, onSettings }: { app: AppState; mod
             current={route ? { goal: route.goal.number, task: route.task.number, chat } : null}
             onChat={(g, t, c) => { setView({ chat: { goal: g, task: t, chat: c } }); if (narrow()) setSidebar(false); }}
             onNew={(g) => { setView({ fresh: main.at(-1)?.key ?? null, goal: g }); if (narrow()) setSidebar(false); }}
+            archived={app.archived}
+            onRename={(what, title) => (what.task === undefined ? store.renameGoal(what.goal, title) : store.renameChat(what.goal, what.task, title))}
+            onArchive={archive}
+            onRestore={(what) => store.restore(what)}
+            onOpenArchive={() => void store.loadArchived().catch(() => {})}
             onNewGoal={async (title) => {
               const made = await store.createGoal(title);
               setView({ fresh: main.at(-1)?.key ?? null, goal: made.number });
@@ -105,6 +125,12 @@ export function Standard({ app, mode, onMode, onSettings }: { app: AppState; mod
         </div>
       )}
 
+      {toast && (
+        <div className="toast" role="status">
+          <span>{toast.text}</span>
+          <button type="button" className="quiet-button" onClick={toast.undo}>Undo</button>
+        </div>
+      )}
       <Notices app={app} />
     </div>
   );

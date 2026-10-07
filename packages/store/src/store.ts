@@ -25,6 +25,8 @@ export interface Goal {
   noteRevision: number;
   createdAt: string;
   updatedAt: string;
+  /** When it was archived; null while it is in use. */
+  archivedAt: string | null;
 }
 
 export interface Task {
@@ -42,6 +44,8 @@ export interface Task {
   startedAt: string;
   updatedAt: string;
   completedAt: string | null;
+  /** When it was archived; null while it is in use. */
+  archivedAt: string | null;
 }
 
 export interface Chat {
@@ -194,6 +198,16 @@ const strOrNull = (v: unknown): string | null => (v === null || v === undefined 
 const channel = (laneId: string | null): string => (laneId ? "lane_id = ?" : "lane_id IS NULL");
 const num = (v: unknown): number => Number(v);
 
+/** A turn of a goal and task that are not archived, for queries on `turns`. */
+const LIVE_TURN = "(turns.task_id IS NULL OR (turns.task_id NOT IN (SELECT id FROM tasks WHERE archived_at IS NOT NULL) AND turns.goal_id NOT IN (SELECT id FROM goals WHERE archived_at IS NOT NULL)))";
+
+/** A name the user typed: trimmed, on one line, and not empty. */
+function chosenTitle(title: string): string {
+  const text = title.replace(/\s+/g, " ").trim();
+  if (!text) throw new StoreError("A name cannot be empty.");
+  return text;
+}
+
 function toGoal(r: Row): Goal {
   return {
     id: str(r.id),
@@ -207,6 +221,7 @@ function toGoal(r: Row): Goal {
     noteRevision: num(r.note_revision),
     createdAt: str(r.created_at),
     updatedAt: str(r.updated_at),
+    archivedAt: strOrNull(r.archived_at),
   };
 }
 
@@ -225,6 +240,7 @@ function toTask(r: Row): Task {
     startedAt: str(r.started_at),
     updatedAt: str(r.updated_at),
     completedAt: strOrNull(r.completed_at),
+    archivedAt: strOrNull(r.archived_at),
   };
 }
 
@@ -590,6 +606,16 @@ export class LedgerStore {
         this.run("UPDATE tasks SET title = ?, objective = ?, completion_criteria = ?, status = ?, continuation_note = ?, revision = ?, updated_at = ?, completed_at = ? WHERE id = ?", p.title, p.objective, criteria, p.status, p.continuation_note, p.revision, e.at, completed, e.task_id);
         this.run("UPDATE goals SET updated_at = ? WHERE id = ?", e.at, e.goal_id); break;
       }
+      case "goal_renamed": {
+        const p = e.payload as EventPayloads["goal_renamed"];
+        this.run("UPDATE goals SET title = ?, updated_at = ? WHERE id = ?", p.title, e.at, e.goal_id); break;
+      }
+      // The new title is already in the task_revised before it; this marks it as the user's.
+      case "task_renamed": break;
+      case "goal_archived": this.run("UPDATE goals SET archived_at = ? WHERE id = ?", e.at, e.goal_id); break;
+      case "goal_restored": this.run("UPDATE goals SET archived_at = NULL WHERE id = ?", e.goal_id); break;
+      case "task_archived": this.run("UPDATE tasks SET archived_at = ? WHERE id = ?", e.at, e.task_id); break;
+      case "task_restored": this.run("UPDATE tasks SET archived_at = NULL WHERE id = ?", e.task_id); break;
       case "chat_opened": {
         const p = e.payload as EventPayloads["chat_opened"];
         this.run("INSERT INTO chats (id, task_id, ordinal, continuation_of, handover_ref, compaction_count, opened_at) VALUES (?, ?, ?, ?, ?, 0, ?)", e.chat_id, e.task_id, p.ordinal, p.continuation_of, p.handover_ref ?? null, e.at); break;
@@ -747,8 +773,102 @@ export class LedgerStore {
     return r ? toGoal(r) : null;
   }
 
-  listGoals(): Goal[] {
-    return this.all("SELECT * FROM goals ORDER BY goal_number").map(toGoal);
+  /** Every goal in the order they were made, leaving out archived ones unless asked. */
+  listGoals(options: { includeArchived?: boolean } = {}): Goal[] {
+    return this.all(`SELECT * FROM goals ${options.includeArchived ? "" : "WHERE archived_at IS NULL"} ORDER BY goal_number`).map(toGoal);
+  }
+
+  /** Rename a goal as the user chose; the new name is never changed by the router or the agent. */
+  renameGoal(goalId: string, title: string): Goal {
+    const next = chosenTitle(title);
+    return this.transaction(() => {
+      const goal = this.requireGoal(goalId);
+      if (goal.general) throw new StoreError("The general conversation cannot be renamed.");
+      const event = this.appendEvent("goal_renamed", { title: next }, { goal_id: goalId });
+      this.run("UPDATE goals SET title = ?, updated_at = ? WHERE id = ?", next, event.at, goalId);
+      this.indexGoal(goalId);
+      return this.requireGoal(goalId);
+    });
+  }
+
+  /** Rename a task (a standard-mode chat) as the user chose; from then on nothing else changes its name. */
+  renameTask(taskId: string, title: string): Task {
+    const next = chosenTitle(title);
+    return this.transaction(() => {
+      const task = this.requireTask(taskId);
+      if (task.general) throw new StoreError("The general conversation cannot be renamed.");
+      this.reviseTask(taskId, { title: next });
+      this.appendEvent("task_renamed", { title: this.requireTask(taskId).title }, { goal_id: task.goalId, task_id: taskId });
+      return this.requireTask(taskId);
+    });
+  }
+
+  /** Whether the user chose this task's name. */
+  titleSetByUser(taskId: string): boolean {
+    return this.get("SELECT 1 FROM events WHERE type = 'task_renamed' AND task_id = ? LIMIT 1", taskId) !== undefined;
+  }
+
+  /** Hide a goal everywhere but the archive. Its tasks and history stay exactly as they were. */
+  archiveGoal(goalId: string): Goal {
+    return this.transaction(() => {
+      const goal = this.requireGoal(goalId);
+      if (goal.general) throw new StoreError("The general conversation cannot be archived.");
+      if (goal.archivedAt) return goal;
+      const event = this.appendEvent("goal_archived", {}, { goal_id: goalId });
+      this.run("UPDATE goals SET archived_at = ? WHERE id = ?", event.at, goalId);
+      this.unindexGoal(goalId);
+      return this.requireGoal(goalId);
+    });
+  }
+
+  restoreGoal(goalId: string): Goal {
+    return this.transaction(() => {
+      const goal = this.requireGoal(goalId);
+      if (!goal.archivedAt) return goal;
+      this.appendEvent("goal_restored", {}, { goal_id: goalId });
+      this.run("UPDATE goals SET archived_at = NULL WHERE id = ?", goalId);
+      this.indexGoal(goalId);
+      for (const task of this.listTasks(goalId)) this.indexTask(task.id);
+      return this.requireGoal(goalId);
+    });
+  }
+
+  /** Hide a task (a standard-mode chat) everywhere but the archive. */
+  archiveTask(taskId: string): Task {
+    return this.transaction(() => {
+      const task = this.requireTask(taskId);
+      if (task.general) throw new StoreError("The general conversation cannot be archived.");
+      if (task.archivedAt) return task;
+      const event = this.appendEvent("task_archived", {}, { goal_id: task.goalId, task_id: taskId });
+      this.run("UPDATE tasks SET archived_at = ? WHERE id = ?", event.at, taskId);
+      this.run("DELETE FROM ledger_fts WHERE entity = 'task' AND entity_id = ?", taskId);
+      return this.requireTask(taskId);
+    });
+  }
+
+  restoreTask(taskId: string): Task {
+    return this.transaction(() => {
+      const task = this.requireTask(taskId);
+      if (!task.archivedAt) return task;
+      this.appendEvent("task_restored", {}, { goal_id: task.goalId, task_id: taskId });
+      this.run("UPDATE tasks SET archived_at = NULL WHERE id = ?", taskId);
+      this.indexTask(taskId);
+      return this.requireTask(taskId);
+    });
+  }
+
+  /** Whether a goal or task is archived, or belongs to an archived goal. */
+  isArchived(ref: { goalId?: string | null; taskId?: string | null }): boolean {
+    if (ref.taskId && this.get("SELECT 1 FROM tasks WHERE id = ? AND archived_at IS NOT NULL", ref.taskId)) return true;
+    const goalId = ref.goalId ?? (ref.taskId ? this.getTask(ref.taskId)?.goalId : null);
+    return !!goalId && !!this.get("SELECT 1 FROM goals WHERE id = ? AND archived_at IS NOT NULL", goalId);
+  }
+
+  /** What is archived: goals, and tasks whose goal is not (a task of an archived goal is hidden with it). */
+  listArchived(): { goals: Goal[]; tasks: { task: Task; goal: Goal }[] } {
+    const goals = this.all("SELECT * FROM goals WHERE archived_at IS NOT NULL ORDER BY archived_at DESC").map(toGoal);
+    const tasks = this.all("SELECT t.* FROM tasks t JOIN goals g ON g.id = t.goal_id WHERE t.archived_at IS NOT NULL AND g.archived_at IS NULL ORDER BY t.archived_at DESC").map(toTask);
+    return { goals, tasks: tasks.map((task) => ({ task, goal: this.requireGoal(task.goalId) })) };
   }
 
   /** A goal's workspace binding is permanent once set (Goal-router.md, rule 11). */
@@ -857,10 +977,11 @@ export class LedgerStore {
   }
 
   /** Tasks of a goal, most recently updated first. */
-  listTasks(goalId: string, options: { status?: LedgerStatus } = {}): Task[] {
+  listTasks(goalId: string, options: { status?: LedgerStatus; includeArchived?: boolean } = {}): Task[] {
+    const live = options.includeArchived ? "" : " AND archived_at IS NULL";
     const rows = options.status
-      ? this.all("SELECT * FROM tasks WHERE goal_id = ? AND status = ? ORDER BY updated_at DESC, task_number DESC", goalId, options.status)
-      : this.all("SELECT * FROM tasks WHERE goal_id = ? ORDER BY updated_at DESC, task_number DESC", goalId);
+      ? this.all(`SELECT * FROM tasks WHERE goal_id = ? AND status = ?${live} ORDER BY updated_at DESC, task_number DESC`, goalId, options.status)
+      : this.all(`SELECT * FROM tasks WHERE goal_id = ?${live} ORDER BY updated_at DESC, task_number DESC`, goalId);
     return rows.map(toTask);
   }
 
@@ -1377,7 +1498,7 @@ export class LedgerStore {
    * across workspaces; a lane's work never changes the main conversation's.
    */
   currentBinding(laneId: string | null = null): CurrentBinding | null {
-    const r = this.get(`SELECT * FROM turns WHERE kind = 'task' AND ${channel(laneId)} ORDER BY project_turn DESC LIMIT 1`, ...(laneId ? [laneId] : []));
+    const r = this.get(`SELECT * FROM turns WHERE kind = 'task' AND ${channel(laneId)} AND ${LIVE_TURN} ORDER BY project_turn DESC LIMIT 1`, ...(laneId ? [laneId] : []));
     if (!r) return null;
     const turn = toTurn(r);
     const goal = this.requireGoal(turn.goalId!);
@@ -1402,7 +1523,7 @@ export class LedgerStore {
            FROM turns t
            JOIN events ue ON ue.id = t.user_event_id
            JOIN events re ON re.id = t.response_event_id
-          WHERE t.response_event_id IS NOT NULL AND t.project_turn < ? AND (${where})
+          WHERE t.response_event_id IS NOT NULL AND t.project_turn < ? AND (${where}) AND ${LIVE_TURN.replaceAll("turns.", "t.")}
           ORDER BY t.project_turn DESC
           LIMIT ?`,
         before,
@@ -1743,7 +1864,7 @@ export class LedgerStore {
     throughTurn?: number;
     limit: number;
   }): ExchangeHit[] {
-    const where: string[] = [];
+    const where: string[] = [LIVE_TURN.replaceAll("turns.", "t.")];
     const params: (string | number)[] = [];
     if (input.fts) (where.push("exchange_fts MATCH ?"), params.push(input.fts));
     if (input.taskIds) (where.push(`x.task_id IN (${input.taskIds.map(() => "?").join(", ") || "NULL"})`), params.push(...input.taskIds));
@@ -1827,6 +1948,10 @@ export class LedgerStore {
     return { title: task.title, body: [task.objective, task.completionCriteria ?? "", task.continuationNote ?? "", this.workspaceName(this.requireGoal(task.goalId)), ...this.distinctFacts(taskId)].filter(Boolean).join("\n") };
   }
 
+  private unindexGoal(goalId: string): void {
+    this.run("DELETE FROM ledger_fts WHERE goal_id = ?", goalId);
+  }
+
   private indexGoal(goalId: string): void {
     const { title, body } = this.goalSearchText(goalId);
     this.run("DELETE FROM ledger_fts WHERE entity = 'goal' AND entity_id = ?", goalId);
@@ -1850,7 +1975,10 @@ export class LedgerStore {
     if (!ftsQuery.trim()) return [];
     return this.all(
       `SELECT entity, entity_id, goal_id, bm25(ledger_fts, 0.0, 0.0, 0.0, 2.0, 1.0) AS score
-         FROM ledger_fts WHERE ledger_fts MATCH ? ORDER BY score, entity, entity_id LIMIT ? OFFSET ?`,
+         FROM ledger_fts WHERE ledger_fts MATCH ?
+          AND goal_id NOT IN (SELECT id FROM goals WHERE archived_at IS NOT NULL)
+          AND entity_id NOT IN (SELECT id FROM tasks WHERE archived_at IS NOT NULL)
+        ORDER BY score, entity, entity_id LIMIT ? OFFSET ?`,
       ftsQuery,
       limit,
       offset,
@@ -1862,16 +1990,16 @@ export class LedgerStore {
     }));
   }
 
-  /** Tasks updated at or after `sinceIso`, most recent first, with their goal and workspace. */
+  /** Tasks updated at or after `sinceIso`, most recent first, with their goal and workspace; archived ones are left out. */
   tasksUpdatedSince(sinceIso: string): TaskWithGoal[] {
-    return this.all("SELECT id FROM tasks WHERE updated_at >= ? ORDER BY updated_at DESC", sinceIso).map((r) =>
+    return this.all("SELECT id FROM tasks WHERE updated_at >= ? AND archived_at IS NULL AND goal_id NOT IN (SELECT id FROM goals WHERE archived_at IS NOT NULL) ORDER BY updated_at DESC", sinceIso).map((r) =>
       this.taskWithGoal(str(r.id)),
     );
   }
 
   /** Every task with its goal and workspace, most recently updated first. */
   allTasks(): TaskWithGoal[] {
-    return this.all("SELECT id FROM tasks ORDER BY updated_at DESC").map((r) => this.taskWithGoal(str(r.id)));
+    return this.all("SELECT id FROM tasks WHERE archived_at IS NULL AND goal_id NOT IN (SELECT id FROM goals WHERE archived_at IS NOT NULL) ORDER BY updated_at DESC").map((r) => this.taskWithGoal(str(r.id)));
   }
 
   taskWithGoal(taskId: string): TaskWithGoal {

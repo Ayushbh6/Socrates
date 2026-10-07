@@ -30,7 +30,7 @@ export type ActivityBody =
 /** Every activity carries its event's sequence number, time, and conversation: "main" or a lane id. */
 export type Activity = { seq: number; at: string; conversation: string } & ActivityBody;
 
-const LEDGER_EVENTS = new Set(["goal_created", "task_created", "task_revised", "goal_note_revised", "goal_workspace_bound", "anchor_revised"]);
+const LEDGER_EVENTS = new Set(["goal_created", "task_created", "task_revised", "goal_note_revised", "goal_workspace_bound", "anchor_revised", "goal_renamed", "task_renamed", "goal_archived", "goal_restored", "task_archived", "task_restored"]);
 
 /**
  * One event as an activity, or null for events the app does not show. A

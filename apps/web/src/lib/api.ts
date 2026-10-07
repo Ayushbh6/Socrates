@@ -1,5 +1,5 @@
 import type { CallDetail, CallRow, DataOverview, DbPage, DbRow, PriceRow, QuestionDetail, QuestionRow, Range, SeriesData, Summary, Trace } from "./observe";
-import type { Access, AttachmentView, Evidence, Folders, GoalView, History, ListedModel, Provider, Settings, Status } from "./types";
+import type { Access, ArchivedView, AttachmentView, Evidence, Folders, GoalView, History, ListedModel, Provider, Settings, Status } from "./types";
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -42,6 +42,13 @@ export const api = {
   setKey: (name: string, value: string) => call<null>("PUT", `/api/keys/${encodeURIComponent(name)}`, { value }),
   goals: () => call<GoalView[]>("GET", "/api/goals"),
   createGoal: (title: string) => call<GoalView>("POST", "/api/goals", { title }),
+  renameGoal: (goal: number, title: string) => call<GoalView>("PATCH", `/api/goals/${goal}`, { title }),
+  renameChat: (goal: number, task: number, title: string) => call<{ ok: true }>("PATCH", `/api/goals/${goal}/tasks/${task}`, { title }),
+  archiveGoal: (goal: number) => call<{ ok: true }>("POST", `/api/goals/${goal}/archive`),
+  restoreGoal: (goal: number) => call<{ ok: true }>("POST", `/api/goals/${goal}/restore`),
+  archiveChat: (goal: number, task: number) => call<{ ok: true }>("POST", `/api/goals/${goal}/tasks/${task}/archive`),
+  restoreChat: (goal: number, task: number) => call<{ ok: true }>("POST", `/api/goals/${goal}/tasks/${task}/restore`),
+  archived: () => call<ArchivedView>("GET", "/api/archived"),
   history: (conversation: string, before?: number) => call<History>("GET", `/api/history?conversation=${encodeURIComponent(conversation)}${before ? `&before=${before}` : ""}`),
   folders: (path?: string) => call<Folders>("GET", `/api/folders${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   addWorkspace: (path: string) => call<{ id: string; name: string; path: string }>("POST", "/api/workspaces", { path }),

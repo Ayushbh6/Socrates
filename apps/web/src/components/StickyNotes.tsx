@@ -1,7 +1,8 @@
-import { ArrowUpRight, ChevronRight, GripHorizontal, X } from "lucide-react";
+import { ArrowUpRight, ChevronRight, GripHorizontal, Pencil, X } from "lucide-react";
 import { type KeyboardEvent, type PointerEvent, type ReactNode, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useDialog } from "../lib/dialog";
+import { store } from "../lib/store";
 import type { GoalView } from "../lib/types";
 import { Prose } from "./Prose";
 
@@ -135,6 +136,20 @@ function ExpandedNote({ kind, goal, taskNumber, onClose }: { kind: NoteId; goal:
   useDialog(modal, onClose);
   const task = goal?.tasks.find((t) => t.number === taskNumber) ?? null;
   const title = kind === "task" ? task?.title ?? "No task yet" : goal?.title ?? "No goal yet";
+  const canRename = !!goal && !goal.general && (kind === "goal" || !!task);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const save = async () => {
+    const next = draft?.trim();
+    if (!goal || next === undefined || !next || next === title) return setDraft(null);
+    try {
+      await (kind === "task" && task ? store.renameChat(goal.number, task.number, next) : store.renameGoal(goal.number, next));
+      setDraft(null);
+      setProblem(null);
+    } catch (error) {
+      setProblem(error instanceof Error ? error.message : String(error));
+    }
+  };
   return createPortal(
     <div className="modal-scrim note-scrim" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
       <div ref={modal} tabIndex={-1} className="modal expanded-note" data-note={kind} role="dialog" aria-modal="true" aria-labelledby="expanded-note-title">
@@ -143,7 +158,13 @@ function ExpandedNote({ kind, goal, taskNumber, onClose }: { kind: NoteId; goal:
           <button type="button" className="icon-button" onClick={onClose} aria-label="Close expanded note"><X aria-hidden /></button>
         </header>
         <div className="expanded-note-body">
-          <h2 id="expanded-note-title">{title}</h2>
+          <div className="note-title-row">
+            {draft === null ? <>
+              <h2 id="expanded-note-title">{title}</h2>
+              {canRename && <button type="button" className="icon-button" onClick={() => setDraft(title)} aria-label={`Rename this ${kind}`} title="Rename"><Pencil aria-hidden /></button>}
+            </> : <input className="note-title-input" autoFocus aria-label={`New name of this ${kind}`} maxLength={120} value={draft} onChange={(e) => setDraft(e.target.value)} onBlur={() => void save()} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void save(); } if (e.key === "Escape") { e.stopPropagation(); setDraft(null); } }} />}
+          </div>
+          {problem && <p className="note-title-error" role="alert">{problem}</p>}
           {goal && <p className="expanded-note-meta"><Status value={kind === "task" && task ? task.status : goal.status} />{goal.workspace && <span>{goal.workspace}</span>}</p>}
           {kind === "task" ? task ? <TaskText task={task} /> : <p className="muted">Send a message to give Socrates a task. Its full notes will appear here.</p> : goal ? <>
             <NoteText label="Objective" text={goal.objective} fallback={goal.general ? "A general conversation, not tied to a project goal." : "No objective recorded yet."} />

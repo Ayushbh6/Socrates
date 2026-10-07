@@ -17,7 +17,7 @@ import { CALL_RETENTION_DAYS, type Runtime, RuntimeBusyError, SettingsError } fr
 import * as observe from "./observe";
 import { DbError, browse, isDb, overview, row as dbRow } from "./dbview";
 import { guard, problem, sameSecret, sessionCookie } from "./security";
-import { FolderError, conversationHistory, goalsView, listFolders, workspaceFolder, workspaceFor } from "./views";
+import { FolderError, archivedView, conversationHistory, goalsView, listFolders, workspaceFolder, workspaceFor } from "./views";
 
 export interface ServerOptions {
   runtime: Runtime;
@@ -156,6 +156,58 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
     const goal = runtime.store.createGoal({ title });
     return goalsView(runtime.store, runtime.chatsGoalNumber()).find((g) => g.number === goal.number);
   });
+
+  // Renaming and archiving, for standard mode's chats (tasks) and goals; flow mode renames from its notes.
+  const Title = z.object({ title: z.string().trim().min(1).max(120) }).strict();
+  const GoalParams = z.object({ goal: z.coerce.number().int().positive() });
+  const TaskParams = GoalParams.extend({ task: z.coerce.number().int().positive() });
+  const lookup = (params: unknown) => {
+    const { goal: number, task: taskNumber } = TaskParams.partial({ task: true }).parse(params);
+    const goal = runtime.store.getGoalByNumber(number);
+    if (!goal || goal.general) return null;
+    if (taskNumber === undefined) return { goal, task: null };
+    const task = runtime.store.getTaskByNumber(goal.id, taskNumber);
+    return task && !task.general ? { goal, task } : null;
+  };
+  const busyWith = (found: NonNullable<ReturnType<typeof lookup>>) => {
+    const tasks = found.task ? [found.task] : runtime.store.listTasks(found.goal.id, { includeArchived: true });
+    return tasks.some((t) => runtime.socrates?.taskBusy(t.id));
+  };
+  const missing = (reply: { code(n: number): { send(b: unknown): unknown } }) => reply.code(404).send(problem("not_found", "That goal or chat no longer exists."));
+  app.patch("/api/goals/:goal", async (request, reply) => {
+    const found = lookup(request.params);
+    if (!found) return missing(reply);
+    runtime.store.renameGoal(found.goal.id, Title.parse(request.body).title);
+    return goalsView(runtime.store, runtime.chatsGoalNumber()).find((g) => g.number === found.goal.number);
+  });
+  app.patch("/api/goals/:goal/tasks/:task", async (request, reply) => {
+    const found = lookup(request.params);
+    if (!found?.task) return missing(reply);
+    runtime.store.renameTask(found.task.id, Title.parse(request.body).title);
+    return { ok: true };
+  });
+  for (const [verb, what] of [["archive", "archived"], ["restore", "restored"]] as const) {
+    app.post(`/api/goals/:goal/${verb}`, async (request, reply) => {
+      const found = lookup(request.params);
+      if (!found) return missing(reply);
+      if (verb === "archive") {
+        if (found.goal.number === runtime.chatsGoalNumber()) return reply.code(400).send(problem("invalid_request", "The Chats list cannot be archived; archive its chats one by one."));
+        if (busyWith(found)) return reply.code(409).send(problem("busy", "Socrates is working in this goal; stop it first."));
+        runtime.store.archiveGoal(found.goal.id);
+      } else runtime.store.restoreGoal(found.goal.id);
+      return { ok: true, [what]: true };
+    });
+    app.post(`/api/goals/:goal/tasks/:task/${verb}`, async (request, reply) => {
+      const found = lookup(request.params);
+      if (!found?.task) return missing(reply);
+      if (verb === "archive") {
+        if (busyWith(found)) return reply.code(409).send(problem("busy", "Socrates is working in this chat; stop it first."));
+        runtime.store.archiveTask(found.task.id);
+      } else runtime.store.restoreTask(found.task.id);
+      return { ok: true, [what]: true };
+    });
+  }
+  app.get("/api/archived", async () => archivedView(runtime.store));
 
   app.get("/api/history", async (request, reply) => {
     const query = History.parse(request.query);

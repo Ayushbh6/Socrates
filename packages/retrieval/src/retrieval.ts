@@ -207,6 +207,8 @@ export class Retrieval implements SemanticIndex {
     const best = new Map<string, SemanticHit>();
     for (const r of rows) {
       if (r.similarity < floor) continue;
+      // Archived goals and chats are not recalled.
+      if ((r.goal_id || r.task_id) && this.options.store.isArchived({ goalId: r.goal_id, taskId: r.task_id })) continue;
       // A file's sections are separate results; chunks of one exchange are not.
       const key = r.kind === "file_section" ? r.id : `${r.kind}:${r.source_id}`;
       if (best.has(key) && best.get(key)!.similarity >= r.similarity) continue;

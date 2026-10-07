@@ -72,6 +72,8 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 
 21. **Standard mode without the router: page** (2026-10-07). The composer sends to the open chat (or the newest); **New chat** starts a plain chat, listed under **Chats**; the folder button names a new goal and opens a chat in it; **+** on a goal starts a chat there. Names update live when the titler renames a chat. A queued message keeps its chat. Tried on a copy of the live data with real models: a new goal, a chat in it named "Rainy weekend ideas in Vienna" by `xiaomi/mimo-v2.6-flash` (278 in, 63 out, 4 s, $0.00005), and a plain chat under Chats; no router call either time.
 
+22. **Rename and archive** (2026-10-07). Goals and chats can be renamed (standard sidebar, and flow's expanded notes) and archived (labelled Archive, not Delete; Undo for a few seconds; an Archived list to restore from). Archived work leaves lists, the router, `ledger_query`, `context_retrieve`, semantic search, recent activity and "the current chat"; nothing is erased from the log. A name the user typed is recorded and never replaced by the namer, which only runs once, for a new chat's first answer in standard mode. Store schema 5 → 6 (`archived_at`), tested on a copy of the live data. Tried in the browser: rename, archive with Undo, the Archived list and Restore, and a goal renamed from flow's note.
+
 ## Suggested
 
 From the observability phase:
