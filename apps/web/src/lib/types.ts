@@ -119,7 +119,7 @@ export interface GoalView {
   status: string;
   general: boolean;
   workspace: string | null;
-  tasks: { number: number; title: string; status: string; note: string | null; objective?: string; completionCriteria?: string | null }[];
+  tasks: { number: number; title: string; chats?: number; status: string; note: string | null; objective?: string; completionCriteria?: string | null }[];
 }
 
 export interface HistoryPart {
@@ -128,6 +128,7 @@ export interface HistoryPart {
   status: "in_progress" | "completed" | "interrupted" | "failed" | string;
   goal: { number: number; title: string };
   task: { number: number; title: string };
+  chat: number;
   lane: number | null;
   handedOff: boolean;
   answer: string | null;
@@ -182,7 +183,7 @@ export interface ResultView {
 
 export type ActivityBody =
   | { kind: "message"; text: string; attachments?: AttachmentView[] }
-  | { kind: "routed"; turnId: string; projectTurn: number; goal: { number: number; title: string }; task: { number: number; title: string }; lane: number | null }
+  | { kind: "routed"; turnId: string; projectTurn: number; goal: { number: number; title: string }; task: { number: number; title: string }; chat?: number; lane: number | null }
   | { kind: "question"; turnId: string; text: string }
   | { kind: "step"; turnId: string; text: string; thinking?: string | null; thinkingTruncated?: boolean }
   | { kind: "tool_started"; turnId: string; task: string; handle: string; line: string; call: CallView }

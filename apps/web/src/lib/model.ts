@@ -45,7 +45,7 @@ export interface Exchange {
   /** Images the user attached to the message. */
   attachments: AttachmentView[];
   /** The goal and task of its first part. */
-  route: { goal: { number: number; title: string }; task: { number: number; title: string } } | null;
+  route: { goal: { number: number; title: string }; task: { number: number; title: string }; chat?: number } | null;
   steps: Step[];
   answers: string[];
   draft: Draft | null;
@@ -255,7 +255,7 @@ function applyOne(e: Exchange, a: Activity | DraftArrived): Exchange {
       return { ...x, draftCalls: { ...x.draftCalls, [thinking ? thinkingKey(a.turnId) : a.turnId]: { call: a.call, settled: false } }, ...(thinking ? { thinking: draft } : { draft }) };
     }
     case "routed":
-      return { ...x, route: x.route ?? { goal: a.goal, task: a.task }, lastAt: a.at };
+      return { ...x, route: x.route ?? { goal: a.goal, task: a.task, chat: a.chat }, lastAt: a.at };
     case "question":
       return { ...x, question: a.text, state: "done", open: x.open.filter((t) => t !== a.turnId) };
     case "step": {
@@ -314,7 +314,7 @@ export function fromHistory(item: HistoryItem, conversation: string): Exchange {
     at: item.at,
     message: item.message,
     attachments: item.attachments ?? [],
-    route: first ? { goal: first.goal, task: first.task } : null,
+    route: first ? { goal: first.goal, task: first.task, chat: first.chat } : null,
     steps: item.parts.flatMap((p): Step[] => (p.handedOff && p.lane !== null ? [{ kind: "handed_off" as const, lane: p.lane }] : [])),
     answers: item.parts.flatMap((p) => (p.answer ? [p.answer] : [])),
     question: item.question,

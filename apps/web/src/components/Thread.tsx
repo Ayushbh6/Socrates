@@ -1,5 +1,5 @@
 import { LoaderCircle } from "lucide-react";
-import { useLayoutEffect, useRef } from "react";
+import { type ReactNode, useLayoutEffect, useRef } from "react";
 import { useFollow } from "../lib/follow";
 import { type Exchange, orbState, workLine } from "../lib/model";
 import { type AppState, store } from "../lib/store";
@@ -10,7 +10,7 @@ import { QuestionCard } from "./QuestionCard";
  * One conversation in standard mode (or `shown`, the part of it that is one chat): every question with its answer, oldest
  * first, following the newest work while the reader is at the bottom.
  */
-export function Thread({ app, conversation, shown, extra = [], compact = false, empty }: { app: AppState; conversation: string; shown?: Exchange[]; extra?: Exchange[]; compact?: boolean; empty: string }) {
+export function Thread({ app, conversation, shown, before, extra = [], compact = false, empty }: { app: AppState; conversation: string; shown?: Exchange[]; before?: ReactNode; extra?: Exchange[]; compact?: boolean; empty: string }) {
   const list = [...(shown ?? app.model.conversations[conversation] ?? []), ...extra];
   const latest = list.at(-1) ?? null;
   const approvals = (app.model.live?.approvals ?? []).filter((a) => a.conversation === conversation);
@@ -38,6 +38,7 @@ export function Thread({ app, conversation, shown, extra = [], compact = false, 
         {app.older[conversation] ? (
           <button type="button" className="quiet-button thread-older" onClick={() => void store.loadOlder(conversation)}>Load earlier questions</button>
         ) : null}
+        {before}
         {!list.length && <p className="thread-empty">{empty}</p>}
         {list.map((e) => (
           <article key={e.key} className="thread-item">

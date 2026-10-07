@@ -3,8 +3,8 @@ import { chatThread, groupChats, newThread } from "../src/lib/chats";
 import type { Exchange } from "../src/lib/model";
 import type { GoalView } from "../src/lib/types";
 
-const goal = (number: number, title: string, tasks: [number, string][], general = false): GoalView => ({ number, title, objective: null, note: null, status: "open", general, workspace: null, tasks: tasks.map(([n, t]) => ({ number: n, title: t, status: "open", note: null })) });
-const ex = (key: string, at: string, route: [number, number] | null, state: Exchange["state"] = "done"): Exchange => ({ key, at, state, route: route && { goal: { number: route[0], title: `g${route[0]}` }, task: { number: route[1], title: `t${route[1]}` } } }) as Exchange;
+const goal = (number: number, title: string, tasks: ([number, string] | [number, string, number])[], general = false): GoalView => ({ number, title, objective: null, note: null, status: "open", general, workspace: null, tasks: tasks.map(([n, t, chats]) => ({ number: n, title: t, ...(chats ? { chats } : {}), status: "open", note: null })) });
+const ex = (key: string, at: string, route: [number, number] | [number, number, number] | null, state: Exchange["state"] = "done"): Exchange => ({ key, at, state, route: route && { goal: { number: route[0], title: `g${route[0]}` }, task: { number: route[1], title: `t${route[1]}` }, ...(route[2] ? { chat: route[2] } : {}) } }) as Exchange;
 
 describe("the chats of each goal", () => {
   const goals = [goal(0, "General", [[1, "x"]], true), goal(1, "Resume", [[1, "Critique"], [2, "Rewrite"]]), goal(2, "Explore", [[1, "Folders"]])];
@@ -21,6 +21,22 @@ describe("the chats of each goal", () => {
   it("keeps newest-made first for a chat nothing was asked in since loading", () => {
     expect(groupChats(goals, [])[0]?.title).toBe("Explore");
     expect(groupChats(goals, [])[1]?.chats.map((c) => c.title)).toEqual(["Rewrite", "Critique"]);
+  });
+});
+
+describe("a long task that continued in a new chat", () => {
+  const goals = [goal(1, "Site", [[1, "Fix the header", 3], [2, "Write copy"]])];
+  const list = [ex("m1", "2026-10-06T09:00:00Z", [1, 1, 1]), ex("m2", "2026-10-06T10:00:00Z", [1, 1, 2]), ex("m3", "2026-10-06T11:00:00Z", [1, 1])];
+
+  it("lists each chat of the chain, named after the task, in order", () => {
+    const [site] = groupChats(goals, list);
+    expect(site?.chats.map((c) => [c.title, c.chat])).toEqual([["Fix the header", 1], ["Fix the header — continued", 2], ["Fix the header — continued (3)", 3], ["Write copy", 1]]);
+    expect(site?.chats[1]?.at).toBe("2026-10-06T10:00:00Z");
+  });
+
+  it("keeps each chat's questions to itself, and treats a question without a chat as the first", () => {
+    expect(chatThread(list, 1, 1, 2).map((e) => e.key)).toEqual(["m2"]);
+    expect(chatThread(list, 1, 1, 1).map((e) => e.key)).toEqual(["m1", "m3"]);
   });
 });
 

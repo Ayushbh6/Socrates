@@ -994,6 +994,11 @@ export class LedgerStore {
     return toChat(r);
   }
 
+  /** Every chat of a task, the first first: a long task is a chain of them, each continuing the last after a rollover. */
+  listChats(taskId: string): Chat[] {
+    return this.all("SELECT * FROM chats WHERE task_id = ? ORDER BY ordinal", taskId).map(toChat);
+  }
+
   /** The open chat of a task, opening the first one if none exists. */
   currentChat(taskId: string): Chat {
     const r = this.get("SELECT * FROM chats WHERE task_id = ? AND closed_at IS NULL ORDER BY ordinal DESC LIMIT 1", taskId);

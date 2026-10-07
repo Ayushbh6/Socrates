@@ -66,6 +66,8 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 
 18. **Standard becomes a chat app** (2026-10-07). The sidebar is now goals as folders, each holding its chats (a chat is one task; its name is the task's title). Choosing a chat shows only its questions; **New chat** starts an empty one that follows its first question to the chat it is routed to. The conversation sits in a centered column with the composer docked under it, no panels; narrow screens slide the sidebar over the chat. Replaced the goals panel. Pure logic in `lib/chats.ts` with tests. Seen on a copy of the live data at desktop and 800px. Still to do: a chat that passes five compactions continues in a new chat of the same goal, and a message written in a chosen chat is still routed by Socrates rather than pinned to it.
 
+19. **Automatic handover shown** (2026-10-07). The harness already rolled a task over into a linked chat after five compactions (written, tested, in the ledger). It was invisible. Now each routed part carries its chat, each task its number of chats, and Standard lists "<task> — continued" under the first with a card at the top of the continuation and a button back. `LedgerStore.listChats`; tests for the chain through the real store and for the sidebar logic. Not tried live: it needs a task that really reaches five compactions.
+
 ## Suggested
 
 From the observability phase:

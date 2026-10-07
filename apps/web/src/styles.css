@@ -472,6 +472,7 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .chat-row > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-row .spin { flex: none; width: 0.8rem; height: 0.8rem; color: var(--accent); }
 .chat-row[data-current="true"] { background: var(--tint); color: var(--text); font-weight: 540; }
+.chat-row[data-continued="true"] { padding-left: 2.9rem; }
 .chat-more { color: var(--faint); font-size: 0.8rem; }
 .sidebar-scrim-button { display: none; }
 .chat-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -482,6 +483,8 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .chat-main .thread[data-compact="false"] { padding: 0.5rem 1.25rem 1.5rem; }
 .chat-main .thread[data-compact="false"] > div { width: min(48rem, 100%); margin: 0 auto; }
 .chat-main .thread-empty { margin: 28vh 0 0; color: var(--text); font-family: var(--serif); font-size: 1.9rem; letter-spacing: -0.01em; text-align: center; }
+.continued-note { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem 1rem; margin: 0.5rem 0 1.4rem; padding: 0.75rem 1rem; border-radius: 0.9rem; background: var(--tint); color: var(--muted); font-size: 0.8rem; line-height: 1.45; }
+.continued-note > span { flex: 1 1 18rem; }
 .chat-composer { width: min(48rem, 100%); margin: 0 auto; padding: 0 1.25rem 1rem; }
 .chat-composer .composer-dock[data-variant="panel"] { margin: 0; }
 .panel { display: flex; flex-direction: column; min-height: 0; border-radius: 1.1rem; background: rgba(255, 255, 255, 0.78); box-shadow: var(--shadow-soft); }

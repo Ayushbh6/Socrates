@@ -11,7 +11,7 @@ export const THINKING_CHARS = 20_000;
 /** What happened, for the web app (architecture/server.md, "Live activity"). */
 export type ActivityBody =
   | { kind: "message"; text: string; attachments: AttachmentView[] }
-  | { kind: "routed"; turnId: string; projectTurn: number; goal: { number: number; title: string }; task: { number: number; title: string }; lane: number | null }
+  | { kind: "routed"; turnId: string; projectTurn: number; goal: { number: number; title: string }; task: { number: number; title: string }; /** Which chat of the task, from 1. */ chat: number; lane: number | null }
   | { kind: "question"; turnId: string; text: string }
   /** `text`: narration before tool calls, or "" when the step only thought; `thinking`: the model's readable thinking, or null. */
   | { kind: "step"; turnId: string; text: string; thinking: string | null; thinkingTruncated: boolean }
@@ -54,7 +54,7 @@ export function activityOf(store: LedgerStore, event: StoredEvent): Activity | n
       if (!turn?.goalId || !turn.taskId) return null;
       const goal = store.requireGoal(turn.goalId);
       const task = store.requireTask(turn.taskId);
-      return { ...base, kind: "routed", turnId: turn.id, projectTurn: turn.projectTurn, goal: { number: goal.number, title: goal.title }, task: { number: task.number, title: task.title }, lane: turn.laneId ? store.requireLane(turn.laneId).number : null };
+      return { ...base, kind: "routed", turnId: turn.id, projectTurn: turn.projectTurn, goal: { number: goal.number, title: goal.title }, task: { number: task.number, title: task.title }, chat: turn.chatId ? store.requireChat(turn.chatId).ordinal : 1, lane: turn.laneId ? store.requireLane(turn.laneId).number : null };
     }
     case "agent_message": {
       const p = event.payload as EventPayloads["agent_message"];

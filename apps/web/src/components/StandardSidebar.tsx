@@ -7,8 +7,8 @@ const SHOWN = 6;
 /** Standard mode's left side: every goal as a folder, and its chats (its tasks) beneath. */
 export function StandardSidebar({ goals, current, onChat, onNew, onClose }: {
   goals: GoalChats[];
-  current: { goal: number; task: number } | null;
-  onChat: (goal: number, task: number) => void;
+  current: { goal: number; task: number; chat: number } | null;
+  onChat: (goal: number, task: number, chat: number) => void;
   onNew: () => void;
   onClose: () => void;
 }) {
@@ -27,7 +27,7 @@ export function StandardSidebar({ goals, current, onChat, onNew, onClose }: {
         {goals.map((goal) => {
           const has = current?.goal === goal.number;
           const open = closed[goal.number] === undefined ? true : !closed[goal.number];
-          const chats = all[goal.number] || goal.chats.length <= SHOWN + 1 ? goal.chats : goal.chats.filter((c, i) => i < SHOWN || (current && c.goal === current.goal && c.task === current.task));
+          const chats = all[goal.number] || goal.chats.length <= SHOWN + 1 ? goal.chats : goal.chats.filter((c, i) => i < SHOWN || (current && c.goal === current.goal && c.task === current.task && c.chat === current.chat));
           return (
             <li key={goal.number}>
               <button type="button" className="goal-row" aria-expanded={open} data-has-current={has} onClick={() => setClosed({ ...closed, [goal.number]: open })}>
@@ -38,8 +38,8 @@ export function StandardSidebar({ goals, current, onChat, onNew, onClose }: {
               {open && (
                 <ul className="chat-list">
                   {chats.map((chat) => (
-                    <li key={chatKey(chat.goal, chat.task)}>
-                      <button type="button" className="chat-row" data-current={has && current?.task === chat.task} data-status={chat.status} title={chat.title} onClick={() => onChat(chat.goal, chat.task)}>
+                    <li key={chatKey(chat.goal, chat.task, chat.chat)}>
+                      <button type="button" className="chat-row" data-current={has && current?.task === chat.task && current.chat === chat.chat} data-continued={chat.chat > 1} data-status={chat.status} title={chat.title} onClick={() => onChat(chat.goal, chat.task, chat.chat)}>
                         <span>{chat.title}</span>
                         {chat.working && <LoaderCircle aria-label="Working" className="spin" />}
                       </button>

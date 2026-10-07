@@ -18,6 +18,8 @@ export interface HistoryPart {
   status: Turn["status"];
   goal: { number: number; title: string };
   task: { number: number; title: string };
+  /** Which chat of the task it ran in, from 1. */
+  chat: number;
   /** The lane the part ran in, or null for the main conversation. */
   lane: number | null;
   /** A main-conversation part handed to the lane busy with its task. */
@@ -95,6 +97,7 @@ function part(store: LedgerStore, t: Turn, laneId: string | null): HistoryPart {
     status: t.status,
     goal: { number: goal.number, title: goal.title },
     task: { number: task.number, title: task.title },
+    chat: t.chatId ? store.requireChat(t.chatId).ordinal : 1,
     lane: t.laneId ? store.requireLane(t.laneId).number : null,
     handedOff: laneId === null && t.laneId !== null,
     // A stopped part shows its answer as far as it was written.
@@ -121,7 +124,7 @@ export function goalsView(store: LedgerStore) {
       general: goal.general,
       workspace: goal.workspaceId ? (store.getWorkspace(goal.workspaceId)?.name ?? null) : null,
       updatedAt: goal.updatedAt,
-      tasks: store.listTasks(goal.id).map((task) => ({ number: task.number, title: task.title, status: task.status, objective: task.objective, completionCriteria: task.completionCriteria, note: task.continuationNote, updatedAt: task.updatedAt })),
+      tasks: store.listTasks(goal.id).map((task) => ({ number: task.number, title: task.title, status: task.status, objective: task.objective, completionCriteria: task.completionCriteria, note: task.continuationNote, chats: Math.max(1, store.listChats(task.id).length), updatedAt: task.updatedAt })),
     }));
 }
 

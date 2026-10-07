@@ -12,7 +12,7 @@ const result = { summary: null, preview: "", truncated: false, diff: null, verb:
 
 const item = (over: Partial<HistoryItem>): HistoryItem => ({
   id: "ev", seq: 10, at, message: "Earlier question", unrouted: false, question: null,
-  parts: [{ projectTurn: 1, status: "completed", ...route, lane: null, handedOff: false, answer: "Earlier answer", interrupted: null, toolCalls: [{ handle: "e1", line: "read a.ts", status: "ok" }] }],
+  parts: [{ projectTurn: 1, status: "completed", ...route, chat: 1, lane: null, handedOff: false, answer: "Earlier answer", interrupted: null, toolCalls: [{ handle: "e1", line: "read a.ts", status: "ok" }] }],
   ...over,
 });
 

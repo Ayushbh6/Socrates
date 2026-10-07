@@ -1,6 +1,6 @@
 import { PanelLeft, Square, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { chatThread, groupChats, newThread } from "../lib/chats";
+import { chatThread, chatTitle, groupChats, newThread } from "../lib/chats";
 import { conversationBusy, currentRoute } from "../lib/model";
 import { type AppState, store } from "../lib/store";
 import type { Lane } from "../lib/types";
@@ -12,7 +12,7 @@ import { StandardSidebar } from "./StandardSidebar";
 import { Thread } from "./Thread";
 
 /** What the middle shows: the newest chat (null), one the reader chose, or a new chat begun after a given question. */
-type View = null | { chat: { goal: number; task: number } } | { fresh: string | null };
+type View = null | { chat: { goal: number; task: number; chat: number } } | { fresh: string | null };
 
 /**
  * Standard mode (architecture/web.md, "Standard mode"): the layout of any chat
@@ -29,8 +29,9 @@ export function Standard({ app, mode, onMode, onSettings }: { app: AppState; mod
   const [view, setView] = useState<View>(null);
   const [sidebar, setSidebar] = useState(() => typeof window === "undefined" || window.innerWidth >= 900);
 
-  const route = view && "chat" in view ? { goal: { number: view.chat.goal }, task: { number: view.chat.task } } : view ? null : currentRoute(main);
-  const shown = useMemo(() => (view && "fresh" in view ? newThread(main, view.fresh) : route ? chatThread(main, route.goal.number, route.task.number) : main), [main, view, route?.goal.number, route?.task.number]);
+  const route = view && "chat" in view ? { goal: { number: view.chat.goal }, task: { number: view.chat.task }, chat: view.chat.chat } : view ? null : currentRoute(main);
+  const chat = route?.chat ?? 1;
+  const shown = useMemo(() => (view && "fresh" in view ? newThread(main, view.fresh) : route ? chatThread(main, route.goal.number, route.task.number, chat) : main), [main, view, route?.goal.number, route?.task.number, chat]);
   const goals = useMemo(() => groupChats(app.goals, main), [app.goals, main]);
   const goal = route ? app.goals.find((g) => g.number === route.goal.number) : undefined;
   const task = goal?.tasks.find((t) => t.number === route?.task.number);
@@ -46,8 +47,8 @@ export function Standard({ app, mode, onMode, onSettings }: { app: AppState; mod
         <>
           <StandardSidebar
             goals={goals}
-            current={route ? { goal: route.goal.number, task: route.task.number } : null}
-            onChat={(g, t) => { setView({ chat: { goal: g, task: t } }); if (window.innerWidth < 900) setSidebar(false); }}
+            current={route ? { goal: route.goal.number, task: route.task.number, chat } : null}
+            onChat={(g, t, c) => { setView({ chat: { goal: g, task: t, chat: c } }); if (window.innerWidth < 900) setSidebar(false); }}
             onNew={() => { setView({ fresh: main.at(-1)?.key ?? null }); if (window.innerWidth < 900) setSidebar(false); }}
             onClose={() => setSidebar(false)}
           />
@@ -59,7 +60,7 @@ export function Standard({ app, mode, onMode, onSettings }: { app: AppState; mod
         <header className="chat-top">
           {!sidebar && <button type="button" className="icon-button" onClick={() => setSidebar(true)} aria-label="Show the sidebar" title="Show the sidebar"><PanelLeft aria-hidden /></button>}
           <div className="chat-title">
-            {task ? <><strong>{task.title}</strong><small>{goal?.title}</small></> : <strong>New chat</strong>}
+            {task ? <><strong>{chatTitle(task.title, chat)}</strong><small>{goal?.title}</small></> : <strong>New chat</strong>}
           </div>
           {!app.connected ? <span className="chip reconnecting">Reconnecting…</span> : app.model.live && !app.model.live.ready && <span className="chip reconnecting">Socrates is restarting…</span>}
           <span className="composer-space" />
@@ -67,7 +68,7 @@ export function Standard({ app, mode, onMode, onSettings }: { app: AppState; mod
           <AccessMenu app={app} />
           <ModeSwitch mode={mode} onMode={onMode} onSettings={onSettings} />
         </header>
-        <Thread app={app} conversation="main" shown={shown} empty={view && "fresh" in view || !main.length ? "What should we work on?" : "Nothing has been asked in this chat yet."} />
+        <Thread app={app} conversation="main" shown={shown} before={chat > 1 && goal && task ? <Continued onBack={() => setView({ chat: { goal: goal.number, task: task.number, chat: chat - 1 } })} /> : null} empty={view && "fresh" in view || !main.length ? "What should we work on?" : "Nothing has been asked in this chat yet."} />
         <div className="chat-composer">
           <Composer app={app} conversation="main" laneNumber={null} variant="panel" onModel={onSettings} onNewLane={(text, attachments) => store.sendToNewLane(text, attachments)} />
         </div>
@@ -87,6 +88,16 @@ export function Standard({ app, mode, onMode, onSettings }: { app: AppState; mod
 
       <Notices app={app} />
     </div>
+  );
+}
+
+/** The start of a chat that took over from a full one. */
+function Continued({ onBack }: { onBack: () => void }) {
+  return (
+    <aside className="continued-note" aria-label="Continued from the previous chat">
+      <span>Automatically continued from the previous chat after extensive context compression. Socrates carries over what matters.</span>
+      <button type="button" className="quiet-button" onClick={onBack}>Open the previous chat</button>
+    </aside>
   );
 }
 
