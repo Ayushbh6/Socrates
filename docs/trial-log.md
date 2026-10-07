@@ -64,6 +64,8 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 
 17. **Quieter trace cards** (2026-10-07). Removed coloured left edges, increased card/detail padding, refined typography and aligned call metrics in responsive seven/four/two-column grids. Verified both saved traces, disclosures, light/dark themes and desktop/tablet/phone fit; metric values and recorded text are identical. Build, typecheck and all 69 web tests passed. Explained that `goal_label` selects an existing goal, so the two `create_new` decisions correctly return null. See `docs/reviews/trace-polish-2026-10-07.md`.
 
+18. **Standard becomes a chat app** (2026-10-07). The sidebar is now goals as folders, each holding its chats (a chat is one task; its name is the task's title). Choosing a chat shows only its questions; **New chat** starts an empty one that follows its first question to the chat it is routed to. The conversation sits in a centered column with the composer docked under it, no panels; narrow screens slide the sidebar over the chat. Replaced the goals panel. Pure logic in `lib/chats.ts` with tests. Seen on a copy of the live data at desktop and 800px. Still to do: a chat that passes five compactions continues in a new chat of the same goal, and a message written in a chosen chat is still routed by Socrates rather than pinned to it.
+
 ## Suggested
 
 From the observability phase:

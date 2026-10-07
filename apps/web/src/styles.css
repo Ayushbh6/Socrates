@@ -443,19 +443,53 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .effort-menu { min-width: 12rem; }
 .tool-running { margin: 0; color: var(--faint); font-size: 0.78rem; }
 
-/* Standard mode: soft panels, no lines */
+/* Standard mode: the layout of any chat app, goals as folders with their chats beneath */
 
-.standard { position: fixed; inset: 0; display: grid; grid-template-columns: 17.5rem minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 0.75rem; padding: 0.75rem; background: linear-gradient(155deg, #fbfaf7 0%, var(--bg) 58%, #f6f5f1 100%); }
-.standard[data-lanes="true"] { grid-template-columns: 17.5rem minmax(0, 1fr) minmax(20rem, 26rem); }
-.standard-header { grid-column: 1 / -1; display: flex; align-items: center; gap: 0.6rem; padding: 0 0.25rem; }
-.brand { padding: 0 0.6rem 0 0.4rem; font-family: var(--serif); font-size: 1.35rem; color: var(--accent-strong); }
+.standard { position: fixed; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr); background: var(--bg); }
+.standard[data-sidebar="true"] { grid-template-columns: 17.5rem minmax(0, 1fr); }
+.standard[data-lanes="true"] { grid-template-columns: minmax(0, 1fr) minmax(20rem, 26rem); }
+.standard[data-lanes="true"][data-sidebar="true"] { grid-template-columns: 17.5rem minmax(0, 1fr) minmax(20rem, 26rem); }
+.brand { font-family: var(--serif); font-size: 1.35rem; color: var(--accent-strong); }
+.chat-sidebar { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; padding: 0.8rem 0.6rem; background: rgba(17, 40, 32, 0.03); scrollbar-width: thin; }
+.chat-sidebar-head { display: flex; align-items: center; justify-content: space-between; padding: 0 0.35rem 0.7rem 0.5rem; }
+.new-chat { display: flex; align-items: center; gap: 0.55rem; width: 100%; margin-bottom: 0.9rem; padding: 0.55rem 0.6rem; border: 0; border-radius: 0.7rem; background: transparent; color: var(--text); font-size: 0.88rem; font-weight: 540; text-align: left; }
+.new-chat:hover { background: var(--hover); }
+.new-chat svg { width: 1rem; height: 1rem; color: var(--muted); }
+.panel-label { margin: 0.3rem 0 0.4rem; padding: 0 0.6rem; color: var(--faint); font-size: 0.68rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+.sidebar-empty { margin: 0.4rem 0.6rem; color: var(--faint); font-size: 0.8rem; }
+.goal-tree, .chat-list { margin: 0; padding: 0; list-style: none; }
+.goal-row { display: flex; align-items: center; gap: 0.55rem; width: 100%; padding: 0.5rem 0.6rem; border: 0; border-radius: 0.7rem; background: transparent; color: var(--text); font-size: 0.88rem; font-weight: 540; text-align: left; }
+.goal-row:hover { background: var(--hover); }
+.goal-row > svg:first-child { flex: none; width: 1rem; height: 1rem; color: var(--muted); }
+.goal-row > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.goal-row .goal-chevron, .goal-row .spin { flex: none; width: 0.8rem; height: 0.8rem; color: var(--faint); transition: transform 160ms; }
+.goal-row[aria-expanded="true"] .goal-chevron { transform: rotate(90deg); }
+.goal-row .goal-chevron { opacity: 0; }
+.goal-row:hover .goal-chevron { opacity: 1; }
+.chat-list { margin: 0.1rem 0 0.5rem; }
+.chat-row, .chat-more { display: flex; align-items: center; gap: 0.4rem; width: 100%; padding: 0.42rem 0.6rem 0.42rem 2.15rem; border: 0; border-radius: 0.65rem; background: transparent; color: var(--muted); font-size: 0.85rem; text-align: left; }
+.chat-row:hover, .chat-more:hover { background: var(--hover); }
+.chat-row > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-row .spin { flex: none; width: 0.8rem; height: 0.8rem; color: var(--accent); }
+.chat-row[data-current="true"] { background: var(--tint); color: var(--text); font-weight: 540; }
+.chat-more { color: var(--faint); font-size: 0.8rem; }
+.sidebar-scrim-button { display: none; }
+.chat-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.chat-top { display: flex; align-items: center; gap: 0.6rem; min-height: 3.4rem; padding: 0.55rem 1rem; }
+.chat-title { display: flex; align-items: baseline; gap: 0.7rem; min-width: 0; }
+.chat-title strong { overflow: hidden; font-size: 0.95rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.chat-title small { overflow: hidden; color: var(--faint); font-size: 0.78rem; text-overflow: ellipsis; white-space: nowrap; }
+.chat-main .thread[data-compact="false"] { padding: 0.5rem 1.25rem 1.5rem; }
+.chat-main .thread[data-compact="false"] > div { width: min(48rem, 100%); margin: 0 auto; }
+.chat-main .thread-empty { margin: 28vh 0 0; color: var(--text); font-family: var(--serif); font-size: 1.9rem; letter-spacing: -0.01em; text-align: center; }
+.chat-composer { width: min(48rem, 100%); margin: 0 auto; padding: 0 1.25rem 1rem; }
+.chat-composer .composer-dock[data-variant="panel"] { margin: 0; }
 .panel { display: flex; flex-direction: column; min-height: 0; border-radius: 1.1rem; background: rgba(255, 255, 255, 0.78); box-shadow: var(--shadow-soft); }
 .panel-head { display: flex; align-items: center; gap: 0.55rem; min-height: 3rem; padding: 0.6rem 0.8rem 0.4rem 1.1rem; }
 .panel-head strong { font-size: 0.92rem; font-weight: 600; }
 .panel-head small { min-width: 0; overflow: hidden; color: var(--faint); font-size: 0.76rem; text-overflow: ellipsis; white-space: nowrap; }
 .panel-head .quiet-button svg { width: 0.75rem; height: 0.75rem; fill: currentColor; }
-.panel-label { margin: 0.3rem 0 0.4rem; padding: 0 0.5rem; color: var(--faint); font-size: 0.68rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
-.lanes-column { display: flex; flex-direction: column; gap: 0.75rem; min-height: 0; }
+.lanes-column { display: flex; flex-direction: column; gap: 0.75rem; min-height: 0; padding: 0.75rem 0.75rem 0.75rem 0; }
 .lane-panel { flex: 1 1 0; min-height: 12rem; }
 .composer-dock[data-variant="panel"] { position: static; width: auto; margin: 0 0.75rem 0.75rem; transform: none; }
 .composer-dock[data-variant="panel"] .composer { box-shadow: 0 1px 2px rgba(45, 55, 72, 0.05), 0 8px 24px rgba(45, 55, 72, 0.08); }
@@ -478,31 +512,12 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .thread .question-card { box-shadow: var(--shadow-soft); }
 .thread .question { margin-top: 0; }
 
-.goals-panel { min-height: 0; overflow-y: auto; padding: 0.75rem 0.6rem; border-radius: 1.1rem; background: rgba(255, 255, 255, 0.6); box-shadow: var(--shadow-soft); }
-.goal-list, .task-list { margin: 0; padding: 0; list-style: none; }
-.goal { margin-bottom: 0.15rem; border-radius: 0.75rem; }
-.goal[data-current="true"] { background: var(--tint); }
-.goal-head { display: flex; align-items: center; gap: 0.4rem; width: 100%; padding: 0.55rem 0.5rem; border: 0; border-radius: 0.7rem; background: transparent; text-align: left; font-size: 0.86rem; }
-.goal-head:hover { background: var(--hover); }
-.goal-head small { margin-left: auto; color: var(--faint); font-size: 0.72rem; }
-.goal-title { min-width: 0; overflow: hidden; font-weight: 520; text-overflow: ellipsis; white-space: nowrap; }
-.goal-chevron { width: 0.8rem; height: 0.8rem; color: var(--faint); transition: transform 160ms; }
-.goal-head[aria-expanded="true"] .goal-chevron { transform: rotate(90deg); }
-.goal-body { padding: 0 0.6rem 0.6rem 1.7rem; }
-.goal-text { margin: 0 0 0.45rem; color: var(--text); font-size: 0.76rem; line-height: 1.45; }
-.goal-text.muted { color: var(--muted); }
-.task { display: flex; gap: 0.45rem; padding: 0.3rem 0; font-size: 0.8rem; color: var(--muted); }
-.task > svg { width: 0.75rem; height: 0.75rem; margin-top: 0.15rem; }
-.task[data-status="open"] > svg { color: var(--accent); }
-.task[data-status="completed"] > svg { color: var(--accent-strong); }
-.task[data-current="true"] { color: var(--text); font-weight: 560; }
-.task[data-current="true"] .goal-text { font-weight: 400; margin-top: 0.25rem; }
-
-/* Narrower screens: goals, main and the lanes stack, and the page scrolls. */
+/* Narrower screens: the sidebar slides over the chat, and the lanes stack under it. */
 @media (max-width: 1099px) {
-  .standard, .standard[data-lanes="true"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-auto-rows: auto; align-content: start; overflow-y: auto; }
-  .goals-panel { height: 14rem; }
-  .main-panel { height: 78vh; }
+  .standard, .standard[data-lanes="true"], .standard[data-sidebar="true"], .standard[data-lanes="true"][data-sidebar="true"] { grid-template-columns: minmax(0, 1fr); grid-auto-rows: auto; align-content: start; overflow-y: auto; }
+  .chat-main { height: 100dvh; }
+  .chat-sidebar { position: fixed; inset: 0 auto 0 0; z-index: 20; width: min(19rem, 86vw); background: #f3f2ed; box-shadow: var(--shadow-float); }
+  .sidebar-scrim-button { position: fixed; inset: 0; z-index: 19; display: block; border: 0; background: rgba(45, 55, 72, 0.18); }
   .lanes-column { min-height: auto; }
   .lane-panel { flex: none; height: 60vh; }
 }

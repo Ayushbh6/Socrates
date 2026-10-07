@@ -1,45 +1,76 @@
-import { Square, X } from "lucide-react";
+import { PanelLeft, Square, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { chatThread, groupChats, newThread } from "../lib/chats";
 import { conversationBusy, currentRoute } from "../lib/model";
 import { type AppState, store } from "../lib/store";
 import type { Lane } from "../lib/types";
 import { AccessMenu } from "./AccessMenu";
 import { Composer } from "./Composer";
-import { GoalsPanel } from "./GoalsPanel";
 import { type Mode, ModeSwitch } from "./ModeSwitch";
 import { Notices } from "./Notices";
+import { StandardSidebar } from "./StandardSidebar";
 import { Thread } from "./Thread";
 
+/** What the middle shows: the newest chat (null), one the reader chose, or a new chat begun after a given question. */
+type View = null | { chat: { goal: number; task: number } } | { fresh: string | null };
+
 /**
- * Standard mode (architecture/web.md, "Standard mode"): goals on the left, the
- * whole main conversation in the middle, and each lane in its own panel.
+ * Standard mode (architecture/web.md, "Standard mode"): the layout of any chat
+ * app. Goals are folders on the left, each holding its chats (its tasks); one
+ * chat fills the middle with the composer under it, and lanes keep their own
+ * panels at the right. Socrates still routes every message, so a message
+ * written in a chat joins the chat it belongs to.
  */
 export function Standard({ app, mode, onMode, onSettings }: { app: AppState; mode: Mode; onMode: (mode: Mode) => void; onSettings: () => void }) {
   const lanes = app.model.live?.lanes ?? app.status?.lanes ?? [];
-  const route = currentRoute(app.model.conversations.main ?? []);
+  const main = app.model.conversations.main ?? [];
   const side = lanes.length > 0 || app.model.pending.length > 0;
   const mainBusy = conversationBusy(app.model.live, "main");
+  const [view, setView] = useState<View>(null);
+  const [sidebar, setSidebar] = useState(() => typeof window === "undefined" || window.innerWidth >= 900);
+
+  const route = view && "chat" in view ? { goal: { number: view.chat.goal }, task: { number: view.chat.task } } : view ? null : currentRoute(main);
+  const shown = useMemo(() => (view && "fresh" in view ? newThread(main, view.fresh) : route ? chatThread(main, route.goal.number, route.task.number) : main), [main, view, route?.goal.number, route?.task.number]);
+  const goals = useMemo(() => groupChats(app.goals, main), [app.goals, main]);
+  const goal = route ? app.goals.find((g) => g.number === route.goal.number) : undefined;
+  const task = goal?.tasks.find((t) => t.number === route?.task.number);
+
+  // A new chat becomes the chat its first question was routed to.
+  useEffect(() => {
+    if (view && "fresh" in view && shown.some((e) => e.route)) setView(null);
+  }, [view, shown]);
 
   return (
-    <div className="standard" data-lanes={side}>
-      <header className="standard-header">
-        <span className="brand">Socrates</span>
-        <AccessMenu app={app} />
-        {!app.connected ? <span className="chip reconnecting">Reconnecting…</span> : app.model.live && !app.model.live.ready && <span className="chip reconnecting">Socrates is restarting…</span>}
-        <span className="composer-space" />
-        <ModeSwitch mode={mode} onMode={onMode} onSettings={onSettings} />
-      </header>
+    <div className="standard" data-lanes={side} data-sidebar={sidebar}>
+      {sidebar && (
+        <>
+          <StandardSidebar
+            goals={goals}
+            current={route ? { goal: route.goal.number, task: route.task.number } : null}
+            onChat={(g, t) => { setView({ chat: { goal: g, task: t } }); if (window.innerWidth < 900) setSidebar(false); }}
+            onNew={() => { setView({ fresh: main.at(-1)?.key ?? null }); if (window.innerWidth < 900) setSidebar(false); }}
+            onClose={() => setSidebar(false)}
+          />
+          <button type="button" className="sidebar-scrim-button" aria-label="Hide the sidebar" onClick={() => setSidebar(false)} />
+        </>
+      )}
 
-      <GoalsPanel goals={app.goals} route={route} />
-
-      <section className="panel main-panel" aria-label="Main conversation">
-        <div className="panel-head">
-          <strong>Main</strong>
-          {route && <small>{route.task.title}</small>}
+      <section className="chat-main" aria-label="Chat">
+        <header className="chat-top">
+          {!sidebar && <button type="button" className="icon-button" onClick={() => setSidebar(true)} aria-label="Show the sidebar" title="Show the sidebar"><PanelLeft aria-hidden /></button>}
+          <div className="chat-title">
+            {task ? <><strong>{task.title}</strong><small>{goal?.title}</small></> : <strong>New chat</strong>}
+          </div>
+          {!app.connected ? <span className="chip reconnecting">Reconnecting…</span> : app.model.live && !app.model.live.ready && <span className="chip reconnecting">Socrates is restarting…</span>}
           <span className="composer-space" />
           {mainBusy && <button type="button" className="quiet-button" onClick={() => store.cancel("main")}><Square aria-hidden /> Stop</button>}
+          <AccessMenu app={app} />
+          <ModeSwitch mode={mode} onMode={onMode} onSettings={onSettings} />
+        </header>
+        <Thread app={app} conversation="main" shown={shown} empty={view && "fresh" in view || !main.length ? "What should we work on?" : "Nothing has been asked in this chat yet."} />
+        <div className="chat-composer">
+          <Composer app={app} conversation="main" laneNumber={null} variant="panel" onModel={onSettings} onNewLane={(text, attachments) => store.sendToNewLane(text, attachments)} />
         </div>
-        <Thread app={app} conversation="main" empty="Ask Socrates anything to begin." />
-        <Composer app={app} conversation="main" laneNumber={null} variant="panel" onModel={onSettings} onNewLane={(text, attachments) => store.sendToNewLane(text, attachments)} />
       </section>
 
       {side && (

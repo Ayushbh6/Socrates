@@ -7,11 +7,11 @@ import { AnswerView } from "./AnswerView";
 import { QuestionCard } from "./QuestionCard";
 
 /**
- * One conversation in standard mode: every question with its answer, oldest
+ * One conversation in standard mode (or `shown`, the part of it that is one chat): every question with its answer, oldest
  * first, following the newest work while the reader is at the bottom.
  */
-export function Thread({ app, conversation, extra = [], compact = false, empty }: { app: AppState; conversation: string; extra?: Exchange[]; compact?: boolean; empty: string }) {
-  const list = [...(app.model.conversations[conversation] ?? []), ...extra];
+export function Thread({ app, conversation, shown, extra = [], compact = false, empty }: { app: AppState; conversation: string; shown?: Exchange[]; extra?: Exchange[]; compact?: boolean; empty: string }) {
+  const list = [...(shown ?? app.model.conversations[conversation] ?? []), ...extra];
   const latest = list.at(-1) ?? null;
   const approvals = (app.model.live?.approvals ?? []).filter((a) => a.conversation === conversation);
   const line = workLine(orbState(latest, approvals), latest);
