@@ -231,8 +231,8 @@ li[data-kind="answer"] .node { background: var(--good); }
 .status-completed { background: var(--tint); color: var(--accent-text); }
 .status-interrupted { background: var(--warn-tint); color: var(--warn); }
 .card-compaction h4 svg { color: var(--s3); }
-.answer { font-size: 0.92rem; line-height: 1.6; }
-.answer p { margin: 0.4rem 0; }
+.trace-answer { min-width: 0; font-size: 0.92rem; line-height: 1.6; }
+.trace-answer p { margin: 0.4rem 0; }
 .blocks { display: grid; gap: 0.3rem; margin: 0.2rem 0 0.5rem; }
 .tool-name { color: var(--accent-text); font-family: var(--mono); font-size: 0.84rem; }
 .tool-args { overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-family: var(--mono); font-size: 0.74rem; }

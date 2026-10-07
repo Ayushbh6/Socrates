@@ -60,6 +60,8 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 
 15. **Search overlay and repeated answer stream** (2026-10-07). Reproduced a shared CSS class turning “in Work” into the Database's 576-pixel fixed drawer; the drawer now has its own class. Confirmed the recorded final answer was streamed again by a hidden-anchor metadata repair; repair text now stays private until the validated answer is saved once, while its complete call, usage, timings and thinking remain inspectable. Verified Flow, Standard, phone width, the real Database drawer, reconnect and Stop during repair. Typecheck, build and all 774 tests passed; V2 history retained and the app restarted. See `docs/reviews/display-stream-fixes-2026-10-07.md`.
 
+16. **Trace answer width** (2026-10-07). The trace answer inherited the chat's narrow orb column through a shared `answer` class. Renamed the trace wrapper and its styles to `trace-answer`; the original answer now fills the card without changing its content. Verified both saved answers, light/dark mode, desktop/tablet/phone widths and Flow/Standard chat. Build, typecheck and all 69 web tests passed. The live Chrome page was reloaded; the server and session remain running. See `docs/reviews/trace-answer-layout-2026-10-07.md`.
+
 ## Suggested
 
 From the observability phase:

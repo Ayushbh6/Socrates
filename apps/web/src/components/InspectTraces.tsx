@@ -160,7 +160,7 @@ function Item({ item, open, widest, growth, onCall }: { item: TraceItem; open: b
       return (
         <article className="card card-answer">
           <h4>{item.stopped ? `Stopped (${item.stopped})` : item.status === "in_progress" ? "Answering…" : "The answer"}</h4>
-          {item.text ? <div className="answer"><Prose text={item.text} animate={false} writing={false} /></div> : <p className="muted">{item.status === "in_progress" ? "Still working." : "No answer was written."}</p>}
+          {item.text ? <div className="trace-answer"><Prose text={item.text} animate={false} writing={false} /></div> : <p className="muted">{item.status === "in_progress" ? "Still working." : "No answer was written."}</p>}
         </article>
       );
   }
