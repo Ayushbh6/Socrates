@@ -70,6 +70,8 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 
 20. **Standard mode without the router: server** (2026-10-07). A message can name its chat (`chat { goal, task }` on `send`/`queue`): it is bound there directly, never routed, and that chat never rolls over (it keeps compacting). A new chat is a task named by its first words, then renamed in the background by `xiaomi/mimo-v2.6-flash` (OpenRouter; `settings.titler`). Chats outside a goal live in an ordinary goal "Chats" (not the hidden General goal, which the router treats as one task), remembered in `standard.json`; `POST /api/goals` makes a goal the user names. Tests: unrouted send, naming, missing goal, and a chat past its compaction limit that keeps compacting. The page does not use it yet; that is the next step.
 
+21. **Standard mode without the router: page** (2026-10-07). The composer sends to the open chat (or the newest); **New chat** starts a plain chat, listed under **Chats**; the folder button names a new goal and opens a chat in it; **+** on a goal starts a chat there. Names update live when the titler renames a chat. A queued message keeps its chat. Tried on a copy of the live data with real models: a new goal, a chat in it named "Rainy weekend ideas in Vienna" by `xiaomi/mimo-v2.6-flash` (278 in, 63 out, 4 s, $0.00005), and a plain chat under Chats; no router call either time.
+
 ## Suggested
 
 From the observability phase:

@@ -3,7 +3,7 @@ import { type SettingsPatch, api } from "./api";
 import { IMAGES_MAX, prepareImage } from "./images";
 import { LiveConnection } from "./live";
 import { type Model, type ModelEvent, emptyModel, reduce, replayFrom } from "./model";
-import type { Access, AttachmentView, Command, Effort, GoalView, ServerMessage, Settings, Status } from "./types";
+import type { Access, AttachmentView, ChatChoice, Command, Effort, GoalView, ServerMessage, Settings, Status } from "./types";
 
 export interface AppState {
   model: Model;
@@ -46,6 +46,8 @@ export class Store {
   private readonly loadingOlder = new Set<string>();
   private statusRequest = 0;
   private readonly pendingQueue = new Map<string, { text: string; attachments: AttachmentView[] }>();
+  /** The chat each standard-mode message was sent to, so one that finds main busy is queued for the same chat. */
+  private readonly sentChats = new Map<string, ChatChoice>();
   private readonly live = new LiveConnection({
     message: (message) => this.receive(message),
     connected: (connected) => this.set({ connected }),
@@ -83,10 +85,11 @@ export class Store {
     if (request === this.statusRequest) this.set({ status, settings });
   }
 
-  /** Send to main or a lane, with any attached images; returns the message's id, or null when the connection is down. */
-  send(text: string, to: string, attachments: AttachmentView[] = []): string | null {
+  /** Send to main or a lane, with any attached images (and, in standard mode, its chosen chat); returns the message's id, or null when the connection is down. */
+  send(text: string, to: string, attachments: AttachmentView[] = [], chat?: ChatChoice): string | null {
     const id = newId();
-    if (!this.command({ type: "send", id, text, to, ...named(attachments) })) return null;
+    if (!this.command({ type: "send", id, text, to, ...named(attachments), ...(chat ? { chat } : {}) })) return null;
+    if (chat) this.sentChats.set(id, chat);
     this.dispatch({ type: "sent", id, text, to, at: new Date().toISOString(), attachments });
     return id;
   }
@@ -95,10 +98,10 @@ export class Store {
     return this.send(text, "new_lane", attachments);
   }
 
-  queue(text: string, attachments: AttachmentView[] = []): boolean {
+  queue(text: string, attachments: AttachmentView[] = [], chat?: ChatChoice): boolean {
     const id = newId();
     this.pendingQueue.set(id, { text, attachments });
-    if (this.command({ type: "queue", id, text, ...named(attachments) })) return true;
+    if (this.command({ type: "queue", id, text, ...named(attachments), ...(chat ? { chat } : {}) })) return true;
     this.pendingQueue.delete(id);
     return false;
   }
@@ -256,13 +259,16 @@ export class Store {
       // Main became busy as this was sent: it waits in the queue instead.
       const sent = Object.values(this.state.model.conversations).flat().find((e) => e.sendId === message.id);
       this.dispatch({ type: "unsent", id: message.id });
-      if (sent && !this.queue(sent.message, sent.attachments)) this.rejectedQueue(message.id, sent.message, "Socrates is reconnecting. Try again in a moment.", sent.attachments);
+      const chat = this.sentChats.get(message.id);
+      this.sentChats.delete(message.id);
+      if (sent && !this.queue(sent.message, sent.attachments, chat)) this.rejectedQueue(message.id, sent.message, "Socrates is reconnecting. Try again in a moment.", sent.attachments);
       return;
     }
     if (message.type === "state") {
       for (const queued of message.queue) this.pendingQueue.delete(queued.id);
     }
     if (message.type === "accepted" || message.type === "result") this.pendingQueue.delete(message.id);
+    if ((message.type === "accepted" || message.type === "result" || message.type === "error") && message.id && !(message.type === "error" && message.code === "main_busy")) this.sentChats.delete(message.id);
     if (message.type === "error") {
       const queued = message.id ? this.pendingQueue.get(message.id) : undefined;
       if (queued !== undefined && message.id) {
@@ -282,6 +288,13 @@ export class Store {
     if (message.type === "state" && this.state.settings && JSON.stringify(message.access) !== JSON.stringify(this.state.settings.access)) this.set({ settings: { ...this.state.settings, access: message.access } });
     this.dispatch({ type: "server", message });
     if (message.type === "activity" && ["ledger", "routed", "finished", "lane"].includes(message.kind)) this.refreshGoals();
+  }
+
+  /** Standard mode's New goal: made on the server, then listed. */
+  async createGoal(title: string): Promise<GoalView> {
+    const goal = await api.createGoal(title);
+    this.set({ goals: await api.goals() });
+    return goal;
   }
 
   private refreshGoals(): void {

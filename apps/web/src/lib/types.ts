@@ -111,6 +111,12 @@ export interface Evidence {
   outputLost: boolean;
 }
 
+/** Standard mode's choice of where a message goes (architecture/server.md, "Live connection"): a goal (null: Chats) and its chat (null: a new one). */
+export interface ChatChoice {
+  goal: number | null;
+  task: number | null;
+}
+
 export interface GoalView {
   number: number;
   title: string;
@@ -239,8 +245,8 @@ export type ServerMessage =
 /** What a page sends on the live connection. */
 export type Command =
   | { type: "hello"; after?: number }
-  | { type: "send"; id: string; text: string; to: string; attachments?: { id: string; name: string }[] }
-  | { type: "queue"; id: string; text: string; attachments?: { id: string; name: string }[] }
+  | { type: "send"; id: string; text: string; to: string; attachments?: { id: string; name: string }[]; chat?: ChatChoice }
+  | { type: "queue"; id: string; text: string; attachments?: { id: string; name: string }[]; chat?: ChatChoice }
   | { type: "queue_remove"; id: string }
   | { type: "queue_to_lane"; id: string }
   | { type: "cancel"; conversation: string }

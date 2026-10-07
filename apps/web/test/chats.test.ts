@@ -18,6 +18,11 @@ describe("the chats of each goal", () => {
     expect(grouped[1]?.working).toBe(false);
   });
 
+  it("marks the goal that holds the plain chats", () => {
+    const withChats = [...goals, { ...goal(3, "Chats", [[1, "Quick question"]]), chats: true }];
+    expect(groupChats(withChats, []).map((g) => [g.title, g.plain])).toEqual([["Chats", true], ["Explore", false], ["Resume", false]]);
+  });
+
   it("keeps newest-made first for a chat nothing was asked in since loading", () => {
     expect(groupChats(goals, [])[0]?.title).toBe("Explore");
     expect(groupChats(goals, [])[1]?.chats.map((c) => c.title)).toEqual(["Rewrite", "Critique"]);

@@ -473,6 +473,21 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .chat-row .spin { flex: none; width: 0.8rem; height: 0.8rem; color: var(--accent); }
 .chat-row[data-current="true"] { background: var(--tint); color: var(--text); font-weight: 540; }
 .chat-row[data-continued="true"] { padding-left: 2.9rem; }
+.chat-list[data-nested="false"] .chat-row, .chat-list[data-nested="false"] .chat-more { padding-left: 0.6rem; }
+.chat-list[data-nested="false"] { margin-bottom: 1rem; }
+.chat-none { margin: 0 0 0.5rem; padding: 0.2rem 0.6rem 0.2rem 2.15rem; color: var(--faint); font-size: 0.8rem; }
+.sidebar-heading { display: flex; align-items: center; justify-content: space-between; padding-right: 0.25rem; }
+.sidebar-heading .panel-label { margin: 0.3rem 0; }
+.sidebar-heading .icon-button svg, .goal-new svg { width: 0.95rem; height: 0.95rem; }
+.new-goal { display: flex; flex-direction: column; gap: 0.3rem; margin: 0.2rem 0.3rem 0.6rem; }
+.new-goal input { width: 100%; padding: 0.5rem 0.65rem; border: 1px solid rgba(17, 40, 32, 0.12); border-radius: 0.6rem; background: #fff; color: var(--text); font: inherit; font-size: 0.86rem; outline: none; }
+.new-goal input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--tint); }
+.new-goal small { padding: 0 0.2rem; color: var(--danger); font-size: 0.75rem; }
+.goal-item { position: relative; }
+.goal-item > .goal-new { position: absolute; top: 0.2rem; right: 1.6rem; opacity: 0; }
+.goal-item:hover > .goal-new, .goal-item > .goal-new:focus-visible { opacity: 1; }
+.goal-row { padding-right: 2.6rem; }
+@media (hover: none) { .goal-item > .goal-new { opacity: 1; } }
 .chat-more { color: var(--faint); font-size: 0.8rem; }
 .sidebar-scrim-button { display: none; }
 .chat-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -485,6 +500,8 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .chat-main .thread-empty { margin: 28vh 0 0; color: var(--text); font-family: var(--serif); font-size: 1.9rem; letter-spacing: -0.01em; text-align: center; }
 .continued-note { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem 1rem; margin: 0.5rem 0 1.4rem; padding: 0.75rem 1rem; border-radius: 0.9rem; background: var(--tint); color: var(--muted); font-size: 0.8rem; line-height: 1.45; }
 .continued-note > span { flex: 1 1 18rem; }
+/* The chat's name and goal are in the bar on top; the answer's own trail would repeat them. */
+.chat-main .answer-route { display: none; }
 .chat-composer { width: min(48rem, 100%); margin: 0 auto; padding: 0 1.25rem 1rem; }
 .chat-composer .composer-dock[data-variant="panel"] { margin: 0; }
 .panel { display: flex; flex-direction: column; min-height: 0; border-radius: 1.1rem; background: rgba(255, 255, 255, 0.78); box-shadow: var(--shadow-soft); }

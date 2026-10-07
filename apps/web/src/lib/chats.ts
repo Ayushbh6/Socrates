@@ -17,6 +17,8 @@ export interface Chat {
 export interface GoalChats {
   number: number;
   title: string;
+  /** Standard mode's plain chats, outside any goal: listed apart, not as a folder. */
+  plain: boolean;
   at: string | null;
   working: boolean;
   chats: Chat[];
@@ -51,7 +53,7 @@ export function groupChats(goals: GoalView[], exchanges: Exchange[]): GoalChats[
       });
       // The task worked on last first; its chats stay in the order of the chain.
       const chats = tasks.sort((a, b) => latestFirst(a, b) || b.number - a.number).flatMap((t) => t.chats);
-      return { number: g.number, title: g.title, at: chats.reduce<string | null>((at, c) => newest(at, c.at), null), working: chats.some((c) => c.working), chats };
+      return { number: g.number, title: g.title, plain: g.chats === true, at: chats.reduce<string | null>((at, c) => newest(at, c.at), null), working: chats.some((c) => c.working), chats };
     })
     .sort((a, b) => latestFirst(a, b) || b.number - a.number);
 }

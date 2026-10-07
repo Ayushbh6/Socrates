@@ -3,12 +3,12 @@ import { type ClipboardEvent, type DragEvent, type KeyboardEvent, type ReactNode
 import { IMAGES_MAX, IMAGE_TYPES } from "../lib/images";
 import { conversationBusy, sendTarget } from "../lib/model";
 import { type AppState, type PendingImage, store } from "../lib/store";
-import { type AttachmentView, MAX_RUNNING_LANES } from "../lib/types";
+import { type AttachmentView, type ChatChoice, MAX_RUNNING_LANES } from "../lib/types";
 import { EffortMenu, ModelMenu } from "./ModelPicker";
 import { Popover } from "./Popover";
 
 /** The message box: Send, Queue while main works, or Send in a new lane (architecture/web.md, "Composer"). */
-export function Composer({ app, conversation, laneNumber, onNewLane, onModel, onSent, variant = "float", compact = false, autoFocus = true }: {
+export function Composer({ app, conversation, laneNumber, onNewLane, onModel, onSent, chat, placeholder, variant = "float", compact = false, autoFocus = true }: {
   app: AppState;
   conversation: string;
   laneNumber: number | null;
@@ -16,6 +16,9 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, on
   /** The model label opens the settings. */
   onModel?: () => void;
   onSent?: () => void;
+  /** Standard mode: the chat a message goes to, unrouted (architecture/web.md, "Standard mode"). */
+  chat?: ChatChoice;
+  placeholder?: string;
   /** Floating over the flow canvas, or inside a standard-mode panel. */
   variant?: "float" | "panel";
   /** A lane panel's composer: no approvals chip or model label. */
@@ -68,7 +71,7 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, on
 
   const submit = (how: "send" | "queue" | "lane" = target) => {
     if (empty || unavailable || (how === "lane" && runningLanes >= MAX_RUNNING_LANES)) return;
-    const sent = how === "lane" ? onNewLane(text, attachments) : how === "queue" ? store.queue(text, attachments) : store.send(text, conversation, attachments);
+    const sent = how === "lane" ? onNewLane(text, attachments) : how === "queue" ? store.queue(text, attachments, chat) : store.send(text, conversation, attachments, chat);
     if (!sent) return;
     onSent?.();
     setText("");
@@ -119,7 +122,7 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, on
           onChange={(e) => setText(e.target.value)}
           onKeyDown={keys}
           onPaste={paste}
-          placeholder={images.length && empty ? "Say what to do with the images…" : laneNumber ? `Message lane ${laneNumber}…` : busy ? "Socrates is working. Your message will wait in the queue…" : "Ask Socrates…"}
+          placeholder={images.length && empty ? "Say what to do with the images…" : laneNumber ? `Message lane ${laneNumber}…` : busy ? "Socrates is working. Your message will wait in the queue…" : placeholder ?? "Ask Socrates…"}
           aria-label="Message"
         />
         <div className="composer-row">

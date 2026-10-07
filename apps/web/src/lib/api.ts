@@ -41,6 +41,7 @@ export const api = {
   keys: () => call<Record<string, boolean>>("GET", "/api/keys"),
   setKey: (name: string, value: string) => call<null>("PUT", `/api/keys/${encodeURIComponent(name)}`, { value }),
   goals: () => call<GoalView[]>("GET", "/api/goals"),
+  createGoal: (title: string) => call<GoalView>("POST", "/api/goals", { title }),
   history: (conversation: string, before?: number) => call<History>("GET", `/api/history?conversation=${encodeURIComponent(conversation)}${before ? `&before=${before}` : ""}`),
   folders: (path?: string) => call<Folders>("GET", `/api/folders${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   addWorkspace: (path: string) => call<{ id: string; name: string; path: string }>("POST", "/api/workspaces", { path }),
