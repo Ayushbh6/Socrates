@@ -30,6 +30,10 @@ describe("tool calls in plain words", () => {
     expect(words("terminal_control", { action: "write", terminal: "dev", keys: ["CTRL_C"] })).toBe("Pressed Ctrl-C in dev");
     expect(words("terminal_control", { action: "wait", terminal: "configure", event: "exit" })).toBe("Waited for configure to finish");
     expect(words("terminal_control", { action: "wait", terminal: "dev", event: "pattern", pattern: "ready" })).toBe('Waited for dev to print "ready"');
+    expect(words("terminal_control", { action: "wait", terminals: ["web", "api", "docs"], event: "exit" })).toBe("Waited for web, api, docs to finish");
+    expect(words("terminal_control", { action: "wait", terminal: "web", event: "port_open", port: 5173 })).toBe("Waited for web to open port 5173");
+    expect(words("terminal_control", { action: "wait", terminal: "web", event: "idle" })).toBe("Waited for web to go quiet");
+    expect(words("terminal_control", { action: "screen", terminal: "shadcn" })).toBe("Looked at the screen of shadcn");
     expect(words("terminal_control", { action: "wait", terminal: "setup", event: "input_required" })).toBe("Waited for setup to ask for input");
     expect(words("terminal_control", { action: "terminate", terminal: "dev" })).toBe("Stopped dev");
     expect(words("terminal_control", { action: "resize", terminal: "dev", cols: 100, rows: 30 })).toBe("Resized dev to 100×30");

@@ -53,6 +53,12 @@ export const KEY_BYTES: Record<string, string> = {
 
 /** A complete escape sequence at the start of the text: CSI, OSC, character-set, or a two-character escape. */
 const ESCAPE = /^\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()][0-9A-Za-z]|[@-Z\\-_=>78])/;
+/** Erase line, or go to a column: what a progress line does before it is drawn again. */
+const REWRITE = /^\x1b\[(?:[0-2]?K|\d*G)$/;
+/** What does not change what a redrawn line says: spinner glyphs and punctuation, but not the marks that say it worked or failed. */
+const NOT_MEANING = /[^\p{L}\p{N}✔✓✖✗✘×⚠]+/gu;
+/** Stands for a redraw boundary while a chunk is cleaned. */
+const REDRAW = "\x1f";
 const ESCAPES = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()][0-9A-Za-z]|[@-Z\\-_=>78])/g;
 /** A sequence longer than this without its end is not one; its ESC is dropped. */
 const ESCAPE_MAX = 64;
@@ -65,6 +71,10 @@ const ESCAPE_MAX = 64;
  */
 export class TerminalText {
   private carry = "";
+  /** The last emitted text ended a line (or nothing was emitted yet). */
+  private atStart = true;
+  /** What the last redrawn line said, without punctuation or spinner glyphs. */
+  private lastKey = "";
 
   push(chunk: string): string {
     let text = this.carry + chunk;
@@ -79,9 +89,37 @@ export class TerminalText {
       this.carry = `\r${this.carry}`;
       text = text.slice(0, -1);
     }
-    text = text.replace(ESCAPES, "").replace(/\x1b/g, "").replace(/\r*\n/g, "\n").replace(/\r/g, "\n");
+    // Erasing the line or going to column 1 rewrites the line, as a carriage return does.
+    text = text.replace(ESCAPES, (sequence) => (REWRITE.test(sequence) ? REDRAW : "")).replace(/\x1b/g, "").replace(/\r*\n/g, "\n").replace(/\r/g, REDRAW);
     while (/[^\n\x08]\x08/.test(text)) text = text.replace(/[^\n\x08]\x08/g, "");
-    return text.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
+    text = text.replace(/[\x00-\x08\x0b-\x1e\x7f]/g, "");
+    const out = this.lines(text);
+    if (out) this.atStart = out.endsWith("\n");
+    return out;
+  }
+
+  /**
+   * Redraws of one line (a spinner, a progress bar) each begin a line; a
+   * redraw that says the same as the line before, apart from its symbols,
+   * adds nothing.
+   */
+  private lines(text: string): string {
+    const pieces = text.split(REDRAW);
+    let out = pieces[0] ?? "";
+    // The line being redrawn is the unfinished one before the first redraw.
+    if (pieces.length > 1 && out && !out.endsWith("\n")) this.lastKey = out.slice(out.lastIndexOf("\n") + 1).replace(NOT_MEANING, "");
+    for (const piece of pieces.slice(1)) {
+      if (!piece) continue;
+      const key = piece.replace(NOT_MEANING, "");
+      const same = key !== "" && key === this.lastKey;
+      this.lastKey = key;
+      if (same) continue;
+      const startsLine = out === "" ? this.atStart : out.endsWith("\n");
+      out += (startsLine ? "" : "\n") + piece;
+    }
+    // Text on its own line after a newline is never a redraw of the line before it.
+    if (pieces.length === 1 && out.includes("\n")) this.lastKey = "";
+    return out;
   }
 
   /** What is still held back when the process ends. */

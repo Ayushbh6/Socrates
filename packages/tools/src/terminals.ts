@@ -1,10 +1,11 @@
-import { spawn, spawnSync } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import net from "node:net";
 import { constants } from "node:os";
 import { ToolError } from "./errors";
 import { forgetProcess, recordProcess } from "./process-registry";
 import { TerminalText, loadPty } from "./pty";
+import { Screen } from "./screen";
 
 /**
  * The project terminal supervisor (agent-harness.md, "terminal" and
@@ -30,6 +31,8 @@ export interface LaunchSpec {
   ready: { pattern: string | null; port: number | null; timeoutMs: number } | null;
   /** Run in a pseudo-terminal of this size instead of over pipes. */
   pty?: { cols: number; rows: number } | null;
+  /** The goal and task the launching call belongs to, such as "g2/t3", for listings. */
+  origin?: string | null;
 }
 
 /** A running command, over pipes or in a pseudo-terminal. */
@@ -123,6 +126,10 @@ export class TerminalSession {
   cursorHidden = false;
   /** When input was last written to it: a prompt answered since it printed is no longer waiting. */
   answeredAt = 0;
+  /** A full-screen program (an editor, a TUI) has taken over the terminal; it waits for a key whenever it is quiet. */
+  fullscreen = false;
+  /** What the program has drawn; null over pipes. */
+  screen: Screen | null = null;
   readonly startedAt = new Date();
   exitedAt: Date | null = null;
   private listeners = new Set<() => void>();
@@ -150,6 +157,8 @@ export class TerminalSession {
   inputRequired(now = Date.now()): boolean | null {
     if (!this.proc?.pty) return null;
     if (this.status !== "running" || now - this.lastOutputAt < INPUT_IDLE_MS || this.answeredAt >= this.lastOutputAt) return false;
+    // A full-screen program that has stopped drawing is waiting for a key.
+    if (this.fullscreen) return true;
     // A menu ("Select a framework"), unlike a plain prompt, ends its last line; it hides the cursor while it waits.
     if (this.cursorHidden) return true;
     const last = this.output.slice(Math.max(this.output.start, this.output.end - 1)).text;
@@ -282,13 +291,15 @@ export class TerminalSupervisor {
         throw new ToolError("spawn_failed", `The command could not be started in a terminal: ${(error as Error).message}`, "Check the command and working directory, or run it without pty.", false);
       }
       const text = new TerminalText();
+      const screen = new Screen(spec.pty.cols, spec.pty.rows);
       session = new TerminalSession(id, spec, {
         pid: term.pid,
         pty: true,
         write: (data) => term.write(data),
         closeInput: () => term.write("\x04"),
-        resize: (cols, rows) => term.resize(cols, rows),
+        resize: (cols, rows) => { term.resize(cols, rows); screen.resize(cols, rows); },
       }, output);
+      session.screen = screen;
       this.live.set(id, session);
       if (this.registry) recordProcess(this.registry, term.pid, spec.command);
       hooks.onStart(session);
@@ -297,6 +308,10 @@ export class TerminalSupervisor {
         const hide = chunk.lastIndexOf("\x1b[?25l");
         const show = chunk.lastIndexOf("\x1b[?25h");
         if (hide >= 0 || show >= 0) session.cursorHidden = hide > show;
+        const enter = chunk.lastIndexOf("\x1b[?1049h");
+        const leave = chunk.lastIndexOf("\x1b[?1049l");
+        if (enter >= 0 || leave >= 0) session.fullscreen = enter > leave;
+        screen.write(chunk);
         const clean = text.push(chunk);
         if (clean) onData(clean);
       });
@@ -496,6 +511,19 @@ export function portOpen(port: number): Promise<boolean> {
   return attempt("127.0.0.1").then((ok) => ok || attempt("::1"));
 }
 
+/** Whether the session's ready condition holds right now (checked once, without waiting); sessions without one are always ready. */
+export async function readyNow(session: TerminalSession): Promise<boolean> {
+  const ready = session.spec.ready;
+  if (!ready || session.ready) return true;
+  const pattern = ready.pattern ? new RegExp(ready.pattern) : null;
+  const patternOk = !pattern || pattern.test(session.output.slice(session.output.start).text);
+  const portOk = ready.port === null || (await portOpen(ready.port));
+  if (!patternOk || !portOk || session.status !== "running") return false;
+  session.ready = true;
+  session.bump();
+  return true;
+}
+
 /**
  * Resolve readiness: every supplied condition (output pattern and/or port)
  * must pass. Returns false when the session exits or the timeout elapses.
@@ -521,4 +549,36 @@ export async function awaitReady(session: TerminalSession, signal: AbortSignal, 
     if (session.status !== "running" || left <= 0 || signal.aborted) return false;
     await session.changed(Math.min(left, 250), signal);
   }
+}
+
+/** Run a small system tool and return its output; empty when it is missing, fails, or takes too long. */
+function tool(file: string, args: string[]): Promise<string> {
+  return new Promise((done) => {
+    try {
+      execFile(file, args, { timeout: 3000, maxBuffer: 4_000_000 }, (error, stdout) => done(error && !stdout ? "" : String(stdout)));
+    } catch {
+      done("");
+    }
+  });
+}
+
+/** The local TCP ports a process group is listening on, lowest first (empty where `ps` or `lsof` are not available). */
+export async function listeningPorts(pgid: number): Promise<number[]> {
+  if (process.platform === "win32") return [];
+  const members = new Set<string>();
+  for (const line of (await tool("ps", ["-axo", "pid=,pgid="])).split("\n")) {
+    const [pid, group] = line.trim().split(/\s+/);
+    if (pid && group === String(pgid)) members.add(pid);
+  }
+  if (!members.size) return [];
+  const ports = new Set<number>();
+  let owner = "";
+  for (const line of (await tool("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn"])).split("\n")) {
+    if (line.startsWith("p")) owner = line.slice(1);
+    else if (line.startsWith("n") && members.has(owner)) {
+      const port = Number(line.slice(line.lastIndexOf(":") + 1));
+      if (Number.isInteger(port) && port > 0) ports.add(port);
+    }
+  }
+  return [...ports].sort((a, b) => a - b);
 }

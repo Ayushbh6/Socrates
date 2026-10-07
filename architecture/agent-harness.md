@@ -320,13 +320,25 @@ The input is a discriminated union selected by `action`:
 ```
 
 ```json
+{ "action": "screen", "terminal": "string" }
+```
+
+```json
 {
   "action": "wait",
-  "terminal": "string",
-  "event": "ready | output | input_required | exit | pattern",
-  "pattern": "string | optional"
+  "terminal": "string | optional",
+  "terminals": "array<string>, 2–16 | optional",
+  "event": "ready | output | input_required | exit | pattern | idle | port_open | port_closed",
+  "pattern": "string | optional",
+  "port": "integer | optional",
+  "idle_ms": "integer 250–600000 | optional",
+  "timeout_ms": "integer 250–600000 | optional"
 }
 ```
+
+`screen` is for a pty session. Its output is a stream of everything the program printed with the colours and cursor movement removed, which is the wrong picture of a program that redraws: a menu redrawn on each arrow key appears as a pile of frames. So the session also keeps a terminal emulator (`@xterm/headless`) fed with the same bytes, and `screen` returns what a person would see now: `text` (the visible lines), the `cursor` (row, column, and whether the program shows it; menus hide it while they wait), `highlighted` (the lines drawn as a selection: reverse video, a colour no other line of the list has, or one pointer glyph such as ❯ among several lines) and `fullscreen` (an editor or TUI has taken over). The screen comes with every `wait` that ends on `input_required` or `idle`, with `write` on a pty (after the program has had `settle_ms`, default 400, to redraw, so the next key is chosen from what the screen shows), with a launch that is waiting for input, and with the end of a program, where it summarizes a run that the stream shows as many progress redraws. A full-screen program that is quiet counts as waiting for input. Over pipes there is no screen (`needs_pty`).
+
+`wait` takes one session or, with `terminals`, several: the first to have the event wins and is named, with the state of the others, so three dev servers can be watched at once and any one stopped on its own. `timeout_ms` ends the wait early with `timeout` (default and maximum ten minutes); `idle` fires when a session has printed nothing for `idle_ms` (default 2000); `port_open` and `port_closed` watch a local TCP port. A program that asks for input, or exits, ends any wait. `list` shows, for each session, the ports its process group listens on, when and from which goal and task it was started, how long it has run and how long it has been quiet.
 
 ```json
 {

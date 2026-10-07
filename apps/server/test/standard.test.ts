@@ -190,7 +190,8 @@ describe("renaming and archiving chats and goals", () => {
   });
 
   it("will not archive the Chats list, and refuses while Socrates is working in the chat", async () => {
-    const gate = new Promise<void>(() => {});
+    let release!: () => void;
+    const gate = new Promise<void>((done) => (release = done));
     const router = new Responder("r", () => ({ text: "no" }));
     const agent = new Responder("a", async () => (await gate, final()));
     const live = await liveServer(router, agent);
@@ -205,6 +206,8 @@ describe("renaming and archiving chats and goals", () => {
     const task = live.rt.store.listTasks(chats.id)[0]!;
     await expect.poll(async () => (await call("POST", `/api/goals/${chats.number}/tasks/${task.number}/archive`)).statusCode, { timeout: 5000 }).toBe(409);
     expect((await call("POST", `/api/goals/${chats.number}/archive`)).statusCode).toBe(400);
-    live.rt.socrates!.close().catch(() => {});
+    // Let the work finish, so nothing is still writing when the test's folder is removed.
+    release();
+    await p.next(isResult("m1"));
   });
 });

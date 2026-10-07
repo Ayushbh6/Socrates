@@ -19,6 +19,19 @@ describe("terminal output as plain text", () => {
     expect(t.push("\x1b[?25l\x1b[2K\x1b[1Ghidden cursor\n")).toBe("hidden cursor\n");
   });
 
+  it("shows a spinner or progress line redrawn many times once, and keeps lines that really differ", () => {
+    const t = new TerminalText();
+    const frame = (glyph: string, text: string) => `\x1b[2K\x1b[1G${glyph} ${text}`;
+    const out = [frame("⠋", "Installing dependencies."), frame("⠙", "Installing dependencies."), frame("⠹", "Installing dependencies."), frame("⠸", "Installing dependencies.")].map((f) => t.push(f)).join("");
+    expect(out).toBe("⠋ Installing dependencies.");
+    expect(t.push("\x1b[2K\x1b[1G✔ Installing dependencies.\n")).toBe("\n✔ Installing dependencies.\n");
+    const bar = new TerminalText();
+    expect(["10%", "55%", "100%"].map((p) => bar.push(`\rDownloading ${p}`)).join("")).toBe("Downloading 10%\nDownloading 55%\nDownloading 100%");
+    // The same line printed twice with real newlines is kept twice.
+    const same = new TerminalText();
+    expect(same.push("done\ndone\n")).toBe("done\ndone\n");
+  });
+
   it("holds a sequence or a carriage return split between chunks until the rest arrives", () => {
     const t = new TerminalText();
     expect(t.push("red: \x1b[3")).toBe("red: ");

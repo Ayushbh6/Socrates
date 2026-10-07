@@ -66,7 +66,7 @@ function keyList(keys: string[]): string {
   return runs.map((r) => `${KEY_NAMES[r.key] ?? r.key}${r.n > 1 ? ` ×${r.n}` : ""}`).join(", ");
 }
 
-const WAIT_FOR: Record<string, string> = { exit: "to finish", ready: "to be ready", output: "to print more", input_required: "to ask for input" };
+const WAIT_FOR: Record<string, string> = { exit: "to finish", ready: "to be ready", output: "to print more", input_required: "to ask for input", idle: "to go quiet" };
 
 export function describeCall(tool: string, input: unknown): CallView {
   const i = (typeof input === "object" && input !== null ? input : {}) as Record<string, unknown>;
@@ -95,7 +95,7 @@ export function describeCall(tool: string, input: unknown): CallView {
       return view("terminal", i.background ? "Started" : "Ran", i.background ? "Starting" : "Running", cut(firstLine(str(i.command)), TARGET_CHARS), where || null);
     }
     case "terminal_control": {
-      const t = str(i.terminal);
+      const t = str(i.terminal) || (Array.isArray(i.terminals) ? i.terminals.map(String).join(", ") : "");
       switch (i.action) {
         case "write": {
           const keys = Array.isArray(i.keys) ? keyList(i.keys.map(String)) : "";
@@ -104,7 +104,9 @@ export function describeCall(tool: string, input: unknown): CallView {
           return view("terminal", "Pressed", "Pressing", keys, `in ${t}`);
         }
         case "wait":
-          return view("terminal", "Waited for", "Waiting for", t, i.event === "pattern" ? `to print ${JSON.stringify(str(i.pattern))}` : WAIT_FOR[str(i.event)] ?? null);
+          return view("terminal", "Waited for", "Waiting for", t, i.event === "pattern" ? `to print ${JSON.stringify(str(i.pattern))}` : i.event === "port_open" ? `to open port ${String(i.port)}` : i.event === "port_closed" ? `to close port ${String(i.port)}` : WAIT_FOR[str(i.event)] ?? null);
+        case "screen":
+          return view("terminal", "Looked at the screen of", "Looking at the screen of", t);
         case "read":
           return view("terminal", "Read the output of", "Reading the output of", t, str(i.filter) ? `lines matching ${JSON.stringify(str(i.filter))}` : null);
         case "list":
@@ -220,8 +222,10 @@ export function describeResult(
         const rows = r.terminals as { terminal?: string; status?: string; command?: string }[];
         return { ...base, summary: plural(rows.length, "terminal"), ...head(rows.map((t) => `${t.terminal ?? ""} · ${t.status ?? ""} · ${t.command ?? ""}`).join("\n")) };
       }
-      const output = str(r.output);
-      const summary = r.status === "running" && r.action === undefined ? (r.ready === true ? "running, ready" : "still running") : exitSummary(r) ?? (r.input_required === true ? "waiting for input" : null);
+      // A program that redraws is best shown as its screen; a stream of redraws is not.
+      const screen = typeof r.screen === "object" && r.screen !== null ? str((r.screen as { text?: unknown }).text) : "";
+      const output = screen || str(r.output);
+      const summary = r.event === "timeout" ? "timed out" : typeof r.event === "string" && r.action === "wait" && r.event !== "exit" ? String(r.event).replace(/_/g, " ") : r.status === "running" && r.action === undefined ? (r.ready === true ? "running, ready" : "still running") : exitSummary(r) ?? (r.input_required === true ? "waiting for input" : null);
       return { ...base, summary, ...tail(output) };
     }
     default:

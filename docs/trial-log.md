@@ -74,6 +74,8 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 
 22. **Rename and archive** (2026-10-07). Goals and chats can be renamed (standard sidebar, and flow's expanded notes) and archived (labelled Archive, not Delete; Undo for a few seconds; an Archived list to restore from). Archived work leaves lists, the router, `ledger_query`, `context_retrieve`, semantic search, recent activity and "the current chat"; nothing is erased from the log. A name the user typed is recorded and never replaced by the namer, which only runs once, for a new chat's first answer in standard mode. Store schema 5 → 6 (`archived_at`), tested on a copy of the live data. Tried in the browser: rename, archive with Undo, the Archived list and Restore, and a goal renamed from flow's note.
 
+23. **Terminal tools, agent side** (2026-10-08). A pty session now keeps a terminal emulator, so `terminal_control screen` and the answers to `wait`/`write` show the screen as drawn, with the cursor and which line is selected, instead of a pile of redraw frames. `wait` gained `timeout_ms`, `idle`, `port_open`/`port_closed`, and `terminals` (first of several); `list` shows ports, age, quiet time and origin; a program's spinner redraws collapse to one line, and a program's final screen comes with its exit. Tried with a real `npx shadcn@latest init` (LIVE_SHADCN=<file> pnpm vitest run packages/tools/test/live-shadcn.test.ts): five menus and prompts answered from their screens, and a clean final summary. Three local servers: stopped one by name, port closed, the others kept serving. Next: the terminal panel in the page.
+
 ## Suggested
 
 From the observability phase:

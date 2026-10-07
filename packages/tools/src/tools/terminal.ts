@@ -1,4 +1,5 @@
 import { TerminalControlInput, TerminalInput } from "@socrates/contracts";
+import type { z } from "zod";
 import { countTokens, truncateToTokens } from "@socrates/shared";
 import { RESULT_CEILING_TOKENS, headTail } from "../bounds";
 import { type HandlerContext, requireWorkspace, throwIfCancelled } from "../context";
@@ -6,7 +7,8 @@ import { ToolError } from "../errors";
 import { statOrNull } from "../files";
 import { type ToolHandler, type ToolOutput, json } from "../handler";
 import { KEY_BYTES } from "../pty";
-import { type LaunchSpec, type TerminalSession, type TerminalSupervisor, awaitReady, commandEnvironment, settles } from "../terminals";
+import { renderScreen } from "../screen";
+import { type LaunchSpec, type TerminalSession, type TerminalSupervisor, awaitReady, commandEnvironment, listeningPorts, portOpen, readyNow, settles } from "../terminals";
 
 export const DEFAULT_YIELD_MS = 10_000;
 export const MAX_YIELD_MS = 30_000;
@@ -91,6 +93,7 @@ export const terminalTool: ToolHandler<TerminalInput> = {
         ? { pattern: input.ready.pattern ?? null, port: input.ready.port ?? null, timeoutMs: input.ready.timeout_ms ?? DEFAULT_READY_TIMEOUT_MS }
         : null,
       pty: input.pty ? { ...PTY_SIZE } : null,
+      origin: originOf(ctx),
     };
     const started = Date.now();
     throwIfCancelled(ctx.signal);
@@ -115,7 +118,7 @@ async function finishLaunch(ctx: HandlerContext, terminals: TerminalSupervisor, 
     }
     if (session.status === "exited") {
       terminals.forget(session);
-      return completed(session, started);
+      return withFinalScreen(session, completed(session, started));
     }
   }
   if (spec.ready) await awaitReady(session, ctx.signal);
@@ -123,7 +126,7 @@ async function finishLaunch(ctx: HandlerContext, terminals: TerminalSupervisor, 
     await terminals.terminate(session);
     throw new ToolError("cancelled", "The launch was cancelled and the process was stopped.", "No action needed.", false);
   }
-  return running(session, started);
+  return withScreen(session, running(session, started));
 }
 
 /**
@@ -148,6 +151,35 @@ function watchOutput(session: TerminalSession, ctx: HandlerContext): () => void 
     }
   })();
   return () => stop.abort();
+}
+
+/** A result with the program's screen added when it waits for input or has taken over the whole terminal. */
+async function withScreen(session: TerminalSession, out: ToolOutput): Promise<ToolOutput> {
+  if (!session.screen || !(session.inputRequired() || session.fullscreen)) return out;
+  const result = { ...(out.result as object), screen: await screenOf(session) };
+  return { ...out, content: json(result), result };
+}
+
+/** What a terminal program left on its screen when it ended: a summary where the stream is a pile of redraws. */
+async function withFinalScreen(session: TerminalSession, out: ToolOutput): Promise<ToolOutput> {
+  const screen = await screenOf(session);
+  if (!screen?.text) return out;
+  const result = { ...(out.result as object), screen };
+  return { ...out, content: json({ ...JSON.parse(out.content as string), screen }), result };
+}
+
+/** Which goal and task a session belongs to, such as "g2/t3". */
+function originOf(ctx: HandlerContext): string | null {
+  try {
+    return `g${ctx.store.requireGoal(ctx.binding.goalId).number}/t${ctx.store.requireTask(ctx.binding.taskId).number}`;
+  } catch {
+    return null;
+  }
+}
+
+/** What a program has drawn on its terminal, for a pseudo-terminal session; nothing over pipes. */
+async function screenOf(session: TerminalSession) {
+  return session.screen ? renderScreen(await session.screen.snapshot()) : null;
 }
 
 function launch(ctx: HandlerContext, terminals: TerminalSupervisor, spec: LaunchSpec): TerminalSession {
@@ -232,40 +264,138 @@ function unseen(session: TerminalSession) {
   return { output: out.text, cursor: `c${session.observed}`, truncated: out.truncated || seen.lost, output_lost: seen.lost };
 }
 
+type WaitInput = Extract<z.infer<typeof TerminalControlInput>, { action: "wait" }>;
+
+/** How long a pseudo-terminal is given to draw its answer to a keystroke. */
+const SETTLE_DEFAULT_MS = 400;
+/** A terminal that has printed nothing for this long has finished drawing, whatever the settle time. */
+const SETTLE_QUIET_MS = 120;
+
+/** Wait for one session, or the first of several, to have an event: ready, output, a prompt, exit, a pattern, quiet, or a port. */
+async function waitFor(input: WaitInput, ctx: HandlerContext, terminals: TerminalSupervisor): Promise<ToolOutput> {
+  if (input.terminal && input.terminals) throw new ToolError("invalid_parameters", "wait takes terminal or terminals, not both.", "Pass one session in terminal, or several in terminals.");
+  const names = input.terminals ?? (input.terminal ? [input.terminal] : []);
+  if (!names.length) throw new ToolError("invalid_parameters", "wait needs terminal or terminals.", "Pass the session to wait on in terminal, or several in terminals.");
+  const sessions = names.map((name) => terminals.find(name));
+  const many = sessions.length > 1;
+  const pty = sessions.filter((s) => !!s.proc?.pty);
+  if (input.event === "input_required" && pty.length < sessions.length) {
+    const piped = sessions.find((s) => !s.proc?.pty)!;
+    throw new ToolError("needs_pty", `${piped.selector} runs over pipes, where a prompt cannot be told from other output.`, 'Wait for event "pattern" with the prompt text, or start interactive programs with pty: true.');
+  }
+  if (input.event === "pattern" && !input.pattern) throw new ToolError("invalid_parameters", "wait with event pattern needs pattern.", "Pass pattern, a regular expression to wait for in new output.");
+  if ((input.event === "port_open" || input.event === "port_closed") && input.port === undefined) throw new ToolError("invalid_parameters", `wait with event ${input.event} needs port.`, "Pass port, a local TCP port number.");
+  if (input.event === "ready") {
+    const without = sessions.find((s) => !s.spec.ready);
+    if (without) throw new ToolError("no_ready_condition", `${without.selector} was started without a ready condition.`, 'Wait for event "pattern" or "output" instead, or restart it with ready.');
+  }
+  const pattern = input.event === "pattern" ? compilePattern(input.pattern!, "pattern") : null;
+  const idleMs = input.idle_ms ?? 2000;
+  const deadline = Date.now() + (input.timeout_ms ?? MAX_WAIT_MS);
+
+  /** The event a session has now, if any. Whatever is waited for, a program that asks for input cannot go on without it, and an exit ends every wait. */
+  const happened = async (s: TerminalSession): Promise<string | null> => {
+    const fresh = s.output.slice(s.observed).text;
+    if (input.event === "exit" && s.status === "exited") return "exit";
+    if (input.event === "output" && fresh.length > 0) return "output";
+    if (pattern && pattern.test(fresh)) return "pattern";
+    if (input.event === "ready" && (s.ready || (s.status === "running" && (await readyNow(s))))) return "ready";
+    if (input.event === "idle" && s.status === "running" && Date.now() - s.lastOutputAt >= idleMs) return "idle";
+    if (input.event === "port_open" && s.status === "running" && (await portOpen(input.port!))) return "port_open";
+    if (input.event === "port_closed" && !(await portOpen(input.port!))) return "port_closed";
+    if (s.inputRequired()) return "input_required";
+    if (s.status === "exited") return "exit";
+    return null;
+  };
+
+  const unwatch = many ? () => {} : watchOutput(sessions[0]!, ctx);
+  let won: { session: TerminalSession; event: string } | null = null;
+  try {
+    while (!won) {
+      if (ctx.signal.aborted) throw new ToolError("cancelled", "The wait was cancelled.", "No action needed.", false);
+      for (const session of sessions) {
+        const event = await happened(session);
+        if (event) { won = { session, event }; break; }
+      }
+      if (won) break;
+      const left = deadline - Date.now();
+      if (left <= 0) break;
+      await Promise.race(sessions.map((s) => s.changed(Math.min(250, left), ctx.signal)));
+    }
+  } finally {
+    unwatch();
+  }
+  if (!won) {
+    const summary = sessions.map((s) => ({ terminal: s.selector, status: s.status, ready: s.ready, input_required: s.inputRequired() }));
+    if (many) {
+      const result = { action: "wait", event: "timeout", terminals: summary };
+      return { content: json(result), result };
+    }
+    won = { session: sessions[0]!, event: "timeout" };
+  }
+  const { session, event } = won;
+  const screen = session.screen && (event === "input_required" || event === "idle" || event === "exit" || session.fullscreen) ? await screenOf(session) : null;
+  const result = {
+    action: "wait",
+    ...identity(session),
+    event,
+    ready: session.ready,
+    ...(session.proc?.pty ? { input_required: session.inputRequired() } : {}),
+    ...unseen(session),
+    ...(screen ? { screen } : {}),
+    ...exitFields(session),
+    ...(many ? { others: sessions.filter((s) => s !== session).map((s) => ({ terminal: s.selector, status: s.status, ready: s.ready, input_required: s.inputRequired() })) } : {}),
+  };
+  return { content: json(result), result };
+}
+
 export const terminalControlTool: ToolHandler<TerminalControlInput> = {
   name: "terminal_control",
   description: [
     "Manage terminal sessions started by terminal, selected by name or session id. Actions:",
-    "list — all live sessions and recently exited ones;",
+    "list — all live sessions and recently exited ones, with the ports each listens on, how long it has run, and how long it has been quiet;",
+    "screen — a pty session's screen as drawn now (its lines, cursor, and which lines look selected): use it to read menus and TUIs, which redraw rather than print;",
     `read — retained output after cursor (default: after what you last received), paged by limit_lines (default ${READ_DEFAULT_LINES}); filter keeps only lines matching a regex;`,
-    `wait — block until event happens: ready, output (new output), exit, pattern (a regex in new output), or input_required (a pty session showing a prompt and waiting); returns event "timeout" after ${MAX_WAIT_MS / 60000} minutes;`,
-    "write — send input text (submit adds Enter, default true) and/or keys: over pipes ENTER, CTRL_C and CTRL_D; in a pty also TAB, ESCAPE, BACKSPACE, DELETE, arrows, HOME, END, PAGE_UP, PAGE_DOWN, CTRL_L and CTRL_Z;",
+    `wait — block until event happens: ready, output (new output), exit, pattern (a regex in new output), input_required (a pty session showing a prompt and waiting), idle (nothing printed for idle_ms, default 2000), or port_open / port_closed (a local port); terminals waits on several sessions and returns the first to have the event; timeout_ms ends the wait early with event "timeout" (default and maximum ${MAX_WAIT_MS / 60000} minutes);`,
+    "write — send input text (submit adds Enter, default true) and/or keys: over pipes ENTER, CTRL_C and CTRL_D; in a pty also TAB, ESCAPE, BACKSPACE, DELETE, arrows, HOME, END, PAGE_UP, PAGE_DOWN, CTRL_L and CTRL_Z; a pty answers with its screen after the keys, so choose the next key from it;",
     "signal — send SIGINT, SIGTERM, SIGHUP, SIGTSTP, or SIGKILL (asks the user) to the process group;",
     "terminate — stop the process tree gracefully, then forcibly; restart — stop it and run the same launch again under the same name; resize — set a pty session's columns and rows.",
   ].join(" "),
   schema: TerminalControlInput,
   concurrency: "serial",
-  mutating: (input) => !["list", "read", "wait", "resize"].includes(input.action),
+  mutating: (input) => !["list", "read", "wait", "resize", "screen"].includes(input.action),
   async execute(input, ctx) {
     const terminals = supervisor(ctx);
     if (input.action === "list") {
-      const rows = terminals.list().map((s) => ({
+      const now = Date.now();
+      const rows = await Promise.all(terminals.list().map(async (s) => ({
         terminal: s.selector,
         session_id: s.id,
         status: s.status,
         ready: s.ready,
         input_required: s.inputRequired(),
+        ...(s.status === "running" && s.proc?.pid ? { listening_ports: await listeningPorts(s.proc.pid) } : {}),
         cwd: s.spec.cwdRel,
         command: s.spec.command.slice(0, 200),
+        ...(s.spec.origin ? { started_in: s.spec.origin } : {}),
         started_at: s.startedAt.toISOString(),
+        running_for_s: Math.round(((s.exitedAt?.getTime() ?? now) - s.startedAt.getTime()) / 1000),
+        ...(s.status === "running" ? { quiet_for_s: Math.round((now - s.lastOutputAt) / 1000) } : {}),
         ...exitFields(s),
-      }));
+      })));
       const result = { action: "list", terminals: rows };
       return { content: json(result), result };
     }
 
+    if (input.action === "wait") return waitFor(input, ctx, terminals);
     const session = terminals.find(input.terminal);
     switch (input.action) {
+      case "screen": {
+        if (!session.screen) throw new ToolError("needs_pty", `${session.selector} runs over pipes, which have no screen.`, "Start the program with pty: true, or use read for its output.");
+        const result = { action: "screen", ...identity(session), input_required: session.inputRequired(), screen: await screenOf(session), ...exitFields(session) };
+        return { content: json(result), result };
+      }
+
       case "read": {
         const from = parseCursor(input.cursor, session);
         const slice = session.output.slice(from);
@@ -322,38 +452,6 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
         return { content: json(result), result };
       }
 
-      case "wait": {
-        if (input.event === "input_required" && !session.proc?.pty) {
-          throw new ToolError("needs_pty", `${session.selector} runs over pipes, where a prompt cannot be told from other output.`, 'Wait for event "pattern" with the prompt text, or start interactive programs with pty: true.');
-        }
-        if (input.event === "pattern" && !input.pattern) throw new ToolError("invalid_parameters", "wait with event pattern needs pattern.", "Pass pattern, a regular expression to wait for in new output.");
-        if (input.event === "ready" && !session.spec.ready) throw new ToolError("no_ready_condition", `${session.selector} was started without a ready condition.`, 'Wait for event "pattern" or "output" instead, or restart it with ready.');
-        const pattern = input.event === "pattern" ? compilePattern(input.pattern!, "pattern") : null;
-        const deadline = Date.now() + MAX_WAIT_MS;
-        let event: string | null = null;
-        const unwatch = watchOutput(session, ctx);
-        try {
-          while (event === null) {
-            if (ctx.signal.aborted) throw new ToolError("cancelled", "The wait was cancelled.", "No action needed.", false);
-            const fresh = session.output.slice(session.observed).text;
-            if (input.event === "exit" && session.status === "exited") event = "exit";
-            else if (input.event === "output" && fresh.length > 0) event = "output";
-            else if (pattern && pattern.test(fresh)) event = "pattern";
-            else if (input.event === "ready" && session.ready) event = "ready";
-            // Whatever it waits for, a program that asks for input cannot go on until it gets some: say so now, not at the deadline.
-            else if (session.inputRequired()) event = "input_required";
-            else if (input.event === "ready" && session.status === "running" && (await awaitReady(session, ctx.signal, Math.max(1, deadline - Date.now())))) event = "ready";
-            else if (session.status === "exited") event = "exit";
-            else if (Date.now() >= deadline) event = "timeout";
-            else await session.changed(Math.min(250, deadline - Date.now()), ctx.signal);
-          }
-        } finally {
-          unwatch();
-        }
-        const result = { action: "wait", ...identity(session), event, ready: session.ready, ...(session.proc?.pty ? { input_required: session.inputRequired() } : {}), ...unseen(session), ...exitFields(session) };
-        return { content: json(result), result };
-      }
-
       case "write": {
         await ctx.path(session.spec.cwd, "run");
         if (input.input === undefined && !input.keys?.length) throw new ToolError("invalid_parameters", "write needs input or keys.", "Pass input text, keys, or both.");
@@ -378,8 +476,16 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
             }
           }
         }
-        session.answeredAt = Date.now();
+        const wrote = Date.now();
+        session.answeredAt = wrote;
         session.bump();
+        // A terminal redraws in answer to a key; show the result, so the next key is chosen from what the screen shows.
+        if (session.screen) {
+          const limit = wrote + (input.settle_ms ?? SETTLE_DEFAULT_MS);
+          while (Date.now() < limit && !ctx.signal.aborted && !(session.lastOutputAt > wrote && Date.now() - session.lastOutputAt >= SETTLE_QUIET_MS)) await session.changed(50, ctx.signal);
+          const result = { action: "write", ...identity(session), accepted: true, input_required: session.inputRequired(), screen: await screenOf(session) };
+          return { content: json(result), result };
+        }
         const result = { action: "write", ...identity(session), accepted: true };
         return { content: json(result), result };
       }
