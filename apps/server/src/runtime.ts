@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, realpathSync, renameSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { type LaneState, Socrates, interruptUnfinishedTurns } from "@socrates/agent";
@@ -7,12 +7,13 @@ import { type CallRecord, type Effort, type EmbeddingClient, type ModelClient, M
 import { type EffortLevels, type ListedModel, PROVIDER_DEFAULTS, type Price, type Provider, costOf, detectEfforts, detectVision, listModels, listPrice, makeEmbedder, makeModel, reportedCost, splitModelId, withRecording } from "@socrates/providers";
 import { Retrieval } from "@socrates/retrieval";
 import { abortable, type Clock, newId } from "@socrates/shared";
-import { CallLog, LedgerStore, type Workspace } from "@socrates/store";
+import { CallLog, type Goal, LedgerStore, type Turn, type Workspace } from "@socrates/store";
 import { type AccessPolicy, canReadAutomatically } from "@socrates/tools";
 import { type ServerConfig, prepareHome } from "./config";
 import { readKeys, writeKey } from "./keys";
 import { lockHome } from "./home-lock";
 import { Settings, SettingsPatch, loadSettings, saveSettings } from "./settings";
+import { DEFAULT_TITLER, nameChat } from "./titles";
 import { workspaceFolder } from "./views";
 
 /** The order in which a chat provider is picked when none is chosen: the first with a key. */
@@ -75,8 +76,10 @@ export class Runtime {
   settings: Settings;
   /** What the user must still do before Socrates takes messages. */
   setup: string[] = [];
-  /** `compactor` is null when compaction uses the chat model. */
-  models: { chat: ModelInUse | null; router: ModelInUse | null; compactor: ModelInUse | null } = { chat: null, router: null, compactor: null };
+  /** `compactor` is null when compaction uses the chat model; `titler` names standard-mode chats. */
+  models: { chat: ModelInUse | null; router: ModelInUse | null; compactor: ModelInUse | null; titler: ModelInUse | null } = { chat: null, router: null, compactor: null, titler: null };
+  /** The model that names standard-mode chats; null when it could not start (chats keep their first words). */
+  private titler: ModelClient | null = null;
   embeddings: { state: "ready" | "unavailable"; detail: string | null } = { state: "unavailable", detail: null };
   private retrieval: Retrieval | null = null;
   private catalog: InstalledCatalog | null = null;
@@ -291,6 +294,48 @@ export class Runtime {
   }
 
   /** Set or remove one API key and rebuild Socrates with it. */
+  /**
+   * The goal that holds standard mode's chats outside any goal, shown as
+   * "Chats" (architecture/web.md, "Standard mode"). An ordinary goal, so flow
+   * mode can continue its chats; made on first use and remembered in the data folder.
+   */
+  chatsGoal(): Goal {
+    const file = path.join(this.config.home, "standard.json");
+    let number: number | null = null;
+    try { number = (JSON.parse(readFileSync(file, "utf8")) as { chatsGoal?: number }).chatsGoal ?? null; } catch {}
+    const known = number ? this.store.getGoalByNumber(number) : null;
+    if (known && !known.general) return known;
+    const goal = this.store.createGoal({ title: "Chats", objective: "Chats started in standard mode outside any goal." });
+    writeFileSync(file, `${JSON.stringify({ chatsGoal: goal.number })}\n`);
+    return goal;
+  }
+
+  /** The number of the Chats goal, or null before the first chat outside a goal. */
+  chatsGoalNumber(): number | null {
+    try {
+      const number = (JSON.parse(readFileSync(path.join(this.config.home, "standard.json"), "utf8")) as { chatsGoal?: number }).chatsGoal ?? null;
+      return number && this.store.getGoalByNumber(number) ? number : null;
+    } catch { return null; }
+  }
+
+  /**
+   * Name a new standard-mode chat from its first question and answer, in the
+   * background. The chat keeps its first words when naming fails or the user
+   * renamed it meanwhile.
+   */
+  nameChat(turn: Turn, answer: string): void {
+    const model = this.titler;
+    if (!model || !turn.taskId || !turn.goalId) return;
+    const before = this.store.requireTask(turn.taskId).title;
+    const asked = (this.store.getEvent(turn.userEventId)?.payload as { text?: string } | undefined)?.text ?? "";
+    void nameChat(model, { message: asked, answer, trace: { goalId: turn.goalId, taskId: turn.taskId, turnId: turn.id, userEventId: turn.userEventId } })
+      .then((title) => {
+        const task = this.store.getTask(turn.taskId!);
+        if (title && task && task.title === before && title !== before) this.store.reviseTask(task.id, { title });
+      })
+      .catch((error) => this.log(`naming a chat failed: ${message(error)}`));
+  }
+
   async setKey(name: string, value: string | null): Promise<void> {
     await this.change(async () => {
       writeKey(this.config.keysPath, name, value);
@@ -364,7 +409,8 @@ export class Runtime {
 
     const chat = this.chatChoice(env);
     if (!chat) {
-      this.models = { chat: null, router: null, compactor: null };
+      this.models = { chat: null, router: null, compactor: null, titler: null };
+      this.titler = null;
       this.setup.push(`Add an API key (${DETECTION_ORDER.map((p) => PROVIDER_DEFAULTS[p].keys[0]).join(", ")}) or choose a chat model.`);
       return;
     }
@@ -378,7 +424,10 @@ export class Runtime {
     ]);
     this.deps.signal?.throwIfAborted();
     const compactor: ModelInUse | null = this.settings.compactor ? { ...this.settings.compactor, source: "settings" } : null;
-    this.models = { chat: { ...chat, vision, ...(efforts.levels.length ? { effort: { ...efforts, current: null } } : {}) }, router, compactor };
+    const titler: ModelInUse = this.settings.titler
+      ? { ...this.settings.titler, source: "settings" }
+      : PROVIDER_DEFAULTS.openrouter.keys.some((k) => env[k]) ? { ...DEFAULT_TITLER, source: "detected" } : router;
+    this.models = { chat: { ...chat, vision, ...(efforts.levels.length ? { effort: { ...efforts, current: null } } : {}) }, router, compactor, titler };
     if (this.models.chat?.effort) this.models.chat.effort.current = this.effortInUse();
     const build = this.deps.makeModel ?? makeModel;
     let model: ModelClient;
@@ -390,6 +439,9 @@ export class Runtime {
       model = withEffort(recorded(build(chat.provider, chat.model, env, { vision })), () => this.effortInUse(), () => this.models.chat?.effort?.maxOutputTokens);
       routerModel = recorded(build(router.provider, router.model, env));
       if (compactor) compactorModel = recorded(build(compactor.provider, compactor.model, env));
+      // Naming chats is a nicety: a titler that cannot start leaves chats their first words.
+      try { this.titler = recorded(build(titler.provider, titler.model, env)); }
+      catch (error) { this.titler = null; this.log(`chat names unavailable: ${redact(message(error), env)}`); }
     } catch (error) {
       this.setup.push(redact(error instanceof ModelError && error.kind === "authentication" ? `${error.message} Add it in settings.` : `The chat model cannot start: ${message(error)}`, env));
       return;

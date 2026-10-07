@@ -7,6 +7,7 @@ import { z } from "zod";
 import { activityOf } from "./activity";
 import { ATTACHMENTS_MAX, findAttachment, viewOf } from "./attachments";
 import type { Runtime } from "./runtime";
+import { provisionalTitle } from "./titles";
 
 /** A reconnecting page catches up on at most this many events; further behind, it reloads its history. */
 export const REPLAY_MAX_EVENTS = 5_000;
@@ -31,13 +32,16 @@ const Id = z.string().regex(/^[A-Za-z0-9_-]{1,100}$/);
 const Text = z.string().max(TEXT_MAX_CHARS);
 /** An attachment named in a message: a stored image's id, with the name the page gives it. */
 const Attached = z.array(z.object({ id: z.string().regex(/^[0-9a-f]{32}$/), name: z.string().max(1000) }).strict()).max(ATTACHMENTS_MAX);
+/** Standard mode's choice of where a message goes: a goal (null: the Chats goal) and its chat (null: a new one). */
+const Chat = z.object({ goal: z.number().int().positive().nullable(), task: z.number().int().positive().nullable() }).strict();
+export type ChatChoice = z.infer<typeof Chat>;
 const Decision = z.object({ goalId: z.string(), path: z.string(), role: z.string(), decision: z.enum(["approve", "reject", "supersede"]) }).strict();
 
 /** What a page may send (architecture/server.md, "Live connection"). */
 const Command = z.discriminatedUnion("type", [
   z.object({ type: z.literal("hello"), after: z.number().int().nonnegative().optional() }).strict(),
-  z.object({ type: z.literal("send"), id: Id, text: Text, to: z.union([z.literal("main"), z.literal("new_lane"), Id]), anchorDecisions: z.array(Decision).max(10).optional(), attachments: Attached.optional() }).strict(),
-  z.object({ type: z.literal("queue"), id: Id, text: Text, attachments: Attached.optional() }).strict(),
+  z.object({ type: z.literal("send"), id: Id, text: Text, to: z.union([z.literal("main"), z.literal("new_lane"), Id]), anchorDecisions: z.array(Decision).max(10).optional(), attachments: Attached.optional(), chat: Chat.optional() }).strict(),
+  z.object({ type: z.literal("queue"), id: Id, text: Text, attachments: Attached.optional(), chat: Chat.optional() }).strict(),
   z.object({ type: z.literal("queue_edit"), id: Id, text: Text }).strict(),
   z.object({ type: z.literal("queue_remove"), id: Id }).strict(),
   z.object({ type: z.literal("queue_to_lane"), id: Id }).strict(),
@@ -97,7 +101,7 @@ export class LiveHub {
   private readonly clients = new Set<WebSocket>();
   /** Subscribe at hello, so events saved between upgrade and replay arrive once. */
   private readonly subscribed = new Set<WebSocket>();
-  private readonly queue: { id: string; text: string; attachments: Attachment[] }[] = [];
+  private readonly queue: { id: string; text: string; attachments: Attachment[]; chat?: ChatChoice }[] = [];
   private readonly approvals = new Map<string, { view: PendingApproval; runId: string; resolve: (granted: boolean) => void }>();
   private readonly runs = new Map<string, Run>();
   /** Accepted IDs remain reserved across reconnects for this server launch. */
@@ -207,14 +211,14 @@ export class LiveHub {
         return this.hello(socket, command.after);
       case "send":
         hasWords(command.text, command.attachments);
-        return this.start(command.id, command.text, command.to, command.anchorDecisions, false, this.attachments(command.attachments));
+        return this.start(command.id, command.text, command.to, command.anchorDecisions, false, this.attachments(command.attachments), command.chat);
       case "queue": {
         this.assertNewId(command.id);
         hasWords(command.text, command.attachments);
         if (this.queue.length >= QUEUE_MAX) throw new LiveError("queue_full", `At most ${QUEUE_MAX} messages can wait for the main conversation.`);
         const attachments = this.attachments(command.attachments);
         this.acceptedIds.add(command.id);
-        this.queue.push({ id: command.id, text: command.text, attachments });
+        this.queue.push({ id: command.id, text: command.text, attachments, ...(command.chat ? { chat: command.chat } : {}) });
         this.publishState();
         return this.drain();
       }
@@ -318,9 +322,11 @@ export class LiveHub {
     });
   }
 
-  private start(id: string, text: string, to: string, anchorDecisions?: AnchorDecision[], fromQueue = false, attachments: Attachment[] = []): void {
+  private start(id: string, text: string, to: string, anchorDecisions?: AnchorDecision[], fromQueue = false, attachments: Attachment[] = [], chat?: ChatChoice): void {
     const socrates = this.socrates();
     if (!fromQueue) this.assertNewId(id);
+    if (chat && to !== "main") throw new LiveError("bad_request", "A message for a chosen chat is sent in the main conversation.");
+    const target = chat ? this.chatTarget(chat, text, attachments.length) : undefined;
     if (to !== "main" && to !== "new_lane") {
       const lane = this.runtime.store.getLane(to);
       if (!lane || lane.closedAt) throw new LiveError("lane_closed", "That lane is closed.");
@@ -339,6 +345,8 @@ export class LiveHub {
       approve: (request, origin) => this.ask(run, request, origin),
       ...(to === "main" ? {} : { lane: to === "new_lane" ? "new" : to }),
       ...(anchorDecisions?.length ? { anchorDecisions } : {}),
+      // Standard mode: no routing, and a chat that never rolls over.
+      ...(target ? { target, rollover: false } : {}),
       onLane: (laneId) => {
         run.conversation = laneId;
         this.broadcast({ type: "accepted", id, conversation: laneId });
@@ -362,7 +370,11 @@ export class LiveHub {
     if (to !== "new_lane") this.broadcast({ type: "accepted", id, conversation: to });
     this.publishState();
     run.settled = work
-      .then((result) => this.broadcast({ type: "result", id, conversation: run.conversation, result: summary(result) }))
+      .then((result) => {
+        this.broadcast({ type: "result", id, conversation: run.conversation, result: summary(result) });
+        const part = result.kind === "answered" ? result.parts[0] : undefined;
+        if (target && !("taskId" in target) && part?.status === "completed") this.runtime.nameChat(part.turn, part.answer);
+      })
       .catch((error) => {
         if (!(error instanceof SocratesBusyError)) this.runtime.log(`message ${id} failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
         this.broadcast({ type: "error", id, conversation: run.conversation, ...problemOf(error) });
@@ -380,13 +392,24 @@ export class LiveHub {
       });
   }
 
+  /** Where a standard-mode message goes: a chat of a goal, or a new chat named for now by its first words. */
+  private chatTarget(chat: ChatChoice, text: string, images: number): { taskId: string } | { goalId: string; title: string } {
+    const store = this.runtime.store;
+    const goal = chat.goal === null ? this.runtime.chatsGoal() : store.getGoalByNumber(chat.goal);
+    if (!goal || goal.general) throw new LiveError("not_found", "That goal no longer exists.");
+    if (chat.task === null) return { goalId: goal.id, title: provisionalTitle(text, images) };
+    const task = store.getTaskByNumber(goal.id, chat.task);
+    if (!task) throw new LiveError("not_found", "That chat no longer exists.");
+    return { taskId: task.id };
+  }
+
   /** The next queued message, as soon as the main conversation is free. */
   private drain(): void {
     const socrates = this.runtime.socrates;
     if (this.closed || !this.runtime.acceptingMessages || !socrates || socrates.busy || !this.queue.length) return;
     const next = this.queue.shift()!;
     try {
-      this.start(next.id, next.text, "main", undefined, true, next.attachments);
+      this.start(next.id, next.text, "main", undefined, true, next.attachments, next.chat);
     } catch (error) {
       this.broadcast({ type: "error", id: next.id, conversation: "main", ...problemOf(error) });
     }
@@ -427,7 +450,7 @@ export class LiveHub {
     });
   }
 
-  private queued(id: string): { id: string; text: string; attachments: Attachment[] } {
+  private queued(id: string): { id: string; text: string; attachments: Attachment[]; chat?: ChatChoice } {
     const item = this.queue.find((q) => q.id === id);
     if (!item) throw new LiveError("not_found", "That message is no longer queued.");
     return item;

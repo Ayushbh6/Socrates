@@ -23,7 +23,8 @@ describe("the compaction model", () => {
     const { rt, request } = await server(home({ settings: SCRIPTED }), { makeModel });
     expect(rt.settings.compactor).toBeNull();
     expect(compactorOf(rt)).toBeUndefined();
-    expect(built.sort()).toEqual(["gemini:chat", "gemini:router"]);
+    // The second router-model client names standard-mode chats; none is built for compaction.
+    expect(built.sort()).toEqual(["gemini:chat", "gemini:router", "gemini:router"]);
     expect((await request("GET", "/api/status")).json().models.compactor).toBeNull();
   });
 

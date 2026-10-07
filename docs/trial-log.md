@@ -68,6 +68,8 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 
 19. **Automatic handover shown** (2026-10-07). The harness already rolled a task over into a linked chat after five compactions (written, tested, in the ledger). It was invisible. Now each routed part carries its chat, each task its number of chats, and Standard lists "<task> — continued" under the first with a card at the top of the continuation and a button back. `LedgerStore.listChats`; tests for the chain through the real store and for the sidebar logic. Not tried live: it needs a task that really reaches five compactions.
 
+20. **Standard mode without the router: server** (2026-10-07). A message can name its chat (`chat { goal, task }` on `send`/`queue`): it is bound there directly, never routed, and that chat never rolls over (it keeps compacting). A new chat is a task named by its first words, then renamed in the background by `xiaomi/mimo-v2.6-flash` (OpenRouter; `settings.titler`). Chats outside a goal live in an ordinary goal "Chats" (not the hidden General goal, which the router treats as one task), remembered in `standard.json`; `POST /api/goals` makes a goal the user names. Tests: unrouted send, naming, missing goal, and a chat past its compaction limit that keeps compacting. The page does not use it yet; that is the next step.
+
 ## Suggested
 
 From the observability phase:

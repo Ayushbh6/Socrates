@@ -149,7 +149,13 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
     return reply.header("cache-control", "private, max-age=31536000, immutable").type(found.media_type).send(readFileSync(found.path));
   });
 
-  app.get("/api/goals", async () => goalsView(runtime.store));
+  app.get("/api/goals", async () => goalsView(runtime.store, runtime.chatsGoalNumber()));
+  // Standard mode's "New goal": a goal the user names, with no task until its first chat.
+  app.post("/api/goals", async (request) => {
+    const { title } = z.object({ title: z.string().trim().min(1).max(120) }).strict().parse(request.body);
+    const goal = runtime.store.createGoal({ title });
+    return goalsView(runtime.store, runtime.chatsGoalNumber()).find((g) => g.number === goal.number);
+  });
 
   app.get("/api/history", async (request, reply) => {
     const query = History.parse(request.query);

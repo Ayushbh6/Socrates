@@ -23,6 +23,7 @@ Everything lives in one folder, `~/.socrates-v2` unless `SOCRATES_HOME` names an
 | `.env` | API keys, mode `600` |
 | `skills/`, `mcp.json` | global Skills and MCP servers |
 | `logs/server.log` | diagnostics; one previous log of up to 5 MB is kept |
+| `standard.json` | the number of the goal standard mode shows as its plain "Chats", made with the first chat outside a goal |
 | `terminals.json` | the process groups of running terminal sessions, each with its start time, so that ones a crashed server left running are stopped at the next start (`agent-harness.md`, "terminal") |
 | `.server-lock.db` | the exclusive runtime ownership lock, automatically released when its process stops |
 
@@ -49,6 +50,7 @@ Settings and keys can change only while Socrates is idle (no main-conversation m
 | `chat` | `null` | `{ provider, model, effort? }` of the working agent; `null` detects it from the keys. `effort` is its thinking level (`agent-harness.md`, "Thinking levels"); `null` or absent is Socrates' default for the model |
 | `router` | `null` | `{ provider, model }` of the Goal Router; `null` uses the chat provider's router default |
 | `compactor` | `null` | `{ provider, model }` of the model that writes history checkpoints when a long turn is compacted (`agent-harness.md`, "Context and compaction"); `null` uses the chat model. Changing it rebuilds Socrates, like the chat and router models; `/api/status` reports it as `models.compactor` (null when it is the chat model) |
+| `titler` | `null` | `{ provider, model }` of the model that names standard-mode chats from their first question and answer; `null` uses `xiaomi/mimo-v2.6-flash` on OpenRouter when there is an OpenRouter key, else the router model. Reported as `models.titler` |
 | `embeddings` | Ollama, `embeddinggemma` | `{ provider, model, url }` as in `agent-harness.md`, "Embeddings and hybrid retrieval" |
 | `timeZone` | `null` | an IANA time zone; `null` follows the machine |
 | `workingFolder` | `null` | the workspace new work is bound to; choosing it adds its folder to `access.folders` |
@@ -103,7 +105,8 @@ API responses are JSON. A failure, including an unknown route, is `{ "error": { 
 | `GET /api/providers` | each model provider with its default chat and router models and the keys it reads, for the settings screen |
 | `GET /api/models?provider=…` | `{ models: [{ id, name? }] }`: the provider's chat models from its own list (only models that can call tools; OpenAI's and Gemini's speech, image and embedding models left out), kept for ten minutes. A provider without a key, or one that cannot be reached, is `invalid_request` with a message that never carries a key |
 | `PUT`, `DELETE /api/keys/:name` | set (`{ value }`) or remove a key |
-| `GET /api/goals` | every goal, most recently updated first, with its objective, status, note and workspace; each task includes its title, status, objective, completion criteria, continuation note and update time |
+| `GET /api/goals` | every goal, most recently updated first, with its objective, status, note and workspace, and `chats: true` on the goal standard mode shows as its plain chats; each task includes its title, status, objective, completion criteria, continuation note, its number of chats (more than one after a rollover) and update time |
+| `POST /api/goals { title }` | standard mode's **New goal**: a goal the user names (1–120 characters), with no task until its first chat; returns it as `GET /api/goals` lists it |
 | `GET /api/history` | one conversation's messages (see "History") |
 | `GET /api/lanes` | open lanes with whether each is running or waiting for approval |
 | `POST /api/attachments?name=…` | store one image for a message (the body is its bytes, with its image content type); answers its id, name, format and size |
@@ -138,8 +141,8 @@ Changes to settings or keys also broadcast state to every subscribed page. `read
 | Command | Effect |
 |---|---|
 | `hello { after? }` | the state, then the activities after `after` |
-| `send { id, text, to, anchorDecisions?, attachments? }` | `to` is `main`, `new_lane`, or an open lane's id. `attachments` names stored images (`{ id, name }`, at most `10`); one that is not stored is refused with `attachment_missing`. A message needs words or at least one image; one with neither is refused with `empty_message`, and its text is otherwise kept exactly as sent. `main` is refused with `main_busy` while main works: the composer queues instead. A fifth running lane is refused with `lane_limit`. `anchorDecisions` are the user's explicit anchor selections (`agent-harness.md`, "Final result") |
-| `queue { id, text, attachments? }` | wait for the main conversation, with its images; queued messages run in order as soon as main is free (at most `20`) |
+| `send { id, text, to, anchorDecisions?, attachments? }` | `to` is `main`, `new_lane`, or an open lane's id. `attachments` names stored images (`{ id, name }`, at most `10`); one that is not stored is refused with `attachment_missing`. A message needs words or at least one image; one with neither is refused with `empty_message`, and its text is otherwise kept exactly as sent. `main` is refused with `main_busy` while main works: the composer queues instead. A fifth running lane is refused with `lane_limit`. `anchorDecisions` are the user's explicit anchor selections (`agent-harness.md`, "Final result"). `chat { goal, task }` is standard mode's choice of where the message goes, with `to: "main"`: `goal` is a goal number, or `null` for the Chats goal (made on first use); `task` is a chat (task) number of it, or `null` for a new chat. Such a message is never routed: it is bound to that task, or to a new task named for now by the message's first six words (its objective is the message), and its chat never rolls over however often it is compacted. A missing goal or chat is refused with `not_found`. When a new chat's first message completes, the titler names it in the background (see "Chat names") |
+| `queue { id, text, attachments?, chat? }` | wait for the main conversation, with its images and its chosen chat; queued messages run in order as soon as main is free (at most `20`) |
 | `queue_edit { id, text }`, `queue_remove { id }`, `queue_to_lane { id }` | change, drop, or send a queued message in a new lane instead; an edit may clear the text only when the message has images |
 | `cancel { conversation }` | stop what runs in `main` or a lane, including a message handed to that lane |
 | `approve { approval, granted }` | answer a pending approval |
@@ -161,6 +164,10 @@ Changes to settings or keys also broadcast state to every subscribed page. `read
 | `result { id, conversation, result }` | the message is done: its text, lane, per-part outcome, notices, and anchor changes |
 | `error { id?, code, message }` | a refusal or failure, with a message meant for the user |
 | `reset { seq }` | too far behind; reload the history |
+
+## Chat names
+
+A chat made in standard mode is a task named by the first six words of its first message. When that message completes, the titler (`settings.titler`) is asked once for a two-to-six-word name from the first question and answer, as a recorded call (`role: "other"`, `observability.md`); the reply is cut to its first line and at most eight words, and the task is revised to it. The chat keeps its first words when the titler cannot start, fails, or returns nothing usable, or when the task was renamed meanwhile. Only new chats are named; chats routed in flow mode keep the router's titles.
 
 ## Live drafts
 

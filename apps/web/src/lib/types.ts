@@ -55,7 +55,7 @@ export interface Status {
   setup: string[];
   access: Access;
   profile: Profile;
-  models: { chat: ModelInUse | null; router: ModelInUse | null; /** null: compaction uses the chat model. */ compactor: ModelInUse | null };
+  models: { chat: ModelInUse | null; router: ModelInUse | null; /** null: compaction uses the chat model. */ compactor: ModelInUse | null; /** Names standard-mode chats. */ titler?: ModelInUse | null };
   embeddings: Embeddings & { state: "ready" | "unavailable"; detail: string | null; index: { documents: number } | null };
   timeZone: string;
   busy: boolean;
@@ -118,6 +118,8 @@ export interface GoalView {
   note: string | null;
   status: string;
   general: boolean;
+  /** The goal standard mode shows as its plain chats, outside any goal. */
+  chats?: boolean;
   workspace: string | null;
   tasks: { number: number; title: string; chats?: number; status: string; note: string | null; objective?: string; completionCriteria?: string | null }[];
 }

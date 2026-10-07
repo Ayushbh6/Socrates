@@ -111,8 +111,8 @@ function responseText(store: LedgerStore, turn: Turn): string | null {
   return turn.responseEventId ? (store.getEvent(turn.responseEventId)!.payload as EventPayloads["assistant_response"]).text : null;
 }
 
-/** Every goal with its tasks, most recently updated first. */
-export function goalsView(store: LedgerStore) {
+/** Every goal with its tasks, most recently updated first; `chatsGoal` is the goal standard mode shows as its plain chats. */
+export function goalsView(store: LedgerStore, chatsGoal: number | null = null) {
   return store.listGoals()
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     .map((goal) => ({
@@ -122,6 +122,7 @@ export function goalsView(store: LedgerStore) {
       note: goal.note,
       status: goal.status,
       general: goal.general,
+      chats: goal.number === chatsGoal,
       workspace: goal.workspaceId ? (store.getWorkspace(goal.workspaceId)?.name ?? null) : null,
       updatedAt: goal.updatedAt,
       tasks: store.listTasks(goal.id).map((task) => ({ number: task.number, title: task.title, status: task.status, objective: task.objective, completionCriteria: task.completionCriteria, note: task.continuationNote, chats: Math.max(1, store.listChats(task.id).length), updatedAt: task.updatedAt })),

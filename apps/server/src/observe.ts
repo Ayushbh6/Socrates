@@ -110,6 +110,8 @@ function moveOf(store: LedgerStore, turn: Turn, route: string | null): Move {
   if (route === "general") return "general";
   if (route?.endsWith("create_task new goal")) return "new_goal";
   if (route?.includes("/create_task g")) return "new_task";
+  // Standard mode: the user chose the chat; nothing was routed.
+  if (route === "standard_new") return "new_task";
   const before = store.previousTurn(turn);
   if (!before) return "first";
   if (before.taskId === turn.taskId) return "continued";

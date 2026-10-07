@@ -259,6 +259,24 @@ describe("rollover", () => {
     expect(text).toContain(`[TURN ${turn!.projectTurn} — full]\nUSER:\nFix the memory logging system.`);
   });
 
+  it("never happens in a standard-mode chat: the user's chosen chat keeps compacting, unrouted", async () => {
+    const w = await world({ files: { "big.txt": bigFile } });
+    const chat = w.store.currentChat(w.taskId);
+    w.store.recordCompaction({ goal_id: w.goalId, task_id: w.taskId, chat_id: chat.id }, { layers: ["linearize"], checkpoint: null, before_tokens: 0, after_tokens: 0 });
+    const statuses: string[] = [];
+    const run = w.socrates([], [readBig, readBig, readBig, readBig, final({ full_answer: "Finished reading." })], {
+      budgets: budgets({ trigger: BASE + 2_500, target: BASE + 1_400, maxCompactionsPerChat: 1 }),
+      compactor: [checkpoint(), checkpoint()] as never,
+    });
+    const result = await run.socrates.handle("Fix the memory logging system.", { target: { taskId: w.taskId }, rollover: false, onStatus: (s) => statuses.push(s) });
+    expect(result).toMatchObject({ kind: "answered", text: "Finished reading." });
+    expect(statuses).toEqual([]);
+    expect(w.store.currentChat(w.taskId).id).toBe(chat.id);
+    expect(w.store.listChats(w.taskId)).toHaveLength(1);
+    expect(compactions(w).length).toBeGreaterThan(1);
+    expect(w.store.listEvents({ type: "turn_bound" }).at(-1)!.payload).toMatchObject({ route: "standard" });
+  });
+
   it("writes a mechanical capsule when the writer fails, so rollover never blocks the turn", async () => {
     const { w, result } = await rolledOver([{ text: "nope" }, { text: "nope" }]);
     expect(result).toMatchObject({ kind: "answered", text: "Finished reading." });

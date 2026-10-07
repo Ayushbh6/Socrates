@@ -103,6 +103,14 @@ export interface HandleOptions {
   onDraft?: (turnId: string, draft: Draft) => void;
   /** Images the user attached to the message, already stored in the attachments folder. */
   attachments?: Attachment[];
+  /**
+   * Standard mode (architecture/web.md, "Standard mode"): the user chose where
+   * the message goes, so it is not routed. An existing task continues; a new
+   * one is made in the goal, named for now by `title`.
+   */
+  target?: { taskId: string } | { goalId: string; title: string };
+  /** False: the chat never rolls over into a new one, however often it is compacted (standard mode). */
+  rollover?: boolean;
 }
 
 export interface PartResult {
@@ -384,6 +392,8 @@ export class Socrates {
         const userEvent = userEventId ? this.store.getEvent(userEventId)! : this.store.recordUserMessage(message, laneId);
         const turn = this.store.bindTurn({ userEventId: userEvent.id, taskId: target.task.id, route: "lane" });
         parts = [{ order: 1, request: message, dependsOn: [], turn, goal: target.goal, task: target.task, chat: this.store.currentChat(target.task.id), clarification: null, created: { goal: false, task: false } }];
+      } else if (options.target) {
+        parts = [this.bindChosen(message, laneId, options.target, userEventId)];
       } else {
         const routed = await this.router.route(message, signal, { laneId, userEventId, laneActivity: this.laneActivity() });
         if (routed.kind === "clarify") {
@@ -432,6 +442,21 @@ export class Socrates {
       // Index what this message added, in the background; replies never wait for it.
       this.options.semantic?.scheduleSync();
     }
+  }
+
+  /** A standard-mode message, bound where the user sent it: its task, or a new one in its goal. */
+  private bindChosen(message: string, laneId: string | null, target: NonNullable<HandleOptions["target"]>, userEventId?: string): RoutedPart {
+    return this.store.transaction(() => {
+      const created = !("taskId" in target);
+      const task = "taskId" in target ? this.store.requireTask(target.taskId) : this.store.createTask(target.goalId, { title: target.title, objective: message.trim() || target.title });
+      const goal = this.store.requireGoal(task.goalId);
+      if (goal.general) throw new Error("A standard-mode message cannot be sent to the general conversation.");
+      // A chosen chat that was done is taken up again.
+      if (task.status === "completed") this.store.reviseTask(task.id, { status: "open" });
+      const userEvent = userEventId ? this.store.getEvent(userEventId)! : this.store.recordUserMessage(message, laneId);
+      const turn = this.store.bindTurn({ userEventId: userEvent.id, taskId: task.id, route: created ? "standard_new" : "standard" });
+      return { order: 1, request: message, dependsOn: [], turn, goal, task: this.store.requireTask(task.id), chat: this.store.currentChat(task.id), clarification: null, created: { goal: false, task: created } };
+    });
   }
 
   /**
@@ -578,7 +603,7 @@ export class Socrates {
       store,
       model: this.options.compactorModel ?? this.options.model,
       turn,
-      budgets: this.budgets,
+      budgets: options.rollover === false ? { ...this.budgets, maxCompactionsPerChat: Number.POSITIVE_INFINITY } : this.budgets,
       assemble,
       refreshHistory: this.options.semantic ? async (signal) => { semantic.task = await ownHistory(signal); } : undefined,
       ...(this.options.retryDelaysMs ? { retryDelaysMs: this.options.retryDelaysMs } : {}),
