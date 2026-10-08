@@ -1,7 +1,7 @@
 import type { Effort, ModelClient } from "@socrates/contracts";
 
 /** The model that names standard-mode chats when nothing else is chosen (architecture/server.md, "Chat names"). */
-export const DEFAULT_TITLER = { provider: "openrouter", model: "xiaomi/mimo-v2.6-flash" } as const;
+export const DEFAULT_TITLER = { provider: "openrouter", model: "qwen/qwen3-30b-a3b-instruct-2507" } as const;
 
 /** How long a chat's name may be, in words. */
 const TITLE_WORDS = 8;

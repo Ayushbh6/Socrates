@@ -63,7 +63,7 @@ export type PriceSetting = z.infer<typeof PriceSetting>;
  * settings: they live in the data folder's `.env` and are never returned.
  * - chat / router: null picks the first provider with a key, and its defaults;
  * - compactor: the model that writes history checkpoints when a long turn's context is compacted; null uses the chat model;
- * - titler: the model that names standard-mode chats; null uses xiaomi/mimo-v2.6-flash on OpenRouter when there is an OpenRouter key, else the router model;
+ * - titler: the model that names standard-mode chats; null uses qwen/qwen3-30b-a3b-instruct-2507 on OpenRouter when there is an OpenRouter key, else the router model;
  *   chat.effort: the thinking level, which applies to the next model request without a restart;
  * - embeddings: local Ollama with embeddinggemma unless changed;
  * - timeZone: null follows the Mac;
