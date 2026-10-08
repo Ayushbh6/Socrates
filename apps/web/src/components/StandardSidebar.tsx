@@ -99,7 +99,7 @@ export function StandardSidebar({ goals, current, archived, onChat, onNew, onNew
                   <span>{chat.title}</span>
                   {chat.working && <LoaderCircle aria-label="Working" className="spin" />}
                 </button>
-                {chat.chat === 1 && !chat.working && actions(target, title)}
+                {chat.chat === 1 && !chat.working && !chat.general && actions(target, title)}
               </>
             )}
           </li>

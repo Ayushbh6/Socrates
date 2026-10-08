@@ -463,7 +463,7 @@ export class LiveHub {
   private chatTarget(chat: ChatChoice, text: string, images: number): { taskId: string } | { goalId: string; title: string } {
     const store = this.runtime.store;
     const goal = chat.goal === null ? this.runtime.chatsGoal() : store.getGoalByNumber(chat.goal);
-    if (!goal || goal.general || goal.archivedAt) throw new LiveError("not_found", "That goal no longer exists.");
+    if (!goal || goal.archivedAt || (goal.general && chat.task === null)) throw new LiveError("not_found", "That goal no longer exists.");
     if (chat.task === null) return { goalId: goal.id, title: provisionalTitle(text, images) };
     const task = store.getTaskByNumber(goal.id, chat.task);
     if (!task || task.archivedAt) throw new LiveError("not_found", "That chat no longer exists.");
@@ -475,7 +475,7 @@ export class LiveHub {
     const store = this.runtime.store;
     const number = chat.goal ?? this.runtime.chatsGoalNumber();
     const goal = number === null || chat.task === null ? null : store.getGoalByNumber(number);
-    return goal && !goal.general ? store.getTaskByNumber(goal.id, chat.task!) : null;
+    return goal ? store.getTaskByNumber(goal.id, chat.task!) : null;
   }
 
   /** Whether a message is working (or waiting) in this chat's task now, in any conversation. */

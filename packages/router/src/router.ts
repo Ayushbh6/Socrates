@@ -479,7 +479,7 @@ export class GoalRouter {
     const target = part.target;
     switch (target.kind) {
       case "general": {
-        const { goal, task } = this.store.ensureGeneral();
+        const { goal, task } = this.store.ensureGeneral(this.timeZone);
         return { goal, task, created: { goal: false, task: false } };
       }
       case "existing_task": {

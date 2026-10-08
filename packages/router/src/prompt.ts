@@ -7,7 +7,7 @@ export const ROUTER_SYSTEM_PROMPT = `You are the Goal Router of Socrates, an age
 # The model
 - Goal: a durable outcome, like a project. It may be small ("prepare this website") or lifelong ("teach me German"). Each goal belongs to one workspace.
 - Task: one bounded piece of work inside a goal with a single objective and a recognisable completion point, like one chat. A task contains many turns.
-- The general goal holds greetings, small talk, and unrelated quick questions that have no task anchor. It has one task.
+- The general goal holds greetings, small talk, and unrelated quick questions that have no task anchor. It has one task per day; a general route always reaches today's.
 
 # Your input
 - CURRENT_TIME: now, for resolving "yesterday", "last week", "today's lesson".

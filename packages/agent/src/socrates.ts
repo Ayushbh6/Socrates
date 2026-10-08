@@ -499,7 +499,8 @@ export class Socrates {
       const created = !("taskId" in target);
       const task = "taskId" in target ? this.store.requireTask(target.taskId) : this.store.createTask(target.goalId, { title: target.title, objective: message.trim() || target.title });
       const goal = this.store.requireGoal(task.goalId);
-      if (goal.general) throw new Error("A standard-mode message cannot be sent to the general conversation.");
+      // A day of the general conversation is a chat like any other, but only the router starts one.
+      if (goal.general && created) throw new Error("A standard-mode chat cannot be started in the general conversation.");
       if (task.archivedAt || goal.archivedAt) throw new Error("That chat is archived; restore it first.");
       // A chosen task that was closed is taken up again, by the user's choice.
       if (task.status !== "open") this.store.setTaskStatus(task.id, "open");

@@ -9,10 +9,11 @@ const ex = (key: string, at: string, route: [number, number] | [number, number, 
 describe("the chats of each goal", () => {
   const goals = [goal(0, "General", [[1, "x"]], true), goal(1, "Resume", [[1, "Critique"], [2, "Rewrite"]]), goal(2, "Explore", [[1, "Folders"]])];
 
-  it("puts the goal and chat worked on last first, and leaves out general conversation", () => {
+  it("puts the goal and chat worked on last first, with the general conversation's days as plain chats", () => {
     const list = [ex("m1", "2026-10-05T09:00:00Z", [1, 1]), ex("m2", "2026-10-06T09:00:00Z", [2, 1]), ex("m3", "2026-10-06T10:00:00Z", [1, 2], "working")];
     const grouped = groupChats(goals, list);
-    expect(grouped.map((g) => g.title)).toEqual(["Resume", "Explore"]);
+    expect(grouped.map((g) => [g.title, g.plain])).toEqual([["Resume", false], ["Explore", false], ["General", true]]);
+    expect(grouped[2]?.chats[0]?.general).toBe(true);
     expect(grouped[0]?.chats.map((c) => c.title)).toEqual(["Rewrite", "Critique"]);
     expect(grouped[0]?.working).toBe(true);
     expect(grouped[1]?.working).toBe(false);
@@ -21,6 +22,15 @@ describe("the chats of each goal", () => {
   it("marks the goal that holds the plain chats", () => {
     const withChats = [...goals, { ...goal(3, "Chats", [[1, "Quick question"]]), chats: true }];
     expect(groupChats(withChats, []).map((g) => [g.title, g.plain])).toEqual([["Chats", true], ["Explore", false], ["Resume", false]]);
+  });
+
+  it("lists the general conversation's days among the plain chats, the one worked on last first, a long day's chats together", () => {
+    const withChats = [goal(0, "General conversation", [[1, "General"], [2, "General · Thu 8 Oct", 2], [3, "General · Fri 9 Oct"]], true), { ...goal(3, "Chats", [[1, "Quick question"]]), chats: true }];
+    const list = [ex("m1", "2026-10-08T09:00:00Z", [0, 2, 1]), ex("m2", "2026-10-08T20:00:00Z", [3, 1]), ex("m3", "2026-10-08T21:00:00Z", [0, 2, 2]), ex("m4", "2026-10-09T09:00:00Z", [0, 3])];
+    const [chats, ...rest] = groupChats(withChats, list);
+    expect(rest).toEqual([]);
+    expect(chats?.title).toBe("Chats");
+    expect(chats?.chats.map((c) => [c.title, !!c.general])).toEqual([["General · Fri 9 Oct", true], ["General · Thu 8 Oct", true], ["General · Thu 8 Oct — continued", true], ["Quick question", false], ["General", true]]);
   });
 
   it("keeps newest-made first for a chat nothing was asked in since loading", () => {

@@ -34,9 +34,7 @@ export function Standard({ app, mode, dock, onMode, onSettings }: { app: AppStat
   const [view, setView] = useState<View>(null);
   const [sidebar, setSidebar] = useState(() => typeof window === "undefined" || window.innerWidth >= 1100);
 
-  // The general conversation of flow mode is no chat here.
-  const general = new Set(app.goals.filter((g) => g.general).map((g) => g.number));
-  const route = view && "chat" in view ? { goal: { number: view.chat.goal }, task: { number: view.chat.task }, chat: view.chat.chat } : view ? null : currentRoute(main.filter((e) => e.route && !general.has(e.route.goal.number)));
+  const route = view && "chat" in view ? { goal: { number: view.chat.goal }, task: { number: view.chat.task }, chat: view.chat.chat } : view ? null : currentRoute(main.filter((e) => e.route));
   const chat = route?.chat ?? 1;
   const shown = useMemo(
     () => (view && "fresh" in view ? (view.sent ? main.filter((e) => e.sendId === view.sent) : newThread(main, view.fresh).filter((e) => !e.route)) : route ? chatThread(main, route.goal.number, route.task.number, chat) : main.filter((e) => !e.route && (e.state === "sending" || e.state === "working"))),

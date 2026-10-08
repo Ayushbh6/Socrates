@@ -156,6 +156,19 @@ describe("turn lifecycle", () => {
     expect(w.store.listTasks(generalGoal.id)[0]!.status).toBe("open");
   });
 
+  it("groups the general conversation by day, and lets standard mode continue a day but not start one", async () => {
+    const w = await world();
+    const { socrates } = w.socrates([general(), general()], [final(), final(), final()]);
+    await socrates.handle("Hi!");
+    const today = w.store.listTasks(w.store.getGeneralGoal()!.id)[0]!;
+    expect(today.title).toBe("General · Tue 1 Sept");
+    w.clock.advance(24 * 60 * 60 * 1000);
+    const next = await socrates.handle("What's the date?");
+    expect(next).toMatchObject({ kind: "answered", parts: [{ task: { title: "General · Wed 2 Sept" } }] });
+    expect(await socrates.handle("One more thing from yesterday.", { target: { taskId: today.id } })).toMatchObject({ kind: "answered", parts: [{ task: { id: today.id } }] });
+    await expect(socrates.handle("A new chat.", { target: { goalId: today.goalId, title: "New" } })).rejects.toThrow(/cannot be started in the general conversation/);
+  });
+
   it("restores interrupted and completed turns from the event log alone", async () => {
     const w = await world();
     const controller = new AbortController();

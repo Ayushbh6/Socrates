@@ -311,6 +311,15 @@ export class StoreError extends Error {
 export const GENERAL_GOAL_TITLE = "General conversation";
 export const GENERAL_TASK_TITLE = "General";
 
+/** A day's general task: "General · Thu 9 Oct". */
+export function generalTaskTitle(at: Date, timeZone: string): string {
+  return `${GENERAL_TASK_TITLE} · ${new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone }).format(at)}`;
+}
+
+function localDay(at: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone }).format(at);
+}
+
 export interface OpenStoreOptions {
   /** File path, or ":memory:" for an ephemeral store. */
   path: string;
@@ -1117,8 +1126,12 @@ export class LedgerStore {
     );
   }
 
-  /** The single general goal and its single general task, created on first use. */
-  ensureGeneral(): { goal: Goal; task: Task } {
+  /**
+   * The single general goal and today's general task, each created on first
+   * use. One-off asks are grouped by day: the first one of a day, in the
+   * user's time zone, starts that day's task, named by its date.
+   */
+  ensureGeneral(timeZone = "UTC"): { goal: Goal; task: Task } {
     return this.transaction(() => {
       const goal =
         this.getGeneralGoal() ??
@@ -1127,12 +1140,13 @@ export class LedgerStore {
           objective: "Greetings, small talk, and quick questions that belong to no project.",
           general: true,
         });
-      const existing = this.get("SELECT * FROM tasks WHERE goal_id = ? AND is_general = 1", goal.id);
-      const task = existing
-        ? toTask(existing)
+      const now = this.clock.now();
+      const latest = this.get("SELECT * FROM tasks WHERE goal_id = ? AND is_general = 1 ORDER BY task_number DESC LIMIT 1", goal.id);
+      const task = latest && localDay(new Date(str(latest.started_at)), timeZone) === localDay(now, timeZone)
+        ? toTask(latest)
         : this.createTask(goal.id, {
-            title: GENERAL_TASK_TITLE,
-            objective: "Conversation and quick questions without a task anchor.",
+            title: generalTaskTitle(now, timeZone),
+            objective: "Conversation and quick questions without a task anchor, for one day.",
             general: true,
           });
       return { goal: this.requireGoal(goal.id), task };

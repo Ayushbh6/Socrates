@@ -33,6 +33,8 @@ The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `serv
 - **Status:** the user sets goal and task status (open, completed or superseded). Flow mode has "Keep my next message in this task". The agent never closes standard-mode chats.
 - **Standard-mode chats work at once:** each runs as its own lane would, with at most 4, a queue per chat, Stop per chat, and approvals shown under the question that asked. Standard mode no longer has lane panels.
 - **Sidebar menus:** a goal's or chat's actions sit behind one ⋯ menu in the Standard sidebar.
+- **Tools without a workspace:** a workspace is only where a turn starts; with no folder, work starts in the home folder and asks before paths outside the user's folders.
+- **General by day:** the General goal holds one task per day ("General · Fri 9 Oct"), listed under Chats in Standard.
 
 ## Next, in the order agreed with the user
 

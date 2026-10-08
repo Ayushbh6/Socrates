@@ -79,12 +79,27 @@ describe("ledger", () => {
     expect(() => store.bindGoalWorkspace(goal.id, other.id)).toThrow(/already bound/);
   });
 
-  it("creates exactly one general goal and task", () => {
+  it("creates exactly one general goal, with one task per day", () => {
     const a = store.ensureGeneral();
     const b = store.ensureGeneral();
     expect(a.goal.id).toBe(b.goal.id);
     expect(a.task.id).toBe(b.task.id);
     expect(a.goal.general && a.task.general).toBe(true);
+    expect(a.task.title).toBe("General · Tue 1 Sept");
+  });
+
+  it("starts the next day's general task at midnight in the user's time zone", () => {
+    const { store, clock } = openStore();
+    clock.set("2026-10-08T21:30:00Z");
+    const thu8 = store.ensureGeneral("Europe/Vienna");
+    expect(thu8.task.title).toBe("General · Thu 8 Oct");
+    clock.set("2026-10-08T22:30:00Z");
+    const fri = store.ensureGeneral("Europe/Vienna");
+    expect(fri.task.id).not.toBe(thu8.task.id);
+    expect(fri.task.title).toBe("General · Fri 9 Oct");
+    // Still Thursday in UTC, but Vienna's day is the one that counts.
+    expect(store.ensureGeneral("Europe/Vienna").task.id).toBe(fri.task.id);
+    expect(store.listTasks(fri.goal.id).map((t) => t.title).sort()).toEqual(["General · Fri 9 Oct", "General · Thu 8 Oct"]);
   });
 });
 

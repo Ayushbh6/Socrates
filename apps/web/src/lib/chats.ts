@@ -12,6 +12,8 @@ export interface Chat {
   /** When its newest loaded question was asked. */
   at: string | null;
   working: boolean;
+  /** A day of the general conversation: listed with the plain chats; it cannot be renamed or archived. */
+  general?: boolean;
 }
 
 export interface GoalChats {
@@ -34,7 +36,11 @@ export const chatTitle = (title: string, chat: number): string => (chat <= 1 ? t
 const newest = (a: string | null, b: string | null): string | null => (a && b ? (a > b ? a : b) : a ?? b);
 const latestFirst = (a: { at: string | null }, b: { at: string | null }): number => (a.at && b.at ? (a.at < b.at ? 1 : a.at > b.at ? -1 : 0) : a.at ? -1 : b.at ? 1 : 0);
 
-/** Every goal with its chats, the one worked on last first; a goal or chat not asked about since loading keeps the order it was made in, newest first. */
+/**
+ * Every goal with its chats, the one worked on last first; a goal or chat not
+ * asked about since loading keeps the order it was made in, newest first. The
+ * general conversation's days join the plain chats, as one list.
+ */
 export function groupChats(goals: GoalView[], exchanges: Exchange[]): GoalChats[] {
   const seen = new Map<string, { at: string | null; working: boolean }>();
   for (const e of exchanges) {
@@ -43,21 +49,34 @@ export function groupChats(goals: GoalView[], exchanges: Exchange[]): GoalChats[
     const now = seen.get(key) ?? { at: null, working: false };
     seen.set(key, { at: newest(now.at, e.at), working: now.working || e.state === "working" || e.state === "sending" });
   }
-  return goals
-    .filter((g) => !g.general)
+  const grouped = goals
     .map((g) => {
       const tasks = g.tasks.map((t) => {
         const chats = Array.from({ length: Math.max(1, t.chats ?? 1) }, (_, i): Chat => {
           const s = seen.get(chatKey(g.number, t.number, i + 1));
-          return { goal: g.number, task: t.number, chat: i + 1, title: chatTitle(t.title, i + 1), status: t.status, at: s?.at ?? null, working: s?.working ?? false };
+          return { goal: g.number, task: t.number, chat: i + 1, title: chatTitle(t.title, i + 1), status: t.status, at: s?.at ?? null, working: s?.working ?? false, ...(g.general ? { general: true } : {}) };
         });
         return { number: t.number, at: chats.reduce<string | null>((at, c) => newest(at, c.at), null), chats };
       });
       // The task worked on last first; its chats stay in the order of the chain.
       const chats = tasks.sort((a, b) => latestFirst(a, b) || b.number - a.number).flatMap((t) => t.chats);
-      return { number: g.number, title: g.title, plain: g.chats === true, status: g.status, at: chats.reduce<string | null>((at, c) => newest(at, c.at), null), working: chats.some((c) => c.working), chats };
+      return { number: g.number, title: g.title, plain: g.chats === true || g.general, status: g.status, at: chats.reduce<string | null>((at, c) => newest(at, c.at), null), working: chats.some((c) => c.working), chats };
     })
     .sort((a, b) => latestFirst(a, b) || b.number - a.number);
+  const plain = grouped.filter((g) => g.plain);
+  if (plain.length < 2) return grouped;
+  // One plain list: the task worked on last first, its chats in the order of the chain; the rest keep their order, newest goal first.
+  const tasks: Chat[][] = [];
+  for (const c of plain.sort((a, b) => b.number - a.number).flatMap((g) => g.chats)) {
+    const last = tasks.at(-1);
+    if (last && last[0]!.goal === c.goal && last[0]!.task === c.task) last.push(c);
+    else tasks.push([c]);
+  }
+  const latest = (t: Chat[]) => ({ at: t.reduce<string | null>((at, c) => newest(at, c.at), null) });
+  const chats = tasks.sort((a, b) => latestFirst(latest(a), latest(b))).flat();
+  const into = plain.find((g) => !goals.find((v) => v.number === g.number)?.general) ?? plain[0]!;
+  const merged = { ...into, at: chats.reduce<string | null>((at, c) => newest(at, c.at), null), working: chats.some((c) => c.working), chats };
+  return grouped.filter((g) => !g.plain).concat(merged).sort((a, b) => latestFirst(a, b) || b.number - a.number);
 }
 
 /**
