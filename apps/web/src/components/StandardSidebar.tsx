@@ -1,7 +1,8 @@
-import { Archive, ArchiveRestore, ChevronRight, Folder, FolderOpen, FolderPlus, LoaderCircle, PanelLeftClose, Pencil, Plus, SquarePen } from "lucide-react";
+import { Archive, ArchiveRestore, Check, ChevronRight, Folder, FolderOpen, FolderPlus, LoaderCircle, PanelLeftClose, Pencil, Plus, SquarePen } from "lucide-react";
 import { type FormEvent, type KeyboardEvent, useState } from "react";
 import { type Chat, type GoalChats, chatKey } from "../lib/chats";
-import type { ArchivedView } from "../lib/types";
+import type { ArchivedView, LedgerStatus } from "../lib/types";
+import { StatusMenu, statusLabel } from "./StatusMenu";
 
 const SHOWN = 6;
 
@@ -17,7 +18,7 @@ const sameTarget = (a: Target | null, b: Target) => !!a && a.goal === b.goal && 
  * be renamed in place or archived; archived ones are listed at the bottom and
  * restored from there.
  */
-export function StandardSidebar({ goals, current, archived, onChat, onNew, onNewGoal, onRename, onArchive, onRestore, onOpenArchive, onClose }: {
+export function StandardSidebar({ goals, current, archived, onChat, onNew, onNewGoal, onRename, onArchive, onRestore, onStatus, onOpenArchive, onClose }: {
   goals: GoalChats[];
   current: Current;
   archived: ArchivedView | null;
@@ -29,6 +30,8 @@ export function StandardSidebar({ goals, current, archived, onChat, onNew, onNew
   onRename: (target: Target, title: string) => Promise<void>;
   onArchive: (target: Target, title: string) => Promise<void>;
   onRestore: (target: Target) => Promise<void>;
+  /** A goal's status; a chat has none (it is archived instead). */
+  onStatus: (goal: number, status: LedgerStatus) => void;
   onOpenArchive: () => void;
   onClose: () => void;
 }) {
@@ -131,12 +134,17 @@ export function StandardSidebar({ goals, current, archived, onChat, onNew, onNew
             <li key={goal.number} className="goal-item">
               {renaming && sameTarget(renaming.target, target) ? renameBox(target) : (
                 <>
-                  <button type="button" className="goal-row" aria-expanded={open} data-has-current={has} onClick={() => setClosed({ ...closed, [goal.number]: open })}>
+                  <button type="button" className="goal-row" aria-expanded={open} data-has-current={has} data-status={goal.status} onClick={() => setClosed({ ...closed, [goal.number]: open })}>
                     {open ? <FolderOpen aria-hidden /> : <Folder aria-hidden />}
                     <span>{goal.title}</span>
+                    {goal.status === "completed" && <Check aria-label="Completed" className="goal-done" />}
+                    {goal.status === "superseded" && <small className="goal-state">{statusLabel(goal.status)}</small>}
                     {goal.working ? <LoaderCircle aria-label="Working" className="spin" /> : <ChevronRight aria-hidden className="goal-chevron" />}
                   </button>
-                  {!goal.working && actions(target, goal.title, <button type="button" className="icon-button" onClick={() => onNew(goal.number)} aria-label={`New chat in ${goal.title}`} title="New chat in this goal"><Plus aria-hidden /></button>)}
+                  {!goal.working && actions(target, goal.title, <>
+                    <StatusMenu what="goal" variant="icon" align="right" value={goal.status} onChange={(status) => onStatus(goal.number, status)} />
+                    <button type="button" className="icon-button" onClick={() => onNew(goal.number)} aria-label={`New chat in ${goal.title}`} title="New chat in this goal"><Plus aria-hidden /></button>
+                  </>)}
                 </>
               )}
               {open && (goal.chats.length ? rows(goal, true) : <p className="chat-none">No chats yet</p>)}

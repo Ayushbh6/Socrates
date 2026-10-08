@@ -36,6 +36,9 @@ const Attached = z.array(z.object({ id: z.string().regex(/^[0-9a-f]{32}$/), name
 /** Standard mode's choice of where a message goes: a goal (null: the Chats goal) and its chat (null: a new one). */
 const Chat = z.object({ goal: z.number().int().positive().nullable(), task: z.number().int().positive().nullable() }).strict();
 export type ChatChoice = z.infer<typeof Chat>;
+/** Flow mode's "Keep my next message in this task": a task chosen for one message, which is then not routed. */
+const Keep = z.object({ goal: z.number().int().positive(), task: z.number().int().positive() }).strict();
+type KeepChoice = z.infer<typeof Keep>;
 /** A terminal session's id, as the terminal panel lists it. */
 const Session = z.string().regex(/^term-\d{1,9}$/);
 /** What one keystroke or paste may send to a terminal. */
@@ -45,8 +48,8 @@ const Decision = z.object({ goalId: z.string(), path: z.string(), role: z.string
 /** What a page may send (architecture/server.md, "Live connection"). */
 const Command = z.discriminatedUnion("type", [
   z.object({ type: z.literal("hello"), after: z.number().int().nonnegative().optional() }).strict(),
-  z.object({ type: z.literal("send"), id: Id, text: Text, to: z.union([z.literal("main"), z.literal("new_lane"), Id]), anchorDecisions: z.array(Decision).max(10).optional(), attachments: Attached.optional(), chat: Chat.optional() }).strict(),
-  z.object({ type: z.literal("queue"), id: Id, text: Text, attachments: Attached.optional(), chat: Chat.optional() }).strict(),
+  z.object({ type: z.literal("send"), id: Id, text: Text, to: z.union([z.literal("main"), z.literal("new_lane"), Id]), anchorDecisions: z.array(Decision).max(10).optional(), attachments: Attached.optional(), chat: Chat.optional(), keep: Keep.optional() }).strict(),
+  z.object({ type: z.literal("queue"), id: Id, text: Text, attachments: Attached.optional(), chat: Chat.optional(), keep: Keep.optional() }).strict(),
   z.object({ type: z.literal("queue_edit"), id: Id, text: Text }).strict(),
   z.object({ type: z.literal("queue_remove"), id: Id }).strict(),
   z.object({ type: z.literal("queue_to_lane"), id: Id }).strict(),
@@ -114,7 +117,7 @@ export class LiveHub {
   private readonly clients = new Set<WebSocket>();
   /** Subscribe at hello, so events saved between upgrade and replay arrive once. */
   private readonly subscribed = new Set<WebSocket>();
-  private readonly queue: { id: string; text: string; attachments: Attachment[]; chat?: ChatChoice }[] = [];
+  private readonly queue: { id: string; text: string; attachments: Attachment[]; chat?: ChatChoice; keep?: KeepChoice }[] = [];
   private readonly approvals = new Map<string, { view: PendingApproval; runId: string; resolve: (granted: boolean) => void }>();
   private readonly runs = new Map<string, Run>();
   /** Accepted IDs remain reserved across reconnects for this server launch. */
@@ -227,14 +230,15 @@ export class LiveHub {
         return this.hello(socket, command.after);
       case "send":
         hasWords(command.text, command.attachments);
-        return this.start(command.id, command.text, command.to, command.anchorDecisions, false, this.attachments(command.attachments), command.chat);
+        return this.start(command.id, command.text, command.to, command.anchorDecisions, false, this.attachments(command.attachments), command.chat, command.keep);
       case "queue": {
         this.assertNewId(command.id);
         hasWords(command.text, command.attachments);
         if (this.queue.length >= QUEUE_MAX) throw new LiveError("queue_full", `At most ${QUEUE_MAX} messages can wait for the main conversation.`);
         const attachments = this.attachments(command.attachments);
         this.acceptedIds.add(command.id);
-        this.queue.push({ id: command.id, text: command.text, attachments, ...(command.chat ? { chat: command.chat } : {}) });
+        if (command.keep) this.keptTask(command.keep);
+        this.queue.push({ id: command.id, text: command.text, attachments, ...(command.chat ? { chat: command.chat } : {}), ...(command.keep ? { keep: command.keep } : {}) });
         this.publishState();
         return this.drain();
       }
@@ -356,11 +360,12 @@ export class LiveHub {
     });
   }
 
-  private start(id: string, text: string, to: string, anchorDecisions?: AnchorDecision[], fromQueue = false, attachments: Attachment[] = [], chat?: ChatChoice): void {
+  private start(id: string, text: string, to: string, anchorDecisions?: AnchorDecision[], fromQueue = false, attachments: Attachment[] = [], chat?: ChatChoice, keep?: KeepChoice): void {
     const socrates = this.socrates();
     if (!fromQueue) this.assertNewId(id);
-    if (chat && to !== "main") throw new LiveError("bad_request", "A message for a chosen chat is sent in the main conversation.");
-    const target = chat ? this.chatTarget(chat, text, attachments.length) : undefined;
+    if ((chat || keep) && to !== "main") throw new LiveError("bad_request", "A message for a chosen chat or task is sent in the main conversation.");
+    if (chat && keep) throw new LiveError("bad_request", "A message goes to a chosen chat or is kept in a task, not both.");
+    const target = chat ? this.chatTarget(chat, text, attachments.length) : keep ? this.keptTask(keep) : undefined;
     if (to !== "main" && to !== "new_lane") {
       const lane = this.runtime.store.getLane(to);
       if (!lane || lane.closedAt) throw new LiveError("lane_closed", "That lane is closed.");
@@ -379,8 +384,8 @@ export class LiveHub {
       approve: (request, origin) => this.ask(run, request, origin),
       ...(to === "main" ? {} : { lane: to === "new_lane" ? "new" : to }),
       ...(anchorDecisions?.length ? { anchorDecisions } : {}),
-      // Standard mode: no routing, and a chat that never rolls over.
-      ...(target ? { target, rollover: false } : {}),
+      // Standard mode: no routing, and a chat that never rolls over. A message kept in its task is not routed, and rolls over as usual.
+      ...(target ? (keep ? { target, pinned: true } : { target, rollover: false }) : {}),
       onLane: (laneId) => {
         run.conversation = laneId;
         this.broadcast({ type: "accepted", id, conversation: laneId });
@@ -437,13 +442,22 @@ export class LiveHub {
     return { taskId: task.id };
   }
 
+  /** The task a message is kept in: one of a goal that is still there, and never the general conversation. */
+  private keptTask(keep: KeepChoice): { taskId: string } {
+    const store = this.runtime.store;
+    const goal = store.getGoalByNumber(keep.goal);
+    const task = goal && !goal.general && !goal.archivedAt ? store.getTaskByNumber(goal.id, keep.task) : null;
+    if (!task || task.archivedAt) throw new LiveError("not_found", "That task no longer exists.");
+    return { taskId: task.id };
+  }
+
   /** The next queued message, as soon as the main conversation is free. */
   private drain(): void {
     const socrates = this.runtime.socrates;
     if (this.closed || !this.runtime.acceptingMessages || !socrates || socrates.busy || !this.queue.length) return;
     const next = this.queue.shift()!;
     try {
-      this.start(next.id, next.text, "main", undefined, true, next.attachments, next.chat);
+      this.start(next.id, next.text, "main", undefined, true, next.attachments, next.chat, next.keep);
     } catch (error) {
       this.broadcast({ type: "error", id: next.id, conversation: "main", ...problemOf(error) });
     }

@@ -41,6 +41,10 @@ export interface EventPayloads {
   goal_renamed: { title: string };
   /** The user renamed a task, after its `task_revised` that carries the new title; marks the name as the user's own, which nothing else changes. */
   task_renamed: { title: string };
+  /** The user set a goal's status: open, completed, or superseded (nothing else changes a goal's status). */
+  goal_status_set: { status: "open" | "completed" | "superseded" };
+  /** The user set a task's status, after its `task_revised` that carries it; marks the status as the user's choice. */
+  task_status_set: { status: "open" | "completed" | "superseded" };
   /** Archived goals and tasks are hidden everywhere but the archive; restoring brings them back. Nothing is erased. */
   goal_archived: Record<string, never>;
   goal_restored: Record<string, never>;

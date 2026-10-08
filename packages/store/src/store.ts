@@ -612,6 +612,12 @@ export class LedgerStore {
       }
       // The new title is already in the task_revised before it; this marks it as the user's.
       case "task_renamed": break;
+      case "goal_status_set": {
+        const p = e.payload as EventPayloads["goal_status_set"];
+        this.run("UPDATE goals SET status = ?, updated_at = ? WHERE id = ?", p.status, e.at, e.goal_id); break;
+      }
+      // The new status is already in the task_revised before it; this marks it as the user's.
+      case "task_status_set": break;
       case "goal_archived": this.run("UPDATE goals SET archived_at = ? WHERE id = ?", e.at, e.goal_id); break;
       case "goal_restored": this.run("UPDATE goals SET archived_at = NULL WHERE id = ?", e.goal_id); break;
       case "task_archived": this.run("UPDATE tasks SET archived_at = ? WHERE id = ?", e.at, e.task_id); break;
@@ -801,6 +807,56 @@ export class LedgerStore {
       this.appendEvent("task_renamed", { title: this.requireTask(taskId).title }, { goal_id: task.goalId, task_id: taskId });
       return this.requireTask(taskId);
     });
+  }
+
+  /** Set a goal's status as the user chose. Its tasks keep theirs. */
+  setGoalStatus(goalId: string, status: LedgerStatus): Goal {
+    return this.transaction(() => {
+      const goal = this.requireGoal(goalId);
+      if (goal.general) throw new StoreError("The general conversation has no status.");
+      if (goal.status === status) return goal;
+      const event = this.appendEvent("goal_status_set", { status }, { goal_id: goalId });
+      this.run("UPDATE goals SET status = ?, updated_at = ? WHERE id = ?", status, event.at, goalId);
+      return this.requireGoal(goalId);
+    });
+  }
+
+  /**
+   * Set a task's status as the user chose (architecture/agent-harness.md,
+   * "Task status"). It is recorded as the user's, so the agent is told when
+   * the user reopened a task, and the page can say who closed one.
+   */
+  setTaskStatus(taskId: string, status: LedgerStatus): Task {
+    return this.transaction(() => {
+      const task = this.requireTask(taskId);
+      if (task.general) throw new StoreError("The general conversation has no status.");
+      if (task.status !== status) this.reviseTask(taskId, { status });
+      this.appendEvent("task_status_set", { status }, { goal_id: task.goalId, task_id: taskId });
+      return this.requireTask(taskId);
+    });
+  }
+
+  /**
+   * Who last set the task's status, and why: the user (`task_status_set`), or
+   * Socrates closing it with a reason at the end of a turn. Null when neither
+   * has (a task the router or a chat reopened is open by default).
+   */
+  statusSource(taskId: string): { by: "user" | "socrates"; status: LedgerStatus; reason: string | null; at: string } | null {
+    const row = this.get(
+      `SELECT type, payload, at FROM events WHERE task_id = ? AND (type = 'task_status_set' OR (type = 'turn_completed' AND json_extract(payload, '$.task_complete_reason') IS NOT NULL)) ORDER BY seq DESC LIMIT 1`,
+      taskId,
+    );
+    if (!row) return null;
+    const payload = JSON.parse(str(row.payload)) as { status?: LedgerStatus; task_complete_reason?: string };
+    return str(row.type) === "task_status_set"
+      ? { by: "user", status: payload.status!, reason: null, at: str(row.at) }
+      : { by: "socrates", status: "completed", reason: payload.task_complete_reason ?? null, at: str(row.at) };
+  }
+
+  /** How a turn was bound: "standard" and "standard_new" are standard-mode chats, "pinned" a message the user kept in its task. */
+  turnRoute(turnId: string): string | null {
+    const row = this.get("SELECT json_extract(payload, '$.route') AS route FROM events WHERE turn_id = ? AND type = 'turn_bound' ORDER BY seq LIMIT 1", turnId);
+    return row ? strOrNull(row.route) : null;
   }
 
   /** Whether the user chose this task's name. */

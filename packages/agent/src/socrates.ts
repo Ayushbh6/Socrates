@@ -7,7 +7,7 @@ import type { SemanticHit, SemanticIndex } from "@socrates/retrieval";
 import { type AccessGrant, type AccessPolicy, type Approve, type CapabilityCatalog, RunState, type ShelfOptions, type SupervisorOptions, ToolRunner, WorkspaceRoot, canReadAutomatically, capabilityCandidates, skillShelf } from "@socrates/tools";
 import { attachmentImages, requestAttachments } from "./attachments";
 import { taskHistory } from "./history";
-import { assembleContext, projectQuery } from "./context";
+import { CHAT_ROUTES, assembleContext, projectQuery } from "./context";
 import { type LaneView, laneNotice, lanesBlock } from "./lanes";
 import { RELATED_MAX_SECTIONS } from "./project-context";
 import { fallbackAnswer, mechanicalNote } from "./final";
@@ -111,6 +111,12 @@ export interface HandleOptions {
   target?: { taskId: string } | { goalId: string; title: string };
   /** False: the chat never rolls over into a new one, however often it is compacted (standard mode). */
   rollover?: boolean;
+  /**
+   * Flow mode's "Keep my next message in this task": `target` is a task the
+   * user chose for this one message. It is bound there without routing, as a
+   * flow turn (it rolls over as usual), and recorded as kept there.
+   */
+  pinned?: boolean;
 }
 
 export interface PartResult {
@@ -393,7 +399,7 @@ export class Socrates {
         const turn = this.store.bindTurn({ userEventId: userEvent.id, taskId: target.task.id, route: "lane" });
         parts = [{ order: 1, request: message, dependsOn: [], turn, goal: target.goal, task: target.task, chat: this.store.currentChat(target.task.id), clarification: null, created: { goal: false, task: false } }];
       } else if (options.target) {
-        parts = [this.bindChosen(message, laneId, options.target, userEventId)];
+        parts = [this.bindChosen(message, laneId, options.target, userEventId, options.pinned === true)];
       } else {
         const routed = await this.router.route(message, signal, { laneId, userEventId, laneActivity: this.laneActivity() });
         if (routed.kind === "clarify") {
@@ -450,17 +456,17 @@ export class Socrates {
   }
 
   /** A standard-mode message, bound where the user sent it: its task, or a new one in its goal. */
-  private bindChosen(message: string, laneId: string | null, target: NonNullable<HandleOptions["target"]>, userEventId?: string): RoutedPart {
+  private bindChosen(message: string, laneId: string | null, target: NonNullable<HandleOptions["target"]>, userEventId?: string, pinned = false): RoutedPart {
     return this.store.transaction(() => {
       const created = !("taskId" in target);
       const task = "taskId" in target ? this.store.requireTask(target.taskId) : this.store.createTask(target.goalId, { title: target.title, objective: message.trim() || target.title });
       const goal = this.store.requireGoal(task.goalId);
       if (goal.general) throw new Error("A standard-mode message cannot be sent to the general conversation.");
       if (task.archivedAt || goal.archivedAt) throw new Error("That chat is archived; restore it first.");
-      // A chosen chat that was done is taken up again.
-      if (task.status === "completed") this.store.reviseTask(task.id, { status: "open" });
+      // A chosen task that was closed is taken up again, by the user's choice.
+      if (task.status !== "open") this.store.setTaskStatus(task.id, "open");
       const userEvent = userEventId ? this.store.getEvent(userEventId)! : this.store.recordUserMessage(message, laneId);
-      const turn = this.store.bindTurn({ userEventId: userEvent.id, taskId: task.id, route: created ? "standard_new" : "standard" });
+      const turn = this.store.bindTurn({ userEventId: userEvent.id, taskId: task.id, route: pinned ? "pinned" : created ? "standard_new" : "standard" });
       return { order: 1, request: message, dependsOn: [], turn, goal, task: this.store.requireTask(task.id), chat: this.store.currentChat(task.id), clarification: null, created: { goal: false, task: created } };
     });
   }
@@ -701,7 +707,8 @@ export class Socrates {
       continuationNote: answer.continuation_note,
       // The general conversation has no durable goal state and no completion.
       goalNote: goal.general ? null : answer.goal_note,
-      ...(!task.general && answer.task_complete ? { taskComplete: true, taskCompleteReason: answer.task_complete.reason } : {}),
+      // A standard-mode chat is never marked complete (architecture/agent-harness.md, "Task status").
+      ...(!task.general && answer.task_complete && !CHAT_ROUTES.has(store.turnRoute(turn.id) ?? "") ? { taskComplete: true, taskCompleteReason: answer.task_complete.reason } : {}),
       stop: outcome.stop,
     });
     return { ...result("completed", outcome.stop, visible), anchorChanges: anchors.changes };

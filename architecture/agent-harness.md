@@ -1498,6 +1498,15 @@ The goal note is the only goal-level state the agent writes. It records the goal
 
 The task-completion proposal (`task_complete`, with one short reason) is recorded by the harness and can always be overridden or reopened by the user — the user has the final say. Anchor proposals (`anchors`, for example `{ "path": "learning/30-day-plan.md", "role": "goal_plan", "reason": "Defines the lesson sequence for this goal." }`) follow the anchor lifecycle in `Goal-router.md`.
 
+### Task status
+
+A goal or task is `open`, `completed` or `superseded` (replaced by other work and no longer pursued). The agent closes a task only through `task_complete`, with a reason; nothing in the harness or the agent changes a goal's status. The user sets either one from the page (`web.md`, "Status"), recorded as `goal_status_set` or as `task_status_set` after the `task_revised` that carries the status, so the ledger says the choice was the user's.
+
+- **A task the user reopened** shows `status: active — the user reopened this task on <date>` in `<CURRENT_TASK>`, telling the agent to keep it open unless this turn finishes the work it was reopened for, and then to say what was finished in `task_complete.reason`. The page shows who closed a task: "You marked it completed", or "Socrates closed it:" with the reason.
+- **A standard-mode chat is never complete.** Its `<CURRENT_TASK>` says so and asks for `task_complete: null`, and the harness ignores a `task_complete` from a turn bound with `route: "standard"` or `"standard_new"`. Writing in a closed chat reopens it as the user's choice.
+- **Keeping a message in its task.** Flow mode's "Keep my next message in this task" sends one message bound to that task without routing (`route: "pinned"`, `kept_here` in `<CURRENT_TASK>`); a closed task is reopened as the user's choice. It is an ordinary flow turn otherwise: it may roll over, and the agent may close the task with a reason. The next message is routed again.
+- **The router** treats a superseded task as it does a completed one: work routed to it must set `reopen_task`. `KNOWN_GOALS` shows a goal's status when it is not open, and a closed task's status as "by the user" when the user set it.
+
 A null completion proposal leaves task status unchanged. Only the router's explicit `reopen_task: true` reopens completed work; a historical question must preserve completion.
 
 ## Images

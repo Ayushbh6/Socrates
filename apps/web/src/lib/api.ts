@@ -1,5 +1,5 @@
 import type { CallDetail, CallRow, DataOverview, DbPage, DbRow, PriceRow, QuestionDetail, QuestionRow, Range, SeriesData, Summary, Trace } from "./observe";
-import type { Access, ArchivedView, AttachmentView, Evidence, Folders, GoalView, History, ListedModel, Provider, Settings, Status } from "./types";
+import type { Access, ArchivedView, AttachmentView, Evidence, Folders, GoalView, History, LedgerStatus, ListedModel, Provider, Settings, Status } from "./types";
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -48,6 +48,8 @@ export const api = {
   restoreGoal: (goal: number) => call<{ ok: true }>("POST", `/api/goals/${goal}/restore`),
   archiveChat: (goal: number, task: number) => call<{ ok: true }>("POST", `/api/goals/${goal}/tasks/${task}/archive`),
   restoreChat: (goal: number, task: number) => call<{ ok: true }>("POST", `/api/goals/${goal}/tasks/${task}/restore`),
+  setGoalStatus: (goal: number, status: LedgerStatus) => call<{ ok: true }>("POST", `/api/goals/${goal}/status`, { status }),
+  setTaskStatus: (goal: number, task: number, status: LedgerStatus) => call<{ ok: true }>("POST", `/api/goals/${goal}/tasks/${task}/status`, { status }),
   archived: () => call<ArchivedView>("GET", "/api/archived"),
   history: (conversation: string, before?: number) => call<History>("GET", `/api/history?conversation=${encodeURIComponent(conversation)}${before ? `&before=${before}` : ""}`),
   folders: (path?: string) => call<Folders>("GET", `/api/folders${path ? `?path=${encodeURIComponent(path)}` : ""}`),

@@ -85,6 +85,7 @@ export function Standard({ app, mode, dock, onMode, onSettings }: { app: AppStat
             onRename={(what, title) => (what.task === undefined ? store.renameGoal(what.goal, title) : store.renameChat(what.goal, what.task, title))}
             onArchive={archive}
             onRestore={(what) => store.restore(what)}
+            onStatus={(goal, status) => void store.setStatus({ goal }, status)}
             onOpenArchive={() => void store.loadArchived().catch(() => {})}
             onNewGoal={async (title) => {
               const made = await store.createGoal(title);

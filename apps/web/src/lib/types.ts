@@ -133,7 +133,23 @@ export interface GoalView {
   /** The goal standard mode shows as its plain chats, outside any goal. */
   chats?: boolean;
   workspace: string | null;
-  tasks: { number: number; title: string; chats?: number; status: string; note: string | null; objective?: string; completionCriteria?: string | null }[];
+  tasks: { number: number; title: string; chats?: number; status: string; closed?: ClosedBy | null; note: string | null; objective?: string; completionCriteria?: string | null }[];
+}
+
+/** A goal's or task's status: open, completed, or superseded (replaced by other work). */
+export type LedgerStatus = "open" | "completed" | "superseded";
+
+/** Who closed a task that is not open: the user, or Socrates with its reason. */
+export interface ClosedBy {
+  by: "user" | "socrates";
+  reason: string | null;
+  at: string;
+}
+
+/** Flow mode's "Keep my next message in this task": the task one message goes to, unrouted. */
+export interface KeepChoice {
+  goal: number;
+  task: number;
 }
 
 export interface HistoryPart {
@@ -279,8 +295,8 @@ export type ServerMessage =
 /** What a page sends on the live connection. */
 export type Command =
   | { type: "hello"; after?: number }
-  | { type: "send"; id: string; text: string; to: string; attachments?: { id: string; name: string }[]; chat?: ChatChoice }
-  | { type: "queue"; id: string; text: string; attachments?: { id: string; name: string }[]; chat?: ChatChoice }
+  | { type: "send"; id: string; text: string; to: string; attachments?: { id: string; name: string }[]; chat?: ChatChoice; keep?: KeepChoice }
+  | { type: "queue"; id: string; text: string; attachments?: { id: string; name: string }[]; chat?: ChatChoice; keep?: KeepChoice }
   | { type: "queue_remove"; id: string }
   | { type: "queue_to_lane"; id: string }
   | { type: "cancel"; conversation: string }

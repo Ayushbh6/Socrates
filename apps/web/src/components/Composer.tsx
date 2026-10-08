@@ -1,14 +1,14 @@
-import { AlertTriangle, ArrowUp, Check, ChevronDown, Hand, ImagePlus, ListPlus, LoaderCircle, Square, Split, X, Zap } from "lucide-react";
+import { AlertTriangle, ArrowUp, Check, ChevronDown, Hand, ImagePlus, ListPlus, LoaderCircle, Pin, Square, Split, X, Zap } from "lucide-react";
 import { type ClipboardEvent, type DragEvent, type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { IMAGES_MAX, IMAGE_TYPES } from "../lib/images";
 import { conversationBusy, sendTarget } from "../lib/model";
 import { type AppState, type PendingImage, store } from "../lib/store";
-import { type AttachmentView, type ChatChoice, MAX_RUNNING_LANES } from "../lib/types";
+import { type AttachmentView, type ChatChoice, type KeepChoice, MAX_RUNNING_LANES } from "../lib/types";
 import { EffortMenu, ModelMenu } from "./ModelPicker";
 import { Popover } from "./Popover";
 
 /** The message box: Send, Queue while main works, or Send in a new lane (architecture/web.md, "Composer"). */
-export function Composer({ app, conversation, laneNumber, onNewLane, onModel, onSent, chat, placeholder, variant = "float", compact = false, autoFocus = true }: {
+export function Composer({ app, conversation, laneNumber, onNewLane, onModel, onSent, chat, keep, onUnkeep, placeholder, variant = "float", compact = false, autoFocus = true }: {
   app: AppState;
   conversation: string;
   laneNumber: number | null;
@@ -18,6 +18,9 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, on
   onSent?: () => void;
   /** Standard mode: the chat a message goes to, unrouted (architecture/web.md, "Standard mode"). */
   chat?: ChatChoice;
+  /** Flow mode: the task the next message is kept in, unrouted, and how to let go of it. */
+  keep?: { choice: KeepChoice; title: string };
+  onUnkeep?: () => void;
   placeholder?: string;
   /** Floating over the flow canvas, or inside a standard-mode panel. */
   variant?: "float" | "panel";
@@ -71,7 +74,8 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, on
 
   const submit = (how: "send" | "queue" | "lane" = target) => {
     if (empty || unavailable || (how === "lane" && runningLanes >= MAX_RUNNING_LANES)) return;
-    const sent = how === "lane" ? onNewLane(text, attachments) : how === "queue" ? store.queue(text, attachments, chat) : store.send(text, conversation, attachments, chat);
+    const kept = keep?.choice;
+    const sent = how === "lane" ? onNewLane(text, attachments) : how === "queue" ? store.queue(text, attachments, chat, kept) : store.send(text, conversation, attachments, chat, kept);
     if (!sent) return;
     onSent?.();
     setText("");
@@ -111,6 +115,11 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, on
         }}
         onDrop={drop}
       >
+        {keep && (
+          <p className="composer-keep"><Pin aria-hidden /><span>Next message stays in <strong>{keep.title}</strong></span>
+            <button type="button" className="icon-button" onClick={onUnkeep} aria-label="Route the next message as usual" title="Route it as usual"><X aria-hidden /></button>
+          </p>
+        )}
         {images.length > 0 && <Thumbnails images={images} onRemove={(key) => store.removeImage(conversation, key)} />}
         {images.length > 0 && app.status?.models.chat?.vision === false && (
           <p className="composer-note"><AlertTriangle aria-hidden /> {app.status.models.chat.model} can't see images: Socrates will know only their names and sizes.</p>

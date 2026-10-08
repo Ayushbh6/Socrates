@@ -5,6 +5,7 @@ import { currentRoute, orbDocked, orbState, viewedExchange } from "../lib/model"
 import { useFollow } from "../lib/follow";
 import { type AppState, store } from "../lib/store";
 import type { Dock } from "../lib/terminals";
+import type { KeepChoice } from "../lib/types";
 import { AccessMenu } from "./AccessMenu";
 import { AnswerView } from "./AnswerView";
 import { Composer } from "./Composer";
@@ -26,6 +27,9 @@ export function Flow({ app, mode, dock, onMode, onSettings }: { app: AppState; m
   const [selected, setSelected] = useState<string | null>(null);
   const [sidebar, setSidebar] = useState(false);
   const [following, setFollowing] = useState<string | null>(null);
+  // "Keep my next message in this task", for the main conversation's next message only.
+  const [keep, setKeep] = useState<KeepChoice | null>(null);
+  useEffect(() => setKeep(null), [conversation]);
   const root = useRef<HTMLDivElement>(null);
   const stage = useRef<HTMLDivElement>(null);
 
@@ -101,7 +105,7 @@ export function Flow({ app, mode, dock, onMode, onSettings }: { app: AppState; m
           <ModeSwitch mode={mode} onMode={onMode} onSettings={onSettings} />
         </header>
 
-        <StickyNotes goal={goal} taskNumber={route?.task.number ?? null} />
+        <StickyNotes goal={goal} taskNumber={route?.task.number ?? null} keep={conversation === "main" ? keep : null} onKeep={setKeep} />
 
         <main className="flow-stage" ref={stage}>
           <div className="flow-column" ref={column}>
@@ -128,7 +132,9 @@ export function Flow({ app, mode, dock, onMode, onSettings }: { app: AppState; m
         conversation={conversation}
         laneNumber={lane?.number ?? null}
         onModel={onSettings}
-        onSent={() => setSelected(null)}
+        onSent={() => { setSelected(null); setKeep(null); }}
+        keep={conversation === "main" && keep ? { choice: keep, title: app.goals.find((g) => g.number === keep.goal)?.tasks.find((t) => t.number === keep.task)?.title ?? "this task" } : undefined}
+        onUnkeep={() => setKeep(null)}
         onNewLane={(text, attachments) => {
           const id = store.sendToNewLane(text, attachments);
           if (id) setFollowing(id);

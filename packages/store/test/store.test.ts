@@ -271,6 +271,33 @@ describe("canonical timestamps and metadata budgets", () => {
     recovered.close(); store.close();
   });
 
+  it("records the user's statuses for goals and tasks, says who set a task's, and rebuilds them from events", () => {
+    let time = 0;
+    const store = LedgerStore.open({path: ":memory:", clock: {now: () => new Date(time++)}});
+    const goal = store.createGoal({title: "Goal"});
+    const task = store.createTask(goal.id, {title: "Task"});
+    expect(store.statusSource(task.id)).toBeNull();
+    const user = store.recordUserMessage("Request");
+    const turn = store.bindTurn({taskId: task.id, userEventId: user.id, route: "pinned"});
+    store.completeTurn(turn.id, {responseEventId: store.recordResponse("Done.").id, taskComplete: true, taskCompleteReason: "It works."});
+    expect(store.turnRoute(turn.id)).toBe("pinned");
+    expect(store.statusSource(task.id)).toMatchObject({by: "socrates", status: "completed", reason: "It works."});
+    expect(store.setTaskStatus(task.id, "superseded").status).toBe("superseded");
+    expect(store.statusSource(task.id)).toMatchObject({by: "user", status: "superseded", reason: null});
+    expect(store.setGoalStatus(goal.id, "completed").status).toBe("completed");
+    // Setting the status a goal already has records nothing.
+    store.setGoalStatus(goal.id, "completed");
+    expect(store.listEvents({type: "goal_status_set"})).toHaveLength(1);
+    const general = store.ensureGeneral();
+    expect(() => store.setGoalStatus(general.goal.id, "completed")).toThrow(/no status/);
+    expect(() => store.setTaskStatus(general.task.id, "completed")).toThrow(/no status/);
+    const recovered = LedgerStore.open({path: ":memory:"}); recovered.restoreEvents(store.listEvents());
+    for (const table of ["goals", "tasks", "task_revisions"]) {
+      expect(recovered.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(), table).toEqual(store.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
+    }
+    recovered.close(); store.close();
+  });
+
   it("bounds both creation and every revision without shortening exact user messages", async () => {
     const {countTokens} = await import("@socrates/shared");
     const {store} = openStore(); const text = "Long acceptance criterion. ".repeat(200);

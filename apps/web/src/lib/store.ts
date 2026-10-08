@@ -3,7 +3,7 @@ import { type SettingsPatch, api } from "./api";
 import { IMAGES_MAX, prepareImage } from "./images";
 import { LiveConnection } from "./live";
 import { type Model, type ModelEvent, emptyModel, reduce, replayFrom } from "./model";
-import type { Access, ArchivedView, AttachmentView, ChatChoice, Command, Effort, GoalView, ServerMessage, Settings, Status, TerminalView } from "./types";
+import type { Access, ArchivedView, AttachmentView, ChatChoice, Command, Effort, GoalView, KeepChoice, LedgerStatus, ServerMessage, Settings, Status, TerminalView } from "./types";
 
 export interface AppState {
   model: Model;
@@ -102,10 +102,14 @@ export class Store {
     if (request === this.statusRequest) this.set({ status, settings });
   }
 
-  /** Send to main or a lane, with any attached images (and, in standard mode, its chosen chat); returns the message's id, or null when the connection is down. */
-  send(text: string, to: string, attachments: AttachmentView[] = [], chat?: ChatChoice): string | null {
+  /**
+   * Send to main or a lane, with any attached images: in standard mode to its
+   * chosen chat, in flow mode kept in a chosen task when `keep` is given.
+   * Returns the message's id, or null when the connection is down.
+   */
+  send(text: string, to: string, attachments: AttachmentView[] = [], chat?: ChatChoice, keep?: KeepChoice): string | null {
     const id = newId();
-    if (!this.command({ type: "send", id, text, to, ...named(attachments), ...(chat ? { chat } : {}) })) return null;
+    if (!this.command({ type: "send", id, text, to, ...named(attachments), ...(chat ? { chat } : {}), ...(keep ? { keep } : {}) })) return null;
     if (chat) this.sentChats.set(id, chat);
     this.dispatch({ type: "sent", id, text, to, at: new Date().toISOString(), attachments });
     return id;
@@ -115,10 +119,10 @@ export class Store {
     return this.send(text, "new_lane", attachments);
   }
 
-  queue(text: string, attachments: AttachmentView[] = [], chat?: ChatChoice): boolean {
+  queue(text: string, attachments: AttachmentView[] = [], chat?: ChatChoice, keep?: KeepChoice): boolean {
     const id = newId();
     this.pendingQueue.set(id, { text, attachments });
-    if (this.command({ type: "queue", id, text, ...named(attachments), ...(chat ? { chat } : {}) })) return true;
+    if (this.command({ type: "queue", id, text, ...named(attachments), ...(chat ? { chat } : {}), ...(keep ? { keep } : {}) })) return true;
     this.pendingQueue.delete(id);
     return false;
   }
@@ -367,6 +371,16 @@ export class Store {
   async restore(what: { goal: number; task?: number }): Promise<void> {
     await (what.task === undefined ? api.restoreGoal(what.goal) : api.restoreChat(what.goal, what.task));
     await this.reloadGoals();
+  }
+
+  /** Set a goal's or task's status as the user chooses; a refusal is shown as a notice. */
+  async setStatus(what: { goal: number; task?: number }, status: LedgerStatus): Promise<void> {
+    try {
+      await (what.task === undefined ? api.setGoalStatus(what.goal, status) : api.setTaskStatus(what.goal, what.task, status));
+      await this.reloadGoals();
+    } catch (error) {
+      this.notice(error);
+    }
   }
 
   private async reloadGoals(): Promise<void> {

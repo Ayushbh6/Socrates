@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import type { EventPayloads } from "@socrates/contracts";
 import { callLine } from "@socrates/retrieval";
-import type { LedgerStore, Turn, Workspace } from "@socrates/store";
+import type { LedgerStore, Task, Turn, Workspace } from "@socrates/store";
 import { assertSeparateFromClassic } from "./config";
 import { type Activity, activityOf } from "./activity";
 import { type AttachmentView, viewOf } from "./attachments";
@@ -125,8 +125,15 @@ export function goalsView(store: LedgerStore, chatsGoal: number | null = null) {
       chats: goal.number === chatsGoal,
       workspace: goal.workspaceId ? (store.getWorkspace(goal.workspaceId)?.name ?? null) : null,
       updatedAt: goal.updatedAt,
-      tasks: store.listTasks(goal.id).map((task) => ({ number: task.number, title: task.title, status: task.status, objective: task.objective, completionCriteria: task.completionCriteria, note: task.continuationNote, chats: Math.max(1, store.listChats(task.id).length), updatedAt: task.updatedAt })),
+      tasks: store.listTasks(goal.id).map((task) => ({ number: task.number, title: task.title, status: task.status, closed: closedBy(store, task), objective: task.objective, completionCriteria: task.completionCriteria, note: task.continuationNote, chats: Math.max(1, store.listChats(task.id).length), updatedAt: task.updatedAt })),
     }));
+}
+
+/** Who closed a task that is not open, and Socrates' reason when it did; null for an open task. */
+function closedBy(store: LedgerStore, task: Task): { by: "user" | "socrates"; reason: string | null; at: string } | null {
+  if (task.status === "open") return null;
+  const source = store.statusSource(task.id);
+  return source && source.status === task.status ? { by: source.by, reason: source.reason, at: source.at } : null;
 }
 
 export class FolderError extends Error {

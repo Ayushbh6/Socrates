@@ -1,10 +1,11 @@
-import { ArrowUpRight, ChevronRight, GripHorizontal, Pencil, X } from "lucide-react";
+import { ArrowUpRight, ChevronRight, GripHorizontal, Pencil, Pin, PinOff, X } from "lucide-react";
 import { type KeyboardEvent, type PointerEvent, type ReactNode, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useDialog } from "../lib/dialog";
 import { store } from "../lib/store";
-import type { GoalView } from "../lib/types";
+import type { GoalView, KeepChoice } from "../lib/types";
 import { Prose } from "./Prose";
+import { StatusMenu, closedText } from "./StatusMenu";
 
 type NoteId = "task" | "goal";
 type Offsets = Record<NoteId, { x: number; y: number }>;
@@ -22,8 +23,12 @@ function stored(): Offsets {
   }
 }
 
-/** The two notes beside the conversation: the current task and its goal. Drag them anywhere. */
-export function StickyNotes({ goal, taskNumber }: { goal: GoalView | null; taskNumber: number | null }) {
+/**
+ * The two notes beside the conversation: the current task and its goal. Drag
+ * them anywhere. Expanded, they set a status and keep the next message in the
+ * task (`keep`, used by the composer).
+ */
+export function StickyNotes({ goal, taskNumber, keep, onKeep }: { goal: GoalView | null; taskNumber: number | null; keep: KeepChoice | null; onKeep: (keep: KeepChoice | null) => void }) {
   const [offsets, setOffsets] = useState(stored);
   const [expanded, setExpanded] = useState<NoteId | null>(null);
   const move = (id: NoteId, x: number, y: number) =>
@@ -44,7 +49,7 @@ export function StickyNotes({ goal, taskNumber }: { goal: GoalView | null; taskN
           <>
             <strong className="note-title">{task.title}</strong>
             <span className="note-body">{task.note ?? "No progress noted yet."}</span>
-            <span className="note-meta"><Status value={task.status} /></span>
+            <span className="note-meta"><Status value={task.status} />{keep && goal && keep.goal === goal.number && keep.task === task.number && <span className="note-kept"><Pin aria-hidden />Next message stays here</span>}</span>
           </>
         ) : (
           <span className="note-body muted">Ask Socrates something and the task it works on appears here.</span>
@@ -63,7 +68,7 @@ export function StickyNotes({ goal, taskNumber }: { goal: GoalView | null; taskN
         )}
       </Note>
     </div>
-    {expanded && <ExpandedNote kind={expanded} goal={goal} taskNumber={taskNumber} onClose={() => setExpanded(null)} />}
+    {expanded && <ExpandedNote kind={expanded} goal={goal} taskNumber={taskNumber} keep={keep} onKeep={onKeep} onClose={() => setExpanded(null)} />}
     </>
   );
 }
@@ -118,6 +123,13 @@ function Status({ value }: { value: string }) {
 
 type Task = GoalView["tasks"][number];
 
+/** "Keep my next message in this task": the next message goes here without routing, reopening the task if it was closed. */
+function KeepButton({ kept, onKeep }: { kept: boolean; onKeep: (on: boolean) => void }) {
+  return kept
+    ? <button type="button" className="quiet-button keep-button" data-on="true" onClick={() => onKeep(false)} title="The next message will be routed as usual"><PinOff aria-hidden /> Next message stays here</button>
+    : <button type="button" className="quiet-button keep-button" onClick={() => onKeep(true)} title="Send the next message to this task, without routing; a closed task is reopened"><Pin aria-hidden /> Keep my next message in this task</button>;
+}
+
 function NoteText({ label, text, fallback }: { label: string; text: string | null | undefined; fallback?: string }) {
   if (!text && !fallback) return null;
   return <section className="note-section"><h3>{label}</h3>{text ? <Prose text={text} animate={false} writing={false} /> : <p className="muted">{fallback}</p>}</section>;
@@ -131,7 +143,7 @@ function TaskText({ task }: { task: Task }) {
   </>;
 }
 
-function ExpandedNote({ kind, goal, taskNumber, onClose }: { kind: NoteId; goal: GoalView | null; taskNumber: number | null; onClose: () => void }) {
+function ExpandedNote({ kind, goal, taskNumber, keep, onKeep, onClose }: { kind: NoteId; goal: GoalView | null; taskNumber: number | null; keep: KeepChoice | null; onKeep: (keep: KeepChoice | null) => void; onClose: () => void }) {
   const modal = useRef<HTMLDivElement>(null);
   useDialog(modal, onClose);
   const task = goal?.tasks.find((t) => t.number === taskNumber) ?? null;
@@ -165,14 +177,21 @@ function ExpandedNote({ kind, goal, taskNumber, onClose }: { kind: NoteId; goal:
             </> : <input className="note-title-input" autoFocus aria-label={`New name of this ${kind}`} maxLength={120} value={draft} onChange={(e) => setDraft(e.target.value)} onBlur={() => void save()} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void save(); } if (e.key === "Escape") { e.stopPropagation(); setDraft(null); } }} />}
           </div>
           {problem && <p className="note-title-error" role="alert">{problem}</p>}
-          {goal && <p className="expanded-note-meta"><Status value={kind === "task" && task ? task.status : goal.status} />{goal.workspace && <span>{goal.workspace}</span>}</p>}
+          {goal && <div className="expanded-note-meta">
+            {goal.general ? <Status value="open" /> : kind === "task" && task
+              ? <StatusMenu what="task" value={task.status} onChange={(status) => void store.setStatus({ goal: goal.number, task: task.number }, status)} />
+              : kind === "goal" ? <StatusMenu what="goal" value={goal.status} onChange={(status) => void store.setStatus({ goal: goal.number }, status)} /> : null}
+            {goal.workspace && <span>{goal.workspace}</span>}
+            {kind === "task" && task && !goal.general && <KeepButton kept={!!keep && keep.goal === goal.number && keep.task === task.number} onKeep={(on) => { onKeep(on ? { goal: goal.number, task: task.number } : null); if (on) onClose(); }} />}
+          </div>}
+          {kind === "task" && task && closedText(task.status, task.closed) && <p className="note-closed">{closedText(task.status, task.closed)}</p>}
           {kind === "task" ? task ? <TaskText task={task} /> : <p className="muted">Send a message to give Socrates a task. Its full notes will appear here.</p> : goal ? <>
             <NoteText label="Objective" text={goal.objective} fallback={goal.general ? "A general conversation, not tied to a project goal." : "No objective recorded yet."} />
             <NoteText label="Goal note" text={goal.note} fallback="No goal note recorded yet." />
             <section className="note-section"><h3>Tasks <span>{goal.tasks.filter((t) => t.status === "open").length} open · {goal.tasks.filter((t) => t.status === "completed").length} done</span></h3>
               <div className="expanded-note-tasks">{goal.tasks.map((t) => <details key={t.number} open={t.number === taskNumber}>
-                <summary><ChevronRight aria-hidden /><span>{t.number === taskNumber && <small>Current</small>}{t.title}</span><Status value={t.status} /></summary>
-                <div className="expanded-task-body"><TaskText task={t} /></div>
+                <summary><ChevronRight aria-hidden /><span>{t.number === taskNumber && <small>Current</small>}{t.title}</span>{goal.general ? <Status value={t.status} /> : <StatusMenu what="task" align="right" value={t.status} onChange={(status) => void store.setStatus({ goal: goal.number, task: t.number }, status)} />}</summary>
+                <div className="expanded-task-body">{closedText(t.status, t.closed) && <p className="note-closed">{closedText(t.status, t.closed)}</p>}<TaskText task={t} /></div>
               </details>)}</div>
             </section>
           </> : <p className="muted">Socrates will choose a goal when you send your first message.</p>}

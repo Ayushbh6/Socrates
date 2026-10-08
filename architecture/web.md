@@ -67,6 +67,13 @@ The familiar harness layout, for following everything at once. The switch in eit
 - **Lanes** on the right, one panel each, stacked: the lane's task and state (working, waiting for you, idle), its whole conversation, and its own small composer that sends to that lane. Stop a working lane or close an idle one from its head. A message sent to a new lane shows in a "New lane" panel until the server names its lane.
 - On narrower screens the lanes stack under the chat and the page scrolls.
 
+## Status
+
+A goal or task is open, completed, or superseded (replaced by other work and no longer pursued), and the user has the final say (`agent-harness.md`, "Task status").
+
+- **Flow mode.** In the expanded task and goal notes the status is a menu: Open, Completed, Superseded. Each task in the goal note's list has the same menu. Under a closed task the note says who closed it: "You marked it completed" or "Socrates closed it:" with its reason. The task note has **Keep my next message in this task**: the note closes, the small note says "Next message stays here", and the composer shows "Next message stays in <task>" with × to let go of it. The next message in the main conversation then goes to that task without routing (reopening it if it was closed), and the pin is used up; switching to a lane drops it.
+- **Standard mode.** A goal folder's actions include a status menu; a completed goal is shown muted with a check, a superseded one muted and labelled. Chats have no status: a chat is never complete, so it is archived instead, and Socrates never closes one.
+
 ## Terminal panel
 
 The terminals the agent starts, at the bottom of the page: docked under the chat in standard mode, sliding up over the canvas in flow mode (the composer rises with it). It is the same terminal the agent drives (`server.md`, "Terminal panel"), drawn by xterm.js, which loads with the first terminal opened.

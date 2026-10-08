@@ -657,3 +657,34 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 @keyframes terminal-pulse { 50% { opacity: 0.45; } }
 @media (prefers-reduced-motion: reduce) { .terminal-dock[data-variant="overlay"], .terminal-dot[data-state="waiting"], .terminal-toggle[data-waiting="true"] .terminal-count { animation: none; } }
 @media (max-width: 760px) { .terminal-actions .quiet-button { padding: 0.3rem 0.45rem; } .terminal-meta span, .terminal-meta a + a { display: none; } }
+
+/* Status (architecture/web.md, "Status"): set by the user from flow's notes and standard's goal folders. */
+.status-menu { position: relative; display: inline-flex; }
+.status-pill { padding: 0.2rem 0.5rem; border: 0; border-radius: 999px; background: transparent; cursor: pointer; }
+.status-pill:hover, .status-pill[aria-expanded="true"] { background: var(--hover); }
+.status-pill svg { width: 0.7rem; height: 0.7rem; opacity: 0.7; }
+.status-popover { width: 15rem; min-width: 0; z-index: 120; }
+/* A goal's actions stay shown while its status menu is open. */
+.row-actions:has(.status-menu [aria-expanded="true"]) { opacity: 1; }
+.status-popover button { display: flex; align-items: center; gap: 0.75rem; width: 100%; padding: 0.55rem 0.7rem; border: 0; border-radius: 0.65rem; background: transparent; text-align: left; }
+.status-popover button:hover { background: var(--hover); }
+.status-popover span { display: grid; flex: 1; gap: 0.1rem; }
+.status-popover strong { font-size: 0.85rem; font-weight: 560; }
+.status-popover small { color: var(--muted); font-size: 0.74rem; }
+.status-popover svg { width: 0.9rem; height: 0.9rem; color: var(--accent-strong); }
+.note-closed { margin: -0.9rem 0 1.4rem; color: var(--muted); font-size: 0.8rem; line-height: 1.45; }
+.expanded-task-body .note-closed { margin: 0 0 0.8rem; }
+.keep-button { margin-left: auto; padding: 0.35rem 0.7rem; font-size: 0.78rem; }
+.keep-button svg { width: 0.85rem; height: 0.85rem; }
+.keep-button[data-on="true"] { background: var(--tint); }
+.note-kept { display: inline-flex; align-items: center; gap: 0.3rem; margin-left: 0.7rem; color: var(--accent-strong); font-size: 0.7rem; }
+.note-kept svg { width: 0.7rem; height: 0.7rem; }
+.composer-keep { display: flex; align-items: center; gap: 0.4rem; margin: 0 0 0.35rem; color: var(--accent-strong); font-size: 0.78rem; }
+.composer-keep > svg { flex: none; width: 0.85rem; height: 0.85rem; }
+.composer-keep span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-keep strong { font-weight: 560; }
+.composer-keep .icon-button { width: 1.5rem; height: 1.5rem; margin-left: auto; }
+.composer-keep .icon-button svg { width: 0.8rem; height: 0.8rem; }
+.goal-row[data-status="completed"] > span, .goal-row[data-status="superseded"] > span { color: var(--muted); }
+.goal-row .goal-done { flex: none; width: 0.85rem; height: 0.85rem; color: var(--accent); }
+.goal-row .goal-state { flex: none; color: var(--faint); font-size: 0.7rem; font-weight: 400; }

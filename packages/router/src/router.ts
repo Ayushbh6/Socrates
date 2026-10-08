@@ -522,7 +522,7 @@ function syntheticRoute(ctx: RoutingContext, target: ResolvedPart["target"], rea
     },
     compound: false,
     parts: [
-      { order: 1, request: ctx.pending?.request ?? ctx.message, decision: "fallback", taskDecision: null, target, workspaceConfidence: "high", reopenTask: target.kind === "existing_task" && target.task.status === "completed" && requestsWork(ctx.pending?.request ?? ctx.message), dependsOn: [], reason },
+      { order: 1, request: ctx.pending?.request ?? ctx.message, decision: "fallback", taskDecision: null, target, workspaceConfidence: "high", reopenTask: target.kind === "existing_task" && target.task.status !== "open" && requestsWork(ctx.pending?.request ?? ctx.message), dependsOn: [], reason },
     ],
     reason,
   };

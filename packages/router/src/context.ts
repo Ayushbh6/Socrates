@@ -346,6 +346,8 @@ function collectHistory(
 function renderGoalEntry(store: LedgerStore, entry: GoalEntry): string {
   const lines = [`label: ${entry.label}`, `title: ${entry.goal.title}`, `workspace: ${entry.workspace?.name ?? "—"}`];
   if (entry.goal.general) lines.push("kind: the general conversation goal");
+  // Only the user changes a goal's status.
+  if (entry.goal.status !== "open") lines.push(`status: ${entry.goal.status} (set by the user)`);
   if (entry.goal.objective) lines.push(`objective: ${excerpt(entry.goal.objective, 300)}`);
   if (entry.goal.note) lines.push(`note: ${excerpt(entry.goal.note, 300)}`);
   const anchors = store.listAnchors(entry.goal.id);
@@ -357,7 +359,8 @@ function renderGoalEntry(store: LedgerStore, entry: GoalEntry): string {
     lines.push("tasks:");
     for (const { label, task } of entry.tasks) {
       const note = task.continuationNote ? `; ${excerpt(task.continuationNote, 140)}` : "";
-      lines.push(`- ${label}: ${task.title} — ${task.status}${note}`);
+      const by = task.status !== "open" && store.statusSource(task.id)?.by === "user" ? " by the user" : "";
+      lines.push(`- ${label}: ${task.title} — ${task.status}${by}${note}`);
     }
   }
   return lines.join("\n");

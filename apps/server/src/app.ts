@@ -207,6 +207,20 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
       return { ok: true, [what]: true };
     });
   }
+  // Status: open, completed or superseded, as the user sets it (flow's notes, standard's sidebar for goals).
+  const Status = z.object({ status: z.enum(["open", "completed", "superseded"]) }).strict();
+  app.post("/api/goals/:goal/status", async (request, reply) => {
+    const found = lookup(request.params);
+    if (!found) return missing(reply);
+    runtime.store.setGoalStatus(found.goal.id, Status.parse(request.body).status);
+    return { ok: true };
+  });
+  app.post("/api/goals/:goal/tasks/:task/status", async (request, reply) => {
+    const found = lookup(request.params);
+    if (!found?.task) return missing(reply);
+    runtime.store.setTaskStatus(found.task.id, Status.parse(request.body).status);
+    return { ok: true };
+  });
   app.get("/api/archived", async () => archivedView(runtime.store));
 
   app.get("/api/history", async (request, reply) => {

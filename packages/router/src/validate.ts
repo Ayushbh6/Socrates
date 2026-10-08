@@ -218,10 +218,11 @@ function resolveTask(goal: Goal, label: string, ctx: RoutingContext, store: Ledg
 function resolvePart(part: RoutePart, ctx: RoutingContext, store: LedgerStore, seen: SeenSelectors, prefix: string): Validation<ResolvedPart> {
   const fail = (...errors: string[]): Validation<ResolvedPart> => ({ ok: false, errors: errors.map((e) => prefix + e) });
   const done = (target: RouteTarget): Validation<ResolvedPart> => {
-    if (target.kind === "existing_task" && target.task.status === "completed" && part.reopen_task == null) {
-      return fail("The selected task is completed: set reopen_task true for renewed work, or false for a question about past work.");
+    // A task that is completed or superseded is closed; renewed work reopens it.
+    if (target.kind === "existing_task" && target.task.status !== "open" && part.reopen_task == null) {
+      return fail(`The selected task is ${target.task.status}: set reopen_task true for renewed work, or false for a question about past work.`);
     }
-    if (part.reopen_task && (target.kind !== "existing_task" || target.task.status !== "completed")) return fail("reopen_task true requires an existing completed task.");
+    if (part.reopen_task && (target.kind !== "existing_task" || target.task.status === "open")) return fail("reopen_task true requires an existing completed or superseded task.");
     return ({
     ok: true,
     value: {

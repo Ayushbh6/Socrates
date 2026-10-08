@@ -65,7 +65,7 @@ export function assembleContext(input: ContextInput): TextPart[] {
 
   const volatile = [
     goal.general ? null : goalState(store, goal, task),
-    task.general && !turn.laneId ? null : currentTask(task, input.part, store.requestForTurn(turn.id).request, laneOf(store, turn)),
+    task.general && !turn.laneId ? null : currentTask(task, input.part, store.requestForTurn(turn.id).request, laneOf(store, turn), taskStatus(store, task, turn)),
     task.general ? block("RECENT_ACTIVITY", renderActivity(store, input.now, input.timeZone)) : null,
     input.lanes ?? null,
     input.access ? block("ACCESS", describeAccess(input.access)) : null,
@@ -153,12 +153,32 @@ function laneOf(store: LedgerStore, turn: Turn): { number: number; handedOff: bo
   return { number: store.requireLane(turn.laneId).number, handedOff: store.listEvents({ turnId: turn.id, type: "turn_moved_to_lane" }).length > 0 };
 }
 
-function currentTask(task: Task, part: ContextInput["part"], partRequest: string, lane: { number: number; handedOff: boolean } | null): string {
+/** Standard mode's routes: the user chose the chat, and a chat is never complete. */
+export const CHAT_ROUTES = new Set(["standard", "standard_new"]);
+
+/**
+ * The task's status line (agent-harness.md, "Task status"): a standard-mode
+ * chat is never complete; a task the user reopened stays open until the work
+ * they reopened it for is finished; the user may have kept this message here.
+ */
+function taskStatus(store: LedgerStore, task: Task, turn: Turn): string[] {
+  const route = store.turnRoute(turn.id);
+  if (route && CHAT_ROUTES.has(route)) return ["status: active — a chat in standard mode, which is never marked complete: always set task_complete to null."];
+  const source = store.statusSource(task.id);
+  const lines = [`status: ${task.status === "open" ? "active" : task.status}`];
+  if (task.status === "open" && source?.by === "user" && source.status === "open") {
+    lines[0] += ` — the user reopened this task on ${source.at.slice(0, 10)}. Keep it open unless this turn finishes the work they reopened it for; then task_complete.reason says what was finished.`;
+  }
+  if (route === "pinned") lines.push("kept_here: the user chose to keep this message in this task, without routing.");
+  return lines;
+}
+
+function currentTask(task: Task, part: ContextInput["part"], partRequest: string, lane: { number: number; handedOff: boolean } | null, status: string[]): string {
   const lines = [
     `title: ${task.title}`,
     `objective: ${task.objective}`,
     ...(task.completionCriteria ? [`completion_criteria: ${task.completionCriteria}`] : []),
-    `status: ${task.status === "completed" ? "completed" : "active"}`,
+    ...status,
     `note: ${task.continuationNote ?? "New task."}`,
   ];
   if (part) {
