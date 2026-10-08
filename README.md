@@ -4,13 +4,13 @@ A coding-agent harness built around one continuous conversation. You never creat
 
 Socrates speaks as a thoughtful working partner: curious, candid and concise, with calm competence and a little dry wit. Its fixed working-agent prompt brings that voice to both everyday conversation and technical work.
 
-The design lives in [`architecture/`](architecture):
+Agents working on this repository start with [`AGENTS.md`](AGENTS.md). The design lives in [`architecture/`](architecture):
 
 - [`agent-harness.md`](architecture/agent-harness.md): tools, the agent loop, context layout, compaction, caching.
 - [`Goal-router.md`](architecture/Goal-router.md): goals, tasks, routing, the ledger, rollover.
 - [`server.md`](architecture/server.md): the local app server: data folder, settings and keys, startup, security, and its API.
 - [`observability.md`](architecture/observability.md): every model call recorded (request, reply, timing, cache, cost), the inspect page, and the live cache evaluation.
-- [`web.md`](architecture/web.md): the web app: the welcome page, flow mode (the orb, the notes, the question sidebar, the composer), standard mode (goals, main and lane panels), approvals, tool output, settings, and how it stays in sync.
+- [`web.md`](architecture/web.md): the web app: the welcome page, flow mode (the orb, the notes, the question sidebar, the composer), standard mode (goals with their chats, chats working at once, no lane panels), approvals, tool output, settings, and how it stays in sync.
 
 ## Packages
 
@@ -26,7 +26,7 @@ The design lives in [`architecture/`](architecture):
 | `@socrates/retrieval` | The embedding index of Socrates' memory: LanceDB storage beside the ledger, background indexing of goals, tasks, exchanges, tool calls, capabilities and workspace files (secrets and generated files excluded), meaning search with similarity floors, and the one hybrid (reciprocal rank fusion) scoring function |
 | `@socrates/agent` | The working agent: `Socrates.handle` runs one message end to end (route, bind, agent loop per part, `FinalAnswer` validation and persistence) in the main conversation or a parallel lane, one run per task, recovery of turns a stopped process left running, context assembly in the canonical layout, three-tier history with N−1 fitting, per-turn limits, cancellation, and prompt-cache breakpoints, and compaction: history checkpoints, in-turn linearization, the failsafe, automatic rollover with handover capsules, and `<RETRIEVED_HISTORY>` |
 | `@socrates/server` (`apps/server`) | The local app server: builds the one Socrates from `~/.socrates-v2` (settings, keys, Skills, MCP servers, embedding index), interrupts turns left running at startup, and serves the session-protected HTTP API and live WebSocket on `127.0.0.1:4200`: Send, Queue and Send in a lane, live activity, per-conversation approvals, and cancel; and where Socrates may work (my folders or full access) and when it asks (ask first or work freely) |
-| `@socrates/web` (`apps/web`) | The web app the server serves: the welcome page and an onboarding page (name, API key, optional folders), flow mode with the orb and expandable task and goal notes, the question sidebar with lanes, the composer (Send, Queue, Send in a new lane, stop, approvals mode, the model and thinking-level pickers), the access menu and approval cards; the work behind each answer as Codex-style groups of plain-words rows (thinking timed, edits as diffs, commands with their output live, a status line while it waits); standard mode with goals, the main conversation and a panel per lane; the full tool-output viewer; and settings for models, keys, memory search, time zone and access |
+| `@socrates/web` (`apps/web`) | The web app the server serves: the welcome page and an onboarding page (name, API key, optional folders), flow mode with the orb and expandable task and goal notes, the question sidebar with lanes, the composer (Send, Queue, Send in a new lane, stop, approvals mode, the model and thinking-level pickers), the access menu and approval cards; the work behind each answer as Codex-style groups of plain-words rows (thinking timed, edits as diffs, commands with their output live, a status line while it waits); standard mode with goals as folders of chats, each chat working on its own (up to four at once), with a ⋯ menu per goal and chat; the terminal panel at the bottom; the full tool-output viewer; and settings for models, the chat-naming model, keys, memory search, time zone and access |
 
 ## Running Socrates
 
