@@ -482,7 +482,6 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .new-goal input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--tint); }
 .new-goal small { padding: 0 0.2rem; color: var(--danger); font-size: 0.75rem; }
 .goal-item { position: relative; }
-.goal-row { padding-right: 2.6rem; }
 .chat-more { color: var(--faint); font-size: 0.8rem; }
 .sidebar-scrim-button { display: none; }
 .chat-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -575,12 +574,28 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 /* Renaming, archiving and the archive, in standard mode's sidebar */
 
 .goal-item, .chat-item { position: relative; }
-.row-actions { position: absolute; top: 50%; right: 0.3rem; display: flex; gap: 0.05rem; transform: translateY(-50%); opacity: 0; transition: opacity 120ms; }
-.goal-item > .row-actions { top: 1.2rem; right: 1.5rem; }
-.goal-item:hover > .row-actions, .chat-item:hover > .row-actions, .row-actions:focus-within { opacity: 1; }
-.row-actions .icon-button { width: 1.5rem; height: 1.5rem; background: var(--bg); }
-.row-actions .icon-button svg { width: 0.85rem; height: 0.85rem; }
-@media (hover: none) { .row-actions { opacity: 1; } }
+.row-actions { position: absolute; top: 50%; right: 0.3rem; display: flex; transform: translateY(-50%); opacity: 0; transition: opacity 120ms; }
+.goal-item > .row-actions { top: 1.2rem; }
+.goal-item:hover > .row-actions, .chat-item:hover > .row-actions, .row-actions:focus-within, .row-actions[data-open="true"] { opacity: 1; }
+.row-actions .icon-button { width: 1.6rem; height: 1.6rem; border-radius: 0.45rem; }
+.row-actions .icon-button:hover, .row-actions[data-open="true"] .icon-button { background: rgba(17, 40, 32, 0.08); }
+.row-actions .icon-button svg { width: 0.95rem; height: 0.95rem; }
+/* The name stops short of the ⋯ button instead of running under it. */
+.goal-item:hover > .goal-row, .goal-item:has(> .row-actions[data-open="true"]) > .goal-row { padding-right: 2.2rem; }
+.goal-item:hover > .goal-row .goal-chevron, .goal-item:hover > .goal-row .goal-done, .goal-item:hover > .goal-row .goal-state { display: none; }
+.chat-item:hover > .chat-row, .chat-item:has(> .row-actions[data-open="true"]) > .chat-row { padding-right: 2.2rem; background: var(--hover); }
+.goal-item:has(> .row-actions[data-open="true"]) > .goal-row { background: var(--hover); }
+@media (hover: none) { .row-actions { opacity: 1; } .goal-row, .chat-row { padding-right: 2.2rem; } }
+.row-menu { width: 13.5rem; min-width: 0; z-index: 120; padding: 0.35rem; }
+.row-menu button { display: flex; align-items: center; gap: 0.6rem; width: 100%; padding: 0.5rem 0.6rem; border: 0; border-radius: 0.55rem; background: transparent; color: var(--text); font-size: 0.86rem; text-align: left; }
+.row-menu button:hover { background: var(--hover); }
+.row-menu button > svg { flex: none; width: 0.95rem; height: 0.95rem; color: var(--muted); }
+.row-menu small { margin-left: auto; color: var(--faint); font-size: 0.75rem; }
+.row-menu .row-menu-more { margin-left: 0; transition: transform 140ms; }
+.row-menu button[aria-expanded="true"] .row-menu-more { transform: rotate(90deg); }
+.row-menu .row-menu-sub { padding-left: 2.15rem; color: var(--muted); }
+.row-menu .row-menu-sub > svg { margin-left: auto; color: var(--accent-strong); }
+.row-menu hr { margin: 0.3rem 0.4rem; border: 0; border-top: 1px solid rgba(17, 40, 32, 0.08); }
 .rename-input { width: calc(100% - 0.4rem); margin: 0.15rem 0.2rem; padding: 0.4rem 0.6rem; border: 1px solid var(--accent); border-radius: 0.6rem; background: #fff; color: var(--text); font: inherit; font-size: 0.86rem; outline: none; box-shadow: 0 0 0 3px var(--tint); }
 .sidebar-error { margin: 0.3rem 0.6rem; color: var(--danger); font-size: 0.78rem; }
 .archive-drawer { position: sticky; bottom: -0.8rem; z-index: 1; margin: auto -0.6rem -0.8rem; padding: 0.4rem 0.6rem 0.8rem; background: #f3f2ed; }
@@ -655,7 +670,6 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .status-pill svg { width: 0.7rem; height: 0.7rem; opacity: 0.7; }
 .status-popover { width: 15rem; min-width: 0; z-index: 120; }
 /* A goal's actions stay shown while its status menu is open. */
-.row-actions:has(.status-menu [aria-expanded="true"]) { opacity: 1; }
 .status-popover button { display: flex; align-items: center; gap: 0.75rem; width: 100%; padding: 0.55rem 0.7rem; border: 0; border-radius: 0.65rem; background: transparent; text-align: left; }
 .status-popover button:hover { background: var(--hover); }
 .status-popover span { display: grid; flex: 1; gap: 0.1rem; }

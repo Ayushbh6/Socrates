@@ -1,8 +1,9 @@
-import { Archive, ArchiveRestore, Check, ChevronRight, Folder, FolderOpen, FolderPlus, LoaderCircle, PanelLeftClose, Pencil, Plus, SquarePen } from "lucide-react";
-import { type FormEvent, type KeyboardEvent, useState } from "react";
+import { Archive, ArchiveRestore, Check, ChevronRight, CircleCheck, Ellipsis, Folder, FolderOpen, FolderPlus, LoaderCircle, PanelLeftClose, Pencil, Plus, SquarePen } from "lucide-react";
+import { type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent, useState } from "react";
 import { type Chat, type GoalChats, chatKey } from "../lib/chats";
 import type { ArchivedView, LedgerStatus } from "../lib/types";
-import { StatusMenu, statusLabel } from "./StatusMenu";
+import { Popover } from "./Popover";
+import { STATUS_CHOICES, statusLabel } from "./StatusMenu";
 
 const SHOWN = 6;
 
@@ -75,12 +76,13 @@ export function StandardSidebar({ goals, current, archived, onChat, onNew, onNew
   const renameBox = (target: Target) => (
     <input className="rename-input" autoFocus aria-label="New name" maxLength={120} value={renaming!.value} onChange={(e) => setRenaming({ target, value: e.target.value })} onKeyDown={renameKeys} onBlur={() => void saveRename()} />
   );
-  const actions = (target: Target, title: string, extra?: React.ReactNode) => (
-    <span className="row-actions">
-      {extra}
-      <button type="button" className="icon-button" onClick={() => setRenaming({ target, value: title })} aria-label={`Rename ${title}`} title="Rename"><Pencil aria-hidden /></button>
-      <button type="button" className="icon-button" onClick={() => void attempt(() => onArchive(target, title))} aria-label={`Archive ${title}`} title="Archive"><Archive aria-hidden /></button>
-    </span>
+  const actions = (target: Target, title: string, goal?: GoalChats) => (
+    <RowMenu
+      title={title}
+      onRename={() => setRenaming({ target, value: title })}
+      onArchive={() => void attempt(() => onArchive(target, title))}
+      {...(goal ? { onNew: () => onNew(goal.number), status: goal.status, onStatus: (status: LedgerStatus) => onStatus(goal.number, status) } : {})}
+    />
   );
 
   const rows = (g: GoalChats, nested: boolean) => (
@@ -141,10 +143,7 @@ export function StandardSidebar({ goals, current, archived, onChat, onNew, onNew
                     {goal.status === "superseded" && <small className="goal-state">{statusLabel(goal.status)}</small>}
                     {goal.working ? <LoaderCircle aria-label="Working" className="spin" /> : <ChevronRight aria-hidden className="goal-chevron" />}
                   </button>
-                  {!goal.working && actions(target, goal.title, <>
-                    <StatusMenu what="goal" variant="icon" align="right" value={goal.status} onChange={(status) => onStatus(goal.number, status)} />
-                    <button type="button" className="icon-button" onClick={() => onNew(goal.number)} aria-label={`New chat in ${goal.title}`} title="New chat in this goal"><Plus aria-hidden /></button>
-                  </>)}
+                  {!goal.working && actions(target, goal.title, goal)}
                 </>
               )}
               {open && (goal.chats.length ? rows(goal, true) : <p className="chat-none">No chats yet</p>)}
@@ -184,5 +183,53 @@ export function StandardSidebar({ goals, current, archived, onChat, onNew, onNew
       </button>
       </div>
     </nav>
+  );
+}
+
+/**
+ * A row's actions behind one "⋯" button, shown on hover, as in other chat
+ * apps: a goal's new chat, rename, status and archive; a chat's rename and
+ * archive. The menu is drawn in the page so the sidebar cannot clip it.
+ */
+function RowMenu({ title, onRename, onArchive, onNew, status, onStatus }: {
+  title: string;
+  onRename: () => void;
+  onArchive: () => void;
+  onNew?: () => void;
+  status?: string;
+  onStatus?: (status: LedgerStatus) => void;
+}) {
+  const [place, setPlace] = useState<{ style: CSSProperties; anchor: HTMLElement } | null>(null);
+  const [statuses, setStatuses] = useState(false);
+  const close = () => { setPlace(null); setStatuses(false); };
+  const toggle = (e: MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
+    if (place) return close();
+    const r = e.currentTarget.getBoundingClientRect();
+    setPlace({ anchor: e.currentTarget, style: { position: "fixed", top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - 232)), right: "auto" } });
+  };
+  const run = (work: () => void) => () => { close(); work(); };
+  return (
+    <span className="row-actions" data-open={!!place}>
+      <button type="button" className="icon-button" aria-haspopup="menu" aria-expanded={!!place} aria-label={`More for ${title}`} title="More" onClick={toggle}><Ellipsis aria-hidden /></button>
+      {place && (
+        <Popover align="left" onClose={close} className="row-menu" style={place.style} anchor={place.anchor}>
+          {onNew && <button type="button" role="menuitem" onClick={run(onNew)}><Plus aria-hidden />New chat</button>}
+          <button type="button" role="menuitem" onClick={run(onRename)}><Pencil aria-hidden />Rename</button>
+          {onStatus && (
+            <>
+              <button type="button" role="menuitem" aria-expanded={statuses} onClick={() => setStatuses(!statuses)}><CircleCheck aria-hidden />Status<small>{statusLabel(status ?? "open")}</small><ChevronRight aria-hidden className="row-menu-more" /></button>
+              {statuses && STATUS_CHOICES.map((c) => (
+                <button key={c.value} type="button" role="menuitemradio" aria-checked={c.value === status} className="row-menu-sub" title={c.hint} onClick={run(() => c.value !== status && onStatus(c.value))}>
+                  {c.label}{c.value === status && <Check aria-hidden />}
+                </button>
+              ))}
+            </>
+          )}
+          <hr />
+          <button type="button" role="menuitem" onClick={run(onArchive)}><Archive aria-hidden />Archive</button>
+        </Popover>
+      )}
+    </span>
   );
 }

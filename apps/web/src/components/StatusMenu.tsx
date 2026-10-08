@@ -3,13 +3,13 @@ import { type CSSProperties, type MouseEvent, useState } from "react";
 import type { ClosedBy, LedgerStatus } from "../lib/types";
 import { Popover } from "./Popover";
 
-const CHOICES: { value: LedgerStatus; label: string; hint: string }[] = [
+export const STATUS_CHOICES: { value: LedgerStatus; label: string; hint: string }[] = [
   { value: "open", label: "Open", hint: "Still being worked on" },
   { value: "completed", label: "Completed", hint: "Done" },
   { value: "superseded", label: "Superseded", hint: "Replaced by other work; no longer pursued" },
 ];
 
-export const statusLabel = (value: string): string => CHOICES.find((c) => c.value === value)?.label ?? "Open";
+export const statusLabel = (value: string): string => STATUS_CHOICES.find((c) => c.value === value)?.label ?? "Open";
 
 /** Who closed a task, in a line for its note: the user, or Socrates with its reason. */
 export function closedText(status: string, closed: ClosedBy | null | undefined): string | null {
@@ -63,7 +63,7 @@ export function StatusMenu({ value, onChange, what, variant = "pill", align = "l
       )}
       {open && (
         <Popover align={align} onClose={() => setOpen(false)} className="status-popover" {...(place ? place : {})}>
-          {CHOICES.map((c) => (
+          {STATUS_CHOICES.map((c) => (
             <button key={c.value} type="button" role="menuitemradio" aria-checked={c.value === value} onClick={(e) => choose(e, c.value)}>
               <span><strong>{c.label}</strong><small>{c.hint}</small></span>
               {c.value === value && <Check aria-hidden />}
