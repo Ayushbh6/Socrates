@@ -162,7 +162,7 @@ export class Runtime {
 
   /** True while work, a configuration rebuild, or shutdown owns the runtime. */
   busy(): boolean {
-    return this.changing || this.closing !== null || !!this.socrates && (this.socrates.busy || this.socrates.lanes().some((l) => l.running));
+    return this.changing || this.closing !== null || !!this.socrates && (this.socrates.busy || this.socrates.runningChats > 0 || this.socrates.lanes().some((l) => l.running));
   }
 
   /** Work may start only after a rebuild finishes and before shutdown begins. */
@@ -248,7 +248,7 @@ export class Runtime {
     return chosen && efforts.levels.includes(chosen) ? chosen : efforts.default;
   }
 
-  /** Apply a settings change and rebuild Socrates from it; a change of access or of the running chat model's thinking level applies at once. */
+  /** Apply a settings change and rebuild Socrates from it; a change of access, of the running chat model's thinking level, or of the model that names chats applies at once. */
   async updateSettings(patch: unknown): Promise<Settings> {
     // Only the fields sent change; the patch schema's defaults must not reset the others.
     const parsed = SettingsPatch.parse(patch) as Record<string, unknown>;
@@ -270,7 +270,9 @@ export class Runtime {
     // The chat model already running, perhaps with another thinking level: no rebuild.
     const inUse = this.models.chat;
     const sameChat = !!this.socrates && !!next.chat && !!inUse && next.chat.provider === inUse.provider && next.chat.model === inUse.model;
-    if (Object.keys(sent).every((key) => key === "access" || key === "profile" || key === "prices" || (key === "chat" && sameChat))) {
+    // The model that names chats is used after an answer, never inside a turn, so it can change while Socrates works.
+    const titlerOnly = !!this.socrates && !!this.models.router;
+    if (Object.keys(sent).every((key) => key === "access" || key === "profile" || key === "prices" || (key === "chat" && sameChat) || (key === "titler" && titlerOnly))) {
       const effort = next.chat?.effort;
       if (sameChat && effort && !inUse!.effort?.levels.includes(effort)) {
         const levels = inUse!.effort?.levels ?? [];
@@ -281,6 +283,7 @@ export class Runtime {
       saveSettings(this.config.settingsPath, next);
       this.settings = next;
       if (sameChat) this.models.chat = { ...inUse!, source: "settings", ...(inUse!.effort ? { effort: { ...inUse!.effort, current: this.effortInUse() } } : {}) };
+      if (Object.hasOwn(sent, "titler")) this.startTitler(this.env(), this.models.router!);
       this.retrieval?.scheduleSync();
       this.announceChange();
       return next;
@@ -396,6 +399,20 @@ export class Runtime {
     return { ...(this.deps.env ?? process.env), ...readKeys(this.config.keysPath) };
   }
 
+  /**
+   * The model that names standard-mode chats: the user's choice, else
+   * DEFAULT_TITLER when there is an OpenRouter key, else the router model.
+   * Naming chats is a nicety: a titler that cannot start leaves chats their first words.
+   */
+  private startTitler(env: Record<string, string | undefined>, router: ModelInUse): void {
+    const titler: ModelInUse = this.settings.titler
+      ? { ...this.settings.titler, source: "settings" }
+      : PROVIDER_DEFAULTS.openrouter.keys.some((k) => env[k]) ? { ...DEFAULT_TITLER, source: "detected" } : router;
+    this.models = { ...this.models, titler };
+    try { this.titler = withRecording((this.deps.makeModel ?? makeModel)(titler.provider, titler.model, env), (call) => this.saveCall(call, env)); }
+    catch (error) { this.titler = null; this.log(`chat names unavailable: ${redact(message(error), env)}`); }
+  }
+
   private async start(): Promise<void> {
     const env = this.env();
     this.setup = [];
@@ -426,10 +443,7 @@ export class Runtime {
     ]);
     this.deps.signal?.throwIfAborted();
     const compactor: ModelInUse | null = this.settings.compactor ? { ...this.settings.compactor, source: "settings" } : null;
-    const titler: ModelInUse = this.settings.titler
-      ? { ...this.settings.titler, source: "settings" }
-      : PROVIDER_DEFAULTS.openrouter.keys.some((k) => env[k]) ? { ...DEFAULT_TITLER, source: "detected" } : router;
-    this.models = { chat: { ...chat, vision, ...(efforts.levels.length ? { effort: { ...efforts, current: null } } : {}) }, router, compactor, titler };
+    this.models = { chat: { ...chat, vision, ...(efforts.levels.length ? { effort: { ...efforts, current: null } } : {}) }, router, compactor, titler: null };
     if (this.models.chat?.effort) this.models.chat.effort.current = this.effortInUse();
     const build = this.deps.makeModel ?? makeModel;
     let model: ModelClient;
@@ -441,9 +455,7 @@ export class Runtime {
       model = withEffort(recorded(build(chat.provider, chat.model, env, { vision })), () => this.effortInUse(), () => this.models.chat?.effort?.maxOutputTokens);
       routerModel = recorded(build(router.provider, router.model, env));
       if (compactor) compactorModel = recorded(build(compactor.provider, compactor.model, env));
-      // Naming chats is a nicety: a titler that cannot start leaves chats their first words.
-      try { this.titler = recorded(build(titler.provider, titler.model, env)); }
-      catch (error) { this.titler = null; this.log(`chat names unavailable: ${redact(message(error), env)}`); }
+      this.startTitler(env, router);
     } catch (error) {
       this.setup.push(redact(error instanceof ModelError && error.kind === "authentication" ? `${error.message} Add it in settings.` : `The chat model cannot start: ${message(error)}`, env));
       return;

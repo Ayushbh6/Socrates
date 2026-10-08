@@ -60,6 +60,21 @@ export function groupChats(goals: GoalView[], exchanges: Exchange[]): GoalChats[
     .sort((a, b) => latestFirst(a, b) || b.number - a.number);
 }
 
+/**
+ * Every question standard mode shows, in the order asked: the main
+ * conversation's and each lane's, since a lane's work shows in its chat (there
+ * are no lane panels here). A main-conversation question handed whole to a
+ * lane shows once, in the lane, where its work and answer are.
+ */
+export function allQuestions(conversations: Record<string, Exchange[]>): Exchange[] {
+  const main = conversations.main ?? [];
+  const lanes = Object.entries(conversations).flatMap(([id, list]) => (id === "main" ? [] : list));
+  if (!lanes.length) return main;
+  const inLanes = new Set(lanes.flatMap((e) => e.turns));
+  const kept = main.filter((e) => e.answers.length > 0 || !e.turns.length || !e.turns.every((t) => inLanes.has(t)));
+  return [...kept, ...lanes].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+}
+
 /** The questions of one chat, oldest first. A question not routed yet, or the router's own question, that came after the chat's last one belongs to it too. */
 export function chatThread(exchanges: Exchange[], goal: number, task: number, chat = 1): Exchange[] {
   const here = (e: Exchange) => e.route?.goal.number === goal && e.route.task.number === task && (e.route.chat ?? 1) === chat;

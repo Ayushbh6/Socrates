@@ -129,7 +129,13 @@ function serverMessage(model: Model, message: ServerMessage): Model {
       return { ...activity(model, message), seq: Math.max(model.seq, message.seq) };
     case "accepted": {
       const index = model.pending.findIndex((e) => e.sendId === message.id);
-      if (index < 0) return model;
+      if (index < 0) {
+        // A message this page queued, started later: its saved question becomes this page's.
+        const list = model.conversations[message.conversation] ?? [];
+        return message.seq !== undefined && list.some((e) => e.seq === message.seq && !e.sendId)
+          ? withConversation(model, message.conversation, list.map((e) => (e.seq === message.seq && !e.sendId ? { ...e, sendId: message.id } : e)))
+          : model;
+      }
       const exchange = { ...model.pending[index]!, conversation: message.conversation };
       const pending = model.pending.filter((_, i) => i !== index);
       return withConversation({ ...model, pending }, message.conversation, [...(model.conversations[message.conversation] ?? []), exchange]);
@@ -176,6 +182,8 @@ function activity(model: Model, a: Activity | DraftArrived): Model {
   }
   const turnId = a.turnId;
   let index = turnId ? list.findLastIndex((e) => e.turns.includes(turnId)) : -1;
+  // Chats working at once: a new turn belongs to the message it answers, not merely the newest one.
+  if (index < 0 && a.kind === "routed" && a.messageSeq != null) index = list.findIndex((e) => e.seq === a.messageSeq);
   let next = list;
   if (a.kind === "draft" && index < 0) return model;
   if (index < 0) {
@@ -364,7 +372,8 @@ export function orbState(exchange: Exchange | null, approvals: PendingApproval[]
   if (!exchange) return "idle";
   if (exchange.state === "failed" || exchange.state === "stopped") return "stopped";
   if (exchange.state === "done") return "done";
-  if (approvals.some((a) => a.conversation === exchange.conversation)) return "waiting";
+  // Its own turn's approval; one without a turn belongs to the conversation.
+  if (approvals.some((a) => (a.turnId ? exchange.turns.includes(a.turnId) : a.conversation === exchange.conversation))) return "waiting";
   return exchange.steps.length || exchange.answers.length || exchange.draft || exchange.thinking ? "working" : "thinking";
 }
 
@@ -380,6 +389,12 @@ export function currentRoute(list: Exchange[]): Exchange["route"] {
 export function workLine(state: OrbState, exchange: Exchange | null): string | null {
   if (state === "waiting") return "Waiting for your approval";
   return exchange?.state === "sending" ? "Sending…" : null;
+}
+
+/** Whether a standard-mode chat has a message working in it now. */
+export function chatBusy(live: LiveState | null, chat: { goal: number | null; task: number | null } | undefined): boolean {
+  if (!live || !chat || chat.goal === null || chat.task === null) return false;
+  return (live.working ?? []).some((w) => w.goal === chat.goal && w.task === chat.task);
 }
 
 /** Whether a conversation is working now. */

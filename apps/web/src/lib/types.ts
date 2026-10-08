@@ -82,6 +82,8 @@ export interface Settings {
   router: ModelChoice | null;
   /** The model that writes history checkpoints when a long turn is compacted; null uses the chat model. */
   compactor: ModelChoice | null;
+  /** The model that names standard-mode chats; null: qwen3-30b-a3b-instruct on OpenRouter when there is a key, else the routing model. */
+  titler?: ModelChoice | null;
   embeddings: Embeddings;
   timeZone: string | null;
   workingFolder: string | null;
@@ -213,7 +215,7 @@ export interface ResultView {
 
 export type ActivityBody =
   | { kind: "message"; text: string; attachments?: AttachmentView[] }
-  | { kind: "routed"; turnId: string; projectTurn: number; goal: { number: number; title: string }; task: { number: number; title: string }; chat?: number; lane: number | null }
+  | { kind: "routed"; turnId: string; messageSeq?: number | null; projectTurn: number; goal: { number: number; title: string }; task: { number: number; title: string }; chat?: number; lane: number | null }
   | { kind: "question"; turnId: string; text: string }
   | { kind: "step"; turnId: string; text: string; thinking?: string | null; thinkingTruncated?: boolean }
   | { kind: "tool_started"; turnId: string; task: string; handle: string; line: string; call: CallView }
@@ -248,7 +250,10 @@ export interface LiveState {
   access: Access;
   busy: boolean;
   lanes: Lane[];
-  queue: { id: string; text: string; attachments?: AttachmentView[] }[];
+  /** The tasks with a message working in them now (standard mode's busy chats). */
+  working?: { goal: number; task: number }[];
+  /** Waiting messages: for the main conversation, or for their standard-mode chat. */
+  queue: { id: string; text: string; attachments?: AttachmentView[]; chat?: ChatChoice }[];
   approvals: PendingApproval[];
 }
 
@@ -280,7 +285,8 @@ export type ServerMessage =
   | ({ type: "state" } & LiveState)
   | ({ type: "activity" } & Activity)
   | { type: "draft"; conversation: string; turnId: string; call: number; kind: "narration" | "answer" | "thinking" | "output"; handle?: string; text: string; length?: number }
-  | { type: "accepted"; id: string; conversation: string }
+  /** `seq`: the saved message, when it was bound at once (a standard-mode chat's), so a message queued and started later is known as this page's. */
+  | { type: "accepted"; id: string; conversation: string; seq?: number }
   | ({ type: "approval" } & PendingApproval)
   | { type: "handed_off"; id: string; conversation: string; lane: number; mainReleased: boolean }
   | { type: "status"; id: string; conversation: string; text: string }
@@ -299,7 +305,7 @@ export type Command =
   | { type: "queue"; id: string; text: string; attachments?: { id: string; name: string }[]; chat?: ChatChoice; keep?: KeepChoice }
   | { type: "queue_remove"; id: string }
   | { type: "queue_to_lane"; id: string }
-  | { type: "cancel"; conversation: string }
+  | { type: "cancel"; conversation: string; chat?: ChatChoice }
   | { type: "approve"; approval: string; granted: boolean }
   | { type: "close_lane"; lane: string }
   | { type: "terminal_open" | "terminal_shut" | "terminal_stop" | "terminal_restart" | "terminal_dismiss"; session: string }
@@ -308,3 +314,5 @@ export type Command =
 
 /** Lanes that may run at once beside the main conversation. */
 export const MAX_RUNNING_LANES = 4;
+/** Standard-mode chats that may run at once; another waits in the queue. */
+export const MAX_RUNNING_CHATS = 4;

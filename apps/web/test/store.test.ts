@@ -34,7 +34,7 @@ afterEach(() => { vi.unstubAllGlobals(); });
 describe('history recovery and unsent text', () => {
   it('restores a rejected queued message without overwriting a newer draft', async () => {
     const store = new Store(); await store.start(); const socket = Socket.all[0]!; socket.open();
-    expect(store.queue('The rejected message')).toBe(true);
+    expect(store.queue('The rejected message')).toEqual(expect.any(String));
     const id = socket.sent.at(-1)!.id;
     store.setDraft('main','A newer unsent draft');
     socket.receive({type:'error',id,code:'queue_full',message:'The queue is full.'});
@@ -54,11 +54,11 @@ describe('history recovery and unsent text', () => {
     const store = new Store(); await store.start();
     store.setDraft('main','Keep this message');
     expect(store.send('Keep this message','main')).toBeNull();
-    expect(store.queue('Keep this message')).toBe(false);
+    expect(store.queue('Keep this message')).toBeNull();
     expect(store.get().drafts.main).toBe('Keep this message');
     expect(store.get().model.conversations.main).toEqual([]);
     Socket.all[0]!.open();
-    expect(store.queue('Keep this message')).toBe(true);
+    expect(store.queue('Keep this message')).toEqual(expect.any(String));
   });
 
   it('pauses delivery during reset, reconnects from the snapshot and accepts the current draft once', async () => {
@@ -126,7 +126,7 @@ describe('attached images', () => {
     store.send('Plain', 'main');
     expect(socket.sent.at(-1)).not.toHaveProperty('attachments');
 
-    expect(store.queue('Later, with the label', [image])).toBe(true);
+    expect(store.queue('Later, with the label', [image])).toEqual(expect.any(String));
     const id = socket.sent.at(-1)!.id;
     socket.receive({ type: 'error', id, code: 'queue_full', message: 'The queue is full.' });
     expect(store.get().images.main!.map((i) => [i.status, i.attachment?.id])).toEqual([['ready', image.id]]);

@@ -53,9 +53,9 @@ export function Flow({ app, mode, dock, onMode, onSettings }: { app: AppState; m
   const list = app.model.conversations[conversation] ?? [];
   const pendingLane = following ? app.model.pending.find((e) => e.sendId === following) ?? null : null;
   const exchange = viewedExchange(list, selected, pendingLane);
-  // Approvals belong to the work happening now: the newest question of this conversation.
+  // An approval belongs to the question whose turn asked (a standard-mode chat's is not this canvas's); one without a turn, to the newest question here.
   const latest = exchange !== null && (exchange === list.at(-1) || exchange === pendingLane);
-  const approvals = latest ? (app.model.live?.approvals ?? []).filter((a) => a.conversation === conversation) : [];
+  const approvals = exchange ? (app.model.live?.approvals ?? []).filter((a) => (a.turnId ? exchange.turns.includes(a.turnId) : latest && a.conversation === conversation)) : [];
   const state = orbState(exchange, approvals);
   const docked = orbDocked(state);
 

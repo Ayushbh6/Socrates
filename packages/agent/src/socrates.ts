@@ -117,6 +117,16 @@ export interface HandleOptions {
    * flow turn (it rolls over as usual), and recorded as kept there.
    */
   pinned?: boolean;
+  /**
+   * Standard mode's parallel chats (architecture/web.md, "Standard mode"):
+   * with `target`, the message runs beside the main conversation and the
+   * other chats, as its own lane would, without waiting for or holding the
+   * main conversation. Its task still runs one message at a time, and at most
+   * MAX_RUNNING_CHATS such messages run at once.
+   */
+  alongside?: boolean;
+  /** Receives each part's turn and task once it is bound, before it runs. */
+  onBound?: (turnId: string, taskId: string) => void;
 }
 
 export interface PartResult {
@@ -167,10 +177,12 @@ export function interruptUnfinishedTurns(store: LedgerStore): Turn[] {
 
 /** At most this many lanes run at once (agent-harness.md, "Lanes"). */
 export const MAX_RUNNING_LANES = 4;
+/** At most this many standard-mode chats run at once, beside the main conversation and the lanes. */
+export const MAX_RUNNING_CHATS = 4;
 
-/** Work Socrates cannot take now: the main conversation is busy, too many lanes run, the lane is closed, or a running lane cannot be closed. */
+/** Work Socrates cannot take now: the main conversation is busy, too many lanes or chats run, the lane is closed, or a running lane cannot be closed. */
 export class SocratesBusyError extends Error {
-  constructor(readonly reason: "main_busy" | "lane_limit" | "lane_closed" | "lane_running", message: string) {
+  constructor(readonly reason: "main_busy" | "lane_limit" | "chat_limit" | "lane_closed" | "lane_running", message: string) {
     super(message);
     this.name = "SocratesBusyError";
   }
@@ -207,6 +219,8 @@ export class Socrates {
   private readonly limits: AgentLimits;
   private readonly budgets: ContextBudgets;
   private mainBusy = false;
+  /** Standard-mode chats running beside the main conversation (`alongside`). */
+  private chatRuns = 0;
   private closed = false;
   private readonly lifetime = new AbortController();
   private readonly inflight = new Set<Promise<unknown>>();
@@ -260,6 +274,11 @@ export class Socrates {
     return this.mainBusy;
   }
 
+  /** How many standard-mode chats are running beside the main conversation. */
+  get runningChats(): number {
+    return this.chatRuns;
+  }
+
   /** Open lanes, oldest first, and whether each is running. */
   lanes(): LaneState[] {
     return this.store.listLanes().map((lane) => ({ ...lane, running: this.laneRuns.has(lane.id), waitingForApproval: this.waitingForApproval(lane.id) }));
@@ -296,8 +315,9 @@ export class Socrates {
     if (this.closed) return Promise.reject(new Error("Socrates is closed."));
     if (options.signal?.aborted) return Promise.reject(options.signal.reason);
     let laneId: string | null;
+    const alongside = options.alongside === true && !!options.target && !options.lane;
     try {
-      laneId = this.claim(options.lane);
+      laneId = alongside ? this.claimChat() : this.claim(options.lane);
     } catch (error) {
       return Promise.reject(error);
     }
@@ -307,12 +327,13 @@ export class Socrates {
       if (laneId || options.attachments?.length) userEventId = this.store.recordUserMessage(message, laneId, options.attachments ?? []).id;
     } catch (error) {
       if (laneId) this.leaveLane(laneId);
+      else if (alongside) this.chatRuns--;
       return Promise.reject(error);
     }
     const signal = AbortSignal.any([this.lifetime.signal, ...(options.signal ? [options.signal] : [])]);
     const work = () => {
       if (laneId && options.lane === "new") options.onLane?.(laneId);
-      return this.handleIn(laneId, message, options, userEventId);
+      return this.handleIn(laneId, message, { ...options, alongside }, userEventId);
     };
     const run = laneId
       ? this.enqueueLane(laneId, work, signal).finally(() => this.leaveLane(laneId))
@@ -330,6 +351,13 @@ export class Socrates {
     await this.runner.close();
     await this.runner.capabilities.catalog.close?.();
     await this.options.semantic?.close();
+  }
+
+  /** Reserve a place for a standard-mode chat beside the main conversation. */
+  private claimChat(): null {
+    if (this.chatRuns >= MAX_RUNNING_CHATS) throw new SocratesBusyError("chat_limit", `${MAX_RUNNING_CHATS} chats are already working; wait for one to finish or stop one.`);
+    this.chatRuns++;
+    return null;
   }
 
   /** Reserve the message's conversation: the main one, or a lane (opening it when new). */
@@ -381,7 +409,9 @@ export class Socrates {
   }
 
   private async handleIn(laneId: string | null, message: string, options: HandleOptions, userEventId?: string): Promise<HandleResult> {
-    let holdsMain = laneId === null;
+    // A chat running alongside holds its own place, not the main conversation's.
+    let holdsMain = laneId === null && !options.alongside;
+    let holdsChat = laneId === null && options.alongside === true;
     const releaseMain = () => {
       if (!holdsMain) return;
       holdsMain = false;
@@ -411,6 +441,9 @@ export class Socrates {
         try { if (acknowledgment) options.onAcknowledgment?.(acknowledgment); }
         catch (error) { setupError = { error }; }
       }
+
+      try { for (const part of parts) options.onBound?.(part.turn.id, part.task.id); }
+      catch (error) { setupError ??= { error }; }
 
       const results: PartResult[] = [];
       const runOptions: RunOptions = { ...options, accessGrants: [] };
@@ -445,6 +478,10 @@ export class Socrates {
       return { kind: "answered", text, acknowledgment, parts: results, laneId, notice: notices.length ? notices.join("\n") : null, notices };
     } finally {
       releaseMain();
+      if (holdsChat) {
+        holdsChat = false;
+        this.chatRuns--;
+      }
       // Index what this message added, in the background; replies never wait for it.
       this.options.semantic?.scheduleSync();
     }

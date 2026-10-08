@@ -13,7 +13,10 @@ import { QuestionCard } from "./QuestionCard";
 export function Thread({ app, conversation, shown, before, extra = [], compact = false, empty }: { app: AppState; conversation: string; shown?: Exchange[]; before?: ReactNode; extra?: Exchange[]; compact?: boolean; empty: string }) {
   const list = [...(shown ?? app.model.conversations[conversation] ?? []), ...extra];
   const latest = list.at(-1) ?? null;
-  const approvals = (app.model.live?.approvals ?? []).filter((a) => a.conversation === conversation);
+  // An approval is shown with the question whose turn asked; one without a turn, with the newest question of its conversation.
+  const pending = app.model.live?.approvals ?? [];
+  const approvalsFor = (e: Exchange) => pending.filter((a) => (a.turnId ? e.turns.includes(a.turnId) : e === latest && a.conversation === conversation));
+  const approvals = latest ? approvalsFor(latest) : [];
   const line = workLine(orbState(latest, approvals), latest);
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
@@ -44,7 +47,7 @@ export function Thread({ app, conversation, shown, before, extra = [], compact =
           <article key={e.key} className="thread-item">
             <QuestionCard text={e.message} attachments={e.attachments} note={e.state === "working" || e.state === "sending" ? e.note : null} />
             <div className="thread-answer">
-              <AnswerView exchange={e} approvals={e === latest ? approvals : []} />
+              <AnswerView exchange={e} approvals={approvalsFor(e)} />
             </div>
           </article>
         ))}

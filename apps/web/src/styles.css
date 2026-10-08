@@ -447,8 +447,6 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 
 .standard { position: fixed; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr); background: var(--bg); }
 .standard[data-sidebar="true"] { grid-template-columns: 17.5rem minmax(0, 1fr); }
-.standard[data-lanes="true"] { grid-template-columns: minmax(0, 1fr) minmax(20rem, 26rem); }
-.standard[data-lanes="true"][data-sidebar="true"] { grid-template-columns: 17.5rem minmax(0, 1fr) minmax(20rem, 26rem); }
 .brand { font-family: var(--serif); font-size: 1.35rem; color: var(--accent-strong); }
 .chat-sidebar { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; padding: 0.8rem 0.6rem; background: rgba(17, 40, 32, 0.03); scrollbar-width: thin; }
 .chat-sidebar-head { display: flex; align-items: center; justify-content: space-between; padding: 0 0.35rem 0.7rem 0.5rem; }
@@ -502,12 +500,6 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .chat-composer { width: min(48rem, 100%); margin: 0 auto; padding: 0 1.25rem 1rem; }
 .chat-composer .composer-dock[data-variant="panel"] { margin: 0; }
 .panel { display: flex; flex-direction: column; min-height: 0; border-radius: 1.1rem; background: rgba(255, 255, 255, 0.78); box-shadow: var(--shadow-soft); }
-.panel-head { display: flex; align-items: center; gap: 0.55rem; min-height: 3rem; padding: 0.6rem 0.8rem 0.4rem 1.1rem; }
-.panel-head strong { font-size: 0.92rem; font-weight: 600; }
-.panel-head small { min-width: 0; overflow: hidden; color: var(--faint); font-size: 0.76rem; text-overflow: ellipsis; white-space: nowrap; }
-.panel-head .quiet-button svg { width: 0.75rem; height: 0.75rem; fill: currentColor; }
-.lanes-column { display: flex; flex-direction: column; gap: 0.75rem; min-height: 0; padding: 0.75rem 0.75rem 0.75rem 0; }
-.lane-panel { flex: 1 1 0; min-height: 12rem; }
 .composer-dock[data-variant="panel"] { position: static; width: auto; margin: 0 0.75rem 0.75rem; transform: none; }
 .composer-dock[data-variant="panel"] .composer { box-shadow: 0 1px 2px rgba(45, 55, 72, 0.05), 0 8px 24px rgba(45, 55, 72, 0.08); }
 .composer-dock[data-compact="true"] .composer { padding: 0.55rem 0.6rem 0.45rem 0.9rem; border-radius: 1.1rem; }
@@ -531,12 +523,10 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 
 /* Narrower screens: the sidebar slides over the chat, and the lanes stack under it. */
 @media (max-width: 1099px) {
-  .standard, .standard[data-lanes="true"], .standard[data-sidebar="true"], .standard[data-lanes="true"][data-sidebar="true"] { grid-template-columns: minmax(0, 1fr); grid-auto-rows: auto; align-content: start; overflow-y: auto; }
+  .standard, .standard[data-sidebar="true"] { grid-template-columns: minmax(0, 1fr); grid-auto-rows: auto; align-content: start; overflow-y: auto; }
   .chat-main { height: 100dvh; }
   .chat-sidebar { position: fixed; inset: 0 auto 0 0; z-index: 20; width: min(19rem, 86vw); background: #f3f2ed; box-shadow: var(--shadow-float); }
   .sidebar-scrim-button { position: fixed; inset: 0; z-index: 19; display: block; border: 0; background: rgba(45, 55, 72, 0.18); }
-  .lanes-column { min-height: auto; }
-  .lane-panel { flex: none; height: 60vh; }
 }
 
 /* Tool output viewer */

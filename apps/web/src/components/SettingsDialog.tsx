@@ -27,6 +27,7 @@ export function SettingsDialog({ app, onClose }: { app: AppState; onClose: () =>
           <button type="button" className="icon-button" onClick={onClose} aria-label="Close"><X aria-hidden /></button>
         </div>
         <Models app={app} providers={providers} />
+        <ChatNames app={app} providers={providers} />
         <Keys providers={providers} />
         <Memory app={app} />
         <TimeZone app={app} />
@@ -118,6 +119,42 @@ function Models({ app, providers }: { app: AppState; providers: Provider[] }) {
       <div className="settings-actions">
         {feedback}
         <button type="button" className="solid-button" disabled={busy || !!(chat && !chat.model.trim()) || !!(router && !router.model.trim()) || !!(compactor && !compactor.model.trim())} onClick={() => save(() => store.saveSettings({ chat, router, compactor }))}>Save models</button>
+      </div>
+    </Section>
+  );
+}
+
+/** OpenRouter's default namer: an instruct model with no thinking mode (apps/server/src/titles.ts, DEFAULT_TITLER). */
+const QWEN_NAMER = "qwen/qwen3-30b-a3b-instruct-2507";
+
+/**
+ * The model that names standard-mode chats after their first answer. It is
+ * used outside the work itself, so a change applies at once, even while
+ * Socrates works.
+ */
+function ChatNames({ app, providers }: { app: AppState; providers: Provider[] }) {
+  const [titler, setTitler] = useState<ModelChoice | null>(app.settings!.titler ?? null);
+  const { busy, save, feedback } = useSave();
+  const listed = useModelList(titler?.provider);
+  const inUse = app.status!.models.titler;
+  return (
+    <Section title="Chat names">
+      <p className="settings-hint">
+        After a new chat's first answer, this model gives it a short name. A small, fast model that doesn't think suits it best; automatic is Qwen3 30B Instruct on OpenRouter, or the routing model without an OpenRouter key.
+        {inUse ? ` In use: ${inUse.provider} · ${inUse.model}.` : ""}
+      </p>
+      <div className="field-row">
+        <span className="field-label">Names</span>
+        <select value={titler?.provider ?? ""} onChange={(e) => { const p = providers.find((x) => x.name === e.target.value); setTitler(p ? { provider: p.name, model: p.name === "openrouter" ? QWEN_NAMER : p.router } : null); }} aria-label="Chat names provider">
+          <option value="">Automatic</option>
+          {providers.map((p) => <option key={p.name} value={p.name}>{PROVIDER_LABELS[p.name] ?? p.name}</option>)}
+        </select>
+        <input value={titler?.model ?? ""} disabled={!titler} placeholder="the provider's default" onChange={(e) => titler && setTitler({ ...titler, model: e.target.value })} aria-label="Chat names model" spellCheck={false} list="models-chat-names" />
+        <datalist id="models-chat-names">{listed.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</datalist>
+      </div>
+      <div className="settings-actions">
+        {feedback}
+        <button type="button" className="solid-button" disabled={busy || !!(titler && !titler.model.trim())} onClick={() => save(() => store.saveSettings({ titler }))}>Save</button>
       </div>
     </Section>
   );

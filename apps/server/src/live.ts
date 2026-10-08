@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { type AnchorDecision, type Draft, type HandleResult, MAX_RUNNING_LANES, SocratesBusyError } from "@socrates/agent";
+import { type AnchorDecision, type Draft, type HandleResult, MAX_RUNNING_CHATS, MAX_RUNNING_LANES, SocratesBusyError } from "@socrates/agent";
 import type { Attachment } from "@socrates/contracts";
 import type { ApprovalOrigin, ApprovalRequest } from "@socrates/tools";
 import type { WebSocket } from "ws";
@@ -53,7 +53,8 @@ const Command = z.discriminatedUnion("type", [
   z.object({ type: z.literal("queue_edit"), id: Id, text: Text }).strict(),
   z.object({ type: z.literal("queue_remove"), id: Id }).strict(),
   z.object({ type: z.literal("queue_to_lane"), id: Id }).strict(),
-  z.object({ type: z.literal("cancel"), conversation: z.union([z.literal("main"), Id]) }).strict(),
+  // With `chat`, only the message working in that standard-mode chat stops.
+  z.object({ type: z.literal("cancel"), conversation: z.union([z.literal("main"), Id]), chat: Chat.optional() }).strict(),
   z.object({ type: z.literal("approve"), approval: Id, granted: z.boolean() }).strict(),
   z.object({ type: z.literal("close_lane"), lane: Id }).strict(),
   // The terminal panel (architecture/server.md, "Terminal panel").
@@ -98,11 +99,26 @@ interface Run {
   id: string;
   /** The message's panel; compound main messages retain main until all parts finish. */
   conversation: string;
+  /** A standard-mode chat message, which runs beside the main conversation rather than in it. */
+  chat: boolean;
+  /** The tasks its parts were bound to, once they are. */
+  tasks: Set<string>;
+  /** The saved message's sequence number, once it is bound without routing, so the page that sent it knows it. */
+  seq?: number;
   /** The current handed-off part; compound messages retain their main reservation. */
   handedTurnId?: string;
   controller: AbortController;
   /** Settles once the message's work is recorded, however it ended. */
   settled?: Promise<unknown>;
+}
+
+/** A message waiting to start: for the main conversation, or for its standard-mode chat. */
+interface Queued {
+  id: string;
+  text: string;
+  attachments: Attachment[];
+  chat?: ChatChoice;
+  keep?: KeepChoice;
 }
 
 /**
@@ -117,7 +133,7 @@ export class LiveHub {
   private readonly clients = new Set<WebSocket>();
   /** Subscribe at hello, so events saved between upgrade and replay arrive once. */
   private readonly subscribed = new Set<WebSocket>();
-  private readonly queue: { id: string; text: string; attachments: Attachment[]; chat?: ChatChoice; keep?: KeepChoice }[] = [];
+  private readonly queue: Queued[] = [];
   private readonly approvals = new Map<string, { view: PendingApproval; runId: string; resolve: (granted: boolean) => void }>();
   private readonly runs = new Map<string, Run>();
   /** Accepted IDs remain reserved across reconnects for this server launch. */
@@ -200,7 +216,8 @@ export class LiveHub {
       settings: this.runtime.settings,
       busy: socrates?.busy ?? false,
       lanes: this.runtime.lanes(),
-      queue: this.queue.map((q) => ({ id: q.id, text: q.text, ...(q.attachments.length ? { attachments: q.attachments.map(viewOf) } : {}) })),
+      working: this.working(),
+      queue: this.queue.map((q) => ({ id: q.id, text: q.text, ...(q.attachments.length ? { attachments: q.attachments.map(viewOf) } : {}), ...(q.chat ? { chat: q.chat } : {}) })),
       approvals: [...this.approvals.values()].map((a) => a.view),
     };
   }
@@ -258,8 +275,11 @@ export class LiveHub {
         return this.publishState();
       }
       case "cancel": {
+        const task = command.chat ? this.chatTask(command.chat) : null;
         const runs = [...this.runs.values()].filter((r) => {
-          if (r.conversation === command.conversation) return true;
+          if (command.chat) return !!task && r.tasks.has(task.id);
+          // Stopping the main conversation leaves the standard-mode chats running beside it.
+          if (r.conversation === command.conversation) return !(r.chat && command.conversation === "main");
           const handed = r.handedTurnId ? this.runtime.store.getTurn(r.handedTurnId) : null;
           return handed?.status === "in_progress" && handed.laneId === command.conversation;
         });
@@ -366,16 +386,19 @@ export class LiveHub {
     if ((chat || keep) && to !== "main") throw new LiveError("bad_request", "A message for a chosen chat or task is sent in the main conversation.");
     if (chat && keep) throw new LiveError("bad_request", "A message goes to a chosen chat or is kept in a task, not both.");
     const target = chat ? this.chatTarget(chat, text, attachments.length) : keep ? this.keptTask(keep) : undefined;
+    // A chat runs beside the main conversation, one message at a time: while it works, or another chat message waits for it, this one waits in the queue.
+    if (chat && (this.chatWorking(chat) || (!fromQueue && chat.task !== null && this.queue.some((q) => q.chat && sameChat(q.chat, chat))))) throw new LiveError("chat_busy", "Socrates is working in this chat; queue this message.");
+    if (chat && socrates.runningChats >= MAX_RUNNING_CHATS) throw new LiveError("chat_busy", `${MAX_RUNNING_CHATS} chats are already working; queue this message.`);
     if (to !== "main" && to !== "new_lane") {
       const lane = this.runtime.store.getLane(to);
       if (!lane || lane.closedAt) throw new LiveError("lane_closed", "That lane is closed.");
     }
-    if (to === "main" && socrates.busy) throw new LiveError("main_busy", "Socrates is working in the main conversation; queue this message or send it in a lane.");
+    if (to === "main" && !chat && socrates.busy) throw new LiveError("main_busy", "Socrates is working in the main conversation; queue this message or send it in a lane.");
     const running = socrates.lanes().filter((l) => l.running);
     if (to !== "main" && !running.some((l) => l.id === to) && running.length >= MAX_RUNNING_LANES) {
       throw new LiveError("lane_limit", `${MAX_RUNNING_LANES} lanes are already working; wait for one to finish or stop one.`);
     }
-    const run: Run = { id, conversation: to === "new_lane" ? "starting" : to, controller: new AbortController() };
+    const run: Run = { id, conversation: to === "new_lane" ? "starting" : to, chat: !!chat, tasks: new Set(target && "taskId" in target ? [target.taskId] : []), controller: new AbortController() };
     this.acceptedIds.add(id);
     this.runs.set(id, run);
     const work = socrates.handle(text, {
@@ -384,16 +407,21 @@ export class LiveHub {
       approve: (request, origin) => this.ask(run, request, origin),
       ...(to === "main" ? {} : { lane: to === "new_lane" ? "new" : to }),
       ...(anchorDecisions?.length ? { anchorDecisions } : {}),
-      // Standard mode: no routing, and a chat that never rolls over. A message kept in its task is not routed, and rolls over as usual.
-      ...(target ? (keep ? { target, pinned: true } : { target, rollover: false }) : {}),
+      // Standard mode: no routing, a chat that never rolls over, and one that runs beside the others. A message kept in its task is not routed, and rolls over as usual.
+      ...(target ? (keep ? { target, pinned: true } : { target, rollover: false, alongside: true }) : {}),
+      onBound: (turnId, taskId) => {
+        run.tasks.add(taskId);
+        run.seq ??= this.runtime.store.getEvent(this.runtime.store.requireTurn(turnId).userEventId)?.seq;
+        this.scheduleState();
+      },
       onLane: (laneId) => {
         run.conversation = laneId;
         this.broadcast({ type: "accepted", id, conversation: laneId });
       },
       onHandoff: (laneId, turnId) => {
         run.handedTurnId = turnId;
-        // Single-part handoffs free main. A compound message still owns it.
-        if (!socrates.busy) run.conversation = laneId;
+        // Single-part handoffs free main. A compound message still owns it. A chat never held it.
+        if (run.chat || !socrates.busy) run.conversation = laneId;
         this.broadcast({ type: "handed_off", id, conversation: laneId, lane: this.runtime.store.requireLane(laneId).number, mainReleased: !socrates.busy });
         this.publishState();
         this.drain();
@@ -406,7 +434,7 @@ export class LiveHub {
         this.broadcast({ type: "status", id, conversation, text: line });
       },
     });
-    if (to !== "new_lane") this.broadcast({ type: "accepted", id, conversation: to });
+    if (to !== "new_lane") this.broadcast({ type: "accepted", id, conversation: to, ...(run.seq ? { seq: run.seq } : {}) });
     this.publishState();
     run.settled = work
       .then((result) => {
@@ -442,6 +470,31 @@ export class LiveHub {
     return { taskId: task.id };
   }
 
+  /** A standard-mode chat's task, without making the Chats goal; null for a new chat or one that is gone. */
+  private chatTask(chat: ChatChoice) {
+    const store = this.runtime.store;
+    const number = chat.goal ?? this.runtime.chatsGoalNumber();
+    const goal = number === null || chat.task === null ? null : store.getGoalByNumber(number);
+    return goal && !goal.general ? store.getTaskByNumber(goal.id, chat.task!) : null;
+  }
+
+  /** Whether a message is working (or waiting) in this chat's task now, in any conversation. */
+  private chatWorking(chat: ChatChoice): boolean {
+    const task = this.chatTask(chat);
+    return !!task && !!this.runtime.socrates?.taskBusy(task.id);
+  }
+
+  /** The tasks with a message working in them now, as goal and task numbers, so a page knows which chats are busy. */
+  private working(): { goal: number; task: number }[] {
+    const store = this.runtime.store;
+    const tasks = new Set([...this.runs.values()].flatMap((r) => [...r.tasks]));
+    return [...tasks].flatMap((id) => {
+      const task = store.getTask(id);
+      const goal = task ? store.getGoal(task.goalId) : null;
+      return task && goal ? [{ goal: goal.number, task: task.number }] : [];
+    });
+  }
+
   /** The task a message is kept in: one of a goal that is still there, and never the general conversation. */
   private keptTask(keep: KeepChoice): { taskId: string } {
     const store = this.runtime.store;
@@ -451,17 +504,32 @@ export class LiveHub {
     return { taskId: task.id };
   }
 
-  /** The next queued message, as soon as the main conversation is free. */
+  /**
+   * Start what can start, in order: the main conversation's next message once
+   * it is free, and each chat's next message once that chat is free (and
+   * fewer than MAX_RUNNING_CHATS chats work). A message waits behind earlier
+   * ones for the same place; a new chat has a place of its own.
+   */
   private drain(): void {
     const socrates = this.runtime.socrates;
-    if (this.closed || !this.runtime.acceptingMessages || !socrates || socrates.busy || !this.queue.length) return;
-    const next = this.queue.shift()!;
-    try {
-      this.start(next.id, next.text, "main", undefined, true, next.attachments, next.chat, next.keep);
-    } catch (error) {
-      this.broadcast({ type: "error", id: next.id, conversation: "main", ...problemOf(error) });
+    if (this.closed || !this.runtime.acceptingMessages || !socrates || !this.queue.length) return;
+    const seen = new Set<string>();
+    let started = false;
+    for (const next of [...this.queue]) {
+      const place = next.chat ? (next.chat.task === null ? next.id : `${next.chat.goal ?? "chats"}/${next.chat.task}`) : "main";
+      if (seen.has(place)) continue;
+      seen.add(place);
+      const free = next.chat ? socrates.runningChats < MAX_RUNNING_CHATS && !this.chatWorking(next.chat) : !socrates.busy;
+      if (!free) continue;
+      this.queue.splice(this.queue.indexOf(next), 1);
+      started = true;
+      try {
+        this.start(next.id, next.text, "main", undefined, true, next.attachments, next.chat, next.keep);
+      } catch (error) {
+        this.broadcast({ type: "error", id: next.id, conversation: "main", ...problemOf(error) });
+      }
     }
-    this.publishState();
+    if (started) this.publishState();
   }
 
   private ask(run: Run, request: ApprovalRequest, origin: ApprovalOrigin | undefined): Promise<boolean> {
@@ -498,7 +566,7 @@ export class LiveHub {
     });
   }
 
-  private queued(id: string): { id: string; text: string; attachments: Attachment[]; chat?: ChatChoice } {
+  private queued(id: string): Queued {
     const item = this.queue.find((q) => q.id === id);
     if (!item) throw new LiveError("not_found", "That message is no longer queued.");
     return item;
@@ -553,6 +621,8 @@ export class LiveError extends Error {
     this.name = "LiveError";
   }
 }
+
+const sameChat = (a: ChatChoice, b: ChatChoice) => a.goal === b.goal && a.task === b.task;
 
 /** A message must say something or carry an image; its text is kept exactly as sent. */
 function hasWords(text: string, attachments: readonly unknown[] | undefined): void {

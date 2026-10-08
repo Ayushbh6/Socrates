@@ -119,12 +119,12 @@ export class Store {
     return this.send(text, "new_lane", attachments);
   }
 
-  queue(text: string, attachments: AttachmentView[] = [], chat?: ChatChoice, keep?: KeepChoice): boolean {
-    const id = newId();
+  /** Queue a message; returns its id (kept when a sent message is queued instead), or null when the connection is down. */
+  queue(text: string, attachments: AttachmentView[] = [], chat?: ChatChoice, keep?: KeepChoice, id = newId()): string | null {
     this.pendingQueue.set(id, { text, attachments });
-    if (this.command({ type: "queue", id, text, ...named(attachments), ...(chat ? { chat } : {}), ...(keep ? { keep } : {}) })) return true;
+    if (this.command({ type: "queue", id, text, ...named(attachments), ...(chat ? { chat } : {}), ...(keep ? { keep } : {}) })) return id;
     this.pendingQueue.delete(id);
-    return false;
+    return null;
   }
 
   /**
@@ -189,8 +189,9 @@ export class Store {
     return () => this.restartListeners.delete(listener);
   }
 
-  cancel(conversation: string): void {
-    this.command({ type: "cancel", conversation });
+  /** Stop what works in a conversation; with `chat`, only the message working in that standard-mode chat. */
+  cancel(conversation: string, chat?: ChatChoice): void {
+    this.command({ type: "cancel", conversation, ...(chat ? { chat } : {}) });
   }
 
   approve(approval: string, granted: boolean): void {
@@ -317,20 +318,20 @@ export class Store {
       }
       return;
     }
-    if (message.type === "error" && message.id && message.code === "main_busy") {
-      // Main became busy as this was sent: it waits in the queue instead.
+    if (message.type === "error" && message.id && (message.code === "main_busy" || message.code === "chat_busy")) {
+      // Main (or the chat) became busy as this was sent: it waits in the queue instead.
       const sent = Object.values(this.state.model.conversations).flat().find((e) => e.sendId === message.id);
       this.dispatch({ type: "unsent", id: message.id });
       const chat = this.sentChats.get(message.id);
       this.sentChats.delete(message.id);
-      if (sent && !this.queue(sent.message, sent.attachments, chat)) this.rejectedQueue(message.id, sent.message, "Socrates is reconnecting. Try again in a moment.", sent.attachments);
+      if (sent && !this.queue(sent.message, sent.attachments, chat, undefined, message.id)) this.rejectedQueue(message.id, sent.message, "Socrates is reconnecting. Try again in a moment.", sent.attachments);
       return;
     }
     if (message.type === "state") {
       for (const queued of message.queue) this.pendingQueue.delete(queued.id);
     }
     if (message.type === "accepted" || message.type === "result") this.pendingQueue.delete(message.id);
-    if ((message.type === "accepted" || message.type === "result" || message.type === "error") && message.id && !(message.type === "error" && message.code === "main_busy")) this.sentChats.delete(message.id);
+    if ((message.type === "accepted" || message.type === "result" || message.type === "error") && message.id) this.sentChats.delete(message.id);
     if (message.type === "error") {
       const queued = message.id ? this.pendingQueue.get(message.id) : undefined;
       if (queued !== undefined && message.id) {
