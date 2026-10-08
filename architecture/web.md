@@ -1,6 +1,6 @@
 # Socrates web app
 
-The web app is Socrates' face: a page served by the local server (`server.md`) and driven through its HTTP API and live connection. Conversation records come from the ledger. The page also holds temporary streamed drafts and unsent text; layout choice and note positions are remembered in this browser.
+The web app is Socrates' face: a page served by the local server (`server.md`) and driven through its HTTP API and live connection. Conversation records come from the ledger. The page also holds temporary streamed drafts and unsent text; note positions are remembered in this browser. Every fresh opening or reload starts in Flow; layout switches apply only to the current page session.
 
 It is built in two changes:
 
@@ -62,7 +62,7 @@ Text appears while the model writes it. The server sends the readable part of th
 
 ## Standard mode
 
-The familiar harness layout, for following everything at once. The switch in either header changes mode; the choice is remembered in this browser, and both modes show the same live conversations.
+The familiar harness layout, for following everything at once. The switch in either header changes mode; the choice lasts until the page is reloaded or opened again, when it starts in Flow. Both modes show the same live conversations.
 
 - **Goals and chats** on the left, as in any chat app with projects. **New chat** at the top starts a plain chat; the folder button beside **Goals** names a new goal (it opens a new chat in it). Each goal is a folder, and its chats are its tasks, the one worked on last first (six shown, then **Show more**); a goal's **⋯** menu has **New chat** for a new chat in it. Plain chats, outside any goal, are listed under **Chats**; they are the tasks of an ordinary goal named "Chats" (`server.md`, "Data folder"), so flow mode continues them like any other. A spinner marks a goal or chat that is working. The general conversation of flow mode is not listed. The sidebar hides from the shared header toggle; on narrow screens it slides over the chat. Goal and task numbers (g1, t1) are internal and never shown.
 - **Rename and archive.** Hovering a goal or chat shows one **⋯** button at the end of its row (the name stops short of it), as in other chat apps; it opens a menu: **New chat** (a goal only), **Rename**, **Status** (a goal only: it opens to Open, Completed and Superseded, the current one checked), and **Archive**. Rename edits the name in place (Enter saves, Escape cancels). Archive hides it at once, says so for a few seconds with **Undo**, and moves the view to the newest remaining chat. **Archived** at the bottom opens a list of what is archived, upward, with a **Restore** button on each. There is no delete: archived chats stay in Socrates' history, but the router and search no longer see them. In flow mode the expanded task and goal notes have a pencil beside the title for the same rename. Renaming a chat marks its name as yours; the namer never touches it.

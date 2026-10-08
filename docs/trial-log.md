@@ -88,6 +88,8 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 
 29. **One header in both modes** (2026-10-08). Asked: standardize Flow and Standard, especially the left sidebar button and the work-folder position. Both now use `AppHeader`: the same sidebar icon and toggle at the far left, folders beside it, and common controls on the right. The header spans the page and stays in place when a sidebar opens; separate sidebar close buttons are removed. Standard keeps its chat title and goal, Flow its lane indicator. Both share the phone layout, and the folder menu is bounded to the available screen width. Standard's overlay breakpoint and initial sidebar state now agree. Verified in Chrome at desktop, tablet and phone widths, with sidebars open/closed and the folder menu; typecheck, web build and all 838 tests passed (one live test skipped). No conversation data changed.
 
+30. **Always open in Flow** (2026-10-09). Asked: Socrates should always open in Flow, rather than restoring Standard. The page now initializes its mode to Flow and no longer reads or writes the saved layout preference. Switching modes still works for the current page session; a reload or fresh opening returns to Flow. Verified in Chrome: Flow on load, Standard when selected, Flow again after reload. Typecheck, web build and all 838 tests passed (one live test skipped).
+
 ## Suggested
 
 From the observability phase:

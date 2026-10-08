@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Flow } from "./components/Flow";
 import { Inspect } from "./components/Inspect";
-import { type Mode, saveMode, storedMode } from "./components/ModeSwitch";
+import { type Mode } from "./components/ModeSwitch";
 import { Onboarding } from "./components/Onboarding";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { Standard } from "./components/Standard";
@@ -29,7 +29,7 @@ export function App() {
   const app = useApp();
   const [route, setRoute] = useState(() => routeOf(location.hash));
   const [hash, setHash] = useState(() => location.hash);
-  const [mode, setMode] = useState<Mode>(storedMode);
+  const [mode, setMode] = useState<Mode>("flow");
   const [settings, setSettings] = useState(false);
   // The terminal panel stays as it is across a switch between flow and standard.
   const dock = useDock(app.terminals);
@@ -44,15 +44,11 @@ export function App() {
   useEffect(() => {
     if (blocked) location.replace("#/onboarding");
   }, [blocked]);
-  const changeMode = (next: Mode) => {
-    saveMode(next);
-    setMode(next);
-  };
   // The inspect page needs no onboarding: it only reads what Socrates has recorded.
   const inspecting = inspectTarget(hash);
   if (inspecting && app.status) return <Inspect app={app} target={inspecting} />;
   if (route === "chat" && app.status && !blocked) {
-    const props = { app, mode, dock, onMode: changeMode, onSettings: () => setSettings(true) };
+    const props = { app, mode, dock, onMode: setMode, onSettings: () => setSettings(true) };
     return (
       <>
         {mode === "standard" ? <Standard {...props} /> : <Flow {...props} />}
