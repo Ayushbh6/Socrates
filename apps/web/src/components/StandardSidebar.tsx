@@ -1,4 +1,4 @@
-import { Archive, ArchiveRestore, Check, ChevronRight, CircleCheck, Ellipsis, Folder, FolderOpen, FolderPlus, LoaderCircle, PanelLeftClose, Pencil, Plus, SquarePen } from "lucide-react";
+import { Archive, ArchiveRestore, Check, ChevronRight, CircleCheck, Ellipsis, Folder, FolderOpen, FolderPlus, LoaderCircle, Pencil, Plus, SquarePen } from "lucide-react";
 import { type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent, useState } from "react";
 import { type Chat, type GoalChats, chatKey } from "../lib/chats";
 import type { ArchivedView, LedgerStatus } from "../lib/types";
@@ -19,7 +19,7 @@ const sameTarget = (a: Target | null, b: Target) => !!a && a.goal === b.goal && 
  * be renamed in place or archived; archived ones are listed at the bottom and
  * restored from there.
  */
-export function StandardSidebar({ goals, current, archived, onChat, onNew, onNewGoal, onRename, onArchive, onRestore, onStatus, onOpenArchive, onClose }: {
+export function StandardSidebar({ goals, current, archived, onChat, onNew, onNewGoal, onRename, onArchive, onRestore, onStatus, onOpenArchive }: {
   goals: GoalChats[];
   current: Current;
   archived: ArchivedView | null;
@@ -34,7 +34,6 @@ export function StandardSidebar({ goals, current, archived, onChat, onNew, onNew
   /** A goal's status; a chat has none (it is archived instead). */
   onStatus: (goal: number, status: LedgerStatus) => void;
   onOpenArchive: () => void;
-  onClose: () => void;
 }) {
   const [closed, setClosed] = useState<Record<number, boolean>>({});
   const [all, setAll] = useState<Record<number, boolean>>({});
@@ -109,10 +108,9 @@ export function StandardSidebar({ goals, current, archived, onChat, onNew, onNew
   );
 
   return (
-    <nav className="chat-sidebar" aria-label="Goals and chats">
+    <nav id="standard-sidebar" className="chat-sidebar" aria-label="Goals and chats">
       <div className="chat-sidebar-head">
         <span className="brand">Socrates</span>
-        <button type="button" className="icon-button" onClick={onClose} aria-label="Hide the sidebar" title="Hide the sidebar"><PanelLeftClose aria-hidden /></button>
       </div>
       <button type="button" className="new-chat" onClick={() => onNew(null)}><SquarePen aria-hidden /> New chat</button>
 

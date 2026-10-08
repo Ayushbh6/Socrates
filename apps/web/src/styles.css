@@ -99,9 +99,26 @@ svg { width: 1rem; height: 1rem; flex: none; }
 .flow { --mx: 0; --my: 0; position: fixed; inset: 0; overflow: clip; background: radial-gradient(circle at 52% 42%, rgba(91, 174, 164, 0.1), transparent 34rem), linear-gradient(155deg, #fbfaf7 0%, var(--bg) 58%, #f6f5f1 100%); }
 .flow-dots { position: absolute; inset: -3rem; pointer-events: none; opacity: 0.5; background-image: radial-gradient(circle, rgba(45, 55, 72, 0.13) 0.7px, transparent 0.9px); background-size: 28px 28px; mask-image: radial-gradient(circle at center, black, transparent 80%); transform: translate(calc(var(--mx) * -10px), calc(var(--my) * -10px)); transition: transform 900ms cubic-bezier(0.22, 1, 0.36, 1); }
 .planet-layer { position: absolute; inset: 0; z-index: 1; display: grid; place-items: center; padding-bottom: 6vh; pointer-events: none; transform: translate(calc(var(--mx) * 16px), calc(var(--my) * 12px)); transition: transform 1200ms cubic-bezier(0.22, 1, 0.36, 1); }
-.flow-header { position: absolute; top: 0; left: 0; right: 0; z-index: 40; display: flex; align-items: center; gap: 0.6rem; padding: 0.9rem 1rem; pointer-events: none; }
-.flow-header > * { pointer-events: auto; }
-.menu-button { width: 2.4rem; height: 2.4rem; }
+/* Shared header: the same controls and geometry in Flow and Standard. */
+.flow, .standard { --app-header-h: 4.2rem; }
+.app-header { position: relative; z-index: 65; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 1rem; height: var(--app-header-h); min-width: 0; padding: 0.8rem 1rem; background: rgba(249, 248, 244, 0.94); backdrop-filter: blur(12px); }
+.flow .app-header { position: absolute; inset: 0 0 auto; }
+.app-header-left, .app-header-actions { display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
+.app-header-left > .chip-anchor { min-width: 0; max-width: min(25vw, 20rem); }
+.app-header-left .header-chip { max-width: 100%; }
+.app-header .access-menu { width: min(26rem, calc(100vw - 5rem)); min-width: 0; }
+.app-header-context { min-width: 0; }
+.app-header-actions { justify-content: flex-end; }
+.sidebar-toggle { flex: none; width: 2.4rem; height: 2.4rem; }
+@media (max-width: 760px) {
+  .flow, .standard { --app-header-h: 6.6rem; }
+  .app-header { grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: 2.4rem 2.4rem; gap: 0.3rem 0.5rem; padding: 0.6rem 0.75rem; }
+  .app-header-left { grid-column: 1 / -1; }
+  .app-header-left > .chip-anchor { max-width: calc(100% - 3rem); }
+  .app-header-actions { gap: 0.2rem; }
+  .app-header-actions .reconnecting { position: absolute; top: var(--app-header-h); right: 0.75rem; background: var(--bg); }
+  .app-header-context .chat-title small { display: none; }
+}
 .lane-chip { color: var(--accent-strong); }
 .flow-stage { position: absolute; inset: 0; z-index: 10; overflow-y: auto; padding: 5.5rem 1rem 14rem; scroll-behavior: smooth; }
 .flow-column { width: min(46rem, 100%); margin: 0 auto; }
@@ -306,11 +323,6 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
   .note-eyebrow { font-size: 0.58rem; }
   .flow-stage { top: 11rem; padding-top: 1rem; }
   .modal.expanded-note { padding: 1rem 1.15rem; }
-  .flow-header { flex-wrap: wrap; gap: 0.25rem 0.5rem; padding: 0.6rem 0.75rem; }
-  .flow-header > .composer-space { display: none; }
-  .flow-header > .mode-controls { width: 100%; justify-content: flex-end; }
-  .flow-header > .chip-anchor { max-width: calc(100% - 3rem); }
-  .flow-header .chip { max-width: 100%; }
   .flow .prose ul, .flow .prose ol { padding-left: 1.25rem; }
 }
 
@@ -386,8 +398,8 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 
 /* Sidebar */
 
-.sidebar-scrim { position: fixed; inset: 0; z-index: 55; background: rgba(45, 55, 72, 0.06); }
-.sidebar { position: fixed; top: 0.75rem; bottom: 0.75rem; left: 0.75rem; z-index: 60; width: min(19rem, calc(100vw - 1.5rem)); padding: 0.75rem; overflow-y: auto; border-radius: 1.15rem; background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(18px); box-shadow: var(--shadow-float); }
+.sidebar-scrim { position: fixed; inset: var(--app-header-h) 0 0; z-index: 55; background: rgba(45, 55, 72, 0.06); }
+.sidebar { position: fixed; top: calc(var(--app-header-h) + 0.25rem); bottom: 0.75rem; left: 0.75rem; z-index: 60; width: min(19rem, calc(100vw - 1.5rem)); padding: 0.75rem; overflow-y: auto; border-radius: 1.15rem; background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(18px); box-shadow: var(--shadow-float); }
 .sidebar-head { display: flex; align-items: center; justify-content: space-between; padding: 0.2rem 0.2rem 0.6rem 0.6rem; font-family: var(--serif); font-size: 1.15rem; }
 .sidebar-head strong { font-weight: 400; color: var(--accent-strong); }
 .sidebar-section { margin-bottom: 1rem; }
@@ -445,7 +457,10 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 
 /* Standard mode: the layout of any chat app, goals as folders with their chats beneath */
 
-.standard { position: fixed; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr); background: var(--bg); }
+.standard { position: fixed; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: var(--app-header-h) minmax(0, 1fr); background: var(--bg); }
+.standard > .app-header { grid-column: 1 / -1; grid-row: 1; }
+.standard > .chat-main { grid-column: -2 / -1; grid-row: 2; }
+.standard > .chat-sidebar { grid-column: 1; grid-row: 2; }
 .standard[data-sidebar="true"] { grid-template-columns: 17.5rem minmax(0, 1fr); }
 .brand { font-family: var(--serif); font-size: 1.35rem; color: var(--accent-strong); }
 .chat-sidebar { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; padding: 0.8rem 0.6rem; background: rgba(17, 40, 32, 0.03); scrollbar-width: thin; }
@@ -485,7 +500,6 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .chat-more { color: var(--faint); font-size: 0.8rem; }
 .sidebar-scrim-button { display: none; }
 .chat-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.chat-top { display: flex; align-items: center; gap: 0.6rem; min-height: 3.4rem; padding: 0.55rem 1rem; }
 .chat-title { display: flex; align-items: baseline; gap: 0.7rem; min-width: 0; }
 .chat-title strong { overflow: hidden; font-size: 0.95rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .chat-title small { overflow: hidden; color: var(--faint); font-size: 0.78rem; text-overflow: ellipsis; white-space: nowrap; }
@@ -520,12 +534,11 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .thread .question-card { box-shadow: var(--shadow-soft); }
 .thread .question { margin-top: 0; }
 
-/* Narrower screens: the sidebar slides over the chat, and the lanes stack under it. */
+/* Narrower screens: the sidebar opens below the shared header, over the chat. */
 @media (max-width: 1099px) {
-  .standard, .standard[data-sidebar="true"] { grid-template-columns: minmax(0, 1fr); grid-auto-rows: auto; align-content: start; overflow-y: auto; }
-  .chat-main { height: 100dvh; }
-  .chat-sidebar { position: fixed; inset: 0 auto 0 0; z-index: 20; width: min(19rem, 86vw); background: #f3f2ed; box-shadow: var(--shadow-float); }
-  .sidebar-scrim-button { position: fixed; inset: 0; z-index: 19; display: block; border: 0; background: rgba(45, 55, 72, 0.18); }
+  .standard, .standard[data-sidebar="true"] { grid-template-columns: minmax(0, 1fr); }
+  .chat-sidebar { position: fixed; inset: var(--app-header-h) auto 0 0; z-index: 60; width: min(19rem, 86vw); background: #f3f2ed; box-shadow: var(--shadow-float); }
+  .sidebar-scrim-button { position: fixed; inset: var(--app-header-h) 0 0; z-index: 55; display: block; border: 0; background: rgba(45, 55, 72, 0.18); }
 }
 
 /* Tool output viewer */

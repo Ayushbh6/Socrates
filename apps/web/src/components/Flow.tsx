@@ -1,4 +1,4 @@
-import { Menu, X } from "lucide-react";
+import { X } from "lucide-react";
 import { LayoutGroup } from "motion/react";
 import { type CSSProperties, type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { currentRoute, orbDocked, orbState, viewedExchange } from "../lib/model";
@@ -6,16 +6,16 @@ import { useFollow } from "../lib/follow";
 import { type AppState, store } from "../lib/store";
 import type { Dock } from "../lib/terminals";
 import type { KeepChoice } from "../lib/types";
-import { AccessMenu } from "./AccessMenu";
+import { AppHeader } from "./AppHeader";
 import { AnswerView } from "./AnswerView";
 import { Composer } from "./Composer";
-import { type Mode, ModeSwitch } from "./ModeSwitch";
+import { type Mode } from "./ModeSwitch";
 import { Notices } from "./Notices";
 import { Orb } from "./Orb";
 import { QuestionCard } from "./QuestionCard";
 import { Sidebar } from "./Sidebar";
 import { StickyNotes } from "./StickyNotes";
-import { TerminalDock, TerminalToggle } from "./TerminalDock";
+import { TerminalDock } from "./TerminalDock";
 
 /**
  * Flow mode (architecture/web.md, "Flow mode"): one question and its answer on
@@ -89,21 +89,13 @@ export function Flow({ app, mode, dock, onMode, onSettings }: { app: AppState; m
           {!docked && <Orb state={state} docked={false} />}
         </div>
 
-        <header className="flow-header">
-          <button type="button" className="icon-button menu-button" onClick={() => setSidebar(true)} aria-label="Open the conversation list">
-            <Menu aria-hidden />
-          </button>
-          <AccessMenu app={app} />
+        <AppHeader app={app} mode={mode} dock={dock} sidebar={sidebar} sidebarId="flow-sidebar" onSidebar={() => setSidebar(!sidebar)} onMode={onMode} onSettings={onSettings}>
           {conversation !== "main" && (
             <button type="button" className="chip lane-chip" onClick={() => { setConversation("main"); setSelected(null); }}>
               Lane {lane?.number} <X aria-hidden />
             </button>
           )}
-          {!app.connected ? <span className="chip reconnecting">Reconnecting…</span> : app.model.live && !app.model.live.ready && <span className="chip reconnecting">Socrates is restarting…</span>}
-          <span className="composer-space" />
-          <TerminalToggle app={app} dock={dock} />
-          <ModeSwitch mode={mode} onMode={onMode} onSettings={onSettings} />
-        </header>
+        </AppHeader>
 
         <StickyNotes goal={goal} taskNumber={route?.task.number ?? null} keep={conversation === "main" ? keep : null} onKeep={setKeep} />
 

@@ -1,16 +1,15 @@
-import { PanelLeft, Square } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { allQuestions, chatThread, chatTitle, groupChats, newThread, withoutArchived } from "../lib/chats";
 import { chatBusy, currentRoute } from "../lib/model";
 import { type AppState, store } from "../lib/store";
 import type { Dock } from "../lib/terminals";
 import type { ChatChoice } from "../lib/types";
-import { AccessMenu } from "./AccessMenu";
+import { AppHeader } from "./AppHeader";
 import { Composer } from "./Composer";
-import { type Mode, ModeSwitch } from "./ModeSwitch";
+import { type Mode } from "./ModeSwitch";
 import { Notices } from "./Notices";
 import { StandardSidebar, type Target } from "./StandardSidebar";
-import { TerminalDock, TerminalToggle } from "./TerminalDock";
+import { TerminalDock } from "./TerminalDock";
 import { Thread } from "./Thread";
 
 /**
@@ -33,7 +32,7 @@ export function Standard({ app, mode, dock, onMode, onSettings }: { app: AppStat
   const conversations = app.model.conversations;
   const main = useMemo(() => withoutArchived(allQuestions(conversations), app.goals), [conversations, app.goals]);
   const [view, setView] = useState<View>(null);
-  const [sidebar, setSidebar] = useState(() => typeof window === "undefined" || window.innerWidth >= 900);
+  const [sidebar, setSidebar] = useState(() => typeof window === "undefined" || window.innerWidth >= 1100);
 
   // The general conversation of flow mode is no chat here.
   const general = new Set(app.goals.filter((g) => g.general).map((g) => g.number));
@@ -57,7 +56,7 @@ export function Standard({ app, mode, dock, onMode, onSettings }: { app: AppStat
   // Where the composer sends: the open chat, else a new one (in the chosen goal, or among the plain chats).
   const target: ChatChoice = route && !fresh ? { goal: route.goal.number, task: route.task.number } : { goal: fresh?.goal ?? null, task: null };
   const working = chatBusy(app.model.live, target);
-  const narrow = () => window.innerWidth < 900;
+  const narrow = () => window.innerWidth < 1100;
 
   // Archiving says so for a few seconds, with a way back.
   const [toast, setToast] = useState<{ text: string; undo: () => void } | null>(null);
@@ -75,6 +74,11 @@ export function Standard({ app, mode, dock, onMode, onSettings }: { app: AppStat
 
   return (
     <div className="standard" data-sidebar={sidebar}>
+      <AppHeader app={app} mode={mode} dock={dock} sidebar={sidebar} sidebarId="standard-sidebar" onSidebar={() => setSidebar(!sidebar)} onMode={onMode} onSettings={onSettings} onStop={working ? () => store.cancel("main", target) : undefined}>
+        <div className="chat-title">
+          {task ? <><strong title={task.title}>{chatTitle(task.title, chat)}</strong>{!goal?.chats && <small title={goal?.title}>{goal?.title}</small>}</> : <><strong>New chat</strong>{freshGoal && <small>{freshGoal.title}</small>}</>}
+        </div>
+      </AppHeader>
       {sidebar && (
         <>
           <StandardSidebar
@@ -93,25 +97,12 @@ export function Standard({ app, mode, dock, onMode, onSettings }: { app: AppStat
               setView({ fresh: main.at(-1)?.key ?? null, goal: made.number });
               if (narrow()) setSidebar(false);
             }}
-            onClose={() => setSidebar(false)}
           />
           <button type="button" className="sidebar-scrim-button" aria-label="Hide the sidebar" onClick={() => setSidebar(false)} />
         </>
       )}
 
       <section className="chat-main" aria-label="Chat">
-        <header className="chat-top">
-          {!sidebar && <button type="button" className="icon-button" onClick={() => setSidebar(true)} aria-label="Show the sidebar" title="Show the sidebar"><PanelLeft aria-hidden /></button>}
-          <div className="chat-title">
-            {task ? <><strong>{chatTitle(task.title, chat)}</strong>{!goal?.chats && <small>{goal?.title}</small>}</> : <><strong>New chat</strong>{freshGoal && <small>{freshGoal.title}</small>}</>}
-          </div>
-          {!app.connected ? <span className="chip reconnecting">Reconnecting…</span> : app.model.live && !app.model.live.ready && <span className="chip reconnecting">Socrates is restarting…</span>}
-          <span className="composer-space" />
-          {working && <button type="button" className="quiet-button" onClick={() => store.cancel("main", target)}><Square aria-hidden /> Stop</button>}
-          <TerminalToggle app={app} dock={dock} />
-          <AccessMenu app={app} />
-          <ModeSwitch mode={mode} onMode={onMode} onSettings={onSettings} />
-        </header>
         <Thread app={app} conversation="main" shown={shown} before={chat > 1 && goal && task ? <Continued onBack={() => setView({ chat: { goal: goal.number, task: task.number, chat: chat - 1 } })} /> : null} empty={fresh || !main.length ? (freshGoal ? `What's next for ${freshGoal.title}?` : "What should we work on?") : "Nothing has been asked in this chat yet."} />
         <div className="chat-composer">
           <Composer app={app} conversation="main" laneNumber={null} variant="panel" chat={target} placeholder={task ? "Reply…" : "Ask Socrates…"} onModel={onSettings} onNewLane={() => null} onSent={(id) => { if (fresh) setView({ ...fresh, sent: id }); }} />

@@ -37,10 +37,9 @@ export function Sidebar({ app, open, conversation, selected, onClose, onConversa
       {open && (
         <>
           <motion.div className="sidebar-scrim" onClick={onClose} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} />
-          <motion.nav className="sidebar" aria-label="Conversation" initial={{ x: -24, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: -24, opacity: 0 }} transition={{ duration: 0.22, ease: "easeOut" }}>
+          <motion.nav id="flow-sidebar" className="sidebar" aria-label="Conversation" initial={{ x: -24, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: -24, opacity: 0 }} transition={{ duration: 0.22, ease: "easeOut" }}>
             <div className="sidebar-head">
               <strong>Socrates</strong>
-              <button type="button" className="icon-button" onClick={onClose} aria-label="Close"><X aria-hidden /></button>
             </div>
             {lanes.length > 0 && (
               <section className="sidebar-section">
