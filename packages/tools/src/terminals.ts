@@ -49,6 +49,10 @@ export interface SessionProcess {
 export const INPUT_IDLE_MS = 750;
 /** A terminal's process may exit before its last output is read; the exit waits this long for it. */
 const PTY_DRAIN_MS = 100;
+/** A page opening a session over pipes is shown at most this much of what it printed. */
+const PIPE_REPLAY_CHARS = 200_000;
+/** Session ids are unique across workspaces and restarts of the agent, so the page's terminal panel can tell sessions apart. */
+let sessionCounter = 0;
 
 export type ExitReason = "exited" | "terminated" | "timeout" | "failed";
 
@@ -130,9 +134,15 @@ export class TerminalSession {
   fullscreen = false;
   /** What the program has drawn; null over pipes. */
   screen: Screen | null = null;
+  /** When the user last typed into it from the page's terminal panel. */
+  userInputAt = 0;
+  /** What records its start and exit; a restart from the page runs the same launch with the same hooks. */
+  hooks: SessionHooks | null = null;
   readonly startedAt = new Date();
   exitedAt: Date | null = null;
   private listeners = new Set<() => void>();
+  /** Pages watching the session: a terminal's bytes as the program wrote them, or a pipe's text with "\r\n" line ends. */
+  private readonly watchers = new Set<(data: string) => void>();
   private timeoutTimer: NodeJS.Timeout | null = null;
 
   constructor(
@@ -186,6 +196,32 @@ export class TerminalSession {
     for (const listener of [...this.listeners]) listener();
   }
 
+  /**
+   * Watch the session as a terminal on the page shows it: first `replay`,
+   * what it already shows (a terminal's scrollback and screen, or the end of
+   * a pipe's output), then every chunk after it, in order and without gaps
+   * or repeats. Returns a function that stops watching.
+   */
+  watch(replay: (data: string) => void, data: (chunk: string) => void): () => void {
+    let held: string[] | null = [];
+    const watcher = (chunk: string) => (held ? held.push(chunk) : data(chunk));
+    this.watchers.add(watcher);
+    const start = (shown: string) => {
+      if (!this.watchers.has(watcher)) return;
+      replay(shown);
+      for (const chunk of held ?? []) data(chunk);
+      held = null;
+    };
+    if (this.screen) this.screen.replay(start);
+    else start(this.output.slice(Math.max(this.output.start, this.output.end - PIPE_REPLAY_CHARS)).text.replace(/\n/g, "\r\n"));
+    return () => this.watchers.delete(watcher);
+  }
+
+  /** Pass output to the pages watching. */
+  show(chunk: string): void {
+    for (const watcher of this.watchers) watcher(chunk);
+  }
+
   bump(): void {
     this.stateVersion++;
     this.notify();
@@ -218,7 +254,6 @@ const LINGER_GRACE_MS = 2000;
 export class TerminalSupervisor {
   private readonly live = new Map<string, TerminalSession>();
   private readonly exited: TerminalSession[] = [];
-  private counter = 0;
   private readonly maxSessions: number;
   private readonly retainChars: number;
   private readonly foregroundRetainChars: number;
@@ -250,13 +285,14 @@ export class TerminalSupervisor {
 
   launch(spec: LaunchSpec, hooks: SessionHooks): TerminalSession {
     this.assertCanLaunch(spec.name);
-    const id = `term-${++this.counter}`;
+    const id = `term-${++sessionCounter}`;
     const { file, args } = shellCommand(spec.command);
     const output = new OutputBuffer(spec.background ? this.retainChars : this.foregroundRetainChars);
     let session: TerminalSession;
     const onData = (chunk: string) => {
       session.lastOutputAt = Date.now();
       output.append(chunk);
+      if (!session.proc?.pty) session.show(chunk.replace(/\n/g, "\r\n"));
       session.notify();
     };
     const finish = (code: number | null, signal: string | null, reason: ExitReason) => {
@@ -300,6 +336,7 @@ export class TerminalSupervisor {
         resize: (cols, rows) => { term.resize(cols, rows); screen.resize(cols, rows); },
       }, output);
       session.screen = screen;
+      session.hooks = hooks;
       this.live.set(id, session);
       if (this.registry) recordProcess(this.registry, term.pid, spec.command);
       hooks.onStart(session);
@@ -312,6 +349,7 @@ export class TerminalSupervisor {
         const leave = chunk.lastIndexOf("\x1b[?1049l");
         if (enter >= 0 || leave >= 0) session.fullscreen = enter > leave;
         screen.write(chunk);
+        session.show(chunk);
         const clean = text.push(chunk);
         if (clean) onData(clean);
       });
@@ -342,6 +380,7 @@ export class TerminalSupervisor {
           throw new ToolError("not_a_terminal", `${session.selector} runs over pipes, which have no size.`, "Start the command with pty: true to give it a terminal size.");
         },
       }, output);
+      session.hooks = hooks;
       this.live.set(id, session);
       if (this.registry && child.pid) recordProcess(this.registry, child.pid, spec.command);
       hooks.onStart(session);
@@ -396,6 +435,35 @@ export class TerminalSupervisor {
   forget(session: TerminalSession): void {
     const i = this.exited.indexOf(session);
     if (i >= 0) this.exited.splice(i, 1);
+  }
+
+  /**
+   * What the user types into a terminal from the page. It counts as an answer
+   * to a prompt, as the agent's input does, and the agent holds off writing
+   * while the user is typing (see terminal_control write).
+   */
+  input(session: TerminalSession, data: string): void {
+    if (session.status !== "running" || !session.proc?.pty) return;
+    session.proc.write(data);
+    session.userInputAt = session.answeredAt = Date.now();
+    session.bump();
+  }
+
+  /** Set a terminal's size, as the page's terminal panel does to fit it. */
+  resize(session: TerminalSession, cols: number, rows: number): void {
+    if (session.status !== "running" || !session.proc?.pty) return;
+    if (session.screen && session.screen.cols === cols && session.screen.rows === rows) return;
+    session.proc.resize(cols, rows);
+    session.bump();
+  }
+
+  /** Stop a session and run the same launch again, recorded as the first was; the stopped one leaves the listings. */
+  async restart(session: TerminalSession): Promise<TerminalSession> {
+    if (!session.hooks) throw new ToolError("not_restartable", `${session.selector} cannot be restarted.`, "Start it again with terminal.");
+    await this.terminate(session);
+    const replacement = this.launch(session.spec, session.hooks);
+    this.forget(session);
+    return replacement;
   }
 
   /** Send a signal to the session's whole process group. */

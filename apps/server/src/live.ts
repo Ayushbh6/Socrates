@@ -7,6 +7,7 @@ import { z } from "zod";
 import { activityOf } from "./activity";
 import { ATTACHMENTS_MAX, findAttachment, viewOf } from "./attachments";
 import type { Runtime } from "./runtime";
+import { TerminalPanel, TerminalPanelError } from "./terminals";
 import { provisionalTitle } from "./titles";
 
 /** A reconnecting page catches up on at most this many events; further behind, it reloads its history. */
@@ -35,6 +36,10 @@ const Attached = z.array(z.object({ id: z.string().regex(/^[0-9a-f]{32}$/), name
 /** Standard mode's choice of where a message goes: a goal (null: the Chats goal) and its chat (null: a new one). */
 const Chat = z.object({ goal: z.number().int().positive().nullable(), task: z.number().int().positive().nullable() }).strict();
 export type ChatChoice = z.infer<typeof Chat>;
+/** A terminal session's id, as the terminal panel lists it. */
+const Session = z.string().regex(/^term-\d{1,9}$/);
+/** What one keystroke or paste may send to a terminal. */
+const TERMINAL_INPUT_MAX = 64 * 1024;
 const Decision = z.object({ goalId: z.string(), path: z.string(), role: z.string(), decision: z.enum(["approve", "reject", "supersede"]) }).strict();
 
 /** What a page may send (architecture/server.md, "Live connection"). */
@@ -48,6 +53,14 @@ const Command = z.discriminatedUnion("type", [
   z.object({ type: z.literal("cancel"), conversation: z.union([z.literal("main"), Id]) }).strict(),
   z.object({ type: z.literal("approve"), approval: Id, granted: z.boolean() }).strict(),
   z.object({ type: z.literal("close_lane"), lane: Id }).strict(),
+  // The terminal panel (architecture/server.md, "Terminal panel").
+  z.object({ type: z.literal("terminal_open"), session: Session }).strict(),
+  z.object({ type: z.literal("terminal_shut"), session: Session }).strict(),
+  z.object({ type: z.literal("terminal_input"), session: Session, data: z.string().min(1).max(TERMINAL_INPUT_MAX) }).strict(),
+  z.object({ type: z.literal("terminal_resize"), session: Session, cols: z.number().int().min(20).max(500), rows: z.number().int().min(5).max(200) }).strict(),
+  z.object({ type: z.literal("terminal_stop"), session: Session }).strict(),
+  z.object({ type: z.literal("terminal_restart"), session: Session }).strict(),
+  z.object({ type: z.literal("terminal_dismiss"), session: Session }).strict(),
 ]);
 type Command = z.infer<typeof Command>;
 
@@ -116,11 +129,13 @@ export class LiveHub {
   private draftTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
   private closing: Promise<void> | null = null;
+  private readonly terminals: TerminalPanel;
 
   private readonly replayMax: number;
 
   constructor(private readonly runtime: Runtime, options: { replayMax?: number } = {}) {
     this.replayMax = options.replayMax ?? REPLAY_MAX_EVENTS;
+    this.terminals = new TerminalPanel(runtime, (message) => this.broadcast(message), (socket, message) => this.send(socket, message));
     this.unsubscribe = runtime.store.onEvent((event) => {
       const activity = activityOf(runtime.store, event);
       // A step that only thought replaces the thinking draft and leaves the reply's.
@@ -144,7 +159,7 @@ export class LiveHub {
     }
     this.clients.add(socket);
     socket.on("message", (raw) => this.command(socket, raw.toString()));
-    const detach = () => { this.clients.delete(socket); this.subscribed.delete(socket); };
+    const detach = () => { this.clients.delete(socket); this.subscribed.delete(socket); this.terminals.detach(socket); };
     socket.on("close", detach);
     socket.on("error", detach);
   }
@@ -156,6 +171,7 @@ export class LiveHub {
     const settling = [...this.runs.values()].map((r) => r.settled);
     this.unsubscribe();
     this.unsubscribeRuntime();
+    this.terminals.close();
     if (this.stateTimer) clearTimeout(this.stateTimer);
     if (this.draftTimer) clearTimeout(this.draftTimer);
     this.drafts.clear();
@@ -258,6 +274,23 @@ export class LiveHub {
         if (!this.runtime.store.getLane(command.lane)) throw new LiveError("not_found", "There is no such lane.");
         this.socrates().closeLane(command.lane);
         return this.publishState();
+      case "terminal_open":
+        return this.terminals.open(socket, command.session);
+      case "terminal_shut":
+        return this.terminals.shut(socket, command.session);
+      case "terminal_input":
+        return this.terminals.input(command.session, command.data);
+      case "terminal_resize":
+        return this.terminals.resize(command.session, command.cols, command.rows);
+      case "terminal_dismiss":
+        return this.terminals.dismiss(command.session);
+      case "terminal_stop":
+        return void this.terminals.stop(command.session).catch((error) => this.send(socket, { type: "error", ...problemOf(error) }));
+      case "terminal_restart":
+        return void this.terminals.restart(command.session).then(
+          (next) => this.send(socket, { type: "terminal_restarted", session: command.session, next }),
+          (error) => this.send(socket, { type: "error", ...problemOf(error) }),
+        );
     }
   }
 
@@ -278,6 +311,7 @@ export class LiveHub {
     }
     // The replies being written now, after the saved activity they follow.
     for (const { message } of this.drafts.values()) this.send(socket, message);
+    this.send(socket, { type: "terminals", terminals: this.terminals.list() });
   }
 
   /** Keep the newest draft of a turn and send it with the next interval's. */
@@ -512,7 +546,7 @@ function hasWords(text: string, attachments: readonly unknown[] | undefined): vo
 }
 
 function problemOf(error: unknown): { code: string; message: string } {
-  if (error instanceof LiveError) return { code: error.code, message: error.message };
+  if (error instanceof LiveError || error instanceof TerminalPanelError) return { code: error.code, message: error.message };
   if (error instanceof SocratesBusyError) return { code: error.reason, message: error.message };
   return { code: "failed", message: "The message could not be handled. Details are in the server log." };
 }

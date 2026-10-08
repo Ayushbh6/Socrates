@@ -168,6 +168,22 @@ Changes to settings or keys also broadcast state to every subscribed page. `read
 | `error { id?, code, message }` | a refusal or failure, with a message meant for the user |
 | `reset { seq }` | too far behind; reload the history |
 
+## Terminal panel
+
+The page's terminal panel (`web.md`, "Terminal panel") travels on the live connection. The server lists the agent's terminal sessions, in every workspace, as `terminals { terminals }`: after `hello`, and whenever the list changes (it is looked at twice a second, since a prompt waiting for input is noticed by time). A session is listed once it runs in the background or for two seconds, and after it ends; a quick foreground command never is. Each entry has its id, name, command, folder, task title, status and how it ended, whether it is a terminal (`pty`), readiness, `inputRequired`, the local ports it listens on (looked up every five seconds), and a terminal's size. Session ids (`term-<n>`) are numbered across workspaces for the server's lifetime.
+
+| Command | Effect |
+|---|---|
+| `terminal_open { session }` | answered with `terminal_replay { session, data, cols, rows }`, the bytes that redraw what it shows now (a terminal's screen and up to `1,000` lines above it; the last `200,000` characters of a pipe's output, with `\r\n` line ends), then `terminal_output { session, data }` as it prints, gathered every `16` ms, with nothing lost or repeated between them. A session that is gone is ignored |
+| `terminal_shut { session }` | stop sending it to this page |
+| `terminal_input { session, data }` | the user's keys (at most `64` KiB); refused with `not_a_terminal` over pipes and `terminal_exited` once it ended. It counts as an answer to a prompt, and the agent's `write` waits (`agent-harness.md`, "terminal") |
+| `terminal_resize { session, cols, rows }` | the panel's size for a running terminal (`20`–`500` × `5`–`200`) |
+| `terminal_stop { session }` | stop the process tree, as `terminal_control terminate` |
+| `terminal_restart { session }` | the same launch again, recorded as the first was; the stopped session leaves the list, and the page is answered with `terminal_restarted { session, next }` |
+| `terminal_dismiss { session }` | remove an ended session from the list; one still running is refused with `terminal_running` |
+
+A command for a session that no longer exists is refused with `not_found`. Sessions belong to the agent's tool runner, so a rebuild of Socrates (a settings change) stops them, as before.
+
 ## Chat names
 
 A chat made in standard mode is a task named by the first six words of its first message. When that message completes, the titler (`settings.titler`) is asked once for a two-to-six-word name from the first question and answer, as a recorded call (`role: "other"`, `observability.md`); the reply is cut to its first line and at most eight words, and the task is revised to it. The chat keeps its first words when the titler cannot start, fails, or returns nothing usable, or when the task was renamed meanwhile. Only new chats are named; chats routed in flow mode keep the router's titles.

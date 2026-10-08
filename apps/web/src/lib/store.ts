@@ -3,7 +3,7 @@ import { type SettingsPatch, api } from "./api";
 import { IMAGES_MAX, prepareImage } from "./images";
 import { LiveConnection } from "./live";
 import { type Model, type ModelEvent, emptyModel, reduce, replayFrom } from "./model";
-import type { Access, ArchivedView, AttachmentView, ChatChoice, Command, Effort, GoalView, ServerMessage, Settings, Status } from "./types";
+import type { Access, ArchivedView, AttachmentView, ChatChoice, Command, Effort, GoalView, ServerMessage, Settings, Status, TerminalView } from "./types";
 
 export interface AppState {
   model: Model;
@@ -22,6 +22,14 @@ export interface AppState {
   images: Record<string, PendingImage[]>;
   /** What is archived, once its list has been opened. */
   archived: ArchivedView | null;
+  /** The terminal sessions the agent started (null until the server first lists them). */
+  terminals: TerminalView[] | null;
+}
+
+/** A terminal on the page: what the session shows when opened (again, after a reconnect), then what it prints. */
+export interface TerminalWatcher {
+  replay(data: string, size: { cols: number; rows: number } | null): void;
+  output(data: string): void;
 }
 
 /** An image in the composer: being stored, ready to send, or refused. */
@@ -40,7 +48,7 @@ const newId = () => `c${Date.now().toString(36)}${Math.random().toString(36).sli
 
 /** The page's one source of truth: history, the live connection, and the server's settings. */
 export class Store {
-  private state: AppState = { model: emptyModel(), status: null, settings: null, goals: [], connected: false, older: {}, error: null, drafts: {}, images: {}, archived: null };
+  private state: AppState = { model: emptyModel(), status: null, settings: null, goals: [], connected: false, older: {}, error: null, drafts: {}, images: {}, archived: null, terminals: null };
   private readonly listeners = new Set<() => void>();
   private resume: number | null = null;
   private goalsTimer: ReturnType<typeof setTimeout> | null = null;
@@ -50,9 +58,16 @@ export class Store {
   private readonly pendingQueue = new Map<string, { text: string; attachments: AttachmentView[] }>();
   /** The chat each standard-mode message was sent to, so one that finds main busy is queued for the same chat. */
   private readonly sentChats = new Map<string, ChatChoice>();
+  /** The terminal sessions open on this page; their output never goes through the app's state. */
+  private readonly terminalWatchers = new Map<string, TerminalWatcher>();
+  private readonly restartListeners = new Set<(from: string, to: string) => void>();
   private readonly live = new LiveConnection({
     message: (message) => this.receive(message),
-    connected: (connected) => this.set({ connected }),
+    connected: (connected) => {
+      this.set({ connected });
+      // A new connection shows nothing until each open terminal asks again.
+      if (connected) for (const session of this.terminalWatchers.keys()) this.live.send({ type: "terminal_open", session });
+    },
     after: () => {
       const after = this.resume ?? this.state.model.seq;
       this.resume = null;
@@ -138,6 +153,36 @@ export class Store {
 
   private setImages(conversation: string, change: (list: PendingImage[]) => PendingImage[]): void {
     this.set({ images: { ...this.state.images, [conversation]: change(this.state.images[conversation] ?? []) } });
+  }
+
+  /** Show a terminal session in the panel; returns what closes it. */
+  watchTerminal(session: string, watcher: TerminalWatcher): () => void {
+    this.terminalWatchers.set(session, watcher);
+    this.live.send({ type: "terminal_open", session });
+    return () => {
+      if (this.terminalWatchers.get(session) !== watcher) return;
+      this.terminalWatchers.delete(session);
+      this.live.send({ type: "terminal_shut", session });
+    };
+  }
+
+  /** What the user types into a terminal, or a paste. */
+  terminalInput(session: string, data: string): void {
+    this.live.send({ type: "terminal_input", session, data });
+  }
+
+  resizeTerminal(session: string, cols: number, rows: number): void {
+    this.live.send({ type: "terminal_resize", session, cols, rows });
+  }
+
+  terminal(action: "terminal_stop" | "terminal_restart" | "terminal_dismiss", session: string): void {
+    this.command({ type: action, session });
+  }
+
+  /** A session the user restarted has a new id; the panel follows it. */
+  onTerminalRestarted(listener: (from: string, to: string) => void): () => void {
+    this.restartListeners.add(listener);
+    return () => this.restartListeners.delete(listener);
   }
 
   cancel(conversation: string): void {
@@ -246,6 +291,17 @@ export class Store {
   }
 
   private receive(message: ServerMessage): void {
+    switch (message.type) {
+      case "terminals":
+        return this.set({ terminals: message.terminals });
+      case "terminal_replay":
+        return this.terminalWatchers.get(message.session)?.replay(message.data, message.cols && message.rows ? { cols: message.cols, rows: message.rows } : null);
+      case "terminal_output":
+        return this.terminalWatchers.get(message.session)?.output(message.data);
+      case "terminal_restarted":
+        for (const listener of this.restartListeners) listener(message.session, message.next);
+        return;
+    }
     if (message.type === "reset") {
       // Pause delivery while rebuilding, then say hello again for activity and current drafts.
       if (!this.recovering) {

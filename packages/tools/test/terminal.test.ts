@@ -34,9 +34,11 @@ describe.skipIf(process.platform === "win32")("terminal", () => {
   it("publishes a long-running command as a session after yield_ms, then waits for its exit", async () => {
     const h = harness();
     const r = await h.call("terminal", { command: "echo started; sleep 1; echo finished", yield_ms: 300 });
-    expect(r.json).toMatchObject({ status: "running", terminal: "term-1", session_id: "term-1", ready: null });
+    // Session ids are numbered across every workspace of the process.
+    expect(r.json).toMatchObject({ status: "running", terminal: expect.stringMatching(/^term-\d+$/), ready: null });
+    expect(r.json.session_id).toBe(r.json.terminal);
     expect(r.json.output).toBe("started\n");
-    const waited = await h.call("terminal_control", { action: "wait", terminal: "term-1", event: "exit" });
+    const waited = await h.call("terminal_control", { action: "wait", terminal: r.json.terminal, event: "exit" });
     expect(waited.json).toMatchObject({ action: "wait", event: "exit", status: "exited", exit_code: 0 });
     expect(waited.json.output).toBe("finished\n");
   });
@@ -126,11 +128,12 @@ describe.skipIf(process.platform === "win32")("terminal", () => {
 
   it("restarts a named session under the same name with a new session id", async () => {
     const h = harness();
-    await h.call("terminal", { command: "echo run-$RANDOM; sleep 30", background: true, name: "svc", ready: { pattern: "run-" } });
+    const first = (await h.call("terminal", { command: "echo run-$RANDOM; sleep 30", background: true, name: "svc", ready: { pattern: "run-" } })).json.session_id;
     const r = await h.call("terminal_control", { action: "restart", terminal: "svc" });
-    expect(r.json).toMatchObject({ action: "restart", terminal: "svc", previous_session_id: "term-1", session_id: "term-2", status: "running", ready: true });
+    expect(r.json).toMatchObject({ action: "restart", terminal: "svc", previous_session_id: first, status: "running", ready: true });
+    expect(r.json.session_id).not.toBe(first);
     const list = await h.call("terminal_control", { action: "list" });
-    expect(list.json.terminals.map((t: any) => [t.session_id, t.status])).toEqual([["term-2", "running"], ["term-1", "exited"]]);
+    expect(list.json.terminals.map((t: any) => [t.session_id, t.status])).toEqual([[r.json.session_id, "running"], [first, "exited"]]);
   });
 
   it("stops a foreground command when the call is cancelled", async () => {

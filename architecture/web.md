@@ -67,6 +67,16 @@ The familiar harness layout, for following everything at once. The switch in eit
 - **Lanes** on the right, one panel each, stacked: the lane's task and state (working, waiting for you, idle), its whole conversation, and its own small composer that sends to that lane. Stop a working lane or close an idle one from its head. A message sent to a new lane shows in a "New lane" panel until the server names its lane.
 - On narrower screens the lanes stack under the chat and the page scrolls.
 
+## Terminal panel
+
+The terminals the agent starts, at the bottom of the page: docked under the chat in standard mode, sliding up over the canvas in flow mode (the composer rises with it). It is the same terminal the agent drives (`server.md`, "Terminal panel"), drawn by xterm.js, which loads with the first terminal opened.
+
+- **Opening it.** A terminal button in either header shows once the agent has started something, with the number running; it turns amber when one waits for input. It and **Ctrl+`** open and close the panel. The panel opens by itself, on that session's tab, when the agent starts a server or a long command, or when a session begins to wait for input, but not for sessions already there when the page loads. It closes when no sessions are left. Its height is dragged from its top edge and remembered in this browser.
+- **Tabs**, one per session: its name (the agent's name for it, else its command's first words), a dot (green running, amber needs input, grey finished or stopped, red failed) and a **needs input** badge. An ended session's tab has **×** to remove it. A session the agent restarted replaces the old one's tab.
+- **The bar** under the tabs: the command, its folder, links to the local ports it listens on, the task it was started for (by title) and, once ended, how it ended. **Restart** and **Stop** act on the running session (Stop ends it and everything it started); an ended one has **Run again**.
+- **Typing.** A session started in a terminal (`pty`) takes the user's keys while it runs, and fills the panel: the program is told the panel's size (at least `40`×`8`), so the agent sees the same screen. A session over pipes shows its output only, and says so. For a few seconds after the user types, the agent's own typing into that terminal is refused, and what it reads says the user typed (`agent-harness.md`, "terminal").
+- The panel belongs to the page, not the mode: switching between flow and standard keeps it as it is.
+
 ## Inspect
 
 `#/inspect`, opened by the activity icon beside settings in either header. It needs no onboarding: it only reads what Socrates recorded (`observability.md`). It is a console of its own: a rail on the left with three tabs and a dark theme by default (a light one from the rail; the choice and the time range are remembered in this browser), and a bar on top that says whether Socrates is working and when the data last arrived. It refreshes every few seconds, every second or two while Socrates works, so a question can be watched as it happens. Addresses: `#/inspect` (overview), `#/inspect/traces[/<message id>]`, `#/inspect/data[/<database>/<table>]`.

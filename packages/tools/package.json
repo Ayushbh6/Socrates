@@ -12,6 +12,7 @@
     "@socrates/shared": "workspace:*",
     "@socrates/store": "workspace:*",
     "@vscode/ripgrep": "^1.18.0",
+    "@xterm/addon-serialize": "^0.14.0",
     "@xterm/headless": "^6.0.0",
     "ajv": "8",
     "diff": "^8",

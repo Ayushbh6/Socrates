@@ -22,6 +22,8 @@ const READ_DEFAULT_LINES = 200;
 const READ_MAX_LINES = 2000;
 /** A pseudo-terminal's size until it is resized. */
 export const PTY_SIZE = { cols: 120, rows: 40 };
+/** The agent does not write to a terminal the user has typed into this recently: the user may be answering it. */
+export const USER_TYPING_MS = 8_000;
 /** Keys that need a terminal: over pipes there is nothing to send them to. */
 const PIPE_KEYS = new Set(["ENTER", "CTRL_C", "CTRL_D"]);
 
@@ -252,8 +254,19 @@ function parseCursor(cursor: string | undefined, session: TerminalSession): numb
   return Math.min(Number(m[1]), session.output.end);
 }
 
+/** Typing from the page more than this long ago is no longer news to the agent. */
+const USER_TYPED_NEWS_MS = 300_000;
+
 function identity(session: TerminalSession) {
-  return { terminal: session.selector, session_id: session.id, status: session.status, state_version: session.stateVersion };
+  const typed = Date.now() - session.userInputAt;
+  return {
+    terminal: session.selector,
+    session_id: session.id,
+    status: session.status,
+    state_version: session.stateVersion,
+    // What the user typed shows in the output as the program echoes it; this says it was the user, not the agent.
+    ...(session.userInputAt && typed < USER_TYPED_NEWS_MS ? { user_typed_s_ago: Math.round(typed / 1000) } : {}),
+  };
 }
 
 /** Unseen output since the agent's last observation, bounded to head and tail. */
@@ -357,7 +370,7 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
     "screen — a pty session's screen as drawn now (its lines, cursor, and which lines look selected): use it to read menus and TUIs, which redraw rather than print;",
     `read — retained output after cursor (default: after what you last received), paged by limit_lines (default ${READ_DEFAULT_LINES}); filter keeps only lines matching a regex;`,
     `wait — block until event happens: ready, output (new output), exit, pattern (a regex in new output), input_required (a pty session showing a prompt and waiting), idle (nothing printed for idle_ms, default 2000), or port_open / port_closed (a local port); terminals waits on several sessions and returns the first to have the event; timeout_ms ends the wait early with event "timeout" (default and maximum ${MAX_WAIT_MS / 60000} minutes);`,
-    "write — send input text (submit adds Enter, default true) and/or keys: over pipes ENTER, CTRL_C and CTRL_D; in a pty also TAB, ESCAPE, BACKSPACE, DELETE, arrows, HOME, END, PAGE_UP, PAGE_DOWN, CTRL_L and CTRL_Z; a pty answers with its screen after the keys, so choose the next key from it;",
+    "write — send input text (submit adds Enter, default true) and/or keys (refused for a few seconds after the user types into the same terminal from the page): over pipes ENTER, CTRL_C and CTRL_D; in a pty also TAB, ESCAPE, BACKSPACE, DELETE, arrows, HOME, END, PAGE_UP, PAGE_DOWN, CTRL_L and CTRL_Z; a pty answers with its screen after the keys, so choose the next key from it;",
     "signal — send SIGINT, SIGTERM, SIGHUP, SIGTSTP, or SIGKILL (asks the user) to the process group;",
     "terminate — stop the process tree gracefully, then forcibly; restart — stop it and run the same launch again under the same name; resize — set a pty session's columns and rows.",
   ].join(" "),
@@ -381,6 +394,7 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
         started_at: s.startedAt.toISOString(),
         running_for_s: Math.round(((s.exitedAt?.getTime() ?? now) - s.startedAt.getTime()) / 1000),
         ...(s.status === "running" ? { quiet_for_s: Math.round((now - s.lastOutputAt) / 1000) } : {}),
+        ...(s.userInputAt ? { user_typed_s_ago: Math.round((now - s.userInputAt) / 1000) } : {}),
         ...exitFields(s),
       })));
       const result = { action: "list", terminals: rows };
@@ -458,6 +472,10 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
         if (session.status !== "running") throw new ToolError("terminal_exited", `${session.selector} has exited (exit code ${session.exitCode}).`, "Restart it with terminal_control restart, or start a new command.");
         const proc = session.proc;
         if (!proc) throw new ToolError("stdin_closed", `${session.selector} no longer accepts input.`, "Restart it, or start a new command.");
+        const typed = Date.now() - session.userInputAt;
+        if (typed < USER_TYPING_MS) {
+          throw new ToolError("user_typing", `The user typed into ${session.selector} ${Math.max(1, Math.round(typed / 1000))}s ago, in the terminal panel.`, "The user may be answering it themselves: wait a few seconds, look at its screen, and write only what is still needed.");
+        }
         if (proc.pty) {
           // A terminal receives keys as the bytes a keyboard sends; Enter is a carriage return.
           if (input.input !== undefined) proc.write(input.input + ((input.submit ?? true) ? "\r" : ""));

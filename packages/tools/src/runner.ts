@@ -12,7 +12,7 @@ import { toDefinition } from "./definitions";
 import { INTERNAL_ERROR, ToolError, renderError } from "./errors";
 import type { ToolHandler, ToolOutput } from "./handler";
 import { reapLeftovers } from "./process-registry";
-import { TerminalSupervisor, type SupervisorOptions } from "./terminals";
+import { type SupervisorOptions, type TerminalSession, TerminalSupervisor } from "./terminals";
 import { applyPatchTool } from "./tools/apply-patch";
 import { CapabilityRuntime, capabilityControlTool, capabilitySearchTool } from "./tools/capabilities";
 import { contextRetrieveTool } from "./tools/context-retrieve";
@@ -146,6 +146,11 @@ export class ToolRunner {
       this.supervisors.set(workspace.root, supervisor);
     }
     return supervisor;
+  }
+
+  /** Every terminal session of every workspace, with the supervisor that owns it, for the page's terminal panel. */
+  terminalSessions(): { supervisor: TerminalSupervisor; session: TerminalSession }[] {
+    return [...this.supervisors.values()].flatMap((supervisor) => supervisor.list().map((session) => ({ supervisor, session })));
   }
 
   async run(call: ToolCall, scope: CallScope): Promise<ToolCallResult> {

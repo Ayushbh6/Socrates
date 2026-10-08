@@ -3,12 +3,14 @@ import { useEffect, useMemo, useState } from "react";
 import { chatThread, chatTitle, groupChats, newThread, withoutArchived } from "../lib/chats";
 import { conversationBusy, currentRoute } from "../lib/model";
 import { type AppState, store } from "../lib/store";
+import type { Dock } from "../lib/terminals";
 import type { ChatChoice, Lane } from "../lib/types";
 import { AccessMenu } from "./AccessMenu";
 import { Composer } from "./Composer";
 import { type Mode, ModeSwitch } from "./ModeSwitch";
 import { Notices } from "./Notices";
 import { StandardSidebar, type Target } from "./StandardSidebar";
+import { TerminalDock, TerminalToggle } from "./TerminalDock";
 import { Thread } from "./Thread";
 
 /**
@@ -24,7 +26,7 @@ type View = null | { chat: { goal: number; task: number; chat: number } } | { fr
  * under it, and lanes keep their own panels at the right. Nothing is routed:
  * a message goes to the chat that is open, or starts the new one.
  */
-export function Standard({ app, mode, onMode, onSettings }: { app: AppState; mode: Mode; onMode: (mode: Mode) => void; onSettings: () => void }) {
+export function Standard({ app, mode, dock, onMode, onSettings }: { app: AppState; mode: Mode; dock: Dock; onMode: (mode: Mode) => void; onSettings: () => void }) {
   const lanes = app.model.live?.lanes ?? app.status?.lanes ?? [];
   const everything = app.model.conversations.main;
   const main = useMemo(() => withoutArchived(everything ?? [], app.goals), [everything, app.goals]);
@@ -104,6 +106,7 @@ export function Standard({ app, mode, onMode, onSettings }: { app: AppState; mod
           {!app.connected ? <span className="chip reconnecting">Reconnecting…</span> : app.model.live && !app.model.live.ready && <span className="chip reconnecting">Socrates is restarting…</span>}
           <span className="composer-space" />
           {mainBusy && <button type="button" className="quiet-button" onClick={() => store.cancel("main")}><Square aria-hidden /> Stop</button>}
+          <TerminalToggle app={app} dock={dock} />
           <AccessMenu app={app} />
           <ModeSwitch mode={mode} onMode={onMode} onSettings={onSettings} />
         </header>
@@ -111,6 +114,7 @@ export function Standard({ app, mode, onMode, onSettings }: { app: AppState; mod
         <div className="chat-composer">
           <Composer app={app} conversation="main" laneNumber={null} variant="panel" chat={target} placeholder={task ? "Reply…" : "Ask Socrates…"} onModel={onSettings} onNewLane={(text, attachments) => store.sendToNewLane(text, attachments)} />
         </div>
+        <TerminalDock app={app} dock={dock} variant="docked" />
       </section>
 
       {side && (

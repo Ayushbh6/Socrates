@@ -615,3 +615,45 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .note-title-row .icon-button svg { width: 0.95rem; height: 0.95rem; }
 .note-title-input { flex: 1; min-width: 0; padding: 0.3rem 0.5rem; border: 1px solid var(--accent); border-radius: 0.6rem; background: #fff; color: var(--text); font-family: var(--serif); font-size: clamp(1.4rem, 3vw, 2rem); font-weight: 500; line-height: 1.2; outline: none; box-shadow: 0 0 0 3px var(--tint); }
 .note-title-error { margin: 0.4rem 0 0; color: var(--danger); font-size: 0.78rem; }
+
+/* Terminal panel (architecture/web.md, "Terminal panel"): docked under the chat in standard mode, sliding up over the canvas in flow. */
+.terminal-toggle { position: relative; }
+.terminal-toggle[data-open="true"] { background: var(--tint); color: var(--accent-strong); }
+.terminal-count { position: absolute; top: 0.1rem; right: 0.05rem; min-width: 0.95rem; height: 0.95rem; padding: 0 0.2rem; border-radius: 999px; background: var(--accent); color: #fff; font-size: 0.62rem; font-weight: 600; line-height: 0.95rem; text-align: center; }
+.terminal-toggle[data-waiting="true"] .terminal-count { background: var(--warn); animation: terminal-pulse 1.6s ease-in-out infinite; }
+.terminal-dock { position: relative; display: flex; flex: none; flex-direction: column; min-height: 0; border-top: 1px solid rgba(45, 55, 72, 0.1); background: #fbfaf7; }
+.terminal-dock[data-variant="overlay"] { position: fixed; left: 0; right: 0; bottom: 0; z-index: 35; box-shadow: 0 -12px 40px rgba(45, 55, 72, 0.1); animation: terminal-rise 260ms cubic-bezier(0.22, 1, 0.36, 1); }
+.terminal-grip { position: absolute; top: -4px; left: 0; right: 0; z-index: 1; height: 8px; cursor: ns-resize; touch-action: none; }
+.terminal-grip::after { content: ""; position: absolute; top: 2px; left: 50%; width: 2.5rem; height: 3px; border-radius: 999px; background: rgba(45, 55, 72, 0.14); transform: translateX(-50%); opacity: 0; transition: opacity 160ms; }
+.terminal-dock:hover .terminal-grip::after { opacity: 1; }
+.terminal-bar { display: flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0.5rem 0 0.75rem; }
+.terminal-tabs { display: flex; flex: 1; gap: 0.2rem; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.terminal-tab { display: flex; flex: none; align-items: center; border-radius: 0.55rem; color: var(--muted); }
+.terminal-tab[data-on="true"] { background: rgba(45, 55, 72, 0.06); color: var(--text); }
+.terminal-tab-name { display: inline-flex; align-items: center; gap: 0.45rem; max-width: 16rem; padding: 0.35rem 0.6rem; border: 0; background: transparent; font-family: var(--mono); font-size: 0.78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.terminal-tab-close { display: inline-grid; place-items: center; width: 1.4rem; height: 1.4rem; margin-right: 0.2rem; padding: 0; border: 0; border-radius: 999px; background: transparent; color: var(--faint); }
+.terminal-tab-close:hover { background: var(--hover); color: var(--text); }
+.terminal-tab-close svg { width: 0.8rem; height: 0.8rem; }
+.terminal-dot { flex: none; width: 0.5rem; height: 0.5rem; border-radius: 999px; background: var(--faint); }
+.terminal-dot[data-state="running"] { background: #38a169; }
+.terminal-dot[data-state="waiting"] { background: var(--warn); animation: terminal-pulse 1.6s ease-in-out infinite; }
+.terminal-dot[data-state="failed"] { background: var(--danger); }
+.terminal-badge { padding: 0.05rem 0.4rem; border-radius: 999px; background: var(--warn-tint); color: var(--warn); font-family: var(--sans); font-size: 0.68rem; font-weight: 600; }
+.terminal-actions { display: flex; flex: none; align-items: center; gap: 0.1rem; }
+.terminal-actions .quiet-button { padding: 0.3rem 0.6rem; font-size: 0.78rem; }
+.terminal-actions .quiet-button svg { width: 0.8rem; height: 0.8rem; }
+.terminal-meta { display: flex; align-items: baseline; gap: 0.7rem; margin: 0; padding: 0.3rem 1rem 0.35rem; overflow: hidden; color: var(--faint); font-size: 0.74rem; white-space: nowrap; }
+.terminal-meta code { min-width: 0; overflow: hidden; color: var(--muted); font-family: var(--mono); text-overflow: ellipsis; }
+.terminal-meta a { color: var(--accent-strong); }
+.terminal-meta [data-state="failed"] { color: var(--danger); }
+.terminal-screen { flex: 1; min-height: 0; padding: 0.15rem 0.25rem 0.35rem 1rem; overflow: hidden; }
+.terminal-screen .xterm { height: 100%; }
+/* xterm paints its viewport black below the last row; the panel's own background shows instead. */
+.terminal-screen .xterm-viewport { background-color: transparent !important; scrollbar-width: thin; }
+.terminal-note { margin: 0; padding: 0.3rem 1rem 0.5rem; color: var(--faint); font-size: 0.74rem; }
+.flow .composer-dock { bottom: calc(1.25rem + var(--dock-h, 0px)); transition: bottom 260ms cubic-bezier(0.22, 1, 0.36, 1); }
+.flow .flow-stage { padding-bottom: calc(14rem + var(--dock-h, 0px)); }
+@keyframes terminal-rise { from { transform: translateY(100%); } to { transform: none; } }
+@keyframes terminal-pulse { 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .terminal-dock[data-variant="overlay"], .terminal-dot[data-state="waiting"], .terminal-toggle[data-waiting="true"] .terminal-count { animation: none; } }
+@media (max-width: 760px) { .terminal-actions .quiet-button { padding: 0.3rem 0.45rem; } .terminal-meta span, .terminal-meta a + a { display: none; } }

@@ -1,6 +1,17 @@
+import { createRequire } from "node:module";
 import xterm from "@xterm/headless";
 
 const { Terminal } = xterm;
+/**
+ * The serialize add-on, loaded without its typings: they bring the browser's
+ * types into the server's build. Only what is used here is declared.
+ */
+const { SerializeAddon } = createRequire(import.meta.url)("@xterm/addon-serialize") as {
+  SerializeAddon: new () => { activate(terminal: unknown): void; dispose(): void; serialize(options?: { scrollback?: number }): string };
+};
+
+/** Lines kept above the screen, so a page that opens the terminal later sees what scrolled away. */
+const SCROLLBACK = 1000;
 
 /** What a program has drawn on its terminal right now, as the agent reads it. */
 export interface ScreenSnapshot {
@@ -29,11 +40,32 @@ const POINTER = /^\s*(?:❯|›|▶|▸|➤|→|>|●|◉|◆|■|\[x\]|\(•\)|
  */
 export class Screen {
   private readonly terminal: InstanceType<typeof Terminal>;
+  private readonly serializer = new SerializeAddon();
   /** The program has hidden the cursor (DECTCEM). */
   cursorVisible = true;
 
   constructor(cols: number, rows: number) {
-    this.terminal = new Terminal({ cols, rows, allowProposedApi: true, scrollback: 0 });
+    this.terminal = new Terminal({ cols, rows, allowProposedApi: true, scrollback: SCROLLBACK });
+    this.terminal.loadAddon(this.serializer);
+  }
+
+  get cols(): number {
+    return this.terminal.cols;
+  }
+
+  get rows(): number {
+    return this.terminal.rows;
+  }
+
+  /**
+   * Everything written so far as the bytes that redraw it (the scrollback, the
+   * screen, its colours and the cursor), for a terminal on the page that opens
+   * now. It is taken once what was written before this call is drawn, and
+   * before anything written after it: writes are drawn in order, and `then`
+   * runs between them.
+   */
+  replay(then: (data: string) => void): void {
+    this.terminal.write("", () => then(this.serializer.serialize({ scrollback: SCROLLBACK })));
   }
 
   write(chunk: string): void {
@@ -60,7 +92,7 @@ export class Screen {
     const inverse: boolean[] = [];
     const colour: (number | null)[] = [];
     for (let y = 0; y < this.terminal.rows; y++) {
-      const line = buffer.getLine(buffer.viewportY + y);
+      const line = buffer.getLine(buffer.baseY + y);
       lines.push(line?.translateToString(true) ?? "");
       let reverse = false;
       let fg: number | null = null;

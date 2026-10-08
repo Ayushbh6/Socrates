@@ -236,6 +236,30 @@ export interface LiveState {
   approvals: PendingApproval[];
 }
 
+/** A terminal session the agent started, as the terminal panel lists it (apps/server/src/terminals.ts). */
+export interface TerminalView {
+  id: string;
+  name: string;
+  command: string;
+  cwd: string;
+  /** The task that started it, by title. */
+  task: string | null;
+  status: "running" | "exited";
+  exitCode: number | null;
+  signal: string | null;
+  reason: string | null;
+  /** A terminal the user can type into; over pipes it only shows output. */
+  pty: boolean;
+  background: boolean;
+  ready: boolean | null;
+  inputRequired: boolean;
+  ports: number[];
+  cols: number | null;
+  rows: number | null;
+  startedAt: string;
+  exitedAt: string | null;
+}
+
 export type ServerMessage =
   | ({ type: "state" } & LiveState)
   | ({ type: "activity" } & Activity)
@@ -246,7 +270,11 @@ export type ServerMessage =
   | { type: "status"; id: string; conversation: string; text: string }
   | { type: "result"; id: string; conversation: string; result: { kind: string; text: string; notices: string[] } }
   | { type: "error"; id?: string; conversation?: string; code: string; message: string }
-  | { type: "reset"; seq: number };
+  | { type: "reset"; seq: number }
+  | { type: "terminals"; terminals: TerminalView[] }
+  | { type: "terminal_replay"; session: string; data: string; cols: number | null; rows: number | null }
+  | { type: "terminal_output"; session: string; data: string }
+  | { type: "terminal_restarted"; session: string; next: string };
 
 /** What a page sends on the live connection. */
 export type Command =
@@ -257,7 +285,10 @@ export type Command =
   | { type: "queue_to_lane"; id: string }
   | { type: "cancel"; conversation: string }
   | { type: "approve"; approval: string; granted: boolean }
-  | { type: "close_lane"; lane: string };
+  | { type: "close_lane"; lane: string }
+  | { type: "terminal_open" | "terminal_shut" | "terminal_stop" | "terminal_restart" | "terminal_dismiss"; session: string }
+  | { type: "terminal_input"; session: string; data: string }
+  | { type: "terminal_resize"; session: string; cols: number; rows: number };
 
 /** Lanes that may run at once beside the main conversation. */
 export const MAX_RUNNING_LANES = 4;

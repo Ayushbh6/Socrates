@@ -7,6 +7,7 @@ import { SettingsDialog } from "./components/SettingsDialog";
 import { Standard } from "./components/Standard";
 import { Welcome } from "./components/Welcome";
 import { inspectTarget } from "./lib/observe";
+import { useDock } from "./lib/terminals";
 import { store, useApp } from "./lib/store";
 
 export type Route = "welcome" | "onboarding" | "chat";
@@ -30,6 +31,8 @@ export function App() {
   const [hash, setHash] = useState(() => location.hash);
   const [mode, setMode] = useState<Mode>(storedMode);
   const [settings, setSettings] = useState(false);
+  // The terminal panel stays as it is across a switch between flow and standard.
+  const dock = useDock(app.terminals);
   useEffect(() => {
     void store.start();
     const follow = () => { setRoute(routeOf(location.hash)); setHash(location.hash); };
@@ -49,7 +52,7 @@ export function App() {
   const inspecting = inspectTarget(hash);
   if (inspecting && app.status) return <Inspect app={app} target={inspecting} />;
   if (route === "chat" && app.status && !blocked) {
-    const props = { app, mode, onMode: changeMode, onSettings: () => setSettings(true) };
+    const props = { app, mode, dock, onMode: changeMode, onSettings: () => setSettings(true) };
     return (
       <>
         {mode === "standard" ? <Standard {...props} /> : <Flow {...props} />}

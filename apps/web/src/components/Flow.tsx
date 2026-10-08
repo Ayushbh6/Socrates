@@ -1,9 +1,10 @@
 import { Menu, X } from "lucide-react";
 import { LayoutGroup } from "motion/react";
-import { type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { currentRoute, orbDocked, orbState, viewedExchange } from "../lib/model";
 import { useFollow } from "../lib/follow";
 import { type AppState, store } from "../lib/store";
+import type { Dock } from "../lib/terminals";
 import { AccessMenu } from "./AccessMenu";
 import { AnswerView } from "./AnswerView";
 import { Composer } from "./Composer";
@@ -13,13 +14,14 @@ import { Orb } from "./Orb";
 import { QuestionCard } from "./QuestionCard";
 import { Sidebar } from "./Sidebar";
 import { StickyNotes } from "./StickyNotes";
+import { TerminalDock, TerminalToggle } from "./TerminalDock";
 
 /**
  * Flow mode (architecture/web.md, "Flow mode"): one question and its answer on
  * an open canvas, the orb in the middle until the answer starts, the task and
  * goal notes beside it, and earlier questions in the sidebar.
  */
-export function Flow({ app, mode, onMode, onSettings }: { app: AppState; mode: Mode; onMode: (mode: Mode) => void; onSettings: () => void }) {
+export function Flow({ app, mode, dock, onMode, onSettings }: { app: AppState; mode: Mode; dock: Dock; onMode: (mode: Mode) => void; onSettings: () => void }) {
   const [conversation, setConversation] = useState("main");
   const [selected, setSelected] = useState<string | null>(null);
   const [sidebar, setSidebar] = useState(false);
@@ -75,7 +77,8 @@ export function Flow({ app, mode, onMode, onSettings }: { app: AppState; mode: M
   };
 
   return (
-    <div className="flow" ref={root} onPointerMove={parallax}>
+    // The terminal panel slides up over the canvas; the composer rises with it.
+    <div className="flow" ref={root} onPointerMove={parallax} style={{ "--dock-h": dock.open ? `${dock.height}px` : "0px" } as CSSProperties}>
       <div className="flow-dots" aria-hidden />
       <LayoutGroup>
         <div className="planet-layer" aria-hidden={docked}>
@@ -94,6 +97,7 @@ export function Flow({ app, mode, onMode, onSettings }: { app: AppState; mode: M
           )}
           {!app.connected ? <span className="chip reconnecting">Reconnecting…</span> : app.model.live && !app.model.live.ready && <span className="chip reconnecting">Socrates is restarting…</span>}
           <span className="composer-space" />
+          <TerminalToggle app={app} dock={dock} />
           <ModeSwitch mode={mode} onMode={onMode} onSettings={onSettings} />
         </header>
 
@@ -131,6 +135,8 @@ export function Flow({ app, mode, onMode, onSettings }: { app: AppState; mode: M
           return id;
         }}
       />
+
+      <TerminalDock app={app} dock={dock} variant="overlay" />
 
       <Sidebar
         app={app}

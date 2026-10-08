@@ -256,6 +256,7 @@ Run a command in the selected project workspace and, when necessary, publish it 
 - Its output reaches the agent as plain text: colours, cursor movement and window titles are removed, `\r\n` and a lone `\r` (a redrawn progress line) become line breaks, and backspaces are applied. A sequence split between two chunks waits for its end.
 - What the user types is echoed back, as in any terminal.
 - A terminal session reports `pty: true` and `input_required`.
+- The user can watch any session and type into a terminal session from the page's terminal panel (`server.md`, "Terminal panel"). That typing counts as an answer to a prompt. For `8` seconds after it, the agent's `terminal_control write` to the same session is refused with `user_typing` (the user may be answering it), and for five minutes every result about the session carries `user_typed_s_ago`, so echoed input is known to be the user's. The panel may resize a terminal session to its own size.
 
 `yield_ms` controls only how long the current call waits before returning a live session; it defaults to `10,000` and is capped at `30,000`. It is not a process deadline. `timeout_ms` is the actual execution deadline: ten minutes by default for ordinary foreground commands and none for `background: true` services, while `0` explicitly requests no deadline and asks for approval. A command that reaches its deadline is stopped and reported with `status: "timed_out"`.
 

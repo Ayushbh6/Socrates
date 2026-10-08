@@ -8,7 +8,7 @@ export * from "./discovery";
 export * from "./bounds";
 export * from "./definitions";
 export type { ToolHandler, ToolOutput, FileMutation } from "./handler";
-export { TerminalSupervisor, type SupervisorOptions } from "./terminals";
+export { TerminalSupervisor, type SupervisorOptions, type TerminalSession, listeningPorts } from "./terminals";
 export { parsePatch } from "./patch";
 
 export type { ActiveCapabilities, ActiveSkill } from "./tools/capabilities";
