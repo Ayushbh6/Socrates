@@ -82,6 +82,7 @@ export function Standard({ app, mode, dock, onMode, onSettings }: { app: AppStat
       {sidebar && (
         <>
           <StandardSidebar
+            onClose={() => setSidebar(false)}
             goals={goals}
             current={route ? { goal: route.goal.number, task: route.task.number, chat } : null}
             onChat={(g, t, c) => { setView({ chat: { goal: g, task: t, chat: c } }); if (narrow()) setSidebar(false); }}

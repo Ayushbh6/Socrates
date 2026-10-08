@@ -1,4 +1,5 @@
-import { PanelLeft, Square } from "lucide-react";
+import { SidebarToggle } from "./SidebarChrome";
+import { Square } from "lucide-react";
 import type { ReactNode } from "react";
 import type { AppState } from "../lib/store";
 import type { Dock } from "../lib/terminals";
@@ -6,7 +7,7 @@ import { AccessMenu } from "./AccessMenu";
 import { type Mode, ModeSwitch } from "./ModeSwitch";
 import { TerminalToggle } from "./TerminalDock";
 
-/** One header in both modes; opening a sidebar never moves its controls. */
+/** Shared floating controls in both modes, without an opaque bar over the canvas. */
 export function AppHeader({ app, mode, dock, sidebar, sidebarId, onSidebar, onMode, onSettings, onStop, children }: {
   app: AppState;
   mode: Mode;
@@ -19,13 +20,10 @@ export function AppHeader({ app, mode, dock, sidebar, sidebarId, onSidebar, onMo
   onStop?: () => void;
   children?: ReactNode;
 }) {
-  const label = sidebar ? "Hide the sidebar" : "Show the sidebar";
   return (
     <header className="app-header">
       <div className="app-header-left">
-        <button type="button" className="icon-button sidebar-toggle" onClick={onSidebar} aria-label={label} title={label} aria-expanded={sidebar} aria-controls={sidebarId} data-on={sidebar}>
-          <PanelLeft aria-hidden />
-        </button>
+        <span className="sidebar-toggle-slot">{!sidebar && <SidebarToggle open={false} sidebarId={sidebarId} onClick={onSidebar} />}</span>
         <AccessMenu app={app} />
       </div>
       <div className="app-header-context">{children}</div>

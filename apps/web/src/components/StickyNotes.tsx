@@ -1,5 +1,5 @@
 import { ArrowUpRight, ChevronRight, GripHorizontal, Pencil, Pin, PinOff, X } from "lucide-react";
-import { type KeyboardEvent, type PointerEvent, type ReactNode, useRef, useState } from "react";
+import { type KeyboardEvent, type PointerEvent, type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useDialog } from "../lib/dialog";
 import { store } from "../lib/store";
@@ -74,6 +74,25 @@ export function StickyNotes({ goal, taskNumber, keep, onKeep }: { goal: GoalView
 }
 
 function Note({ id, offset, onMove, onOpen, eyebrow, children }: { id: NoteId; offset: { x: number; y: number }; onMove: (id: NoteId, x: number, y: number) => void; onOpen: () => void; eyebrow: string; children: ReactNode }) {
+  const grip = useRef<HTMLButtonElement>(null);
+  // Measure the transformed grip, so rotation and previously saved positions
+  // cannot leave the only drag target outside the viewport.
+  const constrain = (x: number, y: number) => {
+    const element = grip.current;
+    if (!element || !element.getClientRects().length) return;
+    const rect = element.getBoundingClientRect();
+    const left = rect.left + x - offset.x;
+    const top = rect.top + y - offset.y;
+    const nextX = x + Math.max(8, Math.min(left, window.innerWidth - rect.width - 8)) - left;
+    const nextY = y + Math.max(8, Math.min(top, window.innerHeight - rect.height - 8)) - top;
+    if (Math.abs(nextX - offset.x) > 0.01 || Math.abs(nextY - offset.y) > 0.01) onMove(id, nextX, nextY);
+  };
+  useLayoutEffect(() => {
+    const recover = () => constrain(offset.x, offset.y);
+    recover();
+    window.addEventListener("resize", recover);
+    return () => window.removeEventListener("resize", recover);
+  });
   const drag = useRef<{ pointer: number; x: number; y: number; from: { x: number; y: number } } | null>(null);
   const down = (e: PointerEvent<HTMLElement>) => {
     if (!(e.target as HTMLElement).closest(".note-grip")) return;
@@ -83,7 +102,7 @@ function Note({ id, offset, onMove, onOpen, eyebrow, children }: { id: NoteId; o
   const moved = (e: PointerEvent<HTMLElement>) => {
     const d = drag.current;
     if (!d || d.pointer !== e.pointerId) return;
-    onMove(id, d.from.x + e.clientX - d.x, d.from.y + e.clientY - d.y);
+    constrain(d.from.x + e.clientX - d.x, d.from.y + e.clientY - d.y);
   };
   const up = (e: PointerEvent<HTMLElement>) => {
     if (drag.current?.pointer === e.pointerId) drag.current = null;
@@ -93,7 +112,7 @@ function Note({ id, offset, onMove, onOpen, eyebrow, children }: { id: NoteId; o
     const delta = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
     if (!delta) return;
     e.preventDefault();
-    onMove(id, offset.x + delta[0]!, offset.y + delta[1]!);
+    constrain(offset.x + delta[0]!, offset.y + delta[1]!);
   };
   return (
     <article
@@ -105,7 +124,7 @@ function Note({ id, offset, onMove, onOpen, eyebrow, children }: { id: NoteId; o
       onPointerUp={up}
       onPointerCancel={up}
     >
-      <button type="button" className="note-grip" aria-label={`Move the ${eyebrow.toLowerCase()} note (arrow keys)`} onKeyDown={nudge}>
+      <button ref={grip} type="button" className="note-grip" aria-label={`Move the ${eyebrow.toLowerCase()} note (arrow keys)`} onKeyDown={nudge}>
         <GripHorizontal aria-hidden />
       </button>
       <button type="button" className="note-open" aria-label={`Expand ${eyebrow.toLowerCase()} note`} aria-haspopup="dialog" onClick={onOpen}>

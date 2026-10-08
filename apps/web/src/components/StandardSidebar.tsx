@@ -1,3 +1,4 @@
+import { SidebarHeading } from "./SidebarChrome";
 import { Archive, ArchiveRestore, Check, ChevronRight, CircleCheck, Ellipsis, Folder, FolderOpen, FolderPlus, LoaderCircle, Pencil, Plus, SquarePen } from "lucide-react";
 import { type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent, useState } from "react";
 import { type Chat, type GoalChats, chatKey } from "../lib/chats";
@@ -19,7 +20,8 @@ const sameTarget = (a: Target | null, b: Target) => !!a && a.goal === b.goal && 
  * be renamed in place or archived; archived ones are listed at the bottom and
  * restored from there.
  */
-export function StandardSidebar({ goals, current, archived, onChat, onNew, onNewGoal, onRename, onArchive, onRestore, onStatus, onOpenArchive }: {
+export function StandardSidebar({ goals, current, archived, onChat, onNew, onNewGoal, onRename, onArchive, onRestore, onStatus, onOpenArchive, onClose }: {
+  onClose: () => void;
   goals: GoalChats[];
   current: Current;
   archived: ArchivedView | null;
@@ -108,10 +110,8 @@ export function StandardSidebar({ goals, current, archived, onChat, onNew, onNew
   );
 
   return (
-    <nav id="standard-sidebar" className="chat-sidebar" aria-label="Goals and chats">
-      <div className="chat-sidebar-head">
-        <span className="brand">Socrates</span>
-      </div>
+    <nav id="standard-sidebar" className="chat-sidebar app-sidebar" aria-label="Goals and chats">
+      <SidebarHeading sidebarId="standard-sidebar" onClose={onClose} />
       <button type="button" className="new-chat" onClick={() => onNew(null)}><SquarePen aria-hidden /> New chat</button>
 
       <div className="sidebar-heading">

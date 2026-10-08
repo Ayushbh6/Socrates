@@ -101,7 +101,8 @@ svg { width: 1rem; height: 1rem; flex: none; }
 .planet-layer { position: absolute; inset: 0; z-index: 1; display: grid; place-items: center; padding-bottom: 6vh; pointer-events: none; transform: translate(calc(var(--mx) * 16px), calc(var(--my) * 12px)); transition: transform 1200ms cubic-bezier(0.22, 1, 0.36, 1); }
 /* Shared header: the same controls and geometry in Flow and Standard. */
 .flow, .standard { --app-header-h: 4.2rem; }
-.app-header { position: relative; z-index: 65; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 1rem; height: var(--app-header-h); min-width: 0; padding: 0.8rem 1rem; background: rgba(249, 248, 244, 0.94); backdrop-filter: blur(12px); }
+.app-header { position: relative; z-index: 40; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 1rem; height: var(--app-header-h); min-width: 0; padding: 0.8rem 1rem; pointer-events: none; }
+.app-header button, .app-header a, .app-header .chip-anchor, .app-header .lane-chip { pointer-events: auto; }
 .flow .app-header { position: absolute; inset: 0 0 auto; }
 .app-header-left, .app-header-actions { display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
 .app-header-left > .chip-anchor { min-width: 0; max-width: min(25vw, 20rem); }
@@ -189,7 +190,7 @@ svg { width: 1rem; height: 1rem; flex: none; }
 .work-narration { margin: 0.4rem 0 0.35rem; color: var(--text); font-size: 0.93rem; line-height: 1.6; overflow-wrap: anywhere; }
 .work-narration p, .work-narration ul, .work-narration ol { margin: 0 0 0.4rem; }
 .work-narration > :last-child { margin-bottom: 0; }
-.work-narration code { padding: 0.05rem 0.25rem; border-radius: 0.25rem; background: rgba(45, 55, 72, 0.06); font-family: var(--mono); font-size: 0.85em; }
+.work-narration code { padding: 0.05rem 0.25rem; border-radius: 0.25rem; background: rgba(45, 55, 72, 0.18); font-family: var(--mono); font-size: 0.85em; }
 /* One row: an icon, what it did in words, what it came to, and a chevron to open it. */
 .row-line { display: flex; align-items: center; gap: 0.5rem; width: 100%; min-width: 0; margin: 0; padding: 0.26rem 0.45rem; border: 0; border-radius: 0.5rem; background: transparent; color: var(--muted); font-size: 0.86rem; line-height: 1.45; text-align: left; }
 button.row-line:hover { background: var(--hover); color: var(--text); }
@@ -243,13 +244,13 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .prose > :first-child { margin-top: 0; }
 .prose p, .prose ul, .prose ol { margin: 0 0 0.9rem; }
 .prose h1, .prose h2, .prose h3 { margin: 1.4rem 0 0.6rem; font-size: 1.05rem; font-weight: 600; }
-.prose code { padding: 0.1rem 0.3rem; border-radius: 0.3rem; background: rgba(45, 55, 72, 0.06); font-family: var(--mono); font-size: 0.86em; }
+.prose code { padding: 0.1rem 0.3rem; border-radius: 0.3rem; background: rgba(45, 55, 72, 0.18); font-family: var(--mono); font-size: 0.86em; }
 .prose pre { padding: 0.85rem 1rem; overflow-x: auto; border-radius: 0.7rem; background: rgba(45, 55, 72, 0.05); }
 .prose pre code { padding: 0; background: none; }
 .prose a { color: var(--accent-strong); }
 .prose table { border-collapse: collapse; margin: 0 0 1rem; font-size: 0.9rem; }
 .prose th, .prose td { padding: 0.35rem 0.7rem; background: rgba(45, 55, 72, 0.03); text-align: left; }
-.prose th { background: rgba(45, 55, 72, 0.06); }
+.prose th { background: rgba(45, 55, 72, 0.18); }
 /* A soft point at the end of text that is still being written. */
 .prose[data-live="true"] > :last-child::after, .work-narration[data-live="true"] > :last-child::after { content: ""; display: inline-block; width: 0.45rem; height: 0.45rem; margin-left: 0.3rem; border-radius: 50%; background: var(--accent); animation: writing 1.3s ease-in-out infinite; }
 @keyframes writing { 0%, 100% { opacity: 0.25; transform: scale(0.8); } 50% { opacity: 0.95; transform: scale(1); } }
@@ -398,10 +399,8 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 
 /* Sidebar */
 
-.sidebar-scrim { position: fixed; inset: var(--app-header-h) 0 0; z-index: 55; background: rgba(45, 55, 72, 0.06); }
-.sidebar { position: fixed; top: calc(var(--app-header-h) + 0.25rem); bottom: 0.75rem; left: 0.75rem; z-index: 60; width: min(19rem, calc(100vw - 1.5rem)); padding: 0.75rem; overflow-y: auto; border-radius: 1.15rem; background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(18px); box-shadow: var(--shadow-float); }
-.sidebar-head { display: flex; align-items: center; justify-content: space-between; padding: 0.2rem 0.2rem 0.6rem 0.6rem; font-family: var(--serif); font-size: 1.15rem; }
-.sidebar-head strong { font-weight: 400; color: var(--accent-strong); }
+.sidebar-scrim { position: fixed; inset: 0; z-index: 55; background: rgba(45, 55, 72, 0.18); }
+.sidebar { position: fixed; inset: 0 auto 0 0; z-index: 60; box-shadow: var(--shadow-float); }
 .sidebar-section { margin-bottom: 1rem; }
 .sidebar-label, .sidebar-day { margin: 0.6rem 0 0.25rem; padding: 0 0.6rem; color: var(--faint); font-size: 0.68rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
 .sidebar-day { font-weight: 500; letter-spacing: 0.04em; text-transform: none; }
@@ -458,12 +457,13 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 /* Standard mode: the layout of any chat app, goals as folders with their chats beneath */
 
 .standard { position: fixed; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: var(--app-header-h) minmax(0, 1fr); background: var(--bg); }
-.standard > .app-header { grid-column: 1 / -1; grid-row: 1; }
+.standard > .app-header { grid-column: -2 / -1; grid-row: 1; }
 .standard > .chat-main { grid-column: -2 / -1; grid-row: 2; }
-.standard > .chat-sidebar { grid-column: 1; grid-row: 2; }
+.standard > .chat-sidebar { grid-column: 1; grid-row: 1 / -1; }
 .standard[data-sidebar="true"] { grid-template-columns: 17.5rem minmax(0, 1fr); }
 .brand { font-family: var(--serif); font-size: 1.35rem; color: var(--accent-strong); }
-.chat-sidebar { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; padding: 0.8rem 0.6rem; background: rgba(17, 40, 32, 0.03); scrollbar-width: thin; }
+.app-sidebar { display: flex; flex-direction: column; width: min(17.5rem, 86vw); min-height: 0; overflow-y: auto; padding: 0.8rem 0.6rem; background: #f3f2ed; scrollbar-width: thin; }
+.app-sidebar > * { flex-shrink: 0; }
 .chat-sidebar-head { display: flex; align-items: center; justify-content: space-between; padding: 0 0.35rem 0.7rem 0.5rem; }
 .new-chat { display: flex; align-items: center; gap: 0.55rem; width: 100%; margin-bottom: 0.9rem; padding: 0.55rem 0.6rem; border: 0; border-radius: 0.7rem; background: transparent; color: var(--text); font-size: 0.88rem; font-weight: 540; text-align: left; }
 .new-chat:hover { background: var(--hover); }
@@ -537,8 +537,8 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 /* Narrower screens: the sidebar opens below the shared header, over the chat. */
 @media (max-width: 1099px) {
   .standard, .standard[data-sidebar="true"] { grid-template-columns: minmax(0, 1fr); }
-  .chat-sidebar { position: fixed; inset: var(--app-header-h) auto 0 0; z-index: 60; width: min(19rem, 86vw); background: #f3f2ed; box-shadow: var(--shadow-float); }
-  .sidebar-scrim-button { position: fixed; inset: var(--app-header-h) 0 0; z-index: 55; display: block; border: 0; background: rgba(45, 55, 72, 0.18); }
+  .chat-sidebar { position: fixed; inset: 0 auto 0 0; z-index: 60; width: min(17.5rem, 86vw); background: #f3f2ed; box-shadow: var(--shadow-float); }
+  .sidebar-scrim-button { position: fixed; inset: 0; z-index: 55; display: block; border: 0; background: rgba(45, 55, 72, 0.18); }
 }
 
 /* Tool output viewer */
@@ -647,7 +647,7 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .terminal-bar { display: flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0.5rem 0 0.75rem; }
 .terminal-tabs { display: flex; flex: 1; gap: 0.2rem; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .terminal-tab { display: flex; flex: none; align-items: center; border-radius: 0.55rem; color: var(--muted); }
-.terminal-tab[data-on="true"] { background: rgba(45, 55, 72, 0.06); color: var(--text); }
+.terminal-tab[data-on="true"] { background: rgba(45, 55, 72, 0.18); color: var(--text); }
 .terminal-tab-name { display: inline-flex; align-items: center; gap: 0.45rem; max-width: 16rem; padding: 0.35rem 0.6rem; border: 0; background: transparent; font-family: var(--mono); font-size: 0.78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .terminal-tab-close { display: inline-grid; place-items: center; width: 1.4rem; height: 1.4rem; margin-right: 0.2rem; padding: 0; border: 0; border-radius: 999px; background: transparent; color: var(--faint); }
 .terminal-tab-close:hover { background: var(--hover); color: var(--text); }
@@ -705,3 +705,5 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .goal-row[data-status="completed"] > span, .goal-row[data-status="superseded"] > span { color: var(--muted); }
 .goal-row .goal-done { flex: none; width: 0.85rem; height: 0.85rem; color: var(--accent); }
 .goal-row .goal-state { flex: none; color: var(--faint); font-size: 0.7rem; font-weight: 400; }
+
+.sidebar-toggle-slot { display: block; flex: none; width: 2.4rem; height: 2.4rem; }

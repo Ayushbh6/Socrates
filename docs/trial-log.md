@@ -90,6 +90,8 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 
 30. **Always open in Flow** (2026-10-09). Asked: Socrates should always open in Flow, rather than restoring Standard. The page now initializes its mode to Flow and no longer reads or writes the saved layout preference. Switching modes still works for the current page session; a reload or fresh opening returns to Flow. Verified in Chrome: Flow on load, Standard when selected, Flow again after reload. Typecheck, web build and all 838 tests passed (one live test skipped).
 
+31. **Restore the open canvas and full-height sidebars** (2026-10-09). **Asked:** remove the solid header introduced during standardisation, restore the full-height sidebars, and prevent notes getting stuck behind the top strip. **Done:** the shared controls float on a transparent, pointer-through header; both sidebars regain their full height. Following the request for identical sidebar UI and removal of duplicate buttons, both share panel styling, dimensions, heading and close toggle; the header opener is only rendered while closed. Note grips stay within the viewport when dragged or nudged, and previously saved offscreen positions recover automatically. The fresh-page Flow default is unchanged. **Open suggestions:** none for this correction.
+
 ## Suggested
 
 From the observability phase:
