@@ -328,7 +328,8 @@ export class Runtime {
     if (!model || !turn.taskId || !turn.goalId || this.store.titleSetByUser(turn.taskId)) return;
     const before = this.store.requireTask(turn.taskId).title;
     const asked = (this.store.getEvent(turn.userEventId)?.payload as { text?: string } | undefined)?.text ?? "";
-    void nameChat(model, { message: asked, answer, trace: { goalId: turn.goalId, taskId: turn.taskId, turnId: turn.id, userEventId: turn.userEventId } })
+    // OpenRouter models are asked not to think: a name needs no reasoning, and thinking only slows it and invites copying.
+    void nameChat(model, { message: asked, answer, ...(this.models.titler?.provider === "openrouter" ? { effort: "off" as const } : {}), trace: { goalId: turn.goalId, taskId: turn.taskId, turnId: turn.id, userEventId: turn.userEventId } })
       .then((title) => {
         const task = this.store.getTask(turn.taskId!);
         // A name the user chose, or one that changed meanwhile, is never replaced.
