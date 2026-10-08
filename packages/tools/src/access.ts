@@ -61,8 +61,9 @@ export function protectedPath(input: string): ToolError {
 }
 
 /** The `<ACCESS>` lines of the working-agent context. */
-export function describeAccess(policy: AccessPolicy): string {
+export function describeAccess(policy: AccessPolicy, start: string | null = null): string {
   return [
+    ...(start ? [`starts in: ${start}. Relative paths and commands begin here; any other path is absolute or starts with ~/.`] : []),
     policy.folders === null
       ? "files: anywhere on this computer by absolute path (Socrates' own data folders excepted)."
       : `files: ${policy.folders.length ? policy.folders.join(", ") : "no folders yet"}. Any other path, including the workspace when it is not listed, asks the user first, who may refuse.`,

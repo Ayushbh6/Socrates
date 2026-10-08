@@ -1,4 +1,5 @@
 import type { Attachment, EventRefs, ModelClient, TurnStop } from "@socrates/contracts";
+import { homedir } from "node:os";
 import { abortable } from "@socrates/shared";
 import { TokenCalibration } from "@socrates/providers";
 import { GoalRouter, type RoutedPart, laneSummaries } from "@socrates/router";
@@ -30,10 +31,10 @@ export interface SocratesOptions {
   /** The application's approval callback; each message may supply its own. */
   approve: Approve;
   /**
-   * The application's workspace for a goal that has none yet, such as the
-   * folder Socrates was launched in. Socrates binds it to the goal before the
-   * agent runs, permanently. Without it, such a goal works without files and
-   * the agent asks where the work belongs.
+   * The application's working folder. Socrates binds it to a project goal
+   * that has none yet, permanently, before the agent runs; the general
+   * conversation starts in it each turn without being bound. Without it, work
+   * starts in the user's home when there is an access policy.
    */
   resolveWorkspace?: (goal: Goal) => { name: string; rootPath: string } | null;
   /** Installed Skills and MCP servers; the application opens it and Socrates.close closes it. */
@@ -736,7 +737,7 @@ export class Socrates {
     }
 
     const { answer } = outcome;
-    const anchors = applyAnchors({ store, goal, workspace, turn, proposals: answer.anchors, decisions: anchorDecisions, refs, access: this.options.access?.() ?? null });
+    const anchors = applyAnchors({ store, goal, workspace: store.requireGoal(goal.id).workspaceId ? workspace : null, turn, proposals: answer.anchors, decisions: anchorDecisions, refs, access: this.options.access?.() ?? null });
     const visible = [answer.full_answer, anchors.question].filter(Boolean).join("\n\n");
     const response = store.recordResponse(visible, refs);
     store.completeTurn(turn.id, {
@@ -757,8 +758,16 @@ export class Socrates {
     return { order: part.order, turn: this.store.requireTurn(part.turn.id), task: this.store.requireTask(part.task.id), status: "interrupted", stop: null, answer: "Not started.", toolCalls: 0 };
   }
 
+  /**
+   * Where the turn's tools start: relative paths and commands begin here. A
+   * project goal is bound to the application's working folder, permanently.
+   * The general conversation is never bound: it starts in the working folder
+   * as it is now. With an access policy, work with no folder starts in the
+   * user's home, where the policy asks before every path outside their folders.
+   */
   private workspaceFor(goal: Goal): WorkspaceRoot | null {
-    if (!goal.workspaceId && !goal.general) {
+    if (goal.general) return this.openWorkspace(this.options.resolveWorkspace?.(goal) ?? null) ?? this.homeWorkspace();
+    if (!goal.workspaceId) {
       const chosen = this.options.resolveWorkspace?.(goal);
       const existing = chosen ? this.store.findWorkspaceByName(chosen.name) : null;
       if (chosen && existing && existing.rootPath !== chosen.rootPath) {
@@ -768,12 +777,21 @@ export class Socrates {
       }
     }
     const workspace = goal.workspaceId ? this.store.getWorkspace(goal.workspaceId) : null;
-    if (!workspace?.rootPath) return null;
+    return this.openWorkspace(workspace?.rootPath ? { name: workspace.name, rootPath: workspace.rootPath } : null) ?? this.homeWorkspace();
+  }
+
+  private openWorkspace(folder: { name: string; rootPath: string } | null): WorkspaceRoot | null {
+    if (!folder) return null;
     try {
-      return WorkspaceRoot.open(workspace.name, workspace.rootPath);
+      return WorkspaceRoot.open(folder.name, folder.rootPath);
     } catch (error) {
-      this.options.log?.(`workspace ${workspace.name} is unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      this.options.log?.(`workspace ${folder.name} is unavailable: ${error instanceof Error ? error.message : String(error)}`);
       return null;
     }
+  }
+
+  /** Without an access policy, tools stay inside a workspace, so there is none to fall back to. */
+  private homeWorkspace(): WorkspaceRoot | null {
+    return this.options.access?.() ? this.openWorkspace({ name: "home", rootPath: homedir() }) : null;
   }
 }

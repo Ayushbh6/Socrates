@@ -1,8 +1,9 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { AccessPolicy } from "@socrates/tools";
-import { continueTask, decision, defineTask } from "../../router/test/helpers";
+import { continueTask, decision, defineTask, general } from "../../router/test/helpers";
 import { call, contextText, final, tempDir, world, writeFiles } from "./helpers";
 
 describe("access", () => {
@@ -17,7 +18,7 @@ describe("access", () => {
     await socrates.handle("Fix the port.");
     const text = contextText(model.requests[0]!);
     const block = /<ACCESS>\n([\s\S]*?)\n<\/ACCESS>/.exec(text)![1]!;
-    expect(block).toBe(`files: ${w.root}. Any other path, including the workspace when it is not listed, asks the user first, who may refuse.\napprovals: the user approves each edit, patch, command and changing MCP call before it runs, and may refuse. Reading and searching need no approval.`);
+    expect(block).toBe(`starts in: ${realpathSync(w.root)}. Relative paths and commands begin here; any other path is absolute or starts with ~/.\nfiles: ${w.root}. Any other path, including the workspace when it is not listed, asks the user first, who may refuse.\napprovals: the user approves each edit, patch, command and changing MCP call before it runs, and may refuse. Reading and searching need no approval.`);
     expect(text.indexOf("<ACCESS>")).toBeGreaterThan(text.indexOf("<CURRENT_TASK>"));
     expect(text.indexOf("<ACCESS>")).toBeLessThan(text.indexOf("<CURRENT_USER_MESSAGE>"));
     expect(w.approvals).toEqual([{ kind: "action", tool: "edit", detail: "Edit server.js", preview: "--- replace\n30\n+++ with\n3000" }]);
@@ -59,5 +60,36 @@ describe("access", () => {
     expect(w.store.listAnchors(w.goalId).map(a => a.path)).toEqual(["plan.md"]);
     expect(w.approvals).toEqual([]);
     expect(w.store.listEvents({ type: "agent_warning" }).some(e => JSON.stringify(e.payload).includes("excluded by file access"))).toBe(true);
+  });
+  it("starts the general conversation in the working folder each turn without binding it", async () => {
+    const w = await world({ files: { "notes.md": "GENERAL-READ-SENTINEL" } });
+    const { socrates, model } = w.socrates([general()], [
+      { toolCalls: [call("read", { path: "notes.md" })] },
+      { toolCalls: [call("terminal", { command: "echo TERMINAL-$((40+2))" })] },
+      final(),
+    ], { access: () => ({ folders: [w.root], approvals: "auto", protected: [] }), resolveWorkspace: () => ({ name: "work", rootPath: w.root }) });
+    await socrates.handle("Read my notes and run a quick command.");
+    expect(contextText(model.requests[0]!)).toContain(`starts in: ${realpathSync(w.root)}.`);
+    expect(JSON.stringify(model.requests[1]!.messages.at(-1)!.content)).toContain("GENERAL-READ-SENTINEL");
+    expect(JSON.stringify(model.requests[2]!.messages.at(-1)!.content)).toContain("TERMINAL-42");
+    expect(w.approvals).toEqual([]);
+    expect(w.store.getGeneralGoal()!.workspaceId).toBeNull();
+  });
+
+  it("works with no workspace at all: it starts in the home folder and asks before every path outside the user's folders", async () => {
+    const outside = tempDir();
+    writeFiles(outside, { "todo.md": "OUTSIDE-READ-SENTINEL" });
+    const w = await world({ workspace: false });
+    const { socrates, model } = w.socrates([continueTask()], [
+      { toolCalls: [call("read", { path: path.join(outside, "todo.md") })] },
+      { toolCalls: [call("terminal", { command: "echo TERMINAL-$((40+2))" })] },
+      final(),
+    ], { access: () => ({ folders: [], approvals: "ask", protected: [] }) });
+    await socrates.handle("Read my todo and run a quick command.");
+    expect(contextText(model.requests[0]!)).toContain(`starts in: ${realpathSync(homedir())}.`);
+    expect(JSON.stringify(model.requests[1]!.messages.at(-1)!.content)).toContain("OUTSIDE-READ-SENTINEL");
+    expect(JSON.stringify(model.requests[2]!.messages.at(-1)!.content)).toContain("TERMINAL-42");
+    expect(w.approvals.map((a) => a.kind).sort()).toEqual(["action", "outside_folder", "outside_folder"]);
+    expect(w.store.requireGoal(w.goalId).workspaceId).toBeNull();
   });
 });
