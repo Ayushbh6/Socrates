@@ -5,7 +5,7 @@ import remarkGfm from "remark-gfm";
 import { diffLines } from "../lib/evidence";
 import type { Exchange } from "../lib/model";
 import type { CallView } from "../lib/types";
-import { type Segment, type ToolStep, type WorkItem, arriving, callVerb, elapsed, groupLabel, thoughtLabel, waitingLine, workSegments, workSummary } from "../lib/work";
+import { type Segment, type ToolStep, type WorkItem, arriving, callFailed, callVerb, elapsed, groupLabel, thoughtLabel, waitingLine, workSegments, workSummary } from "../lib/work";
 import { EvidenceViewer, ThinkingViewer } from "./EvidenceViewer";
 
 /** The current time, every second while `on`. */
@@ -148,12 +148,13 @@ function ToolRow({ step, output, now }: { step: ToolStep; output: string | null;
   const [open, setOpen] = useState(false);
   const [viewing, setViewing] = useState(false);
   const running = step.status === "running";
+  const failed = callFailed(step);
   const Icon = ICONS[step.call.kind];
   const result = step.result;
   const took = running ? now - Date.parse(step.at) : result?.ms ?? null;
   const live = running && output ? output.replace(/\n+$/, "").split("\n").slice(-LIVE_LINES).join("\n") : "";
   return (
-    <div className="tool" data-status={step.status} data-open={open}>
+    <div className="tool" data-status={failed ? "error" : step.status} data-open={open}>
       <button type="button" className="row-line" onClick={() => setOpen(!open)} aria-expanded={open}>
         <Icon aria-hidden className="row-icon" />
         <span className="row-text">
@@ -161,9 +162,9 @@ function ToolRow({ step, output, now }: { step: ToolStep; output: string | null;
           {step.call.target && <code>{step.call.target}</code>}
           {step.call.detail && <span className="row-detail">{step.call.detail}</span>}
         </span>
-        {result?.summary && <Summary text={result.summary} failed={step.status === "error"} />}
+        {result?.summary && <Summary text={result.summary} failed={failed} />}
         {took !== null && took >= 1000 && <span className="row-time">{elapsed(took)}</span>}
-        {running ? <LoaderCircle aria-label="Running" className="row-state spin" /> : step.status === "error" ? <X aria-label="Failed" className="row-state" /> : null}
+        {running ? <LoaderCircle aria-label="Running" className="row-state spin" /> : failed ? <X aria-label="Failed" className="row-state" /> : null}
         <ChevronRight aria-hidden className="row-chevron" />
       </button>
       {live && <pre className="tool-live" aria-live="off">{live}</pre>}
@@ -184,7 +185,7 @@ function ToolRow({ step, output, now }: { step: ToolStep; output: string | null;
 function Summary({ text, failed }: { text: string; failed: boolean }) {
   const counts = /^\+(\d+) −(\d+)$/.exec(text);
   if (counts) return <span className="row-summary"><span className="added">+{counts[1]}</span> <span className="removed">−{counts[2]}</span></span>;
-  return <span className="row-summary" data-failed={failed || /^exit [1-9]/.test(text)}>{text}</span>;
+  return <span className="row-summary" data-failed={failed}>{text}</span>;
 }
 
 /** An edit's change: added and removed lines in colour, under each file's name. */

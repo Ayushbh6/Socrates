@@ -30,6 +30,11 @@ export interface ResultView {
   verb: string | null;
   /** How long the call took. */
   ms: number | null;
+  /**
+   * Whether it failed: the call itself, or the command it ran or waited on
+   * (a non-zero exit, a timeout, a crash). Every failure looks the same.
+   */
+  failed: boolean;
 }
 
 const TARGET_CHARS = 200;
@@ -164,6 +169,17 @@ export function diffCounts(diff: string): { added: number; removed: number } {
   return { added, removed };
 }
 
+/**
+ * A command that ended badly (a non-zero exit, its deadline, or a crash), seen
+ * by the call that ran or waited on it. Stopping, reading or typing into a
+ * session never fails through the command, and a wait that ran out of time
+ * while the command goes on is no failure.
+ */
+function commandFailed(tool: string, r: Record<string, unknown>): boolean {
+  const runs = tool === "terminal" || r.action === "restart" || (r.action === "wait" && r.event !== "timeout");
+  return runs && ((typeof r.exit_code === "number" && r.exit_code !== 0) || r.status === "timed_out" || (typeof r.exit_code !== "number" && !!str(r.signal)));
+}
+
 function exitSummary(r: Record<string, unknown>): string | null {
   if (typeof r.exit_code === "number") return `exit ${r.exit_code}`;
   if (str(r.signal)) return `stopped by ${str(r.signal)}`;
@@ -176,10 +192,10 @@ export function describeResult(
   p: { status: "ok" | "error"; content: string; result: unknown; error: { message: string; correction: string } | null; wall_time_ms?: number },
 ): ResultView {
   const ms = typeof p.wall_time_ms === "number" ? p.wall_time_ms : null;
-  const base: ResultView = { summary: null, preview: "", truncated: false, diff: null, verb: null, ms };
+  const base: ResultView = { summary: null, preview: "", truncated: false, diff: null, verb: null, ms, failed: false };
   if (p.status === "error") {
     const message = p.error ? `${p.error.message}${p.error.correction ? `\n${p.error.correction}` : ""}` : p.content;
-    return { ...base, summary: "failed", ...head(message) };
+    return { ...base, summary: "failed", ...head(message), failed: true };
   }
   const r = (typeof p.result === "object" && p.result !== null ? p.result : {}) as Record<string, unknown>;
   switch (tool) {
@@ -226,7 +242,7 @@ export function describeResult(
       const screen = typeof r.screen === "object" && r.screen !== null ? str((r.screen as { text?: unknown }).text) : "";
       const output = screen || str(r.output);
       const summary = r.event === "timeout" ? "timed out" : typeof r.event === "string" && r.action === "wait" && r.event !== "exit" ? String(r.event).replace(/_/g, " ") : r.status === "running" && r.action === undefined ? (r.ready === true ? "running, ready" : "still running") : exitSummary(r) ?? (r.input_required === true ? "waiting for input" : null);
-      return { ...base, summary, ...tail(output) };
+      return { ...base, summary, ...tail(output), failed: commandFailed(tool, r) };
     }
     default:
       return { ...base, ...head(p.content) };

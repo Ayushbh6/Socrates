@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { type Exchange, emptyModel, reduce } from "../src/lib/model";
 import type { CallView, ServerMessage } from "../src/lib/types";
-import { arriving, callCounts, callVerb, groupLabel, thoughtLabel, waitingLine, workSegments, workSummary } from "../src/lib/work";
+import { arriving, callCounts, callFailed, callVerb, groupLabel, thoughtLabel, waitingLine, workSegments, workSummary } from "../src/lib/work";
 
 const at = "2026-10-04T10:00:00Z";
 let seq = 500;
@@ -45,6 +45,10 @@ describe("the work behind an answer", () => {
     const failed = (c: CallView) => ({ call: c, status: "error" as const });
     expect(callCounts([failed(CALLS.test!)])).toEqual(["1 tool call failed"]);
     expect(callCounts([{ call: CALLS.test!, status: "ok" }, failed(CALLS.test!), failed(CALLS.edit!), { call: CALLS.read!, status: "running" }, failed(CALLS.read2!)])).toEqual(["Ran 1 command", "Read 1 file", "3 tool calls failed"]);
+    // A command that ran and exited non-zero is a failure like any other.
+    const exited = { call: CALLS.test!, status: "ok" as const, result: { summary: "exit 1", preview: "", truncated: false, diff: null, verb: null, ms: 10, failed: true } };
+    expect(callCounts([exited, { call: CALLS.read!, status: "ok" }])).toEqual(["Read 1 file", "1 tool call failed"]);
+    expect(callFailed(exited)).toBe(true);
     const e = exchange(act(tool("e1", "read")), act(tool("e2", "test")));
     const group = workSegments(e)[0]!;
     expect(group.kind === "group" && groupLabel(group.items)).toBe("Read 1 file, ran 1 command");

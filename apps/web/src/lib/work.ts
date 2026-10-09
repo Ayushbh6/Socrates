@@ -49,8 +49,8 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
  * the kinds first appear. A call that failed, of any kind, is never counted as
  * done: every failure is one last part, "1 tool call failed".
  */
-export function callCounts(steps: Pick<ToolStep, "call" | "status">[]): string[] {
-  const calls = steps.filter((s) => s.status !== "error").map((s) => s.call);
+export function callCounts(steps: (Pick<ToolStep, "call" | "status"> & { result?: ToolStep["result"] })[]): string[] {
+  const calls = steps.filter((s) => !callFailed(s)).map((s) => s.call);
   const failed = steps.length - calls.length;
   const kinds: CallView["kind"][] = [];
   for (const c of calls) if (!kinds.includes(c.kind)) kinds.push(c.kind);
@@ -105,6 +105,11 @@ export function workSummary(segments: Segment[], exchange: Pick<Exchange, "at" |
     parts.push(parts.length ? label[0]!.toLowerCase() + label.slice(1) : label);
   }
   return parts.join(" · ") || (working ? "Working" : "Worked");
+}
+
+/** Whether a call failed, or the command it ran did: every failure, of any tool, looks the same. */
+export function callFailed(step: Pick<ToolStep, "status"> & { result?: ToolStep["result"] }): boolean {
+  return step.status === "error" || step.result?.failed === true;
 }
 
 /** What a tool row says: "Ran", "Running", or the result's own verb ("Created"). */

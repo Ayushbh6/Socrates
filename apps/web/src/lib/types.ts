@@ -211,6 +211,8 @@ export interface ResultView {
   diff: string | null;
   verb: string | null;
   ms: number | null;
+  /** Whether the call, or the command it ran, failed; older servers leave it out. */
+  failed?: boolean;
 }
 
 export type ActivityBody =

@@ -55,6 +55,20 @@ describe("tool results in plain words", () => {
     expect(describeResult("terminal_control", ok({ action: "wait", status: "running", input_required: true, output: "Port? " }))).toMatchObject({ summary: "waiting for input", preview: "Port? " });
   });
 
+  it("marks every failure the same way: a failed call, and a command that exited non-zero, timed out or crashed", () => {
+    expect(describeResult("read", { status: "error", content: "", result: null, error: { message: "No such file.", correction: "" } }).failed).toBe(true);
+    expect(describeResult("terminal", ok({ status: "completed", exit_code: 1, output: "" })).failed).toBe(true);
+    expect(describeResult("terminal", ok({ status: "timed_out", output: "" })).failed).toBe(true);
+    expect(describeResult("terminal_control", ok({ action: "wait", event: "exit", status: "exited", signal: "SIGSEGV", output: "" })).failed).toBe(true);
+    expect(describeResult("terminal", ok({ status: "completed", exit_code: 0, output: "" })).failed).toBe(false);
+    expect(describeResult("terminal", ok({ status: "running", terminal: "web", output: "" })).failed).toBe(false);
+    // Stopping a server on purpose, or a wait that ran out of time while the command goes on, is no failure.
+    expect(describeResult("terminal_control", ok({ action: "terminate", status: "exited", signal: "SIGTERM", output: "" })).failed).toBe(false);
+    expect(describeResult("terminal_control", ok({ action: "read", status: "exited", exit_code: 1, output: "" })).failed).toBe(false);
+    expect(describeResult("terminal_control", ok({ action: "wait", event: "timeout", status: "running", output: "" })).failed).toBe(false);
+    expect(describeResult("edit", ok({ path: "a.ts", diff: "" })).failed).toBe(false);
+  });
+
   it("shows an edit as its diff with counts, and says when it created the file", () => {
     const diff = "--- a/a.ts\n+++ b/a.ts\n@@ -1,2 +1,2 @@\n-old\n+new\n+more\n same\n";
     expect(diffCounts(diff)).toEqual({ added: 2, removed: 1 });
