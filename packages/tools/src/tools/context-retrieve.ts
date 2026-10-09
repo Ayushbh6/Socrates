@@ -244,6 +244,7 @@ async function search(input: Search, ctx: HandlerContext) {
     let hits: Hit[] = ctx.store.searchExchanges({
       ...filter,
       ...dates,
+      includeRedone: true,
       ...(fts ? { fts } : {}),
       ...(input.query && match === "exact" ? { exact: input.query } : {}),
       limit: FROZEN_SET_LIMIT + 1,
@@ -264,6 +265,7 @@ async function search(input: Search, ctx: HandlerContext) {
 
   const goals = new Map<string, Goal>();
   const goalOf = (id: string) => goals.get(id) ?? goals.set(id, ctx.store.requireGoal(id)).get(id)!;
+  const redoneIn = (turnId: string) => redoneInOf(ctx, turnId);
   const render = (h: Hit, ref: string) => {
     const user = preview(h.userMessage, PREVIEW_TOKENS);
     const reply = preview(h.response, PREVIEW_TOKENS);
@@ -276,6 +278,7 @@ async function search(input: Search, ctx: HandlerContext) {
       socrates_response: reply.text,
       complete: user.complete && reply.complete,
       omitted: [user.omitted && `user message: ${user.omitted}`, reply.omitted && `response: ${reply.omitted}`].filter(Boolean).join("; ") || null,
+      ...redoneIn(h.turnId),
     };
   };
   const { out, nextCursor } = page(ctx, key, items, offset, topN, (h) => json(render(h, "r0")), { capped, maxBytes: MAX_BYTES, maxLines: MAX_LINES });
@@ -293,6 +296,15 @@ async function search(input: Search, ctx: HandlerContext) {
     next_cursor: nextCursor,
     ...(capped ? { note: `More than ${FROZEN_SET_LIMIT} exchanges match; only the first ${FROZEN_SET_LIMIT} can be paged. Narrow the query, target, or dates.` } : {}),
   };
+}
+
+/** For a turn set aside by a redo: where its question was asked again, so its answer is not taken as that task's. */
+function redoneInOf(ctx: HandlerContext, turnId: string): { redone_in?: string } {
+  const redo = ctx.store.redoneTo(turnId);
+  if (!redo?.taskId) return {};
+  const task = ctx.store.requireTask(redo.taskId);
+  const goal = ctx.store.requireGoal(task.goalId);
+  return { redone_in: `${taskSelector(goal, task)} (the user asked this again there; this answer was set aside)` };
 }
 
 // ── inspect ─────────────────────────────────────────────────────────────────

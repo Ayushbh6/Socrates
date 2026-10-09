@@ -67,6 +67,7 @@ export function assembleContext(input: ContextInput): TextPart[] {
     goal.general ? null : goalState(store, goal, task),
     task.general && !turn.laneId ? null : currentTask(task, input.part, store.requestForTurn(turn.id).request, laneOf(store, turn), taskStatus(store, task, turn)),
     task.general ? block("RECENT_ACTIVITY", renderActivity(store, input.now, input.timeZone)) : null,
+    redoneFrom(store, turn),
     input.lanes ?? null,
     input.access ? block("ACCESS", describeAccess(input.access, input.workspace?.root ?? null)) : null,
     ...input.dependsOn.map((d) => evidenceFromPart(store, d.order, d.turn)),
@@ -110,6 +111,41 @@ function block(name: string, body: string, attributes = ""): string {
 export function userBlock(name: string | null | undefined): string | null {
   const clean = name?.replace(/[<>\r\n]+/g, " ").trim();
   return clean ? block("USER", `The user's name is ${clean}.`) : null;
+}
+
+/** At most this many changed files and commands of the first attempt are listed in `<REDONE_FROM>`. */
+const REDONE_FROM_MAX_ITEMS = 20;
+
+/**
+ * `<REDONE_FROM>`: for a question the user asked again here because the router
+ * put it in another task, what that first attempt did that may still be in
+ * effect. Facts only, never its answer, which was written with the other
+ * task's context.
+ */
+export function redoneFrom(store: LedgerStore, turn: Turn): string | null {
+  const first = store.redoOf(turn.id);
+  if (!first?.taskId) return null;
+  const task = store.requireTask(first.taskId);
+  const goal = store.requireGoal(task.goalId);
+  const files = store.listEvents({ turnId: first.id, type: "file_changed" }).map((e) => {
+    const p = e.payload as EventPayloads["file_changed"];
+    return p.action === "moved" ? `- moved ${p.from_path} to ${p.path}` : `- ${p.action} ${p.path}`;
+  });
+  const exits = new Map(store.listEvents({ type: "terminal_exited" }).map((e) => [(e.payload as EventPayloads["terminal_exited"]).session_id, e.payload as EventPayloads["terminal_exited"]]));
+  const commands = store.listEvents({ turnId: first.id, type: "terminal_started" }).map((e) => {
+    const p = e.payload as EventPayloads["terminal_started"];
+    const exit = exits.get(p.session_id);
+    const ended = !exit ? (p.background ? "still running in the background" : "no exit recorded") : exit.exit_code !== null ? `exit ${exit.exit_code}` : `ended: ${exit.signal ?? exit.reason}`;
+    return `- ran \`${p.command.split("\n")[0]}\` in ${p.cwd} (${ended})`;
+  });
+  const done = [...files, ...commands];
+  const lines = [
+    `The user first asked this in another task, "${goal.general ? "General conversation" : goal.title} · ${task.title}", and asked it again here because it belongs here. Answer it with this task's context. That attempt ${first.status === "completed" ? "finished" : "was stopped"}; its answer is not shown, because it was written for the other task.`,
+    done.length
+      ? `What it did may still be in effect. Check the current state before repeating any of it:\n${done.slice(0, REDONE_FROM_MAX_ITEMS).join("\n")}${done.length > REDONE_FROM_MAX_ITEMS ? `\n- and ${done.length - REDONE_FROM_MAX_ITEMS} more` : ""}`
+      : "It changed no files and ran no commands.",
+  ];
+  return block("REDONE_FROM", lines.join("\n\n"));
 }
 
 function goalBlock(store: LedgerStore, goal: Goal): string {

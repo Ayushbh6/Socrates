@@ -215,9 +215,18 @@ export interface ResultView {
   failed?: boolean;
 }
 
+/** A chat as the page names it: its goal, its task, and which chat of the task. */
+export interface Place {
+  goal: { number: number; title: string };
+  task: { number: number; title: string };
+  chat: number;
+}
+
 export type ActivityBody =
   | { kind: "message"; text: string; attachments?: AttachmentView[] }
-  | { kind: "routed"; turnId: string; messageSeq?: number | null; projectTurn: number; goal: { number: number; title: string }; task: { number: number; title: string }; chat?: number; lane: number | null }
+  | { kind: "routed"; turnId: string; messageSeq?: number | null; projectTurn: number; goal: { number: number; title: string }; task: { number: number; title: string }; chat?: number; lane: number | null; redoneFrom?: Place }
+  /** The turn's question was asked again in another task; the turn is set aside. */
+  | { kind: "redone"; turnId: string; to: Place }
   | { kind: "question"; turnId: string; text: string }
   | { kind: "step"; turnId: string; text: string; thinking?: string | null; thinkingTruncated?: boolean }
   | { kind: "tool_started"; turnId: string; task: string; handle: string; line: string; call: CallView }
@@ -305,6 +314,7 @@ export type Command =
   | { type: "hello"; after?: number }
   | { type: "send"; id: string; text: string; to: string; attachments?: { id: string; name: string }[]; chat?: ChatChoice; keep?: KeepChoice }
   | { type: "queue"; id: string; text: string; attachments?: { id: string; name: string }[]; chat?: ChatChoice; keep?: KeepChoice }
+  | { type: "redo"; id: string; turn: string; chat?: ChatChoice; general?: true }
   | { type: "queue_remove"; id: string }
   | { type: "queue_to_lane"; id: string }
   | { type: "cancel"; conversation: string; chat?: ChatChoice }

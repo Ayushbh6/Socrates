@@ -37,7 +37,8 @@ export interface RetrievedHistoryInput {
  */
 export function retrievedHistory(store: LedgerStore, input: RetrievedHistoryInput): string | null {
   const now = input.now ?? store.clock.now();
-  const exclude = input.excludeTurnIds ?? new Set<string>();
+  // Turns set aside by a redo are never brought back.
+  const exclude = new Set([...(input.excludeTurnIds ?? []), ...store.redoneTurnIds()]);
   const exchange = (turnId: string | null) => (turnId && !exclude.has(turnId) ? store.exchangeForTurn(turnId) : null);
 
   const own: ExchangeHit[] = [];

@@ -128,6 +128,12 @@ export interface HandleOptions {
   alongside?: boolean;
   /** Receives each part's turn and task once it is bound, before it runs. */
   onBound?: (turnId: string, taskId: string) => void;
+  /**
+   * With `target`: the message asks this turn's question again in the chosen
+   * task, because the router put it in the wrong one (architecture/agent-harness.md,
+   * "Redo in another task"). The turn is set aside once the redo is bound.
+   */
+  redoOf?: string;
 }
 
 export interface PartResult {
@@ -186,6 +192,14 @@ export class SocratesBusyError extends Error {
   constructor(readonly reason: "main_busy" | "lane_limit" | "chat_limit" | "lane_closed" | "lane_running", message: string) {
     super(message);
     this.name = "SocratesBusyError";
+  }
+}
+
+/** A question that cannot be asked again in another task now; the message says why. */
+export class RedoError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RedoError";
   }
 }
 
@@ -315,6 +329,10 @@ export class Socrates {
   handle(message: string, options: HandleOptions = {}): Promise<HandleResult> {
     if (this.closed) return Promise.reject(new Error("Socrates is closed."));
     if (options.signal?.aborted) return Promise.reject(options.signal.reason);
+    if (options.redoOf) {
+      const problem = !options.target ? "A redo needs the task to ask it in." : this.redoProblem(options.redoOf, "taskId" in options.target ? options.target.taskId : null);
+      if (problem) return Promise.reject(new RedoError(problem));
+    }
     let laneId: string | null;
     const alongside = options.alongside === true && !!options.target && !options.lane;
     try {
@@ -325,7 +343,7 @@ export class Socrates {
     let userEventId: string | undefined;
     try {
       // A message with attachments is recorded here, so they are saved with it before routing.
-      if (laneId || options.attachments?.length) userEventId = this.store.recordUserMessage(message, laneId, options.attachments ?? []).id;
+      if (laneId || options.attachments?.length || options.redoOf) userEventId = this.store.recordUserMessage(message, laneId, options.attachments ?? [], options.redoOf ?? null).id;
     } catch (error) {
       if (laneId) this.leaveLane(laneId);
       else if (alongside) this.chatRuns--;
@@ -493,6 +511,22 @@ export class Socrates {
     return this.taskLocks.has(taskId);
   }
 
+  /**
+   * Why this turn's question cannot be asked again in another task, or null
+   * when it can: only a finished or stopped task turn that is still the latest
+   * of its task (later ones may build on its answer), once, and elsewhere.
+   */
+  redoProblem(turnId: string, toTaskId: string | null = null): string | null {
+    const turn = this.store.getTurn(turnId);
+    if (!turn || turn.kind !== "task" || !turn.taskId) return "That question cannot be redone.";
+    if (this.store.redoneTo(turnId)) return "That question was already asked again in another task.";
+    if (turn.status === "in_progress" || this.taskBusy(turn.taskId)) return "Socrates is still working on it; stop it first.";
+    const redone = this.store.redoneTurnIds();
+    if (this.store.turnsForTask(turn.taskId).some((t) => t.projectTurn > turn.projectTurn && !redone.has(t.id))) return "Later questions in this task build on this answer.";
+    if (toTaskId === turn.taskId) return "That is the task it was answered in; pick another.";
+    return null;
+  }
+
   /** A standard-mode message, bound where the user sent it: its task, or a new one in its goal. */
   private bindChosen(message: string, laneId: string | null, target: NonNullable<HandleOptions["target"]>, userEventId?: string, pinned = false): RoutedPart {
     return this.store.transaction(() => {
@@ -505,7 +539,12 @@ export class Socrates {
       // A chosen task that was closed is taken up again, by the user's choice.
       if (task.status !== "open") this.store.setTaskStatus(task.id, "open");
       const userEvent = userEventId ? this.store.getEvent(userEventId)! : this.store.recordUserMessage(message, laneId);
-      const turn = this.store.bindTurn({ userEventId: userEvent.id, taskId: task.id, route: pinned ? "pinned" : created ? "standard_new" : "standard" });
+      const redoOf = (userEvent.payload as { redo_of?: string }).redo_of ?? null;
+      // Checked again where it is bound: the turn may have changed since the message was sent.
+      const problem = redoOf ? this.redoProblem(redoOf, task.id) : null;
+      if (problem) throw new RedoError(problem);
+      const turn = this.store.bindTurn({ userEventId: userEvent.id, taskId: task.id, route: redoOf ? "redo" : pinned ? "pinned" : created ? "standard_new" : "standard" });
+      if (redoOf) this.store.markTurnRedone(redoOf, turn.id);
       return { order: 1, request: message, dependsOn: [], turn, goal, task: this.store.requireTask(task.id), chat: this.store.currentChat(task.id), clarification: null, created: { goal: false, task: created } };
     });
   }

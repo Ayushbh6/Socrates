@@ -266,7 +266,7 @@ The notepad is a **derived view, never stored prose** — a mechanical query ove
 
 #### 2. `RECENT_EXACT_HISTORY`
 
-This section is purely chronological. Starting immediately before the current user message, the harness walks backward through the flow's exact Q&A trail and takes the newest complete pairs that fit within the history budget.
+This section is purely chronological. Starting immediately before the current user message, the harness walks backward through the flow's exact Q&A trail and takes the newest complete pairs that fit within the history budget. A turn the user asked again in another task is left out (`agent-harness.md`, "Redo in another task"); its redo is in the trail where it was asked.
 
 There is no semantic, vector, BM25, keyword, file, or topic filtering in this section.
 

@@ -2,7 +2,7 @@ import { useSyncExternalStore } from "react";
 import { type SettingsPatch, api } from "./api";
 import { IMAGES_MAX, prepareImage } from "./images";
 import { LiveConnection } from "./live";
-import { type Model, type ModelEvent, emptyModel, reduce, replayFrom } from "./model";
+import { type Exchange, type Model, type ModelEvent, emptyModel, reduce, replayFrom } from "./model";
 import type { Access, ArchivedView, AttachmentView, ChatChoice, Command, Effort, GoalView, KeepChoice, LedgerStatus, ServerMessage, Settings, Status, TerminalView } from "./types";
 
 export interface AppState {
@@ -112,6 +112,22 @@ export class Store {
     if (!this.command({ type: "send", id, text, to, ...named(attachments), ...(chat ? { chat } : {}), ...(keep ? { keep } : {}) })) return null;
     if (chat) this.sentChats.set(id, chat);
     this.dispatch({ type: "sent", id, text, to, at: new Date().toISOString(), attachments });
+    return id;
+  }
+
+  /**
+   * Ask a finished or stopped question again in another task: a chosen chat,
+   * or today's general conversation. It shows as a new message at once; the
+   * server sets the first attempt aside. Returns its id, or null when the
+   * connection is down.
+   */
+  redo(exchange: Exchange, to: { chat: ChatChoice } | { general: true }): string | null {
+    const turn = exchange.turns[0];
+    if (!turn) return null;
+    const id = newId();
+    if (!this.command({ type: "redo", id, turn, ...to })) return null;
+    if ("chat" in to) this.sentChats.set(id, to.chat);
+    this.dispatch({ type: "sent", id, text: exchange.message, to: "main", at: new Date().toISOString(), attachments: exchange.attachments });
     return id;
   }
 

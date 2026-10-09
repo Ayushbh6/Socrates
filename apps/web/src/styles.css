@@ -176,8 +176,23 @@ svg { width: 1rem; height: 1rem; flex: none; }
 .answer { display: grid; grid-template-columns: 2.3rem minmax(0, 1fr); gap: 1rem; margin-top: 2rem; }
 .answer-dock { min-height: 2.3rem; }
 .answer-body { min-width: 0; padding-top: 0.2rem; }
-.answer-route { margin: 0.35rem 0 0.8rem; color: var(--faint); font-size: 0.75rem; }
-.answer-route span { margin: 0 0.3rem; opacity: 0.6; }
+.answer-route { display: flex; flex-wrap: wrap; align-items: center; gap: 0.15rem 0.7rem; margin: 0.35rem 0 0.8rem; color: var(--faint); font-size: 0.75rem; }
+.answer-route .route-sep, .redone-line .route-sep { margin: 0 0.3rem; opacity: 0.6; }
+.answer-route .route-from { font-style: italic; }
+.redo { margin-left: auto; }
+.redo-button { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.15rem 0.35rem; border: 0; border-radius: 0.4rem; background: transparent; color: var(--faint); font-size: 0.75rem; }
+.redo-button svg { width: 0.8rem; height: 0.8rem; }
+.redo-button:hover:not([aria-disabled="true"]), .redo-button[aria-expanded="true"] { background: var(--hover); color: var(--muted); }
+.redo-button[aria-disabled="true"] { opacity: 0.55; cursor: default; }
+.redo-menu { width: 17rem; overflow-y: auto; }
+.redo-menu .redo-menu-label { margin: 0.45rem 0.6rem 0.15rem; color: var(--faint); font-size: 0.7rem; letter-spacing: 0.04em; text-transform: uppercase; }
+.redo-menu button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.redo-menu .redo-menu-new { color: var(--muted); }
+.redone-line { display: inline-flex; align-items: center; gap: 0.2rem; margin: 0 0 0.6rem; padding: 0.3rem 0.55rem; border: 1px dashed rgba(17, 40, 32, 0.14); border-radius: 0.55rem; background: transparent; color: var(--muted); font-size: 0.82rem; }
+.redone-line:hover { background: var(--hover); }
+.redone-line svg { width: 0.85rem; height: 0.85rem; transition: transform 140ms; }
+.redone-line[aria-expanded="true"] svg { transform: rotate(90deg); }
+.answer-main[data-set-aside="true"] { opacity: 0.6; }
 /* The work behind an answer: quiet rows with an icon each, as in Codex and Claude Code; no panels and no lines. */
 .work { min-width: 0; margin: 0 0 1.1rem; }
 .work-head { display: inline-flex; align-items: center; gap: 0.35rem; max-width: 100%; padding: 0.15rem 0; border: 0; background: transparent; color: var(--muted); font-size: 0.85rem; text-align: left; }
@@ -509,7 +524,7 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .continued-note { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem 1rem; margin: 0.5rem 0 1.4rem; padding: 0.75rem 1rem; border-radius: 0.9rem; background: var(--tint); color: var(--muted); font-size: 0.8rem; line-height: 1.45; }
 .continued-note > span { flex: 1 1 18rem; }
 /* The chat's name and goal are in the bar on top; the answer's own trail would repeat them. */
-.chat-main .answer-route { display: none; }
+.chat-main .answer-route .route-name { display: none; }
 .chat-composer { width: min(48rem, 100%); margin: 0 auto; padding: 0 1.25rem 1rem; }
 .chat-composer .composer-dock[data-variant="panel"] { margin: 0; }
 .panel { display: flex; flex-direction: column; min-height: 0; border-radius: 1.1rem; background: rgba(255, 255, 255, 0.78); box-shadow: var(--shadow-soft); }

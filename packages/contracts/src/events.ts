@@ -13,10 +13,16 @@ export interface EventPayloads {
    * conversation. `attachments`: images the user attached, stored in
    * Socrates' attachments folder, which `read` may always open.
    */
-  user_message: { text: string; lane_id?: string; attachments?: Attachment[] };
+  user_message: { text: string; lane_id?: string; attachments?: Attachment[]; /** The turn whose question this asks again in another task. */ redo_of?: string };
   /** A parallel lane (agent-harness.md, "Lanes"); numbers are never reused. */
   lane_opened: { lane_id: string; lane_number: number };
   lane_closed: { lane_id: string };
+  /**
+   * The user asked this turn's question again in another task (its
+   * `redo_turn_id`), because the router put it in the wrong one. The turn is
+   * kept but set aside: no context of its task, the router or retrieval sees it.
+   */
+  turn_redone: { redo_turn_id: string };
   /** A main-conversation turn whose task was busy in a lane, handed to that lane. */
   turn_moved_to_lane: { lane_id: string };
   routing_completed: {

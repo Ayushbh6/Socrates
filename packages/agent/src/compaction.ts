@@ -190,9 +190,10 @@ function planSpan(store: LedgerStore, turn: Turn, budgets: ContextBudgets): Span
   }
   const kept = new Set(history.turns.slice(windowStart).map((t) => t.id));
   const prior = history.summary;
+  const redone = store.redoneTurnIds();
   const turns = store
     .turnsForTask(turn.taskId!)
-    .filter((t) => t.id !== turn.id && t.projectTurn < turn.projectTurn && t.projectTurn > (prior?.to ?? 0) && t.status !== "in_progress" && !kept.has(t.id));
+    .filter((t) => t.id !== turn.id && t.projectTurn < turn.projectTurn && t.projectTurn > (prior?.to ?? 0) && t.status !== "in_progress" && !kept.has(t.id) && !redone.has(t.id));
   if (!turns.length) return null;
   return { turns, prior, range: { from: prior && prior.from > 0 ? prior.from : turns[0]!.projectTurn, to: turns.at(-1)!.projectTurn } };
 }

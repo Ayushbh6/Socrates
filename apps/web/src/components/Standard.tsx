@@ -102,7 +102,7 @@ export function Standard({ app, mode, dock, onMode, onSettings }: { app: AppStat
       )}
 
       <section className="chat-main" aria-label="Chat">
-        <Thread app={app} conversation="main" shown={shown} before={chat > 1 && goal && task ? <Continued onBack={() => setView({ chat: { goal: goal.number, task: task.number, chat: chat - 1 } })} /> : null} empty={fresh || !main.length ? (freshGoal ? `What's next for ${freshGoal.title}?` : "What should we work on?") : "Nothing has been asked in this chat yet."} />
+        <Thread app={app} conversation="main" shown={shown} onRedone={(id) => setView({ fresh: main.at(-1)?.key ?? null, goal: null, sent: id })} before={chat > 1 && goal && task ? <Continued onBack={() => setView({ chat: { goal: goal.number, task: task.number, chat: chat - 1 } })} /> : null} empty={fresh || !main.length ? (freshGoal ? `What's next for ${freshGoal.title}?` : "What should we work on?") : "Nothing has been asked in this chat yet."} />
         <div className="chat-composer">
           <Composer app={app} conversation="main" laneNumber={null} variant="panel" chat={target} placeholder={task ? "Reply…" : "Ask Socrates…"} onModel={onSettings} onNewLane={() => null} onSent={(id) => { if (fresh) setView({ ...fresh, sent: id }); }} />
         </div>

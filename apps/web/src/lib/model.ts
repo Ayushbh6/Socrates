@@ -1,4 +1,4 @@
-import type { Activity, AttachmentView, CallView, HistoryItem, LiveState, PendingApproval, ResultView, ServerMessage } from "./types";
+import type { Activity, AttachmentView, CallView, HistoryItem, LiveState, PendingApproval, Place, ResultView, ServerMessage } from "./types";
 
 /**
  * What the page knows, built from history pages and the live connection
@@ -68,6 +68,10 @@ export interface Exchange {
   note: string | null;
   /** The page's id for a message this page sent. */
   sendId: string | null;
+  /** Where its question was asked again, once the user redid it in another task; it is then set aside. */
+  redoneTo: Place | null;
+  /** For a redo: where its question was first asked. */
+  redoneFrom: Place | null;
   turns: string[];
   /** Turns still working. */
   open: string[];
@@ -185,7 +189,8 @@ function activity(model: Model, a: Activity | DraftArrived): Model {
   // Chats working at once: a new turn belongs to the message it answers, not merely the newest one.
   if (index < 0 && a.kind === "routed" && a.messageSeq != null) index = list.findIndex((e) => e.seq === a.messageSeq);
   let next = list;
-  if (a.kind === "draft" && index < 0) return model;
+  // A draft, or a redo of a question not loaded here, has nothing to join.
+  if ((a.kind === "draft" || a.kind === "redone") && index < 0) return model;
   if (index < 0) {
     index = list.findLastIndex((e) => e.state !== "sending");
     const last = list[index];
@@ -263,7 +268,9 @@ function applyOne(e: Exchange, a: Activity | DraftArrived): Exchange {
       return { ...x, draftCalls: { ...x.draftCalls, [thinking ? thinkingKey(a.turnId) : a.turnId]: { call: a.call, settled: false } }, ...(thinking ? { thinking: draft } : { draft }) };
     }
     case "routed":
-      return { ...x, route: x.route ?? { goal: a.goal, task: a.task, chat: a.chat }, lastAt: a.at };
+      return { ...x, route: x.route ?? { goal: a.goal, task: a.task, chat: a.chat }, redoneFrom: x.redoneFrom ?? a.redoneFrom ?? null, lastAt: a.at };
+    case "redone":
+      return { ...e, redoneTo: a.to };
     case "question":
       return { ...x, question: a.text, state: "done", open: x.open.filter((t) => t !== a.turnId) };
     case "step": {
@@ -338,7 +345,7 @@ export function fromHistory(item: HistoryItem, conversation: string): Exchange {
 }
 
 function blank(e: Partial<Exchange> & Pick<Exchange, "key" | "conversation" | "at" | "message">): Exchange {
-  return { seq: null, attachments: [], route: null, steps: [], answers: [], draft: null, thinking: null, workedAt: null, lastAt: null, outputs: {}, draftCalls: {}, throughSeq: 0, question: null, state: "working", note: null, sendId: null, turns: [], open: [], ...e };
+  return { seq: null, attachments: [], route: null, steps: [], answers: [], draft: null, thinking: null, workedAt: null, lastAt: null, outputs: {}, draftCalls: {}, throughSeq: 0, question: null, state: "working", note: null, sendId: null, redoneTo: null, redoneFrom: null, turns: [], open: [], ...e };
 }
 
 function bySeq(a: Exchange, b: Exchange): number {

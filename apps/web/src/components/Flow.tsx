@@ -8,6 +8,7 @@ import type { Dock } from "../lib/terminals";
 import type { KeepChoice } from "../lib/types";
 import { AppHeader } from "./AppHeader";
 import { AnswerView } from "./AnswerView";
+import { redoOffer } from "./RedoMenu";
 import { Composer } from "./Composer";
 import { type Mode } from "./ModeSwitch";
 import { Notices } from "./Notices";
@@ -111,7 +112,7 @@ export function Flow({ app, mode, dock, onMode, onSettings }: { app: AppState; m
                 <QuestionCard text={exchange.message} attachments={exchange.attachments} note={exchange.state === "working" || exchange.state === "sending" ? exchange.note : null} />
                 <section className="answer" aria-live="polite">
                   <div className="answer-dock">{docked && <Orb state={state} docked />}</div>
-                  <AnswerView key={exchange.key} exchange={exchange} approvals={approvals} />
+                  <AnswerView key={exchange.key} exchange={exchange} approvals={approvals} redo={redoOffer(exchange, list, () => setSelected(null))} />
                 </section>
               </>
             )}

@@ -38,9 +38,11 @@ export function taskHistory(store: LedgerStore, currentTurnId: string): History 
   const summary = store.latestHistoryRecord(current.taskId!);
   const omitted = store.pendingOmission(current.taskId!);
   const boundary = Math.max(summary?.to ?? 0, omitted?.to ?? 0);
+  // A turn whose question was asked again in another task is set aside.
+  const redone = store.redoneTurnIds();
   const turns = store
     .turnsForTask(current.taskId!)
-    .filter((t) => t.id !== currentTurnId && t.projectTurn < current.projectTurn && t.projectTurn > boundary && t.status !== "in_progress");
+    .filter((t) => t.id !== currentTurnId && t.projectTurn < current.projectTurn && t.projectTurn > boundary && t.status !== "in_progress" && !redone.has(t.id));
   return { summary, omitted, turns };
 }
 

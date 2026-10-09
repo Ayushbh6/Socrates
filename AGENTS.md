@@ -35,16 +35,17 @@ The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `serv
 - **Sidebar menus:** a goal's or chat's actions sit behind one ⋯ menu in the Standard sidebar.
 - **Tools without a workspace:** a workspace is only where a turn starts; with no folder, work starts in the home folder and asks before paths outside the user's folders.
 - **General by day:** the General goal holds one task per day ("General · Fri 9 Oct"), listed under Chats in Standard.
+- **Failures look the same:** every failed tool call, or command that exits non-zero, gets the red ✗ and counts as "N tool calls failed".
+- **Redo in another task:** a misrouted question is asked again in a chosen task ("Redo in…" on the route line); the first attempt is set aside, never moved (`architecture/agent-harness.md`, "Redo in another task").
 
 ## Next, in the order agreed with the user
 
 Ask before starting each one.
 
-1. **Move an exchange to another task:** the user said the router put a question in the wrong task. This changes recorded history, so design it carefully.
-2. **Fixed request overhead:** each request carries about 6k fixed tokens (system prompt plus tool definitions). Reduce it, and keep the prompt cache hitting.
-3. **Memory and personalisation:** a simple, working system alongside `context_retrieve`.
-4. **Standard to flow:** a richer design for moving between the two modes.
-5. **Continue button:** offer one after a safeguard stop (200 steps, 60 minutes, or the token limit).
+1. **Fixed request overhead:** each request carries about 6k fixed tokens (system prompt plus tool definitions). Reduce it, and keep the prompt cache hitting.
+2. **Memory and personalisation:** a simple, working system alongside `context_retrieve`.
+3. **Standard to flow:** a richer design for moving between the two modes.
+4. **Continue button:** offer one after a safeguard stop (200 steps, 60 minutes, or the token limit).
 
 **Known small issues:**
 - If attaching images fails while saving a Flow message, the main conversation can stay "busy". This is in `packages/agent/src/socrates.ts` `handle`.

@@ -201,6 +201,9 @@ const num = (v: unknown): number => Number(v);
 /** A turn of a goal and task that are not archived, for queries on `turns`. */
 const LIVE_TURN = "(turns.task_id IS NULL OR (turns.task_id NOT IN (SELECT id FROM tasks WHERE archived_at IS NOT NULL) AND turns.goal_id NOT IN (SELECT id FROM goals WHERE archived_at IS NOT NULL)))";
 
+/** A turn not set aside by a redo (`turn_redone`). */
+const NOT_REDONE = "turns.id NOT IN (SELECT turn_id FROM events WHERE type = 'turn_redone' AND turn_id IS NOT NULL)";
+
 /** A name the user typed: trimmed, on one line, and not empty. */
 function chosenTitle(title: string): string {
   const text = title.replace(/\s+/g, " ").trim();
@@ -530,8 +533,59 @@ export class LedgerStore {
   }
 
   /** Persist the exact user message before anything else happens to it. */
-  recordUserMessage(text: string, laneId: string | null = null, attachments: Attachment[] = []): StoredEvent<"user_message"> {
-    return this.appendEvent("user_message", { text, ...(laneId ? { lane_id: laneId } : {}), ...(attachments.length ? { attachments } : {}) });
+  recordUserMessage(text: string, laneId: string | null = null, attachments: Attachment[] = [], redoOf: string | null = null): StoredEvent<"user_message"> {
+    return this.appendEvent("user_message", { text, ...(laneId ? { lane_id: laneId } : {}), ...(attachments.length ? { attachments } : {}), ...(redoOf ? { redo_of: redoOf } : {}) });
+  }
+
+  // ── Redone turns ─────────────────────────────────────────────────────────
+
+  /**
+   * Set a turn aside because its question was asked again in another task
+   * (`redo_turn_id`). Its task and goal forget what it wrote into them: their
+   * notes go back to what they were before it, and a task it closed reopens.
+   * Only a task's latest turn is redone, so nothing later depends on those.
+   */
+  markTurnRedone(turnId: string, redoTurnId: string): void {
+    this.transaction(() => {
+      const turn = this.requireTurn(turnId);
+      if (turn.kind !== "task" || !turn.taskId || !turn.goalId) throw new StoreError("Only a task's turn can be redone.");
+      if (this.redoneTo(turnId)) throw new StoreError("That question was already asked again in another task.");
+      const since = this.listEvents({ turnId, type: "turn_bound" })[0]?.seq ?? 0;
+      const before = (type: EventType, column: "task_id" | "goal_id", id: string) => {
+        const r = this.get(`SELECT payload FROM events WHERE type = ? AND ${column} = ? AND seq < ? ORDER BY seq DESC LIMIT 1`, type, id, since);
+        return r ? JSON.parse(str(r.payload)) : null;
+      };
+      const task = this.requireTask(turn.taskId);
+      const was = before("task_revised", "task_id", task.id) as EventPayloads["task_revised"] | null ?? before("task_created", "task_id", task.id) as { continuation_note?: null } | null;
+      const userSetStatus = !!this.get("SELECT 1 FROM events WHERE type = 'task_status_set' AND task_id = ? AND seq > ? LIMIT 1", task.id, since);
+      const note = was?.continuation_note ?? null;
+      const reopen = task.status === "completed" && (was && "status" in was ? was.status : "open") === "open" && !userSetStatus;
+      if (note !== task.continuationNote || reopen) this.reviseTask(task.id, { continuationNote: note, ...(reopen ? { status: "open" as const } : {}) });
+      const goal = this.requireGoal(turn.goalId);
+      const goalNote = (before("goal_note_revised", "goal_id", goal.id) as EventPayloads["goal_note_revised"] | null)?.note ?? null;
+      if (!goal.general && (goalNote ?? "") !== (goal.note ?? "")) this.reviseGoalNote(goal.id, goalNote ?? "");
+      // A task that held only this question, such as one the router made for it, is archived (restorable).
+      if (!task.general && !this.turnsForTask(task.id).some((t) => t.id !== turnId)) this.archiveTask(task.id);
+      this.appendEvent("turn_redone", { redo_turn_id: redoTurnId }, { goal_id: turn.goalId, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turnId });
+    });
+  }
+
+  /** Every turn set aside by a redo. */
+  redoneTurnIds(): Set<string> {
+    return new Set(this.all("SELECT turn_id FROM events WHERE type = 'turn_redone'").map((r) => str(r.turn_id)));
+  }
+
+  /** The turn that asked this turn's question again, when it was redone. */
+  redoneTo(turnId: string): Turn | null {
+    const r = this.get("SELECT payload FROM events WHERE type = 'turn_redone' AND turn_id = ? LIMIT 1", turnId);
+    return r ? this.getTurn((JSON.parse(str(r.payload)) as EventPayloads["turn_redone"]).redo_turn_id) : null;
+  }
+
+  /** The turn whose question this turn asks again, when it is a redo. */
+  redoOf(turnId: string): Turn | null {
+    const turn = this.getTurn(turnId);
+    const p = turn ? (this.getEvent(turn.userEventId)?.payload as EventPayloads["user_message"] | undefined) : undefined;
+    return p?.redo_of ? this.getTurn(p.redo_of) : null;
   }
 
   /** The conversation's latest turn when it is a clarification: the main conversation's, or a lane's. */
@@ -702,7 +756,7 @@ export class LedgerStore {
         }
         break;
       }
-      case "file_changed": case "terminal_started": case "approval_decided": case "history_omitted": case "agent_warning": case "agent_message": case "anchor_question": case "anchor_decided":
+      case "turn_redone": case "file_changed": case "terminal_started": case "approval_decided": case "history_omitted": case "agent_warning": case "agent_message": case "anchor_question": case "anchor_decided":
       case "mcp_tools_listed": case "skill_shelf_frozen": break;
       default: throw new StoreError(`Unsupported event type: ${e.type}`);
     }
@@ -1593,7 +1647,7 @@ export class LedgerStore {
            FROM turns t
            JOIN events ue ON ue.id = t.user_event_id
            JOIN events re ON re.id = t.response_event_id
-          WHERE t.response_event_id IS NOT NULL AND t.project_turn < ? AND (${where}) AND ${LIVE_TURN.replaceAll("turns.", "t.")}
+          WHERE t.response_event_id IS NOT NULL AND t.project_turn < ? AND (${where}) AND ${LIVE_TURN.replaceAll("turns.", "t.")} AND ${NOT_REDONE.replaceAll("turns.", "t.")}
           ORDER BY t.project_turn DESC
           LIMIT ?`,
         before,
@@ -1606,7 +1660,8 @@ export class LedgerStore {
         const userEventId = str(r.user_event_id);
         if (seen.has(userEventId)) continue;
         seen.add(userEventId);
-        const turns = this.turnsForUserEvent(userEventId).filter((turn) => lanes.includes(turn.laneId));
+        const redone = this.redoneTurnIds();
+        const turns = this.turnsForUserEvent(userEventId).filter((turn) => lanes.includes(turn.laneId) && !redone.has(turn.id));
         // Compound parts may each have their own answer; the exchange shows them in part order.
         const responseIds = [...new Set(turns.map((t) => t.responseEventId).filter((id): id is string => id !== null))];
         const response = responseIds.length > 1
@@ -1933,8 +1988,10 @@ export class LedgerStore {
     /** Exclude exchanges still attached to history before ranking and limiting. */
     throughTurn?: number;
     limit: number;
+    /** Also find turns set aside by a redo, which only `context_retrieve` shows (marked). */
+    includeRedone?: boolean;
   }): ExchangeHit[] {
-    const where: string[] = [LIVE_TURN.replaceAll("turns.", "t.")];
+    const where: string[] = [LIVE_TURN.replaceAll("turns.", "t."), ...(input.includeRedone ? [] : [NOT_REDONE.replaceAll("turns.", "t.")])];
     const params: (string | number)[] = [];
     if (input.fts) (where.push("exchange_fts MATCH ?"), params.push(input.fts));
     if (input.taskIds) (where.push(`x.task_id IN (${input.taskIds.map(() => "?").join(", ") || "NULL"})`), params.push(...input.taskIds));

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { type AnchorDecision, type Draft, type HandleResult, MAX_RUNNING_CHATS, MAX_RUNNING_LANES, SocratesBusyError } from "@socrates/agent";
+import { type AnchorDecision, type Draft, type HandleResult, MAX_RUNNING_CHATS, MAX_RUNNING_LANES, RedoError, SocratesBusyError } from "@socrates/agent";
 import type { Attachment } from "@socrates/contracts";
 import type { ApprovalOrigin, ApprovalRequest } from "@socrates/tools";
 import type { WebSocket } from "ws";
@@ -50,6 +50,8 @@ const Command = z.discriminatedUnion("type", [
   z.object({ type: z.literal("hello"), after: z.number().int().nonnegative().optional() }).strict(),
   z.object({ type: z.literal("send"), id: Id, text: Text, to: z.union([z.literal("main"), z.literal("new_lane"), Id]), anchorDecisions: z.array(Decision).max(10).optional(), attachments: Attached.optional(), chat: Chat.optional(), keep: Keep.optional() }).strict(),
   z.object({ type: z.literal("queue"), id: Id, text: Text, attachments: Attached.optional(), chat: Chat.optional(), keep: Keep.optional() }).strict(),
+  /** Ask a finished or stopped question again in a chosen chat, or in today's general conversation, setting the first attempt aside. */
+  z.object({ type: z.literal("redo"), id: Id, turn: z.string().min(1).max(100), chat: Chat.optional(), general: z.literal(true).optional() }).strict(),
   z.object({ type: z.literal("queue_edit"), id: Id, text: Text }).strict(),
   z.object({ type: z.literal("queue_remove"), id: Id }).strict(),
   z.object({ type: z.literal("queue_to_lane"), id: Id }).strict(),
@@ -259,6 +261,18 @@ export class LiveHub {
         this.publishState();
         return this.drain();
       }
+      case "redo": {
+        const store = this.runtime.store;
+        if (!command.chat === !command.general) throw new LiveError("bad_request", "Choose one place to ask it again.");
+        if (!store.getTurn(command.turn)) throw new LiveError("not_found", "That question no longer exists.");
+        const { request, attachments } = store.requestForTurn(command.turn);
+        let chat = command.chat;
+        if (command.general) {
+          const today = store.ensureGeneral(this.runtime.timeZone);
+          chat = { goal: today.goal.number, task: today.task.number };
+        }
+        return this.start(command.id, request, "main", undefined, false, attachments, chat, undefined, command.turn);
+      }
       case "queue_edit": {
         const item = this.queued(command.id);
         hasWords(command.text, item.attachments);
@@ -380,12 +394,14 @@ export class LiveHub {
     });
   }
 
-  private start(id: string, text: string, to: string, anchorDecisions?: AnchorDecision[], fromQueue = false, attachments: Attachment[] = [], chat?: ChatChoice, keep?: KeepChoice): void {
+  private start(id: string, text: string, to: string, anchorDecisions?: AnchorDecision[], fromQueue = false, attachments: Attachment[] = [], chat?: ChatChoice, keep?: KeepChoice, redoOf?: string): void {
     const socrates = this.socrates();
     if (!fromQueue) this.assertNewId(id);
     if ((chat || keep) && to !== "main") throw new LiveError("bad_request", "A message for a chosen chat or task is sent in the main conversation.");
     if (chat && keep) throw new LiveError("bad_request", "A message goes to a chosen chat or is kept in a task, not both.");
     const target = chat ? this.chatTarget(chat, text, attachments.length) : keep ? this.keptTask(keep) : undefined;
+    const refused = redoOf ? socrates.redoProblem(redoOf, target && "taskId" in target ? target.taskId : null) : null;
+    if (refused) throw new LiveError("redo_refused", refused);
     // A chat runs beside the main conversation, one message at a time: while it works, or another chat message waits for it, this one waits in the queue.
     if (chat && (this.chatWorking(chat) || (!fromQueue && chat.task !== null && this.queue.some((q) => q.chat && sameChat(q.chat, chat))))) throw new LiveError("chat_busy", "Socrates is working in this chat; queue this message.");
     if (chat && socrates.runningChats >= MAX_RUNNING_CHATS) throw new LiveError("chat_busy", `${MAX_RUNNING_CHATS} chats are already working; queue this message.`);
@@ -409,6 +425,7 @@ export class LiveHub {
       ...(anchorDecisions?.length ? { anchorDecisions } : {}),
       // Standard mode: no routing, a chat that never rolls over, and one that runs beside the others. A message kept in its task is not routed, and rolls over as usual.
       ...(target ? (keep ? { target, pinned: true } : { target, rollover: false, alongside: true }) : {}),
+      ...(redoOf ? { redoOf } : {}),
       onBound: (turnId, taskId) => {
         run.tasks.add(taskId);
         run.seq ??= this.runtime.store.getEvent(this.runtime.store.requireTurn(turnId).userEventId)?.seq;
@@ -632,6 +649,7 @@ function hasWords(text: string, attachments: readonly unknown[] | undefined): vo
 function problemOf(error: unknown): { code: string; message: string } {
   if (error instanceof LiveError || error instanceof TerminalPanelError) return { code: error.code, message: error.message };
   if (error instanceof SocratesBusyError) return { code: error.reason, message: error.message };
+  if (error instanceof RedoError) return { code: "redo_refused", message: error.message };
   return { code: "failed", message: "The message could not be handled. Details are in the server log." };
 }
 

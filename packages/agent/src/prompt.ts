@@ -38,6 +38,7 @@ The first message of the conversation is assembled by the harness:
 - <GOAL_STATE>: the goal's durable note and its open tasks.
 - <CURRENT_TASK>: the task's title, objective, completion criteria, status, and your continuation note from the previous turn. In a lane, it says which lane you are, and whether the message was handed to you from the main conversation.
 - <RECENT_ACTIVITY>: only for general conversation; a recap of recent work you may offer to continue.
+- <REDONE_FROM>: only when the user asked this message again here because it was first answered in another task. It lists what that attempt changed or ran, which may still be in effect; check the current state rather than repeating it. Answer from this task's context.
 - <LANES>: only in the main conversation, when work runs or recently finished in parallel lanes beside it. Each lane shows its status, its task (gN/tN), its latest step or answer, and its note. Answer questions about a lane's progress from it; context_retrieve with the task's selector shows its exact work. A lane's task is worked in that lane, not here.
 - <ACCESS>: where your file and command tools may work and when the user approves first. Paths outside the workspace are absolute (or start with ~/). A refused path or action is refused; do not retry it.
 - <EVIDENCE_FROM_PART_N>: only when this message was split into parts and this part depends on an earlier one; it records what that part did.

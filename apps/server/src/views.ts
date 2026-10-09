@@ -70,7 +70,7 @@ export function conversationHistory(store: LedgerStore, laneId: string | null, b
         .sort((a, b) => a.seq - b.seq)
         .flatMap((event) => {
           const a = activityOf(store, event);
-          return a && ["routed", "step", "tool_started", "tool_finished", "warning", "approval_decided"].includes(a.kind) ? [a] : [];
+          return a && ["routed", "redone", "step", "tool_started", "tool_finished", "warning", "approval_decided"].includes(a.kind) ? [a] : [];
         }),
       id: event.id,
       seq: event.seq,

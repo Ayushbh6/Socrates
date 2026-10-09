@@ -4,13 +4,14 @@ import { useFollow } from "../lib/follow";
 import { type Exchange, orbState, workLine } from "../lib/model";
 import { type AppState, store } from "../lib/store";
 import { AnswerView } from "./AnswerView";
+import { redoOffer } from "./RedoMenu";
 import { QuestionCard } from "./QuestionCard";
 
 /**
  * One conversation in standard mode (or `shown`, the part of it that is one chat): every question with its answer, oldest
  * first, following the newest work while the reader is at the bottom.
  */
-export function Thread({ app, conversation, shown, before, extra = [], compact = false, empty }: { app: AppState; conversation: string; shown?: Exchange[]; before?: ReactNode; extra?: Exchange[]; compact?: boolean; empty: string }) {
+export function Thread({ app, conversation, shown, before, extra = [], compact = false, empty, onRedone }: { app: AppState; conversation: string; shown?: Exchange[]; before?: ReactNode; extra?: Exchange[]; compact?: boolean; empty: string; onRedone?: (id: string) => void }) {
   const list = [...(shown ?? app.model.conversations[conversation] ?? []), ...extra];
   const latest = list.at(-1) ?? null;
   // An approval is shown with the question whose turn asked; one without a turn, with the newest question of its conversation.
@@ -47,7 +48,7 @@ export function Thread({ app, conversation, shown, before, extra = [], compact =
           <article key={e.key} className="thread-item">
             <QuestionCard text={e.message} attachments={e.attachments} note={e.state === "working" || e.state === "sending" ? e.note : null} />
             <div className="thread-answer">
-              <AnswerView exchange={e} approvals={approvalsFor(e)} />
+              <AnswerView exchange={e} approvals={approvalsFor(e)} redo={redoOffer(e, list, onRedone)} />
             </div>
           </article>
         ))}
