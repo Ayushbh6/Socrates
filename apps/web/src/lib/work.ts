@@ -44,11 +44,16 @@ export function workSegments(exchange: Exchange): Segment[] {
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-/** "Read 2 files", "ran 1 command": what calls of each kind did, in the order the kinds first appear. */
-export function callCounts(calls: CallView[]): string[] {
+/**
+ * "Read 2 files", "ran 1 command": what calls of each kind did, in the order
+ * the kinds first appear. A command that failed before it could finish, such
+ * as one refused, is "tried", never "ran".
+ */
+export function callCounts(steps: Pick<ToolStep, "call" | "status">[]): string[] {
+  const calls = steps.map((s) => s.call);
   const kinds: CallView["kind"][] = [];
   for (const c of calls) if (!kinds.includes(c.kind)) kinds.push(c.kind);
-  return kinds.map((kind) => {
+  return kinds.flatMap((kind): string | string[] => {
     const of = calls.filter((c) => c.kind === kind);
     const distinct = (list: CallView[]) => new Set(list.map((c) => c.target)).size;
     switch (kind) {
@@ -56,8 +61,11 @@ export function callCounts(calls: CallView[]): string[] {
       case "search": return of.length === 1 ? "Searched once" : `Searched ${of.length} times`;
       case "edit": return `Edited ${plural(distinct(of), "file")}`;
       case "terminal": {
-        const commands = of.filter((c) => c.verb === "Ran" || c.verb === "Started").length;
-        return commands ? `Ran ${plural(commands, "command")}` : `Worked in ${plural(distinct(of), "terminal")}`;
+        const launches = steps.filter((s) => s.call.kind === kind && (s.call.verb === "Ran" || s.call.verb === "Started"));
+        const tried = launches.filter((s) => s.status === "error").length;
+        const ran = launches.length - tried;
+        if (!launches.length) return `Worked in ${plural(distinct(of), "terminal")}`;
+        return [...(ran ? [`Ran ${plural(ran, "command")}`] : []), ...(tried ? [`Tried ${plural(tried, "command")}`] : [])];
       }
       case "memory": return of.length === 1 ? "Looked back once" : `Looked back ${of.length} times`;
       case "capability": return `Used ${plural(of.length, "capability", "capabilities")}`;
@@ -71,7 +79,7 @@ const joined = (parts: string[]) => parts.map((p, i) => (i ? p[0]!.toLowerCase()
 
 /** A group's line: its calls by kind, or how long it thought when it only thought. */
 export function groupLabel(items: WorkItem[]): string {
-  const calls = items.flatMap((i) => (i.kind === "tool" ? [i.step.call] : []));
+  const calls = items.flatMap((i) => (i.kind === "tool" ? [i.step] : []));
   if (calls.length) return joined(callCounts(calls));
   return thoughtLabel(items.reduce<number | null>((sum, i) => (i.kind === "thinking" && i.ms !== null ? (sum ?? 0) + i.ms : sum), null));
 }
@@ -94,7 +102,7 @@ export function workSummary(segments: Segment[], exchange: Pick<Exchange, "at" |
   if (Number.isFinite(seconds) && seconds >= 1) parts.push(`${working ? "Working for" : "Worked for"} ${duration(seconds)}`);
   const items = segments.flatMap((s) => (s.kind === "group" ? s.items : []));
   if (items.some((i) => i.kind === "thinking")) parts.push(parts.length ? "thought" : "Thought");
-  for (const label of callCounts(items.flatMap((i) => (i.kind === "tool" ? [i.step.call] : [])))) {
+  for (const label of callCounts(items.flatMap((i) => (i.kind === "tool" ? [i.step] : [])))) {
     parts.push(parts.length ? label[0]!.toLowerCase() + label.slice(1) : label);
   }
   return parts.join(" · ") || (working ? "Working" : "Worked");

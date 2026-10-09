@@ -35,9 +35,16 @@ describe("the work behind an answer", () => {
   });
 
   it("labels a group by what its calls did, and a group that only thought by how long", () => {
-    expect(callCounts([CALLS.read!, CALLS.read!, CALLS.read2!, CALLS.test!, CALLS.enter!, CALLS.edit!])).toEqual(["Read 2 files", "Ran 1 command", "Edited 1 file"]);
-    expect(callCounts([CALLS.enter!, call("terminal", "Waited for", "configure")])).toEqual(["Worked in 2 terminals"]);
-    expect(callCounts([call("search", "Searched for", "x")])).toEqual(["Searched once"]);
+    const ok = (c: CallView) => ({ call: c, status: "ok" as const });
+    expect(callCounts([CALLS.read!, CALLS.read!, CALLS.read2!, CALLS.test!, CALLS.enter!, CALLS.edit!].map(ok))).toEqual(["Read 2 files", "Ran 1 command", "Edited 1 file"]);
+    expect(callCounts([CALLS.enter!, call("terminal", "Waited for", "configure")].map(ok))).toEqual(["Worked in 2 terminals"]);
+    expect(callCounts([call("search", "Searched for", "x")].map(ok))).toEqual(["Searched once"]);
+  });
+
+  it("says a command that failed before it could finish was tried, never ran", () => {
+    const refused = { call: CALLS.test!, status: "error" as const };
+    expect(callCounts([refused])).toEqual(["Tried 1 command"]);
+    expect(callCounts([{ call: CALLS.test!, status: "ok" }, refused, { call: CALLS.read!, status: "ok" }])).toEqual(["Ran 1 command", "Tried 1 command", "Read 1 file"]);
     const e = exchange(act(tool("e1", "read")), act(tool("e2", "test")));
     const group = workSegments(e)[0]!;
     expect(group.kind === "group" && groupLabel(group.items)).toBe("Read 1 file, ran 1 command");
