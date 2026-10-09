@@ -102,6 +102,8 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 
 36. **A command that fails looks like every other failure** (2026-10-09). **Asked:** a command that exits with an error is a failure, even when it was meant to fail, and should look like every other failure. **Done:** the server marks a result failed when the call failed, or when the command it ran or waited on exited non-zero, hit its deadline or crashed; the page gives those rows the red ✗ and counts them in "N tool calls failed". Stopping a session (terminate, signal), reading its output or screen, typing into it, and a wait that only ran out of time are not failures. Results are described from the log when shown, so older commands get the new look too. Tests: each of those cases on the server, and a non-zero exit counted as a failure on the page. **Open suggestions:** none.
 
+37. **Redo in another task: design** (2026-10-09). **Asked:** fix a question the router put in the wrong task, without moving an answer that was written with the wrong task's context. A check after every routing decision was rejected as jarring; the user catches a misroute by pressing Stop when the route and notes appear. **Done:** a design for approval, `docs/redo-in-task.md`: a misrouted question is asked again in the chosen task (double tokens, accepted), the new agent gets the first attempt's facts (files changed, commands run) but never its answer, and the first attempt is set aside from its task's context but kept in the log. Offered only while the exchange is its task's latest. No code yet. **Open suggestions:** the router could later see recent redos when routing.
+
 ## Suggested
 
 From the observability phase:
