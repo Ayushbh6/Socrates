@@ -43,7 +43,7 @@ The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `serv
 
 Ask before starting each one.
 
-1. **Memory and personalisation:** a simple, working system alongside `context_retrieve`.
+1. **Memory and personalisation:** designed in `docs/memory.md` (awaiting the user's approval; three phases M1–M3, built one at a time).
 2. **Standard to flow:** a richer design for moving between the two modes.
 3. **Continue button:** offer one after a safeguard stop (200 steps, 60 minutes, or the token limit).
 
