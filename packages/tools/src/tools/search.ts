@@ -111,9 +111,8 @@ async function directory(ctx: HandlerContext, input: string | undefined) {
 export const globTool: ToolHandler<GlobInput> = {
   name: "glob",
   description: [
-    'Find files by path pattern, such as "**/*.ts", "src/**/index.ts", "*.{ts,tsx}" or "*.md". Patterns use ripgrep (gitignore-style) globs: a pattern without "/" matches file names at any depth.',
-    'Returns workspace-relative file paths, most recently modified first (sort: "path" for path order). Hidden files are included; files ignored by .gitignore are not unless include_ignored is true, and .git never is.',
-    `path is the directory to search (default: workspace root). limit defaults to ${GLOB_DEFAULT_LIMIT} (max ${GLOB_MAX_LIMIT}). A truncated result carries next_cursor; pass it with the same arguments to continue.`,
+    'Find files by a ripgrep (gitignore-style) glob, such as "**/*.ts", "src/**/index.ts" or "*.{ts,tsx}"; a pattern without "/" matches names at any depth.',
+    `Hidden files are included, .gitignore'd ones only with include_ignored, .git never. limit default ${GLOB_DEFAULT_LIMIT}, max ${GLOB_MAX_LIMIT}; a truncated result has next_cursor: repeat the call with it.`,
   ].join(" "),
   schema: GlobInput,
   concurrency: "parallel",
@@ -199,10 +198,8 @@ const stripEol = (text: string) => text.replace(/\r?\n$/, "");
 export const grepTool: ToolHandler<GrepInput> = {
   name: "grep",
   description: [
-    "Search file contents. pattern is a regular expression (Rust regex syntax: no lookaround or backreferences) unless literal is true. Matching is case-sensitive unless case_sensitive is false; multiline: true lets a pattern span lines.",
-    'path may be one file or a directory (default: workspace root). Narrow with type (a ripgrep file type such as "ts", "py", "rust") and/or glob ("*.ts", "*.{ts,tsx}", "!**/fixtures/**"). Hidden files are searched; .gitignore-ignored files are not unless include_ignored is true, and .git never is.',
-    `output "content" (default) returns matching lines with path and line_number, path order; context, context_before and context_after add the lines around each match. output "files" returns only the paths of matching files and "count" each file's number of matching lines, both newest first. sort overrides the order.`,
-    `limit defaults to ${GREP_DEFAULT_LIMIT} (max ${GREP_MAX_LIMIT} matches, ${GREP_MAX_FILES_LIMIT} files); a truncated result carries next_cursor. Long lines show a ${GREP_MAX_LINE_CHARS}-character window around the match.`,
+    "Search file contents with a Rust regex (no lookaround or backreferences), or exact text with literal. Narrow with type and/or glob.",
+    `Hidden files are searched, .gitignore'd ones only with include_ignored, .git never. Long lines show ${GREP_MAX_LINE_CHARS} characters around the match. limit default ${GREP_DEFAULT_LIMIT}, max ${GREP_MAX_LIMIT} matches or ${GREP_MAX_FILES_LIMIT} files; a truncated result has next_cursor: repeat the call with it.`,
   ].join(" "),
   schema: GrepInput,
   concurrency: "parallel",

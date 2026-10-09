@@ -162,10 +162,9 @@ async function applyHunks(hunks: PatchHunk[], paths: Map<string, ResolvedPath>, 
 export const applyPatchTool: ToolHandler<ApplyPatchInput> = {
   name: "apply_patch",
   description: [
-    "Create, update, move, or delete one or more files with one patch. All changes are validated first. On failure or cancellation, completed writes are rolled back; concurrent user changes are preserved and any rollback conflicts are reported.",
+    "Add, update, move or delete files with one patch, validated first; on failure everything written is rolled back (the user's own changes are kept, conflicts reported).",
     PATCH_FORMAT_HINT,
-    'Paths are workspace-relative. Context lines must match the current file (read it first); "@@ line" may name a nearby line such as a function signature to anchor a chunk. Use "*** Move to: path" after Update File to rename.',
-    "Prefer edit for one small replacement; use apply_patch for new files, several hunks, or coordinated multi-file changes.",
+    'Context lines must match the current file (read it first); "@@ <line>" may name a nearby line, such as a function signature, to anchor a chunk. "*** Move to: path" after Update File renames. For one small replacement prefer edit.',
   ].join(" "),
   schema: ApplyPatchInput,
   concurrency: "serial",

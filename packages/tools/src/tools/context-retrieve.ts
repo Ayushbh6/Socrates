@@ -575,11 +575,11 @@ export function enforceBounds<T>(view: T): T {
 export const contextRetrieveTool: ToolHandler<ContextRetrieveInput> = {
   name: "context_retrieve",
   description: [
-    "Recall earlier work from Socrates' memory. Three actions:",
-    "ledger_search — find goals and tasks by their metadata (query, entity goals|tasks|both, scope current_goal|all_goals, status, from/to dates, match hybrid|exact, limit, cursor); returns selectors such as g7 and g7/t4.",
-    "search — find exact past questions and answers (query and/or from/to dates; target current_task (default) | current_goal | all_goals | gN | tN | gN/tN; top_n default 5); returns short refs such as r1. A bare tN means a task of the current goal.",
-    "inspect — open one record: ref gN, tN, gN/tN, rN (a search result), eN (a tool call of this task), or turn_number for any [TURN k] label.",
-    "Output is always bounded; omissions are stated with refs you can inspect.",
+    "Recall earlier work from Socrates' memory.",
+    "ledger_search: goals and tasks by their metadata; returns selectors such as g7 and g7/t4.",
+    "search: exact past questions and answers by query and/or dates, in target: current_task (default), current_goal, all_goals, gN, tN (a task of the current goal) or gN/tN; top_n default 5; returns refs such as r1.",
+    "inspect: one record by ref (gN, tN, gN/tN, rN, eN: a tool call of this task, gN/tN/eN, hc-N) or turn_number (any [TURN k]).",
+    "Dates are YYYY-MM-DD. Output is bounded; omissions name refs to inspect.",
   ].join(" "),
   schema: ContextRetrieveInput,
   concurrency: "parallel",

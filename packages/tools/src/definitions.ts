@@ -7,9 +7,10 @@ type Schema = Record<string, unknown> & { properties?: Record<string, Schema>; r
 /**
  * The model-facing JSON Schema of a tool. Providers require a plain object at
  * the top level, so a union of actions becomes one object whose `action`
- * enum selects the variant; each field says which actions use it. Strictness
- * (unknown fields, per-action requirements) is enforced by the Zod schema in
- * the runner, so `additionalProperties: false` is not sent to providers.
+ * enum selects the variant, and its description lists each action's fields.
+ * Strictness (unknown fields, per-action requirements, string lengths) is
+ * enforced by the Zod schema in the runner, so it is not sent to providers:
+ * every request carries these schemas, and the model gains nothing from them.
  */
 export function modelSchema(schema: z.ZodType): JsonSchema {
   const raw = z.toJSONSchema(schema, { io: "input" }) as Schema;
@@ -20,7 +21,6 @@ export function modelSchema(schema: z.ZodType): JsonSchema {
 
 function mergeVariants(variants: Schema[]): Schema {
   const properties: Record<string, Schema> = {};
-  const usedBy: Record<string, string[]> = {};
   const actions: string[] = [];
   const usage: string[] = [];
   for (const v of variants) {
@@ -29,14 +29,7 @@ function mergeVariants(variants: Schema[]): Schema {
     const fields = Object.keys(v.properties ?? {}).filter((k) => k !== "action");
     const required = new Set(v.required ?? []);
     usage.push(`${action}(${fields.map((f) => (required.has(f) ? f : `${f}?`)).join(", ")})`);
-    for (const field of fields) {
-      properties[field] ??= { ...v.properties![field]! };
-      (usedBy[field] ??= []).push(action);
-    }
-  }
-  for (const [field, schema] of Object.entries(properties)) {
-    const note = `For ${usedBy[field]!.join(", ")}.`;
-    schema.description = schema.description ? `${note} ${schema.description}` : note;
+    for (const field of fields) properties[field] ??= { ...v.properties![field]! };
   }
   return {
     type: "object",
@@ -52,7 +45,7 @@ function clean(node: unknown): unknown {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(node)) {
     if (key === "additionalProperties" && value === false) continue;
-    if (key === "propertyNames") continue;
+    if (key === "propertyNames" || key === "minLength" || key === "maxLength") continue;
     if ((key === "maximum" && value === Number.MAX_SAFE_INTEGER) || (key === "minimum" && value === Number.MIN_SAFE_INTEGER)) continue;
     out[key] = clean(value);
   }

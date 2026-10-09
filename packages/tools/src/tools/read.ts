@@ -17,10 +17,9 @@ const FRAME_TOKENS = 200;
 export const readTool: ToolHandler<ReadInput> = {
   name: "read",
   description: [
-    "Read a window of lines from one UTF-8 text file in the workspace, or an absolute resource path under a valid active Skill. Skill resource access is read-only. Output lines are prefixed with their 1-based number and a colon (\"42: text\"); the prefix is not part of the file.",
-    `Defaults: offset 1, limit ${READ_DEFAULT_LIMIT} lines. A window also stops at about ${RESULT_CEILING_TOKENS} tokens; when more remains the footer gives the next offset to continue from.`,
-    `Lines longer than ${READ_MAX_LINE_CHARS} characters are cut with a marker. Use glob to list directories and grep to find text; binary files are rejected.`,
-    "A PNG, JPEG, GIF or WebP image is shown to you as an image when you can see images; otherwise the result says you cannot, and you must not guess its content.",
+    "Read lines of one UTF-8 text file, or of a file under an active Skill's resource_base (read-only). Each line starts with its number (\"42: text\"), which is not part of the file.",
+    `A window stops at limit (default ${READ_DEFAULT_LIMIT} lines) or about ${RESULT_CEILING_TOKENS} tokens; the footer gives the next offset. Lines over ${READ_MAX_LINE_CHARS} characters are cut. Binary files are refused; list a directory with glob.`,
+    "A PNG, JPEG, GIF or WebP image is shown to you when you can see images; otherwise you are told so, and must not guess its content.",
   ].join(" "),
   schema: ReadInput,
   concurrency: "parallel",

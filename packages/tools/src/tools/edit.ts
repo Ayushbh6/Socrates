@@ -84,10 +84,10 @@ function replace(text: string, edit: OneEdit, rel: string, label: string): { tex
 export const editTool: ToolHandler<EditInput> = {
   name: "edit",
   description: [
-    "Replace text in one file, or create a new file. old_text must match the file and occur exactly once, unless replace_all is true (then every occurrence is replaced; zero still fails).",
-    "For several changes to one file, pass edits: [{ old_text, new_text, replace_all? }] instead: they apply in order, each to the text the previous one left, and either all succeed or nothing is written.",
-    "Copy old_text from read output without the line-number prefix. Include enough surrounding lines to make it unique. Exact matching is tried first; if nothing matches exactly, whole lines are matched ignoring trailing whitespace, then indentation, then typographic punctuation, and the result reports which. A miss names the closest lines and how they differ.",
-    "To create a file that does not exist, pass an empty old_text and its whole content as new_text (missing folders are created); it never overwrites a file. Fails if the file changed since this task last read it; read it again first. Keeps the file's encoding (UTF-8 or UTF-16), byte-order mark, and each line's ending. Use apply_patch for changes across several files, moves, and deletes.",
+    "Replace text in one file, or create one. old_text must occur exactly once (replace_all: every occurrence, at least one); copy it from read output without the line numbers, with enough lines to be unique.",
+    "edits: [{ old_text, new_text, replace_all? }] makes several changes in order, each on the previous result; all succeed or none is written.",
+    "Without an exact match, whole lines are matched ignoring trailing whitespace, then indentation, then typographic punctuation (the result says which); a miss shows the closest lines and how they differ.",
+    "To create a file, give an empty old_text and its whole content (folders are made; an existing file is never overwritten). Fails if the file changed since this task read it: read it again. Encoding, byte-order mark and line endings are kept. For several files, moves and deletes use apply_patch.",
   ].join(" "),
   schema: EditInput,
   concurrency: "serial",

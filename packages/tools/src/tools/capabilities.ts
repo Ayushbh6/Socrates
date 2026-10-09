@@ -279,9 +279,8 @@ function activeNames(ctx: HandlerContext): Set<string> {
 export const capabilitySearchTool: ToolHandler<CapabilitySearchInput> = {
   name: "capability_search",
   description: [
-    "Search the catalog of installed Skills (instructions for a kind of task) and MCP tools (external callable tools) without loading them.",
-    `kind: any (default), skill, or mcp. limit defaults to ${SEARCH_DEFAULT_LIMIT} (max ${SEARCH_MAX_LIMIT}). Each match has a short ref such as c1; activate it with capability_control.`,
-    "Use it when the Skill shelf and candidates do not cover a need, for example browser testing or reading an issue tracker.",
+    "Search installed Skills (instructions for a kind of task) and MCP tools (external tools) without loading them, when the shelf and candidates do not cover a need, such as browser testing or an issue tracker.",
+    `kind: any (default), skill or mcp; limit default ${SEARCH_DEFAULT_LIMIT}, max ${SEARCH_MAX_LIMIT}. Each match has a ref such as c1 for capability_control.`,
   ].join(" "),
   schema: CapabilitySearchInput,
   concurrency: "parallel",
@@ -320,8 +319,8 @@ export function capabilityControlTool(loaded: CapabilityRuntime): ToolHandler<Ca
   return {
     name: "capability_control",
     description: [
-      'Activate one capability found by capability_search ({"action":"activate","ref":"c1"}), list the active ones ({"action":"list"}), or deactivate one by name.',
-      "Activating a Skill returns its full instructions in the result: follow them. Activating an MCP tool makes it callable from your next step under the returned public_name. Activation lasts for the current goal.",
+      "Activate a capability_search result by ref, list the active ones, or deactivate one by name. Activation lasts for the current goal.",
+      "A Skill returns its full instructions: follow them. An MCP tool is callable from your next step under the returned public_name.",
     ].join(" "),
     schema: CapabilityControlInput,
     concurrency: "serial",

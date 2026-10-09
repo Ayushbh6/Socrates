@@ -15,62 +15,64 @@ const IsoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD.").refin
 }, "Use a real calendar date.");
 
 export const ReadInput = z.strictObject({
-  path: Path.describe("Workspace-relative path of one UTF-8 text file, or of a PNG, JPEG, GIF or WebP image."),
-  offset: z.number().int().min(1).optional().describe("1-based first line. Default 1."),
-  limit: z.number().int().min(1).optional().describe("Maximum lines. Default 2000."),
+  path: Path,
+  offset: z.number().int().min(1).optional().describe("First line, from 1. Default 1."),
+  limit: z.number().int().min(1).optional(),
 });
 
 const SearchSort = z.enum(["path", "modified"]);
-const IncludeIgnored = z.boolean().optional().describe("Also list files .gitignore excludes, such as node_modules or build output. Default false; .git is never searched.");
+const IncludeIgnored = z.boolean().optional().describe("Include files .gitignore excludes (node_modules, build output).");
+const Root = "Default: the workspace root.";
+const NextCursor = "next_cursor of the same call.";
 
 export const GlobInput = z.strictObject({
-  pattern: z.string().min(1).max(1000).describe('Glob such as "**/*.ts", "src/**/index.ts" or "*.{ts,tsx}" (ripgrep/gitignore glob dialect).'),
-  path: Path.optional().describe("Directory to search. Defaults to the workspace root."),
-  sort: SearchSort.optional().describe('"modified" (newest first, the default) or "path".'),
+  pattern: z.string().min(1).max(1000),
+  path: Path.optional().describe(`Directory. ${Root}`),
+  sort: SearchSort.optional().describe("Default modified (newest first)."),
   include_ignored: IncludeIgnored,
-  limit: z.number().int().min(1).optional().describe("Maximum paths per page. Default 200."),
-  cursor: Cursor.optional().describe("next_cursor from the preceding identical call."),
+  limit: z.number().int().min(1).optional(),
+  cursor: Cursor.optional().describe(NextCursor),
 });
 
 const ContextLines = z.number().int().min(0).max(50);
 
 export const GrepInput = z.strictObject({
-  pattern: z.string().min(1).max(1000).describe("Regular expression (Rust regex syntax), or exact text with literal: true."),
-  path: Path.optional().describe("File or directory to search. Defaults to the workspace root."),
-  glob: z.string().min(1).max(1000).optional().describe('One file filter such as "*.ts", "**/*.test.ts", "*.{ts,tsx}", or an exclusion such as "!**/fixtures/**".'),
-  type: z.string().regex(/^[A-Za-z0-9_+-]{1,40}$/).optional().describe('A ripgrep file type such as "ts", "py", "rust", "go", "md".'),
-  output: z.enum(["content", "files", "count"]).optional().describe('"content" (matching lines, the default), "files" (paths of files that match), or "count" (matching lines per file).'),
-  context_before: ContextLines.optional().describe("Lines to show before each match (content only)."),
-  context_after: ContextLines.optional().describe("Lines to show after each match (content only)."),
-  context: ContextLines.optional().describe("Lines to show before and after each match; context_before and context_after override it."),
-  multiline: z.boolean().optional().describe("Let the pattern span lines (. matches newlines too). Default false."),
+  pattern: z.string().min(1).max(1000),
+  path: Path.optional().describe(`File or directory. ${Root}`),
+  glob: z.string().min(1).max(1000).optional().describe('File filter: "*.ts", "*.{ts,tsx}", or an exclusion "!**/fixtures/**".'),
+  type: z.string().regex(/^[A-Za-z0-9_+-]{1,40}$/).optional().describe('ripgrep file type: "ts", "py", "rust".'),
+  output: z.enum(["content", "files", "count"]).optional().describe("content (default): matching lines with path and line number; files: matching paths; count: matching lines per file."),
+  context_before: ContextLines.optional().describe("Lines before each match (content)."),
+  context_after: ContextLines.optional().describe("Lines after each match (content)."),
+  context: ContextLines.optional().describe("Lines before and after; context_before and context_after override it."),
+  multiline: z.boolean().optional().describe("Pattern may span lines; . matches newlines."),
   case_sensitive: z.boolean().optional().describe("Default true."),
-  literal: z.boolean().optional().describe("Treat pattern as exact text. Default false."),
-  sort: SearchSort.optional().describe('"path" (the default for content) or "modified" (newest first, the default for files and count).'),
+  literal: z.boolean().optional().describe("Pattern is exact text."),
+  sort: SearchSort.optional().describe("Default path for content, modified (newest first) for files and count."),
   include_ignored: IncludeIgnored,
-  limit: z.number().int().min(1).optional().describe("Maximum matches (content) or files (files, count) per page. Default 100."),
-  cursor: Cursor.optional().describe("next_cursor from the preceding identical call."),
+  limit: z.number().int().min(1).optional(),
+  cursor: Cursor.optional().describe(NextCursor),
 });
 
 /** At most this many replacements in one edit call. */
 export const EDIT_MAX_EDITS = 50;
 
 const OneEdit = z.strictObject({
-  old_text: z.string().describe("Exact text to replace; must occur exactly once unless replace_all is true. Empty only to create a new file."),
-  new_text: z.string().describe("Replacement text, or the whole content of a new file."),
-  replace_all: z.boolean().optional().describe("Replace every occurrence. Default false."),
+  old_text: z.string(),
+  new_text: z.string(),
+  replace_all: z.boolean().optional(),
 });
 
 export const EditInput = z.strictObject({
-  path: Path.describe("Workspace-relative path of the file."),
-  old_text: OneEdit.shape.old_text.optional(),
-  new_text: OneEdit.shape.new_text.optional(),
-  replace_all: OneEdit.shape.replace_all,
-  edits: z.array(OneEdit).min(1).max(EDIT_MAX_EDITS).optional().describe("Several replacements in one file, applied in order, each to the text the previous one left; all succeed or none is written. Use instead of old_text and new_text."),
+  path: Path,
+  old_text: z.string().optional().describe("Exact text to replace; empty to create the file."),
+  new_text: z.string().optional().describe("Replacement, or the new file's content."),
+  replace_all: z.boolean().optional().describe("Replace every occurrence."),
+  edits: z.array(OneEdit).min(1).max(EDIT_MAX_EDITS).optional().describe("Several replacements, instead of old_text and new_text."),
 });
 
 export const ApplyPatchInput = z.strictObject({
-  patch: z.string().min(1).describe("The complete patch, from *** Begin Patch to *** End Patch."),
+  patch: z.string().min(1),
 });
 
 export const TerminalKey = z.enum(["ENTER", "TAB", "ESCAPE", "BACKSPACE", "DELETE", "UP", "DOWN", "LEFT", "RIGHT", "HOME", "END", "PAGE_UP", "PAGE_DOWN", "CTRL_C", "CTRL_D", "CTRL_L", "CTRL_Z"]);
@@ -78,14 +80,14 @@ export const TerminalSignal = z.enum(["SIGINT", "SIGTERM", "SIGHUP", "SIGTSTP", 
 const TerminalName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, "Use letters, digits, dot, dash, or underscore (max 64).");
 
 export const TerminalInput = z.strictObject({
-  command: z.string().min(1).max(20_000).describe("Shell command to run."),
-  cwd: Path.optional().describe("Working directory. Defaults to the workspace root."),
-  env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), z.string()).optional().describe("Extra environment variables."),
-  timeout_ms: z.number().int().min(0).optional().describe("Execution deadline. 0 requests no deadline (needs approval)."),
-  yield_ms: z.number().int().min(250).optional().describe("How long to wait before returning a live session. Default 10000, max 30000."),
-  pty: z.boolean().optional().describe("Run in a pseudo-terminal (120×40) for interactive programs: prompts, REPLs, editors, TUIs. Default false (pipes)."),
-  background: z.boolean().optional().describe("Return once the process starts, or once `ready` resolves."),
-  name: TerminalName.optional().describe("Stable session name such as dev-server."),
+  command: z.string().min(1).max(20_000),
+  cwd: Path.optional().describe(Root),
+  env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), z.string()).optional(),
+  timeout_ms: z.number().int().min(0).optional().describe("Deadline; 0: none (asks the user)."),
+  yield_ms: z.number().int().min(250).optional().describe("Wait before returning a running session."),
+  pty: z.boolean().optional().describe("120×40 pseudo-terminal for interactive programs."),
+  background: z.boolean().optional().describe("Return once started, or once ready."),
+  name: TerminalName.optional().describe('Session name, such as "dev-server".'),
   ready: z
     .strictObject({
       pattern: z.string().min(1).max(500).optional(),
@@ -93,10 +95,10 @@ export const TerminalInput = z.strictObject({
       timeout_ms: z.number().int().min(1).optional(),
     })
     .optional()
-    .describe("Readiness condition for services: an output regex and/or a local TCP port."),
+    .describe("Ready when output matches pattern (regex) and/or port is open."),
 });
 
-const Selector = z.string().min(1).max(64).describe("Terminal name or session id.");
+const Selector = z.string().min(1).max(64);
 
 export const TerminalControlInput = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("list") }),
@@ -105,7 +107,7 @@ export const TerminalControlInput = z.discriminatedUnion("action", [
     terminal: Selector,
     cursor: Cursor.optional(),
     limit_lines: z.number().int().min(1).optional(),
-    filter: z.string().min(1).max(500).optional().describe("Only lines matching this regular expression."),
+    filter: z.string().min(1).max(500).optional(),
   }),
   z.strictObject({
     action: z.literal("screen"),
@@ -113,13 +115,13 @@ export const TerminalControlInput = z.discriminatedUnion("action", [
   }),
   z.strictObject({
     action: z.literal("wait"),
-    terminal: Selector.optional().describe("The session to wait on; give this or terminals."),
-    terminals: z.array(Selector).min(2).max(16).optional().describe("Wait on several sessions at once; the first to have the event wins and is named in the result."),
+    terminal: Selector.optional(),
+    terminals: z.array(Selector).min(2).max(16).optional(),
     event: z.enum(["ready", "output", "input_required", "exit", "pattern", "idle", "port_open", "port_closed"]),
-    pattern: z.string().min(1).max(500).optional().describe("For event pattern: a regular expression to wait for in new output."),
-    port: z.number().int().min(1).max(65535).optional().describe("For port_open and port_closed: a local TCP port."),
-    idle_ms: z.number().int().min(250).max(600_000).optional().describe("For event idle: how long the session must print nothing. Default 2000."),
-    timeout_ms: z.number().int().min(250).max(600_000).optional().describe("Give up after this long and return event timeout. Default and maximum ten minutes."),
+    pattern: z.string().min(1).max(500).optional(),
+    port: z.number().int().min(1).max(65535).optional(),
+    idle_ms: z.number().int().min(250).max(600_000).optional(),
+    timeout_ms: z.number().int().min(250).max(600_000).optional(),
   }),
   z.strictObject({
     action: z.literal("write"),
@@ -127,7 +129,7 @@ export const TerminalControlInput = z.discriminatedUnion("action", [
     input: z.string().max(20_000).optional(),
     submit: z.boolean().optional(),
     keys: z.array(TerminalKey).max(64).optional(),
-    settle_ms: z.number().int().min(0).max(5000).optional().describe("In a pseudo-terminal: how long to let the program draw its answer before the screen is returned. Default 400."),
+    settle_ms: z.number().int().min(0).max(5000).optional(),
   }),
   z.strictObject({ action: z.literal("signal"), terminal: Selector, signal: TerminalSignal }),
   z.strictObject({ action: z.literal("terminate"), terminal: Selector }),
@@ -152,7 +154,7 @@ export const ContextRetrieveInput = z.discriminatedUnion("action", [
     action: z.literal("search"),
     query: z.string().min(1).max(500).optional(),
     match: z.enum(["hybrid", "exact"]).optional(),
-    target: z.string().min(1).max(32).optional().describe("current_task | current_goal | all_goals | gN | tN | gN/tN"),
+    target: z.string().min(1).max(32).optional(),
     from: IsoDate.optional(),
     to: IsoDate.optional(),
     top_n: z.number().int().min(1).optional(),
@@ -160,7 +162,7 @@ export const ContextRetrieveInput = z.discriminatedUnion("action", [
   }),
   z.strictObject({
     action: z.literal("inspect"),
-    ref: z.string().min(1).max(32).optional().describe("gN, tN, gN/tN, rN, eN, gN/tN/eN, or hc-N"),
+    ref: z.string().min(1).max(32).optional(),
     turn_number: z.number().int().min(1).optional(),
   }),
 ]);
