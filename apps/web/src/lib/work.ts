@@ -46,14 +46,15 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 
 /**
  * "Read 2 files", "ran 1 command": what calls of each kind did, in the order
- * the kinds first appear. A command that failed before it could finish, such
- * as one refused, is "tried", never "ran".
+ * the kinds first appear. A call that failed, of any kind, is never counted as
+ * done: every failure is one last part, "1 tool call failed".
  */
 export function callCounts(steps: Pick<ToolStep, "call" | "status">[]): string[] {
-  const calls = steps.map((s) => s.call);
+  const calls = steps.filter((s) => s.status !== "error").map((s) => s.call);
+  const failed = steps.length - calls.length;
   const kinds: CallView["kind"][] = [];
   for (const c of calls) if (!kinds.includes(c.kind)) kinds.push(c.kind);
-  return kinds.flatMap((kind): string | string[] => {
+  const done = kinds.map((kind) => {
     const of = calls.filter((c) => c.kind === kind);
     const distinct = (list: CallView[]) => new Set(list.map((c) => c.target)).size;
     switch (kind) {
@@ -61,17 +62,15 @@ export function callCounts(steps: Pick<ToolStep, "call" | "status">[]): string[]
       case "search": return of.length === 1 ? "Searched once" : `Searched ${of.length} times`;
       case "edit": return `Edited ${plural(distinct(of), "file")}`;
       case "terminal": {
-        const launches = steps.filter((s) => s.call.kind === kind && (s.call.verb === "Ran" || s.call.verb === "Started"));
-        const tried = launches.filter((s) => s.status === "error").length;
-        const ran = launches.length - tried;
-        if (!launches.length) return `Worked in ${plural(distinct(of), "terminal")}`;
-        return [...(ran ? [`Ran ${plural(ran, "command")}`] : []), ...(tried ? [`Tried ${plural(tried, "command")}`] : [])];
+        const commands = of.filter((c) => c.verb === "Ran" || c.verb === "Started").length;
+        return commands ? `Ran ${plural(commands, "command")}` : `Worked in ${plural(distinct(of), "terminal")}`;
       }
       case "memory": return of.length === 1 ? "Looked back once" : `Looked back ${of.length} times`;
       case "capability": return `Used ${plural(of.length, "capability", "capabilities")}`;
       case "other": return `Used ${plural(of.length, "tool")}`;
     }
   });
+  return failed ? [...done, `${plural(failed, "tool call")} failed`] : done;
 }
 
 /** Joins sentence parts: "Read 2 files, ran 1 command". */

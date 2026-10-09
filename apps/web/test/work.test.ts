@@ -41,10 +41,10 @@ describe("the work behind an answer", () => {
     expect(callCounts([call("search", "Searched for", "x")].map(ok))).toEqual(["Searched once"]);
   });
 
-  it("says a command that failed before it could finish was tried, never ran", () => {
-    const refused = { call: CALLS.test!, status: "error" as const };
-    expect(callCounts([refused])).toEqual(["Tried 1 command"]);
-    expect(callCounts([{ call: CALLS.test!, status: "ok" }, refused, { call: CALLS.read!, status: "ok" }])).toEqual(["Ran 1 command", "Tried 1 command", "Read 1 file"]);
+  it("never counts a failed call as done, and puts every failure, of any kind, in one last part", () => {
+    const failed = (c: CallView) => ({ call: c, status: "error" as const });
+    expect(callCounts([failed(CALLS.test!)])).toEqual(["1 tool call failed"]);
+    expect(callCounts([{ call: CALLS.test!, status: "ok" }, failed(CALLS.test!), failed(CALLS.edit!), { call: CALLS.read!, status: "running" }, failed(CALLS.read2!)])).toEqual(["Ran 1 command", "Read 1 file", "3 tool calls failed"]);
     const e = exchange(act(tool("e1", "read")), act(tool("e2", "test")));
     const group = workSegments(e)[0]!;
     expect(group.kind === "group" && groupLabel(group.items)).toBe("Read 1 file, ran 1 command");
