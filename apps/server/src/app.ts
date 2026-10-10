@@ -18,7 +18,7 @@ import * as observe from "./observe";
 import { DbError, browse, isDb, overview, row as dbRow } from "./dbview";
 import { guard, problem, sameSecret, sessionCookie } from "./security";
 import { StoreError } from "@socrates/store";
-import { FolderError, archivedView, conversationHistory, goalsView, listFolders, memoriesView, workspaceFolder, workspaceFor } from "./views";
+import { FolderError, archivedView, conversationHistory, requestHistory, goalsView, listFolders, memoriesView, workspaceFolder, workspaceFor } from "./views";
 
 export interface ServerOptions {
   runtime: Runtime;
@@ -272,6 +272,13 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
     const laneId = query.conversation === "main" ? null : query.conversation;
     if (laneId && !runtime.store.getLane(laneId)) return reply.code(404).send(problem("not_found", "There is no such lane."));
     return conversationHistory(runtime.store, laneId, query.before);
+  });
+
+  app.get("/api/requests/:id", async (request, reply) => {
+    const {id} = z.object({id: z.string().min(1).max(100)}).parse(request.params);
+    if (runtime.store.getEvent(id)?.type !== "user_message") return reply.code(404).send(problem("not_found", "There is no such request."));
+    const root = runtime.store.requestRoot(id);
+    return {conversation: root.payload.lane_id ?? "main", item: requestHistory(runtime.store, root.id)};
   });
 
   app.get("/api/lanes", async () => runtime.lanes());

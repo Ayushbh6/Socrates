@@ -50,6 +50,8 @@ const Decision = z.object({ goalId: z.string(), path: z.string(), role: z.string
 const Command = z.discriminatedUnion("type", [
   z.object({ type: z.literal("hello"), after: z.number().int().nonnegative().optional() }).strict(),
   z.object({ type: z.literal("send"), id: Id, text: Text, to: z.union([z.literal("main"), z.literal("new_lane"), Id]), anchorDecisions: z.array(Decision).max(10).optional(), attachments: Attached.optional(), chat: Chat.optional(), keep: Keep.optional() }).strict(),
+  z.object({ type: z.literal("reply"), id: Id, clarification: Id, text: Text }).strict(),
+  z.object({ type: z.literal("cancel_question"), clarification: Id }).strict(),
   z.object({ type: z.literal("queue"), id: Id, text: Text, attachments: Attached.optional(), chat: Chat.optional(), keep: Keep.optional() }).strict(),
   /** Ask a finished or stopped question again in a chosen chat, or in today's general conversation, setting the first attempt aside. */
   z.object({ type: z.literal("redo"), id: Id, turn: z.string().min(1).max(100), chat: Chat.optional(), general: z.literal(true).optional() }).strict(),
@@ -118,6 +120,7 @@ interface Run {
 
 /** Acceptance order survives queuing. Binding and finishing also settle on removal, failure and Stop. */
 interface Schedule {
+  receivedAt: string;
   order: number;
   tasks: Set<string>;
   bound: Promise<void>;
@@ -135,6 +138,9 @@ interface Queued {
   attachments: Attachment[];
   chat?: ChatChoice;
   keep?: KeepChoice;
+  replyTo?: string;
+  contextFromTask?: string;
+  conversation?: string;
   schedule: Schedule;
 }
 
@@ -236,8 +242,12 @@ export class LiveHub {
       busy: socrates?.busy ?? false,
       lanes: this.runtime.lanes(),
       working: this.working(),
-      queue: this.queue.map((q) => ({ id: q.id, text: q.text, ...(q.attachments.length ? { attachments: q.attachments.map(viewOf) } : {}), ...(q.chat ? { chat: q.chat } : {}) })),
+      queue: this.queue.map((q) => ({ id: q.id, text: q.text, ...(q.attachments.length ? { attachments: q.attachments.map(viewOf) } : {}), ...(q.chat ? { chat: q.chat } : {}), ...(q.replyTo ? {replyTo: q.replyTo} : {}) })),
       approvals: [...this.approvals.values()].map((a) => a.view),
+      routingQuestions: this.runtime.store.clarifications().filter(q => q.state === "pending" || q.state === "resuming").map(q => {
+        const queued = this.queue.find(item => item.replyTo === q.turnId);
+        return queued ? {...q, state: "resuming" as const, answer: queued.text} : q;
+      }),
     };
   }
 
@@ -267,6 +277,25 @@ export class LiveHub {
       case "send":
         hasWords(command.text, command.attachments);
         return this.start(command.id, command.text, command.to, command.anchorDecisions, false, this.attachments(command.attachments), command.chat, command.keep);
+      case "reply": {
+        this.assertNewId(command.id);
+        hasWords(command.text, undefined);
+        const q = this.runtime.store.clarification(command.clarification);
+        if (q.state !== "pending" || this.queue.some(item => item.replyTo === q.turnId)) throw new LiveError("clarification_resolved", "That routing question already has a reply.");
+        if (q.conversation === "main" && this.socrates().busy) {
+          if (this.queue.length >= QUEUE_MAX) throw new LiveError("queue_full", "The queue is full. Try again when a message finishes.");
+          this.acceptedIds.add(command.id);
+          this.queue.push({id: command.id, text: command.text, attachments: [], replyTo: q.turnId, conversation: q.conversation, schedule: this.schedule()});
+          return this.publishState();
+        }
+        return this.start(command.id, command.text, q.conversation, undefined, false, [], undefined, undefined, undefined, undefined, q.turnId);
+      }
+      case "cancel_question": {
+        const queued = this.queue.find(item => item.replyTo === command.clarification);
+        if (queued) { this.queue.splice(this.queue.indexOf(queued), 1); queued.schedule.bind(); queued.schedule.finish(); }
+        this.runtime.store.cancelClarification(command.clarification);
+        return this.publishState();
+      }
       case "queue": {
         this.assertNewId(command.id);
         hasWords(command.text, command.attachments);
@@ -275,9 +304,16 @@ export class LiveHub {
         this.acceptedIds.add(command.id);
         if (command.keep) this.keptTask(command.keep);
         const schedule = this.schedule();
+        const viewed = command.chat ? this.chatTask(command.chat) : null;
+        const selected = command.chat?.task != null ? this.chatTarget(command.chat, command.text, attachments.length, new Date(schedule.receivedAt)) : null;
+        const contextFromTask = viewed?.general && selected && "taskId" in selected && viewed.id !== selected.taskId ? viewed.id : undefined;
+        if (selected && "taskId" in selected) {
+          const task = this.runtime.store.requireTask(selected.taskId);
+          command.chat = {goal: this.runtime.store.requireGoal(task.goalId).number, task: task.number};
+        }
         const taskId = command.chat ? this.chatTask(command.chat)?.id : command.keep ? this.keptTask(command.keep).taskId : undefined;
         if (taskId) { schedule.tasks.add(taskId); schedule.bind(); }
-        this.queue.push({ id: command.id, text: command.text, attachments, schedule, ...(command.chat ? { chat: command.chat } : {}), ...(command.keep ? { keep: command.keep } : {}) });
+        this.queue.push({ id: command.id, text: command.text, attachments, schedule, ...(contextFromTask ? {contextFromTask} : {}), ...(command.chat ? { chat: command.chat } : {}), ...(command.keep ? { keep: command.keep } : {}) });
         this.publishState();
         return this.drain();
       }
@@ -420,12 +456,18 @@ export class LiveHub {
     });
   }
 
-  private start(id: string, text: string, to: string, anchorDecisions?: AnchorDecision[], fromQueue = false, attachments: Attachment[] = [], chat?: ChatChoice, keep?: KeepChoice, redoOf?: string, queuedSchedule?: Schedule): void {
+  private start(id: string, text: string, to: string, anchorDecisions?: AnchorDecision[], fromQueue = false, attachments: Attachment[] = [], chat?: ChatChoice, keep?: KeepChoice, redoOf?: string, queuedSchedule?: Schedule, replyTo?: string, contextFromTaskOverride?: string): void {
     const socrates = this.socrates();
     if (!fromQueue) this.assertNewId(id);
     if ((chat || keep) && to !== "main") throw new LiveError("bad_request", "A message for a chosen chat or task is sent in the main conversation.");
     if (chat && keep) throw new LiveError("bad_request", "A message goes to a chosen chat or is kept in a task, not both.");
-    const target = chat ? this.chatTarget(chat, text, attachments.length) : keep ? this.keptTask(keep) : undefined;
+    const viewed = chat ? this.chatTask(chat) : null;
+    const target = chat ? this.chatTarget(chat, text, attachments.length, new Date(queuedSchedule?.receivedAt ?? this.runtime.store.clock.now())) : keep ? this.keptTask(keep) : undefined;
+    const contextFromTask = contextFromTaskOverride ?? (viewed?.general && target && "taskId" in target && viewed.id !== target.taskId ? viewed.id : undefined);
+    if (viewed?.general && target && "taskId" in target) {
+      const task = this.runtime.store.requireTask(target.taskId);
+      chat = {goal: this.runtime.store.requireGoal(task.goalId).number, task: task.number};
+    }
     const refused = redoOf ? socrates.redoProblem(redoOf, target && "taskId" in target ? target.taskId : null) : null;
     if (refused) throw new LiveError("redo_refused", refused);
     // A chat runs beside the main conversation, one message at a time: while it works, or another chat message waits for it, this one waits in the queue.
@@ -447,6 +489,10 @@ export class LiveHub {
     this.runs.set(id, run);
     const work = socrates.handle(text, {
       signal: run.controller.signal,
+      newRequest: !replyTo,
+      receivedAt: schedule.receivedAt,
+      ...(replyTo ? {replyTo} : {}),
+      ...(contextFromTask ? {contextFromTask} : {}),
       ...(attachments.length ? { attachments } : {}),
       approve: (request, origin) => this.ask(run, request, origin),
       ...(to === "main" ? {} : { lane: to === "new_lane" ? "new" : to }),
@@ -455,11 +501,11 @@ export class LiveHub {
       ...(target ? (keep ? { target, pinned: true } : { target, rollover: false, alongside: true }) : {}),
       ...(redoOf ? { redoOf } : {}),
       beforeBind: (taskIds, signal) => this.beforeBind(run, taskIds, signal),
-      onRecorded: (userEventId) => { if (target) run.seq = this.runtime.store.getEvent(userEventId)?.seq; },
+      onRecorded: (userEventId) => { if (target || replyTo) run.seq = this.runtime.store.requestRoot(userEventId).seq; },
       onBound: (turnId, taskId) => {
         run.tasks.add(taskId);
         schedule.bind();
-        run.seq ??= this.runtime.store.getEvent(this.runtime.store.requireTurn(turnId).userEventId)?.seq;
+        run.seq ??= this.runtime.store.requestRoot(this.runtime.store.requireTurn(turnId).userEventId).seq;
         this.scheduleState();
       },
       onLane: (laneId) => {
@@ -511,14 +557,14 @@ export class LiveHub {
   }
 
   /** Where a standard-mode message goes: a chat of a goal, or a new chat named for now by its first words. */
-  private chatTarget(chat: ChatChoice, text: string, images: number): { taskId: string } | { goalId: string; title: string } {
+  private chatTarget(chat: ChatChoice, text: string, images: number, at = this.runtime.store.clock.now()): { taskId: string } | { goalId: string; title: string } {
     const store = this.runtime.store;
     const goal = chat.goal === null ? this.runtime.chatsGoal() : store.getGoalByNumber(chat.goal);
     if (!goal || goal.archivedAt || (goal.general && chat.task === null)) throw new LiveError("not_found", "That goal no longer exists.");
     if (chat.task === null) return { goalId: goal.id, title: provisionalTitle(text, images) };
     const task = store.getTaskByNumber(goal.id, chat.task);
     if (!task || task.archivedAt) throw new LiveError("not_found", "That chat no longer exists.");
-    return { taskId: task.id };
+    return { taskId: task.general ? store.ensureGeneral(this.runtime.timeZone, at).task.id : task.id };
   }
 
   /** A standard-mode chat's task, without making the Chats goal; null for a new chat or one that is gone. */
@@ -537,7 +583,7 @@ export class LiveHub {
 
   private schedule(): Schedule {
     let bind!: () => void, finish!: () => void, handOff!: () => void;
-    return { order: ++this.nextOrder, tasks: new Set(), bound: new Promise<void>((resolve) => { bind = resolve; }), bind,
+    return { receivedAt: this.runtime.store.clock.now().toISOString(), order: ++this.nextOrder, tasks: new Set(), bound: new Promise<void>((resolve) => { bind = resolve; }), bind,
       done: new Promise<void>((resolve) => { finish = resolve; }), finish,
       handedOff: new Promise<void>((resolve) => { handOff = resolve; }), handOff };
   }
@@ -599,7 +645,7 @@ export class LiveHub {
       this.queue.splice(this.queue.indexOf(next), 1);
       started = true;
       try {
-        this.start(next.id, next.text, "main", undefined, true, next.attachments, next.chat, next.keep, undefined, next.schedule);
+        this.start(next.id, next.text, next.conversation ?? "main", undefined, true, next.attachments, next.chat, next.keep, undefined, next.schedule, next.replyTo, next.contextFromTask);
       } catch (error) {
         next.schedule.bind();
         next.schedule.finish();

@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import type { EventPayloads, MemoryAuthor, MemoryKind, TurnStop } from "@socrates/contracts";
 import { callLine } from "@socrates/retrieval";
-import type { LedgerStore, Task, Turn, Workspace } from "@socrates/store";
+import type { Clarification, LedgerStore, Task, Turn, Workspace } from "@socrates/store";
 import { assertSeparateFromClassic } from "./config";
 import { type Activity, type Place, activityOf, placeOf } from "./activity";
 import { type AttachmentView, viewOf } from "./attachments";
@@ -43,12 +43,15 @@ export interface HistoryItem {
   attachments: AttachmentView[];
   /** That event's sequence number: a page resumes the live connection from just before an unfinished message. */
   seq: number;
+  pageSeq?: number;
   at: string;
   message: string;
   /** The exact message is saved, but routing has not bound any part yet. */
   unrouted: boolean;
   /** The router's question, when the message was answered with one instead of being worked on. */
   question: string | null;
+  clarification?: Clarification | null;
+  target?: Place | null;
   parts: HistoryPart[];
 }
 
@@ -58,35 +61,36 @@ export interface HistoryItem {
  * for the following page, or null at the start.
  */
 export function conversationHistory(store: LedgerStore, laneId: string | null, before?: number, limit = HISTORY_PAGE_TURNS): { items: HistoryItem[]; next: number | null; seq: number } {
-  const seq = store.latestEventSeq();
-  const messages = store.conversationMessages(laneId, { ...(before !== undefined ? { before } : {}), limit });
-  const items: HistoryItem[] = [];
-  for (const event of messages) {
-    const turns = store.turnsForUserEvent(event.id);
-    // In the main conversation, a message's parts include any handed to a lane; in a lane, only its own.
-    const all = turns.filter((t) => !laneId || t.laneId === laneId);
-    const clarification = all.find((t) => t.kind === "clarification");
-    items.push({
-      throughSeq: seq,
-      activities: all.flatMap((turn) => store.listEvents({ turnId: turn.id }))
-        .sort((a, b) => a.seq - b.seq)
-        .flatMap((event) => {
-          const a = activityOf(store, event);
-          return a && ["routed", "redone", "step", "tool_started", "tool_finished", "warning", "approval_decided", "memory"].includes(a.kind) ? [a] : [];
-        }),
-      id: event.id,
-      seq: event.seq,
-      at: event.at,
-      message: event.payload.text,
-      attachments: (event.payload.attachments ?? []).map(viewOf),
-      unrouted: turns.length === 0,
-      question: clarification ? responseText(store, clarification) : null,
-      parts: all.filter((t) => t.kind === "task").map((t) => part(store, t, laneId)),
-    });
-  }
-  const oldest = messages.at(-1)?.seq;
-  const next = oldest !== undefined && store.conversationMessages(laneId, { before: oldest, limit: 1 }).length ? oldest : null;
-  return { items, next, seq };
+  const messages = store.conversationMessages(laneId, { ...(before !== undefined ? { before } : {}), limit, rootsOnly: true });
+  const items = messages.map(event => requestHistory(store, event.id, laneId));
+  const oldest = messages.at(-1)?.pageSeq ?? messages.at(-1)?.seq;
+  const next = oldest !== undefined && store.conversationMessages(laneId, { before: oldest, limit: 1, rootsOnly: true }).length ? oldest : null;
+  return { items, next, seq: store.latestEventSeq() };
+}
+
+/** One complete logical request, including children outside the current history page. */
+export function requestHistory(store: LedgerStore, requestId: string, laneId: string | null = null): HistoryItem {
+  const event = store.requestRoot(requestId);
+  const turns = store.requestTurns(event.id);
+  const all = turns.filter(t => !laneId || t.laneId === laneId);
+  const question = turns.find(t => t.kind === "clarification");
+  const clarification = question ? store.clarification(question.id) : null;
+  const chosen = event.payload.chosen_task_id ? store.getTask(event.payload.chosen_task_id) : null;
+  const goal = chosen ? store.getGoal(chosen.goalId) : null;
+  return {
+    throughSeq: store.latestEventSeq(),
+    activities: all.flatMap(turn => store.listEvents({turnId: turn.id})).sort((a,b) => a.seq-b.seq).flatMap(e => {
+      const a = activityOf(store, e);
+      return a && ["routed", "redone", "step", "tool_started", "tool_finished", "warning", "approval_decided", "memory"].includes(a.kind) ? [a] : [];
+    }),
+    id: event.id, seq: event.seq, pageSeq: store.requestMessages(event.id).at(-1)?.seq ?? event.seq, at: event.at, message: event.payload.text,
+    attachments: (event.payload.attachments ?? []).map(viewOf),
+    unrouted: !turns.length || clarification?.state === "resuming",
+    question: question ? responseText(store, question) : null,
+    clarification,
+    target: chosen && goal ? {goal: {number: goal.number, title: goal.title}, task: {number: chosen.number, title: chosen.title}, chat: 1} : null,
+    parts: all.filter(t => t.kind === "task").map(t => part(store, t, laneId)),
+  };
 }
 
 function part(store: LedgerStore, t: Turn, laneId: string | null): HistoryPart {
@@ -128,7 +132,7 @@ export function goalsView(store: LedgerStore, chatsGoal: number | null = null) {
       chats: goal.number === chatsGoal,
       workspace: goal.workspaceId ? (store.getWorkspace(goal.workspaceId)?.name ?? null) : null,
       updatedAt: goal.updatedAt,
-      tasks: store.listTasks(goal.id).map((task) => ({ number: task.number, title: task.title, status: task.status, closed: closedBy(store, task), objective: task.objective, completionCriteria: task.completionCriteria, note: task.continuationNote, chats: Math.max(1, store.listChats(task.id).length), updatedAt: task.updatedAt })),
+      tasks: store.listTasks(goal.id).map((task) => ({ number: task.number, title: task.title, status: task.status, closed: closedBy(store, task), objective: task.objective, completionCriteria: task.completionCriteria, note: task.continuationNote, chats: Math.max(1, store.listChats(task.id).length), updatedAt: task.updatedAt, startedAt: task.startedAt })),
     }));
 }
 

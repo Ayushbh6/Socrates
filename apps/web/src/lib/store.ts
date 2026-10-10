@@ -4,10 +4,14 @@ import { approvalExchange } from "./approvals";
 import { IMAGES_MAX, prepareImage } from "./images";
 import { LiveConnection } from "./live";
 import { type Exchange, type Model, type ModelEvent, emptyModel, reduce, replayFrom } from "./model";
-import type { Access, ArchivedView, AttachmentView, ChatChoice, Command, Effort, GoalView, KeepChoice, LedgerStatus, PendingApproval, ServerMessage, Settings, Status, TerminalView } from "./types";
+import type { Access, ArchivedView, AttachmentView, ChatChoice, ClarificationView, Command, Effort, GoalView, KeepChoice, LedgerStatus, PendingApproval, ServerMessage, Settings, Status, TerminalView } from "./types";
 
 export interface AppState {
   model: Model;
+  questionDialog?: string | null;
+  questionSending?: string | null;
+  questionError?: string | null;
+  focusedRequest?: {key: string; conversation: string; request: number} | null;
   status: Status | null;
   settings: Settings | null;
   goals: GoalView[];
@@ -58,6 +62,7 @@ export class Store {
   private statusRequest = 0;
   private readonly pendingQueue = new Map<string, { text: string; attachments: AttachmentView[] }>();
   /** The chat each standard-mode message was sent to, so one that finds main busy is queued for the same chat. */
+  private readonly replySends = new Map<string, string>();
   private readonly sentChats = new Map<string, ChatChoice>();
   /** The terminal sessions open on this page; their output never goes through the app's state. */
   private readonly terminalWatchers = new Map<string, TerminalWatcher>();
@@ -116,6 +121,31 @@ export class Store {
     return id;
   }
 
+  /** Open the original request even when it is outside the loaded history pages. */
+  async openQuestion(question: ClarificationView): Promise<void> {
+    this.set({questionDialog: question.turnId, questionError: null});
+    try {
+      const page = await api.request(question.requestId);
+      this.dispatch({type: "history", conversation: page.conversation, items: [page.item], older: true});
+      this.set({focusedRequest: {key: `m${page.item.seq}`, conversation: page.conversation, request: (this.state.focusedRequest?.request ?? 0)+1}});
+    } catch (error) { this.notice(error); }
+  }
+
+  closeQuestion(): void { this.set({questionDialog: null, questionError: null}); }
+
+  replyTo(question: ClarificationView, text: string): string | null {
+    if (!text.trim() || this.state.questionSending) return null;
+    const id = newId();
+    if (!this.command({type: "reply", id, clarification: question.turnId, text})) return null;
+    this.replySends.set(id, question.turnId);
+    this.set({questionSending: question.turnId, questionError: null});
+    return id;
+  }
+
+  cancelQuestion(question: ClarificationView): void {
+    if (this.command({type: "cancel_question", clarification: question.turnId})) this.closeQuestion();
+  }
+
   /**
    * Ask a finished or stopped question again in another task: a chosen chat,
    * or today's general conversation. It shows as a new message at once; the
@@ -123,7 +153,7 @@ export class Store {
    * connection is down.
    */
   redo(exchange: Exchange, to: { chat: ChatChoice } | { general: true }): string | null {
-    const turn = exchange.turns[0];
+    const turn = exchange.turns.find(id => id !== exchange.clarification?.turnId);
     if (!turn) return null;
     const id = newId();
     if (!this.command({ type: "redo", id, turn, ...to })) return null;
@@ -355,6 +385,25 @@ export class Store {
           .finally(() => { this.recovering = null; });
       }
       return;
+    }
+    if (message.type === "error" && message.id && this.replySends.has(message.id)) {
+      const question = this.replySends.get(message.id)!;
+      this.replySends.delete(message.id);
+      this.set({questionSending: null, questionDialog: question, questionError: message.message});
+      this.dispatch({type: "server", message});
+      return;
+    }
+    if (message.type === "result") {
+      const question = this.replySends.get(message.id);
+      if (question) this.set({drafts: {...this.state.drafts, [`question:${question}`]: ""}});
+      this.replySends.delete(message.id);
+    }
+    if (message.type === "state" && this.state.questionSending) {
+      const q = message.routingQuestions?.find(q => q.turnId === this.state.questionSending);
+      if (!q || q.state !== "pending") {
+        const id = this.state.questionSending;
+        this.set({questionSending: null, questionDialog: null, drafts: q?.state === "resuming" ? this.state.drafts : {...this.state.drafts, [`question:${id}`]: ""}});
+      }
     }
     if (message.type === "error" && message.id && (message.code === "main_busy" || message.code === "chat_busy")) {
       // Main (or the chat) became busy as this was sent: it waits in the queue instead.

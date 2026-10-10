@@ -83,7 +83,8 @@ export function redoOffer(exchange: Exchange, list: Exchange[], onRedone?: (id: 
  */
 export function redoBlock(exchange: Exchange, list: Exchange[]): string | null | undefined {
   const route = exchange.route;
-  if (!route || exchange.redoneTo || exchange.question || exchange.turns.length !== 1) return undefined;
+  const work = exchange.turns.filter(id => id !== exchange.clarification?.turnId);
+  if (!route || exchange.redoneTo || (exchange.question && exchange.clarification?.state !== "answered") || work.length !== 1) return undefined;
   if (exchange.state !== "done" && exchange.state !== "stopped") return undefined;
   const later = list.some((o) => o !== exchange && !o.redoneTo && o.route?.goal.number === route.goal.number && o.route.task.number === route.task.number &&
     (o.route.projectTurn !== undefined && route.projectTurn !== undefined ? o.route.projectTurn > route.projectTurn : o.at > exchange.at));

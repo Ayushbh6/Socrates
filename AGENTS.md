@@ -48,15 +48,16 @@ The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `serv
 
 - **Standard and Flow order, Stop and approvals:** messages targeting the same task keep their acceptance order across modes, including queued Standard messages and Flow messages still routing. Binding waits too, so later work sees earlier answers. Task Stop clears both its active owner and routed waiters; stopping only Flow leaves Standard's owner and queue alive. Both headers show **Approval needed** with the count; clicking opens the original question in the current mode, loading older history when needed (`architecture/web.md`, "Approvals").
 
+- **Routing questions:** a premium freeform dialog and global **Reply needed** indicator resume the explicitly selected original request. Question, reply and final answer stay one visible turn across modes, history and Inspect. Pending state survives other activity and restart; duplicates are refused and failures can be retried. General freezes the original request day, fresh Standard General sends use today with earlier context, and legacy default General names are dated from their start (`architecture/web.md`, "Routing questions"; trial log entry 51).
+
 ## Next, in the order agreed with the user
 
 Ask before starting each one.
 
 1. **Memory follow-ups** (`docs/memory.md`): measure on real use whether later conversations follow the project notes better than without; a Memory-page view of the notes; the Inspect panel's rates are where thresholds get set.
-The Standard/Flow verification and its three agreed implementation points are complete (trial log entry 50). Ordinary routing after switching modes remains the agreed behaviour; no automatic pin or routing hint was added.
+The Standard/Flow verification and its three agreed implementation points are complete (trial log entry 50). The linked routing-question implementation is complete in entry 51. Ordinary routing after switching modes remains the agreed behaviour; no automatic pin or routing hint was added.
 
 **Known small issues:**
-- If attaching images fails while saving a Flow message, the main conversation can stay "busy". This is in `packages/agent/src/socrates.ts` `handle`.
 - In Standard mode, the composer's unsent text is shared across chats.
 - The router can still stop at a clarification for a message about a brand-new project folder (it knows no goal for it); answering "start something new" works.
 - Browser-pane trials need the pane displayed: open it with `preview_start` and a `url` if screenshots time out.

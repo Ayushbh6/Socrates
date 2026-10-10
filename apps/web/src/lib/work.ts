@@ -92,12 +92,12 @@ export function thoughtLabel(ms: number | null): string {
  * thought, and its tool calls by kind, e.g. "Worked for 14s · thought ·
  * read 2 files · ran 1 command".
  */
-export function workSummary(segments: Segment[], exchange: Pick<Exchange, "at" | "workedAt" | "state" | "answers" | "draft">, now = Date.now()): string {
+export function workSummary(segments: Segment[], exchange: Pick<Exchange, "at" | "workStartedAt" | "workedAt" | "state" | "answers" | "draft">, now = Date.now()): string {
   const parts: string[] = [];
   // The clock runs until the answer starts; the work ended with its last saved step.
   const working = exchange.state === "working" && !exchange.answers.length && exchange.draft?.kind !== "answer";
   const end = working ? now : exchange.workedAt ? Date.parse(exchange.workedAt) : NaN;
-  const seconds = Math.round((end - Date.parse(exchange.at)) / 1000);
+  const seconds = Math.round((end - Date.parse(exchange.workStartedAt ?? exchange.at)) / 1000);
   if (Number.isFinite(seconds) && seconds >= 1) parts.push(`${working ? "Working for" : "Worked for"} ${duration(seconds)}`);
   const items = segments.flatMap((s) => (s.kind === "group" ? s.items : []));
   if (items.some((i) => i.kind === "thinking")) parts.push(parts.length ? "thought" : "Thought");

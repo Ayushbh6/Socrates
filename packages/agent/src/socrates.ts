@@ -87,6 +87,13 @@ export interface SocratesOptions {
 }
 
 export interface HandleOptions {
+  /** Reply inside this original routing request, independently of the active mode/chat. */
+  replyTo?: string;
+  /** A normal app send must not consume any older pending routing question. */
+  newRequest?: boolean;
+  /** The historical General chat the user was viewing when starting today's request. */
+  contextFromTask?: string;
+  receivedAt?: string;
   signal?: AbortSignal;
   approve?: Approve;
   /** Receives the one-line plan of a compound message before part 1 starts. */
@@ -356,7 +363,7 @@ export class Socrates {
       if (problem) return Promise.reject(new RedoError(problem));
     }
     let laneId: string | null;
-    const alongside = options.alongside === true && !!options.target && !options.lane;
+    const alongside = options.alongside === true && !!options.target && !options.lane && !options.replyTo;
     try {
       laneId = alongside ? this.claimChat() : this.claim(options.lane);
     } catch (error) {
@@ -365,16 +372,21 @@ export class Socrates {
     let userEventId: string | undefined;
     try {
       // A message with attachments is recorded here, so they are saved with it before routing.
-      if (laneId || options.attachments?.length || options.redoOf) userEventId = this.store.recordUserMessage(message, laneId, options.attachments ?? [], options.redoOf ?? null).id;
+      if (options.replyTo) userEventId = this.store.recordClarificationReply(options.replyTo, message).id;
+      else if (laneId || options.attachments?.length || options.redoOf || options.target || options.receivedAt) userEventId = this.store.recordUserMessage(message, laneId, options.attachments ?? [], options.redoOf ?? null, {...(options.target && "taskId" in options.target ? {chosen_task_id: options.target.taskId} : {}), ...(options.contextFromTask ? {context_from_task: options.contextFromTask} : {}), ...(options.receivedAt && options.receivedAt !== this.store.clock.now().toISOString() ? {received_at: options.receivedAt} : {})}).id;
     } catch (error) {
       if (laneId) this.leaveLane(laneId);
       else if (alongside) this.chatRuns--;
+      else this.mainBusy = false;
       return Promise.reject(error);
     }
     const signal = AbortSignal.any([this.lifetime.signal, ...(options.signal ? [options.signal] : [])]);
     const work = () => {
       if (laneId && options.lane === "new") options.onLane?.(laneId);
-      return this.handleIn(laneId, message, { ...options, alongside }, userEventId);
+      return this.handleIn(laneId, message, { ...options, alongside }, userEventId).catch(error => {
+        if (userEventId) this.store.failClarificationReply(userEventId, "Routing could not finish. Please send your reply again.");
+        throw error;
+      });
     };
     const run = laneId
       ? this.enqueueLane(laneId, work, signal).finally(() => this.leaveLane(laneId))
@@ -462,13 +474,15 @@ export class Socrates {
       const signal = AbortSignal.any([this.lifetime.signal, ...(options.signal ? [options.signal] : [])]);
       userEventId ??= this.store.recordUserMessage(message, laneId).id;
       options.onRecorded?.(userEventId);
+      const clarification = options.replyTo ? this.store.clarification(options.replyTo) : null;
+      const gateMessage = clarification ? `${clarification.message}\nRouting question: ${clarification.detail}\nUser's clarification reply: ${message}` : message;
       const beforeBind = async (taskIds: string[]) => {
         try { await options.beforeBind?.(taskIds, signal); }
         // Still bind a message stopped while waiting, so its saved question has a stopped result.
         catch (error) { if (!signal.aborted) throw error; }
       };
       // A lane with a task continues it directly; only its first message, or an answer to its clarification, is routed.
-      const target = laneId && !this.store.pendingClarification(laneId) ? this.store.currentBinding(laneId) : null;
+      const target = laneId && !options.replyTo && (options.newRequest || !this.store.pendingClarification(laneId)) ? this.store.currentBinding(laneId) : null;
       let parts: RoutedPart[];
       let acknowledgment: string | null = null;
       let setupError: { error: unknown } | null = null;
@@ -479,14 +493,14 @@ export class Socrates {
         reading = this.askGate(message, userEvent.id, target.task.id, signal);
         const turn = this.store.bindTurn({ userEventId: userEvent.id, taskId: target.task.id, route: "lane" });
         parts = [{ order: 1, request: message, dependsOn: [], turn, goal: target.goal, task: target.task, chat: this.store.currentChat(target.task.id), clarification: null, created: { goal: false, task: false } }];
-      } else if (options.target) {
+      } else if (options.target && !options.replyTo) {
         reading = this.askGate(message, userEventId, "taskId" in options.target ? options.target.taskId : null, signal);
         await beforeBind("taskId" in options.target ? [options.target.taskId] : []);
         parts = [this.bindChosen(message, laneId, options.target, userEventId, options.pinned === true)];
       } else {
-        reading = this.askGate(message, userEventId, this.store.currentBinding(laneId)?.task.id ?? null, signal);
-        const remembered = await this.rememberedForRouting(message, await reading, signal);
-        const routed = await this.router.route(message, signal, { laneId, userEventId, laneActivity: this.laneActivity(), beforeBind, ...(remembered ? { remembered } : {}) });
+        reading = this.askGate(gateMessage, userEventId, this.store.currentBinding(laneId)?.task.id ?? null, signal);
+        const remembered = await this.rememberedForRouting(gateMessage, await reading, signal);
+        const routed = await this.router.route(message, signal, { laneId, userEventId, ...(options.replyTo ? {clarificationTurnId: options.replyTo} : options.newRequest ? {clarificationTurnId: null} : {}), laneActivity: this.laneActivity(), beforeBind, ...(remembered ? { remembered } : {}) });
         if (routed.kind === "clarify") {
           const notice = laneId ? laneNotice(this.store.requireLane(laneId).number, { kind: "clarify", question: routed.text }) : null;
           return { kind: "clarify", text: routed.text, laneId, notice, notices: notice ? [notice] : [] };

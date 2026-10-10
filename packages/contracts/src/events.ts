@@ -14,7 +14,7 @@ export interface EventPayloads {
    * conversation. `attachments`: images the user attached, stored in
    * Socrates' attachments folder, which `read` may always open.
    */
-  user_message: { text: string; lane_id?: string; attachments?: Attachment[]; /** The turn whose question this asks again in another task. */ redo_of?: string };
+  user_message: { text: string; lane_id?: string; attachments?: Attachment[]; /** The turn whose question this asks again in another task. */ redo_of?: string; /** Explicit reply to this routing clarification, inside its original request. */ reply_to?: string; /** A Standard message's chosen task before binding. */ chosen_task_id?: string; /** An older General chat continued in today's chat. */ context_from_task?: string; /** When a queued request was accepted, before execution. */ received_at?: string };
   /** A parallel lane (agent-harness.md, "Lanes"); numbers are never reused. */
   lane_opened: { lane_id: string; lane_number: number };
   lane_closed: { lane_id: string };
@@ -37,12 +37,15 @@ export interface EventPayloads {
     reason: string;
     validation_errors?: string[];
   };
-  clarification_asked: { question: string; candidates: unknown[]; allow_new: boolean; zero_history: boolean; candidate_bindings?: ({ goal_id: string; task_id: string | null } | null)[] };
+  clarification_asked: { question: string; candidates: unknown[]; allow_new: boolean; zero_history: boolean; candidate_bindings?: ({ goal_id: string; task_id: string | null } | null)[]; request_day?: string };
+  general_day_set: {day: string};
+  clarification_cancelled: Record<string, never>;
+  clarification_reply_failed: { answer_event_id: string; reason: string };
   workspace_created: { workspace_id: string; name: string; root_path: string | null };
   goal_created: { goal_number: number; title: string; workspace_id: string | null; general: boolean; objective?: string | null };
   goal_workspace_bound: { workspace_id: string };
   goal_note_revised: { revision: number; note: string };
-  task_created: { task_number: number; title: string; objective: string; general: boolean; completion_criteria?: string | null };
+  task_created: { task_number: number; title: string; objective: string; general: boolean; completion_criteria?: string | null; /** The original request's date for a General day created after midnight. */ started_at?: string; general_day?: string };
   task_revised: { revision: number; status: string; continuation_note: string | null; title: string; objective: string; completion_criteria?: string | null };
   /** The user renamed a goal. */
   goal_renamed: { title: string };

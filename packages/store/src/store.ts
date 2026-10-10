@@ -78,6 +78,22 @@ export interface Turn {
   laneId: string | null;
 }
 
+/** A routing question inside one durable request. Internal turn records remain exact. */
+export interface Clarification {
+  turnId: string;
+  requestId: string;
+  messageSeq: number;
+  at: string;
+  message: string;
+  conversation: string;
+  question: string;
+  detail: string;
+  answer: string | null;
+  answerEventId: string | null;
+  state: "pending" | "resuming" | "answered" | "cancelled";
+  error: string | null;
+}
+
 /** A parallel lane (agent-harness.md, "Lanes"). */
 export interface Lane {
   id: string;
@@ -604,8 +620,78 @@ export class LedgerStore {
   }
 
   /** Persist the exact user message before anything else happens to it. */
-  recordUserMessage(text: string, laneId: string | null = null, attachments: Attachment[] = [], redoOf: string | null = null): StoredEvent<"user_message"> {
-    return this.appendEvent("user_message", { text, ...(laneId ? { lane_id: laneId } : {}), ...(attachments.length ? { attachments } : {}), ...(redoOf ? { redo_of: redoOf } : {}) });
+  recordUserMessage(text: string, laneId: string | null = null, attachments: Attachment[] = [], redoOf: string | null = null, metadata: Pick<EventPayloads["user_message"], "chosen_task_id" | "context_from_task" | "received_at"> = {}): StoredEvent<"user_message"> {
+    return this.appendEvent("user_message", { text, ...(laneId ? { lane_id: laneId } : {}), ...(attachments.length ? { attachments } : {}), ...(redoOf ? { redo_of: redoOf } : {}), ...metadata });
+  }
+
+  /** Resolve both explicit replies and the links recorded by older versions. */
+  requestRoot(userEventId: string): StoredEvent<"user_message"> {
+    const event = this.getEvent(userEventId);
+    if (!event || event.type !== "user_message") throw new StoreError("The original request is missing.");
+    const p = event.payload as EventPayloads["user_message"];
+    const bound = this.get("SELECT json_extract(payload, '$.request_event_id') AS request_id FROM events WHERE type = 'turn_bound' AND json_extract(payload, '$.user_event_id') = ? LIMIT 1", userEventId);
+    const root = p.reply_to ? this.requireTurn(p.reply_to).userEventId : strOrNull(bound?.request_id) ?? userEventId;
+    return root === userEventId ? {...event, at: p.received_at ?? event.at} as StoredEvent<"user_message"> : this.requestRoot(root);
+  }
+
+  requestMessages(requestId: string): StoredEvent<"user_message">[] {
+    const root = this.requestRoot(requestId);
+    const turns = this.turnsForUserEvent(root.id).filter(t => t.kind === "clarification");
+    const ids = new Set([root.id]);
+    for (const t of turns) {
+      for (const e of this.all("SELECT id FROM events WHERE type = 'user_message' AND json_extract(payload, '$.reply_to') = ?", t.id)) ids.add(str(e.id));
+      for (const e of this.all("SELECT json_extract(payload, '$.user_event_id') AS id FROM events WHERE type = 'turn_bound' AND json_extract(payload, '$.clarification_turn_id') = ?", t.id)) ids.add(str(e.id));
+    }
+    return [...ids].map(id => this.getEvent(id) as StoredEvent<"user_message">).sort((a,b) => a.seq-b.seq);
+  }
+
+  requestTurns(requestId: string): Turn[] {
+    return this.requestMessages(requestId).flatMap(e => this.turnsForUserEvent(e.id)).sort((a,b) => a.projectTurn-b.projectTurn);
+  }
+
+  clarification(turnId: string): Clarification {
+    const turn = this.requireTurn(turnId);
+    if (turn.kind !== "clarification") throw new StoreError("That turn is not a routing question.");
+    const root = this.requestRoot(turn.userEventId);
+    const asked = this.listEvents({turnId, type: "clarification_asked"})[0]?.payload as EventPayloads["clarification_asked"] | undefined;
+    const failed = this.listEvents({turnId, type: "clarification_reply_failed"});
+    const failures = new Set(failed.map(e => (e.payload as EventPayloads["clarification_reply_failed"]).answer_event_id));
+    const bound = this.get("SELECT json_extract(payload, '$.user_event_id') AS id FROM events WHERE type = 'turn_bound' AND json_extract(payload, '$.clarification_turn_id') = ? LIMIT 1", turnId);
+    const replies = this.requestMessages(root.id).filter(e => e.id !== root.id && !failures.has(e.id));
+    const answer = bound ? this.getEvent(str(bound.id)) as StoredEvent<"user_message"> : replies.at(-1) ?? null;
+    const cancelled = this.listEvents({turnId, type: "clarification_cancelled"}).length > 0;
+    const detail = turn.responseEventId ? (this.getEvent(turn.responseEventId)?.payload as EventPayloads["assistant_response"])?.text ?? "" : "";
+    return {turnId, requestId: root.id, messageSeq: root.seq, at: root.at, message: root.payload.text, conversation: root.payload.lane_id ?? "main", question: asked?.question ?? detail, detail, answer: answer?.payload.text ?? null, answerEventId: answer?.id ?? null,
+      state: cancelled ? "cancelled" : bound ? "answered" : answer ? "resuming" : "pending", error: answer ? null : (failed.at(-1)?.payload as EventPayloads["clarification_reply_failed"] | undefined)?.reason ?? null};
+  }
+
+  clarifications(): Clarification[] {
+    return this.all("SELECT id FROM turns WHERE kind = 'clarification' ORDER BY project_turn").map(r => this.clarification(str(r.id)));
+  }
+
+  recordClarificationReply(turnId: string, text: string): StoredEvent<"user_message"> {
+    return this.transaction(() => {
+      const q = this.clarification(turnId);
+      if (q.state !== "pending") throw new StoreError("That routing question is no longer waiting for a reply.");
+      if (!text.trim()) throw new StoreError("Write a reply to the routing question.");
+      return this.appendEvent("user_message", {text, reply_to: turnId, ...(q.conversation !== "main" ? {lane_id: q.conversation} : {})});
+    });
+  }
+
+  cancelClarification(turnId: string): void {
+    if (this.clarification(turnId).state !== "pending") throw new StoreError("That routing question is no longer waiting for a reply.");
+    this.appendEvent("clarification_cancelled", {}, {turn_id: turnId});
+  }
+
+  failClarificationReply(answerEventId: string, reason: string): void {
+    const p = this.getEvent(answerEventId)?.payload as EventPayloads["user_message"] | undefined;
+    if (!p?.reply_to || this.turnsForUserEvent(answerEventId).some(t => t.kind === "task")) return;
+    if (this.listEvents({turnId: p.reply_to, type: "clarification_reply_failed"}).some(e => (e.payload as EventPayloads["clarification_reply_failed"]).answer_event_id === answerEventId)) return;
+    this.appendEvent("clarification_reply_failed", {answer_event_id: answerEventId, reason}, {turn_id: p.reply_to});
+  }
+
+  recoverClarificationReplies(): void {
+    for (const q of this.clarifications()) if (q.state === "resuming" && q.answerEventId) this.failClarificationReply(q.answerEventId, "The app restarted before routing finished. Please send your reply again.");
   }
 
   // ── Redone turns ─────────────────────────────────────────────────────────
@@ -659,13 +745,10 @@ export class LedgerStore {
     return p?.redo_of ? this.getTurn(p.redo_of) : null;
   }
 
-  /** The conversation's latest turn when it is a clarification: the main conversation's, or a lane's. */
+  /** The latest unanswered question in this channel, independent of intervening work. */
   pendingClarification(laneId: string | null = null): Turn | null {
-    const r = this.get(`SELECT * FROM turns WHERE ${channel(laneId)} ORDER BY project_turn DESC LIMIT 1`, ...(laneId ? [laneId] : []));
-    if (!r || r.kind !== "clarification") return null;
-    // Its answering turn may now live in another lane after a handoff.
-    if (this.get("SELECT 1 FROM events WHERE type = 'turn_bound' AND json_extract(payload, '$.clarification_turn_id') = ? LIMIT 1", str(r.id))) return null;
-    return toTurn(r);
+    const q = this.clarifications().findLast(q => q.conversation === (laneId ?? "main") && q.state === "pending");
+    return q ? this.requireTurn(q.turnId) : null;
   }
 
   /** Exact request and clarification records for the worker handoff. */
@@ -728,7 +811,7 @@ export class LedgerStore {
       }
       case "task_created": {
         const p = e.payload as EventPayloads["task_created"];
-        this.run("INSERT INTO tasks (id, goal_id, task_number, title, objective, completion_criteria, status, is_general, revision, started_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, 1, ?, ?)", e.task_id, e.goal_id, p.task_number, p.title, p.objective, p.completion_criteria ?? null, p.general ? 1 : 0, e.at, e.at);
+        this.run("INSERT INTO tasks (id, goal_id, task_number, title, objective, completion_criteria, status, is_general, revision, started_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, 1, ?, ?)", e.task_id, e.goal_id, p.task_number, p.title, p.objective, p.completion_criteria ?? null, p.general ? 1 : 0, p.started_at ?? e.at, e.at);
         this.run("INSERT INTO task_revisions (task_id, revision, title, objective, completion_criteria, status, event_id, created_at) VALUES (?, 1, ?, ?, ?, 'open', ?, ?)", e.task_id, p.title, p.objective, p.completion_criteria ?? null, e.id, e.at);
         this.run("UPDATE goals SET updated_at = ? WHERE id = ?", e.at, e.goal_id); break;
       }
@@ -830,7 +913,7 @@ export class LedgerStore {
       }
       case "memory_saved": case "memory_edited": case "memory_forgotten": case "memory_surfaced": this.projectMemory(e); break;
       case "turn_redone": case "file_changed": case "terminal_started": case "approval_decided": case "history_omitted": case "agent_warning": case "agent_message": case "anchor_question": case "anchor_decided":
-      case "mcp_tools_listed": case "skill_shelf_frozen": break;
+      case "mcp_tools_listed": case "skill_shelf_frozen": case "clarification_cancelled": case "clarification_reply_failed": case "general_day_set": break;
       default: throw new StoreError(`Unsupported event type: ${e.type}`);
     }
   }
@@ -1248,7 +1331,7 @@ export class LedgerStore {
 
   // ── Tasks ────────────────────────────────────────────────────────────────
 
-  createTask(goalId: string, input: { title: string; objective?: string; completionCriteria?: string | null; general?: boolean }): Task {
+  createTask(goalId: string, input: { title: string; objective?: string; completionCriteria?: string | null; general?: boolean; startedAt?: Date; generalDay?: string }): Task {
     return this.transaction(() => {
       this.requireGoal(goalId);
       const id = newId("task");
@@ -1259,7 +1342,7 @@ export class LedgerStore {
       const general = input.general ?? false;
       const event = this.appendEvent(
         "task_created",
-        { task_number: next, title, objective, general, completion_criteria: completionCriteria },
+        { task_number: next, title, objective, general, completion_criteria: completionCriteria, ...(input.startedAt ? {started_at: input.startedAt.toISOString()} : {}), ...(input.generalDay ? {general_day: input.generalDay} : {}) },
         { goal_id: goalId, task_id: id },
       );
       const at = event.at;
@@ -1273,7 +1356,7 @@ export class LedgerStore {
         objective,
         completionCriteria,
         general ? 1 : 0,
-        at,
+        input.startedAt?.toISOString() ?? at,
         at,
       );
       this.run(
@@ -1398,7 +1481,7 @@ export class LedgerStore {
    * use. One-off asks are grouped by day: the first one of a day, in the
    * user's time zone, starts that day's task, named by its date.
    */
-  ensureGeneral(timeZone = "UTC"): { goal: Goal; task: Task } {
+  ensureGeneral(timeZone = "UTC", requestAt = this.clock.now(), requestDay?: string): { goal: Goal; task: Task } {
     return this.transaction(() => {
       const goal =
         this.getGeneralGoal() ??
@@ -1407,17 +1490,36 @@ export class LedgerStore {
           objective: "Greetings, small talk, and quick questions that belong to no project.",
           general: true,
         });
-      const now = this.clock.now();
-      const latest = this.get("SELECT * FROM tasks WHERE goal_id = ? AND is_general = 1 ORDER BY task_number DESC LIMIT 1", goal.id);
-      const task = latest && localDay(new Date(str(latest.started_at)), timeZone) === localDay(now, timeZone)
-        ? toTask(latest)
+      const now = requestAt;
+      const day = requestDay ?? localDay(now, timeZone);
+      const existing = this.listTasks(goal.id).find(t => t.general && (this.generalDay(t.id) ?? localDay(new Date(t.startedAt), timeZone)) === day);
+      const task = existing
+        ? existing
         : this.createTask(goal.id, {
-            title: generalTaskTitle(now, timeZone),
+            title: generalTaskTitle(new Date(`${day}T12:00:00Z`), "UTC"),
             objective: "Conversation and quick questions without a task anchor, for one day.",
             general: true,
+            startedAt: now,
+            generalDay: day,
           });
       return { goal: this.requireGoal(goal.id), task };
     });
+  }
+
+  /** The day is metadata, independent of later timezone changes and task labels. */
+  generalDay(taskId: string): string | null {
+    const row = this.get("SELECT CASE WHEN type = 'general_day_set' THEN json_extract(payload, '$.day') ELSE json_extract(payload, '$.general_day') END AS day FROM events WHERE task_id = ? AND type IN ('general_day_set', 'task_created') ORDER BY seq DESC LIMIT 1", taskId);
+    return strOrNull(row?.day);
+  }
+
+  /** Date legacy default General labels without moving any historical work. */
+  dateGeneralTasks(timeZone: string): void {
+    const goal = this.getGeneralGoal();
+    if (!goal) return;
+    for (const task of this.listTasks(goal.id)) if (task.general) {
+      if (!this.generalDay(task.id)) this.appendEvent("general_day_set", {day: localDay(new Date(task.startedAt), timeZone)}, {task_id: task.id, goal_id: goal.id});
+      if (task.title === GENERAL_TASK_TITLE && !this.titleSetByUser(task.id)) this.reviseTask(task.id, {title: generalTaskTitle(new Date(task.startedAt), timeZone)});
+    }
   }
 
   // ── Chats ────────────────────────────────────────────────────────────────
@@ -1602,9 +1704,9 @@ export class LedgerStore {
   }
 
   /**
-   * Store a routing clarification as a completed exchange that belongs to no
-   * task. It appears in router history so the user's answer resolves against
-   * the enumerated candidates, but never in any task's chat history.
+   * Complete the internal routing phase without binding a task. Its logical
+   * request remains waiting; after a linked reply it is projected together
+   * with the worker's final answer in the chosen task.
    */
   recordClarification(userEventId: string, questionText: string): Turn {
     return this.transaction(() => {
@@ -1783,10 +1885,26 @@ export class LedgerStore {
    * Include messages still routing or queued, with no turn yet. The page's
    * turn budget expands to keep each compound message together.
    */
-  conversationMessages(laneId: string | null, options: { before?: number; limit: number }): StoredEvent<"user_message">[] {
+  conversationMessages(laneId: string | null, options: { before?: number; limit: number; rootsOnly?: boolean }): (StoredEvent<"user_message"> & {pageSeq?: number})[] {
     const where = laneId
-      ? "(json_extract(e.payload, '$.lane_id') = ? OR EXISTS (SELECT 1 FROM turns lane WHERE lane.user_event_id = e.id AND lane.lane_id = ?))"
+      ? "(json_extract(e.payload, '$.lane_id') = ? OR EXISTS (SELECT 1 FROM turns lane WHERE lane.lane_id = ? AND (lane.user_event_id = e.id OR EXISTS (SELECT 1 FROM events b WHERE b.type = 'turn_bound' AND b.turn_id = lane.id AND json_extract(b.payload, '$.request_event_id') = e.id))))"
       : "json_extract(e.payload, '$.lane_id') IS NULL";
+    if (options.rootsOnly) {
+      const rows = this.all(`WITH roots AS (
+        SELECT e.*, MAX(e.seq, COALESCE((SELECT MAX(answer.seq) FROM events answer WHERE answer.type = 'user_message' AND (
+          EXISTS (SELECT 1 FROM turns q WHERE q.kind = 'clarification' AND q.user_event_id = e.id AND json_extract(answer.payload, '$.reply_to') = q.id)
+          OR EXISTS (SELECT 1 FROM events b WHERE b.type = 'turn_bound' AND json_extract(b.payload, '$.request_event_id') = e.id AND json_extract(b.payload, '$.user_event_id') = answer.id)
+        )), e.seq)) AS order_seq FROM events e WHERE e.type = 'user_message' AND ${where}
+        AND json_extract(e.payload, '$.reply_to') IS NULL
+        AND NOT EXISTS (SELECT 1 FROM events b WHERE b.type = 'turn_bound' AND json_extract(b.payload, '$.user_event_id') = e.id AND json_extract(b.payload, '$.request_event_id') <> e.id)
+      ), candidates AS (SELECT * FROM roots WHERE order_seq < ? ORDER BY order_seq DESC LIMIT ?), messages AS (
+        SELECT e.*, MAX(1, COUNT(t.id)) AS parts FROM candidates e LEFT JOIN turns t ON t.kind = 'task' AND (
+          t.user_event_id = e.id OR EXISTS (SELECT 1 FROM events b WHERE b.type = 'turn_bound' AND b.turn_id = t.id AND json_extract(b.payload, '$.request_event_id') = e.id)
+        ) ${laneId ? "AND t.lane_id = ?" : ""} GROUP BY e.id
+      ), page AS (SELECT *, COALESCE(SUM(parts) OVER (ORDER BY order_seq DESC ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS preceding FROM messages)
+      SELECT * FROM page WHERE preceding < ? ORDER BY order_seq DESC`, ...(laneId ? [laneId, laneId] : []), options.before ?? Number.MAX_SAFE_INTEGER, options.limit, ...(laneId ? [laneId] : []), options.limit);
+      return rows.map(row => ({...this.toEvent(row) as StoredEvent<"user_message">, pageSeq: num(row.order_seq)}));
+    }
     return this.all(
       `WITH candidates AS (
          SELECT e.* FROM events e WHERE e.type = 'user_message' AND e.seq < ? AND ${where}
@@ -1876,26 +1994,24 @@ export class LedgerStore {
       if (rows.length === 0) return;
       for (const r of rows) {
         before = Math.min(before, num(r.project_turn));
-        const userEventId = str(r.user_event_id);
+        const root = this.requestRoot(str(r.user_event_id));
+        const userEventId = root.id;
         if (seen.has(userEventId)) continue;
         seen.add(userEventId);
         const redone = this.redoneTurnIds();
-        const turns = this.turnsForUserEvent(userEventId).filter((turn) => lanes.includes(turn.laneId) && !redone.has(turn.id));
-        // Compound parts may each have their own answer; the exchange shows them in part order.
-        const responseIds = [...new Set(turns.map((t) => t.responseEventId).filter((id): id is string => id !== null))];
-        const response = responseIds.length > 1
-          ? responseIds.map((id) => (this.getEvent(id)!.payload as EventPayloads["assistant_response"]).text).join("\n\n")
-          : (JSON.parse(str(r.response_payload)) as { text: string }).text;
-        const user = JSON.parse(str(r.user_payload)) as EventPayloads["user_message"];
+        const turns = this.requestTurns(userEventId).filter(turn => lanes.includes(turn.laneId) && !redone.has(turn.id));
+        const work = turns.filter(t => t.kind === "task" && t.responseEventId);
+        const clarification = turns.find(t => t.kind === "clarification");
+        const q = clarification ? this.clarification(clarification.id) : null;
+        const responseIds = [...new Set((work.length ? work : turns).map(t => t.responseEventId).filter((id): id is string => id !== null))];
+        const answers = responseIds.map(id => (this.getEvent(id)!.payload as EventPayloads["assistant_response"]).text).join("\n\n");
+        const response = work.length && q?.answer ? `Routing clarification: ${q.detail}\nUser's clarification reply: ${q.answer}\nFinal answer: ${answers}` : answers;
         yield {
-          userEventId,
-          userMessage: user.text,
-          attachments: (user.attachments ?? []).map((a) => a.name),
-          response,
-          at: str(r.user_at),
-          projectTurns: turns.map((t) => t.projectTurn),
-          kind: str(r.kind) as Exchange["kind"],
-          bindings: turns.filter((t) => t.kind === "task").map((t) => ({ goalId: t.goalId!, taskId: t.taskId! })),
+          userEventId, userMessage: root.payload.text,
+          attachments: (root.payload.attachments ?? []).map(a => a.name),
+          response, at: root.at, projectTurns: turns.map(t => t.projectTurn),
+          kind: work.length ? "task" : str(r.kind) as Exchange["kind"],
+          bindings: work.map(t => ({goalId: t.goalId!, taskId: t.taskId!})),
         };
       }
     }

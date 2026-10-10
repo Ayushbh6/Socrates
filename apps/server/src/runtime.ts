@@ -156,6 +156,8 @@ export class Runtime {
         calls = null;
       }
       runtime = new Runtime(config, store, calls, recovered, deps, log, unlock, settings);
+      store.recoverClarificationReplies();
+      store.dateGeneralTasks(runtime.timeZone);
       await runtime.start();
       return runtime;
     } catch (error) {

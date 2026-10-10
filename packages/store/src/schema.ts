@@ -80,6 +80,9 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_by_task ON events(task_id, seq);
 CREATE INDEX IF NOT EXISTS events_by_turn ON events(turn_id, seq);
 CREATE INDEX IF NOT EXISTS events_by_type ON events(type, seq);
+CREATE INDEX IF NOT EXISTS events_by_reply ON events(json_extract(payload, '$.reply_to')) WHERE type = 'user_message';
+CREATE INDEX IF NOT EXISTS events_by_request ON events(json_extract(payload, '$.request_event_id')) WHERE type = 'turn_bound';
+CREATE INDEX IF NOT EXISTS events_by_clarification ON events(json_extract(payload, '$.clarification_turn_id')) WHERE type = 'turn_bound';
 CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON events
   BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events

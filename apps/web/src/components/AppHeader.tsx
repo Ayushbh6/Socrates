@@ -5,6 +5,7 @@ import type { AppState } from "../lib/store";
 import type { Exchange } from "../lib/model";
 import type { Dock } from "../lib/terminals";
 import { AccessMenu } from "./AccessMenu";
+import { RoutingQuestionIndicator } from "./RoutingQuestion";
 import { ApprovalIndicator } from "./ApprovalIndicator";
 import { type Mode, ModeSwitch } from "./ModeSwitch";
 import { TerminalToggle } from "./TerminalDock";
@@ -32,6 +33,7 @@ export function AppHeader({ app, mode, dock, sidebar, sidebarId, onSidebar, onMo
       <div className="app-header-context">{children}</div>
       <div className="app-header-actions">
         {!app.connected ? <span className="chip reconnecting" role="status">Reconnecting…</span> : app.model.live && !app.model.live.ready && <span className="chip reconnecting" role="status">Socrates is restarting…</span>}
+        <RoutingQuestionIndicator app={app} />
         <ApprovalIndicator app={app} onOpen={onApproval} />
         {onStop && <button type="button" className="icon-button" onClick={onStop} aria-label="Stop" title="Stop"><Square aria-hidden /></button>}
         <TerminalToggle app={app} dock={dock} />

@@ -35,7 +35,11 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, on
   const area = useRef<HTMLTextAreaElement>(null);
   const live = app.model.live;
   // Standard mode: each chat works on its own, so only this chat's work and queue matter.
-  const queued = (live?.queue ?? []).filter((q) => (chat ? !!q.chat && q.chat.goal === chat.goal && q.chat.task === chat.task : !q.chat));
+  const queued = (live?.queue ?? []).filter((q) => !q.replyTo && (chat ? !!q.chat && q.chat.goal === chat.goal && q.chat.task === chat.task : !q.chat));
+  const general = chat ? app.goals.find(g => g.general && g.number === chat.goal)?.tasks.find(t => t.number === chat.task) : null;
+  const zone = app.status?.timeZone;
+  const day = (at: Date) => new Intl.DateTimeFormat("en-CA", {timeZone: zone}).format(at);
+  const generalRedirect = general?.startedAt && day(new Date(general.startedAt)) !== day(new Date()) ? `General · ${new Intl.DateTimeFormat("en-GB", {weekday: "short", day: "numeric", month: "short", timeZone: zone}).format(new Date())}` : null;
   const busy = chat ? chatBusy(live, chat) : conversationBusy(live, conversation);
   const target = chat ? (busy || queued.length > 0 ? "queue" : "send") : sendTarget(conversation, live?.busy ?? false);
   const runningLanes = live?.lanes.filter((l) => l.running).length ?? 0;
@@ -105,6 +109,7 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, on
           ))}
         </ul>
       )}
+      {generalRedirect && <p className="composer-day">New messages go to <strong>{generalRedirect}</strong> · the earlier context comes with you</p>}
       <div
         className="composer"
         data-dragging={dragging}

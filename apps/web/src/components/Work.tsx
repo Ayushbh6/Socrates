@@ -27,7 +27,7 @@ function useNow(on: boolean): number {
  */
 export function Work({ exchange }: { exchange: Exchange }) {
   const working = exchange.state === "working" || exchange.state === "sending";
-  const answering = exchange.answers.length > 0 || exchange.draft?.kind === "answer" || exchange.question !== null;
+  const answering = exchange.answers.length > 0 || exchange.draft?.kind === "answer" || (exchange.question !== null && !exchange.clarification);
   const active = working && !answering;
   const [open, setOpen] = useState<boolean | null>(null);
   const now = useNow(working);

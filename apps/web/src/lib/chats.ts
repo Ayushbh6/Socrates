@@ -90,15 +90,14 @@ export function allQuestions(conversations: Record<string, Exchange[]>): Exchang
   const lanes = Object.entries(conversations).flatMap(([id, list]) => (id === "main" ? [] : list));
   if (!lanes.length) return main;
   const inLanes = new Set(lanes.flatMap((e) => e.turns));
-  const kept = main.filter((e) => e.answers.length > 0 || !e.turns.length || !e.turns.every((t) => inLanes.has(t)));
+  const kept = main.filter(e => {const work = e.turns.filter(t => t !== e.clarification?.turnId); return e.answers.length > 0 || !work.length || !work.every(t => inLanes.has(t));});
   return [...kept, ...lanes].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
 }
 
-/** The questions of one chat, oldest first. A question not routed yet, or the router's own question, that came after the chat's last one belongs to it too. */
+/** The questions explicitly assigned to this chat, including its chosen sends still waiting to bind. */
 export function chatThread(exchanges: Exchange[], goal: number, task: number, chat = 1): Exchange[] {
   const here = (e: Exchange) => e.route?.goal.number === goal && e.route.task.number === task && (e.route.chat ?? 1) === chat;
-  const last = exchanges.reduce((at, e, i) => (here(e) ? i : at), -1);
-  return taskOrder(exchanges.filter((e, i) => (e.route ? here(e) : i > last)));
+  return taskOrder(exchanges.filter(here));
 }
 
 /** What was asked after a new chat was started: the questions newer than the one that was last when it began. */

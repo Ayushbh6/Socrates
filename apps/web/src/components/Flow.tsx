@@ -52,6 +52,13 @@ export function Flow({ app, mode, dock, onMode, onSettings }: { app: AppState; m
     }
   }, [following, app.model.conversations]);
 
+  useEffect(() => {
+    if (!app.focusedRequest) return;
+    setConversation(app.focusedRequest.conversation);
+    setSelected(app.focusedRequest.key);
+    setSent(null);
+  }, [app.focusedRequest]);
+
   const list = app.model.conversations[conversation] ?? [];
   const pendingLane = following ? app.model.pending.find((e) => e.sendId === following) ?? null : null;
   // Keep the question just sent on the canvas while earlier queued work is saved and run.
@@ -101,11 +108,11 @@ export function Flow({ app, mode, dock, onMode, onSettings }: { app: AppState; m
           )}
         </AppHeader>
 
-        <StickyNotes goal={goal} taskNumber={route?.task.number ?? null} keep={conversation === "main" ? keep : null} onKeep={setKeep} />
+        {!(exchange?.clarification && !exchange.route) && <StickyNotes goal={goal} taskNumber={route?.task.number ?? null} keep={conversation === "main" ? keep : null} onKeep={setKeep} />}
 
         <main className="flow-stage" ref={stage}>
           <div className="flow-column" ref={column}>
-            {exchange && selected && (
+            {exchange && selected && !latest && (
               <p className="history-notice">
                 An earlier question <button type="button" onClick={() => setSelected(null)}>Return to the latest</button>
               </p>

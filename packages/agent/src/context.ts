@@ -2,6 +2,7 @@ import type { EventPayloads, ModelMessage, TextPart } from "@socrates/contracts"
 import type { SemanticHit } from "@socrates/retrieval";
 import { type AccessPolicy, type ActiveCapabilities, type WorkspaceRoot, describeAccess } from "@socrates/tools";
 import { renderActivity } from "@socrates/router";
+import { truncateToTokens } from "@socrates/shared";
 import type { Goal, LedgerStore, Task, Turn } from "@socrates/store";
 import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
 import { attachmentLines, requestAttachments, requestText } from "./attachments";
@@ -268,7 +269,10 @@ function currentMessage(store: LedgerStore, turn: Turn, vision: boolean): string
   const original = (store.getEvent(bound.request_event_id)!.payload as EventPayloads["user_message"]).text;
   const { clarification } = store.requestForTurn(turn.id);
   const attachments = requestAttachments(store, turn);
-  return [requestText(original, attachments), clarification ? clarificationLine(clarification) : "", attachmentLines(attachments, vision)].filter(Boolean).join("\n");
+  const source = (store.getEvent(bound.request_event_id)!.payload as EventPayloads["user_message"]).context_from_task;
+  const previous = source ? store.turnsForTask(source).findLast(t => t.responseEventId) : null;
+  const earlier = previous ? truncateToTokens(`Earlier General request: ${store.requestForTurn(previous.id).request}\nAnswer: ${(store.getEvent(previous.responseEventId!)!.payload as EventPayloads["assistant_response"]).text}`, 1000).text : "";
+  return [requestText(original, attachments), earlier ? `<CONTINUED_GENERAL_CONTEXT>\n${earlier}\n</CONTINUED_GENERAL_CONTEXT>` : "", clarification ? clarificationLine(clarification) : "", attachmentLines(attachments, vision)].filter(Boolean).join("\n");
 }
 
 /** Synchronize only capability exposure. Keep native calls and exact stored evidence intact.

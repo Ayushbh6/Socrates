@@ -58,9 +58,9 @@ describe("a long task that continued in a new chat", () => {
 describe("one chat's questions", () => {
   const list = [ex("m1", "a", [1, 1]), ex("m2", "b", [2, 1]), ex("m3", "c", [1, 1]), ex("m4", "d", null, "sending")];
 
-  it("holds its own questions and an unrouted one sent after them", () => {
-    expect(chatThread(list, 1, 1).map((e) => e.key)).toEqual(["m1", "m3", "m4"]);
-    expect(chatThread(list, 2, 1).map((e) => e.key)).toEqual(["m2", "m4"]);
+  it("holds only explicitly owned questions, leaving unassigned requests out of every chat", () => {
+    expect(chatThread(list, 1, 1).map((e) => e.key)).toEqual(["m1", "m3"]);
+    expect(chatThread(list, 2, 1).map((e) => e.key)).toEqual(["m2"]);
   });
 
   it("shows earlier queued messages before a later Flow message by their bound task order", () => {

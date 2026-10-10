@@ -318,6 +318,32 @@ export class CallLog {
     return (this.db.prepare(`SELECT ${COLUMNS} FROM calls WHERE user_event_id = ? ORDER BY started_at, seq`).all(userEventId) as Row[]).map(rowOf);
   }
 
+  /** Calls for a logical request, preserving their exact original message IDs. */
+  forRequests(ids: string[]): CallRow[] {
+    if (!ids.length) return [];
+    return (this.db.prepare(`SELECT ${COLUMNS} FROM calls WHERE user_event_id IN (${ids.map(() => "?").join(",")}) ORDER BY started_at, seq`).all(...ids) as Row[]).map(rowOf);
+  }
+
+  totalsForRequests(ids: string[], since?: string): CallTotals {
+    return totalsOf(this.db.prepare(`SELECT ${TOTALS} FROM calls WHERE user_event_id IN (${ids.map(() => "?").join(",") || "NULL"}) ${since ? "AND started_at >= ?" : ""}`).get(...ids, ...(since ? [since] : [])) as Row);
+  }
+
+  /** Group before sorting/pagination, so clarification replies never become separate questions. */
+  logicalQuestions(rootOf: (id: string) => string, options: {limit?: number; before?: string; since?: string; sort?: "recent" | "cost"} = {}): QuestionCalls[] {
+    const rows = this.db.prepare(`SELECT user_event_id, MIN(started_at) AS first_at FROM calls WHERE user_event_id IS NOT NULL ${options.since ? "AND started_at >= ?" : ""} GROUP BY user_event_id`).all(...(options.since ? [options.since] : [])) as Row[];
+    const groups = new Map<string, {ids: string[]; at: string}>();
+    for (const row of rows) {
+      const id = String(row.user_event_id);
+      const root = rootOf(id);
+      const group = groups.get(root) ?? {ids: [], at: String(row.first_at)};
+      group.ids.push(id);
+      if (String(row.first_at) < group.at) group.at = String(row.first_at);
+      groups.set(root, group);
+    }
+    return [...groups].filter(([,g]) => !options.before || g.at < options.before).map(([id,g]) => ({...this.totalsForRequests(g.ids, options.since), userEventId: id, startedAt: g.at}))
+      .sort((a,b) => (options.sort === "cost" ? b.costUsd-a.costUsd : 0) || b.startedAt.localeCompare(a.startedAt)).slice(0, Math.min(options.limit ?? 50, 500));
+  }
+
   get(id: string): CallDetail | null {
     const row = this.db.prepare(`SELECT ${COLUMNS}, request_ref, response_ref FROM calls WHERE id = ?`).get(id) as Row | undefined;
     if (!row) return null;

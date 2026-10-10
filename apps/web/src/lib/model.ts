@@ -1,4 +1,4 @@
-import type { Activity, AttachmentView, CallView, HistoryItem, KeepChoice, LiveState, PendingApproval, Place, ResultView, ServerMessage } from "./types";
+import type { Activity, AttachmentView, ClarificationView, CallView, HistoryItem, KeepChoice, LiveState, PendingApproval, Place, ResultView, ServerMessage } from "./types";
 
 /**
  * What the page knows, built from history pages and the live connection
@@ -39,7 +39,9 @@ export interface Exchange {
   /** "m<seq>" once the server saved the message; "c<id>" while it is being sent. */
   key: string;
   conversation: string;
+  requestId?: string | null;
   seq: number | null;
+  orderSeq?: number;
   at: string;
   message: string;
   /** Images the user attached to the message. */
@@ -53,6 +55,8 @@ export interface Exchange {
   thinking: Draft | null;
   /** When the latest work (thinking, narration or a tool) was saved, for "Worked for". */
   workedAt: string | null;
+  /** Linked requests start working after clarification, excluding the wait for a reply. */
+  workStartedAt?: string;
   /** When anything last happened in this exchange's work (routing included), for how long thinking took. */
   lastAt: string | null;
   /** What each running tool call has printed so far, by "<turn>:<handle>"; its result replaces it. */
@@ -63,7 +67,8 @@ export interface Exchange {
   throughSeq: number;
   /** The router's clarifying question, instead of work. */
   question: string | null;
-  state: "sending" | "working" | "done" | "stopped" | "failed";
+  clarification?: ClarificationView | null;
+  state: "sending" | "working" | "waiting" | "done" | "stopped" | "failed";
   /** Why it stopped or failed, or the split acknowledgment while it works. */
   note: string | null;
   /** The page's id for a message this page sent. */
@@ -143,7 +148,8 @@ export function reduce(model: Model, event: ModelEvent): Model {
       const current = model.conversations[event.conversation] ?? [];
       const known = new Set(current.map((e) => e.seq));
       const fresh = loaded.filter((e) => !known.has(e.seq));
-      return withConversation(model, event.conversation, event.older ? [...fresh, ...current] : [...current, ...fresh].sort(bySeq));
+      const refreshed = current.map(e => {const newer = loaded.find(x => x.seq === e.seq && x.throughSeq > e.throughSeq); return newer ? {...newer, sendId: e.sendId} : e;});
+      return withConversation(model, event.conversation, event.older ? [...fresh, ...refreshed] : [...refreshed, ...fresh].sort(bySeq));
     }
     case "sent": {
       const exchange = blank({ key: `c${event.id}`, conversation: event.to, at: event.at, message: event.text, attachments: event.attachments ?? [], state: "sending", sendId: event.id });
@@ -164,7 +170,11 @@ function serverMessage(model: Model, message: ServerMessage): Model {
     case "state": {
       const { type: _type, ...live } = message;
       // State may precede replay; only applied activities advance the resume cursor.
-      return { ...model, live };
+      const conversations = Object.fromEntries(Object.entries(model.conversations).map(([id,list]) => [id, list.map(e => {
+        const question = live.routingQuestions?.find(q => q.messageSeq === e.seq);
+        return question ? {...e, clarification: question, state: question.state === "pending" ? "waiting" as const : question.state === "resuming" ? "working" as const : e.state} : e;
+      })]));
+      return { ...model, live, conversations };
     }
     case "activity":
       return { ...activity(model, message), seq: Math.max(model.seq, message.seq) };
@@ -204,14 +214,18 @@ function activity(model: Model, a: Activity | DraftArrived): Model {
     if (a.state === "opened" && !model.conversations[a.laneId]) return withConversation(model, a.laneId, []);
     return model;
   }
-  const list = model.conversations[a.conversation] ?? [];
+  let list = model.conversations[a.conversation] ?? [];
+  if ("original" in a && a.original && !list.some(e => e.seq === a.original!.seq)) {
+    list = [...list, blank({key: `m${a.original.seq}`, requestId: a.original.id, seq: a.original.seq, conversation: a.conversation, at: a.original.at, message: a.original.message, attachments: a.original.attachments})];
+    model = withConversation(model, a.conversation, list);
+  }
   if (a.kind === "message") {
     const existing = list.findIndex((e) => e.seq === a.seq);
     if (existing >= 0 && a.seq <= list[existing]!.throughSeq) return model;
     // A replayed message is rebuilt from its events.
     if (existing >= 0) return withConversation(model, a.conversation, list.map((e, i) => (i === existing ? blank({ ...e, steps: [], answers: [], draft: null, thinking: null, workedAt: null, lastAt: null, outputs: {}, draftCalls: {}, question: null, state: "working", note: null, turns: [], open: [] }) : e)));
     const sending = list.findIndex((e) => e.state === "sending" && e.message === a.text);
-    const saved = { key: `m${a.seq}`, seq: a.seq, at: a.at, state: "working" as const };
+    const saved = { key: `m${a.seq}`, requestId: a.requestId ?? null, route: a.target ? {...a.target} : null, seq: a.seq, at: a.at, state: "working" as const };
     if (sending >= 0) return withConversation(model, a.conversation, list.map((e, i) => (i === sending ? { ...e, ...saved } : e)));
     // A new lane's first message can be saved before the server says which lane it went to.
     const waiting = model.pending.findIndex((e) => e.message === a.text);
@@ -224,6 +238,7 @@ function activity(model: Model, a: Activity | DraftArrived): Model {
   const turnId = a.turnId;
   let index = turnId ? list.findLastIndex((e) => e.turns.includes(turnId)) : -1;
   // Chats working at once: a new turn belongs to the message it answers, not merely the newest one.
+  if (index < 0 && "requestSeq" in a && a.requestSeq != null) index = list.findIndex(e => e.seq === a.requestSeq);
   if (index < 0 && a.kind === "routed" && a.messageSeq != null) index = list.findIndex((e) => e.seq === a.messageSeq);
   let next = list;
   // A draft, or a redo of a question not loaded here, has nothing to join.
@@ -248,7 +263,7 @@ function activity(model: Model, a: Activity | DraftArrived): Model {
       const lane = result.conversations[laneId] ?? [];
       if (!lane.some((e) => e.turns.includes(a.turnId))) {
         result = withConversation(result, laneId, [...lane, blank({key: `t${a.turnId}`, conversation: laneId, at: a.at, message: updated.message, attachments: updated.attachments,
-          route: a.goal && a.task ? {goal:a.goal,task:a.task,projectTurn:updated.route?.projectTurn} : updated.route, turns:[a.turnId], open:[a.turnId] })]);
+          requestId: updated.requestId, clarification: updated.clarification, route: a.goal && a.task ? {goal:a.goal,task:a.task,projectTurn:updated.route?.projectTurn} : updated.route, turns:[a.turnId], open:[a.turnId] })]);
       }
     }
   }
@@ -305,7 +320,7 @@ function applyOne(e: Exchange, a: Activity | DraftArrived): Exchange {
       return { ...x, draftCalls: { ...x.draftCalls, [thinking ? thinkingKey(a.turnId) : a.turnId]: { call: a.call, settled: false } }, ...(thinking ? { thinking: draft } : { draft }) };
     }
     case "routed":
-      return { ...x, route: x.route ?? { goal: a.goal, task: a.task, chat: a.chat, projectTurn: a.projectTurn }, redoneFrom: x.redoneFrom ?? a.redoneFrom ?? null, lastAt: a.at };
+      return { ...x, state: "working", ...((a.clarification || x.clarification) ? {workStartedAt: x.workStartedAt ?? a.at} : {}), clarification: a.clarification ?? (x.clarification ? {...x.clarification, state: "answered"} : null), route: !x.route?.projectTurn ? { goal: a.goal, task: a.task, chat: a.chat, projectTurn: a.projectTurn } : x.route, redoneFrom: x.redoneFrom ?? a.redoneFrom ?? null, lastAt: a.at };
     case "redone":
       return { ...e, redoneTo: a.to };
     case "memory": {
@@ -316,7 +331,9 @@ function applyOne(e: Exchange, a: Activity | DraftArrived): Exchange {
       return { ...e, memories: known ? e.memories.map((m) => (m === known ? note : m)) : [...e.memories, note] };
     }
     case "question":
-      return { ...x, question: a.text, state: "done", open: x.open.filter((t) => t !== a.turnId) };
+      return { ...x, question: a.text, clarification: a.clarification ?? null, requestId: a.clarification?.requestId ?? x.requestId, state: a.clarification?.state === "cancelled" ? "stopped" : a.clarification?.state === "answered" ? x.state : "waiting", open: x.open.filter((t) => t !== a.turnId) };
+    case "clarification_changed":
+      return {...x, orderSeq: Math.max(x.orderSeq ?? x.seq ?? 0, a.seq), open: x.open.filter(t => t !== a.turnId), requestId: a.clarification.requestId, clarification: a.clarification, question: a.clarification.detail, state: a.clarification.state === "pending" ? "waiting" : a.clarification.state === "cancelled" ? "stopped" : a.clarification.state === "resuming" ? "working" : x.state};
     case "step": {
       // The request's thinking comes before what it said.
       const ms = Date.parse(a.at) - Date.parse(x.lastAt ?? x.at);
@@ -368,37 +385,41 @@ export function fromHistory(item: HistoryItem, conversation: string): Exchange {
   const interrupted = item.parts.find((p) => p.interrupted);
   let exchange = blank({
     key: `m${item.seq}`,
+    requestId: item.id,
     conversation,
     seq: item.seq,
+    orderSeq: item.pageSeq ?? item.seq,
     at: item.at,
     message: item.message,
     attachments: item.attachments ?? [],
-    route: first ? { goal: first.goal, task: first.task, chat: first.chat, projectTurn: first.projectTurn } : null,
+    route: first ? { goal: first.goal, task: first.task, chat: first.chat, projectTurn: first.projectTurn } : item.target ?? null,
     steps: item.parts.flatMap((p): Step[] => (p.handedOff && p.lane !== null ? [{ kind: "handed_off" as const, lane: p.lane }] : [])),
     answers: item.parts.flatMap((p) => (p.answer ? [p.answer] : [])),
     question: item.question,
-    state: working ? "working" : interrupted ? "stopped" : "done",
+    clarification: item.clarification ?? null,
+    state: item.clarification?.state === "pending" ? "waiting" : item.clarification?.state === "cancelled" ? "stopped" : working ? "working" : interrupted ? "stopped" : "done",
     note: interrupted ? stopReason(interrupted.interrupted) : null,
     limit: limitOf(item.parts.at(-1)?.stop),
     turns: item.parts.flatMap((p) => p.turnId ? [p.turnId] : []),
     open: item.parts.flatMap((p) => p.turnId && p.status === "in_progress" && !p.handedOff ? [p.turnId] : []),
     throughSeq: item.throughSeq ?? 0,
   });
+  const snapshotState = exchange.state;
   // Its narration, thinking and tool calls, as they happened.
   for (const a of item.activities ?? []) exchange = apply(exchange, a);
-  return exchange;
+  return {...exchange, state: snapshotState};
 }
 
 function blank(e: Partial<Exchange> & Pick<Exchange, "key" | "conversation" | "at" | "message">): Exchange {
-  return { seq: null, attachments: [], route: null, steps: [], answers: [], draft: null, thinking: null, workedAt: null, lastAt: null, outputs: {}, draftCalls: {}, throughSeq: 0, question: null, state: "working", note: null, limit: null, sendId: null, redoneTo: null, redoneFrom: null, memories: [], turns: [], open: [], ...e };
+  return { requestId: null, seq: null, attachments: [], route: null, steps: [], answers: [], draft: null, thinking: null, workedAt: null, lastAt: null, outputs: {}, draftCalls: {}, throughSeq: 0, question: null, clarification: null, state: "working", note: null, limit: null, sendId: null, redoneTo: null, redoneFrom: null, memories: [], turns: [], open: [], ...e };
 }
 
 function bySeq(a: Exchange, b: Exchange): number {
-  return (a.seq ?? Number.MAX_SAFE_INTEGER) - (b.seq ?? Number.MAX_SAFE_INTEGER);
+  return (a.orderSeq ?? a.seq ?? Number.MAX_SAFE_INTEGER) - (b.orderSeq ?? b.seq ?? Number.MAX_SAFE_INTEGER);
 }
 
 function withConversation(model: Model, conversation: string, list: Exchange[]): Model {
-  return { ...model, conversations: { ...model.conversations, [conversation]: taskOrder(list) } };
+  return { ...model, conversations: { ...model.conversations, [conversation]: taskOrder([...list].sort(bySeq)) } };
 }
 
 /** Queued requests may be saved later than a following Flow message. Their bound task turns retain the send order. */
@@ -446,6 +467,7 @@ export function orbState(exchange: Exchange | null, approvals: PendingApproval[]
   if (!exchange) return "idle";
   if (exchange.state === "failed" || exchange.state === "stopped") return "stopped";
   if (exchange.state === "done") return "done";
+  if (exchange.state === "waiting") return "waiting";
   // Its own turn's approval; one without a turn belongs to the conversation.
   if (approvals.some((a) => (a.turnId ? exchange.turns.includes(a.turnId) : a.conversation === exchange.conversation))) return "waiting";
   return exchange.steps.length || exchange.answers.length || exchange.draft || exchange.thinking ? "working" : "thinking";
@@ -461,6 +483,7 @@ export function currentRoute(list: Exchange[]): Exchange["route"] {
 
 /** One line below a thread for what the work itself does not show: an approval to give, a message being sent. */
 export function workLine(state: OrbState, exchange: Exchange | null): string | null {
+  if (exchange?.state === "waiting") return "Waiting for your reply…";
   if (state === "waiting") return "Waiting for your approval";
   return exchange?.state === "sending" ? "Sending…" : null;
 }

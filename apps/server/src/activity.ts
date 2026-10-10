@@ -1,6 +1,6 @@
 import type { EventPayloads, MemoryKind, StoredEvent, TurnStop } from "@socrates/contracts";
 import { callLine } from "@socrates/retrieval";
-import type { LedgerStore } from "@socrates/store";
+import type { Clarification, LedgerStore } from "@socrates/store";
 import { type AttachmentView, viewOf } from "./attachments";
 import { type CallView, type ResultView, describeCall, describeResult } from "./calls";
 
@@ -10,14 +10,15 @@ export const THINKING_CHARS = 20_000;
 
 /** What happened, for the web app (architecture/server.md, "Live activity"). */
 export type ActivityBody =
-  | { kind: "message"; text: string; attachments: AttachmentView[] }
+  | { kind: "message"; text: string; attachments: AttachmentView[]; requestId?: string; target?: Place }
   /** `messageSeq`: the message the turn answers, so chats working at once each find their own question. */
-  | { kind: "routed"; turnId: string; messageSeq: number | null; projectTurn: number; goal: { number: number; title: string }; task: { number: number; title: string }; /** Which chat of the task, from 1. */ chat: number; lane: number | null; /** For a redo: where the question was first asked. */ redoneFrom?: Place }
+  | { kind: "routed"; turnId: string; messageSeq: number | null; projectTurn: number; goal: { number: number; title: string }; task: { number: number; title: string }; /** Which chat of the task, from 1. */ chat: number; lane: number | null; /** For a redo: where the question was first asked. */ redoneFrom?: Place; clarification?: Clarification }
   /** The turn's question was asked again in another task (`to`); the turn is set aside. */
   | { kind: "redone"; turnId: string; to: Place }
   /** Memory changed in this turn: saved by its answer, or changed later from the Memory page (on the entry's source turn). */
   | { kind: "memory"; turnId: string; change: "saved" | "edited" | "forgotten"; memory: { handle: string; number: number; text: string; kind: MemoryKind; everywhere: boolean } }
-  | { kind: "question"; turnId: string; text: string }
+  | { kind: "question"; turnId: string; text: string; clarification?: Clarification }
+  | { kind: "clarification_changed"; turnId: string; clarification: Clarification }
   /** `text`: narration before tool calls, or "" when the step only thought; `thinking`: the model's readable thinking, or null. */
   | { kind: "step"; turnId: string; text: string; thinking: string | null; thinkingTruncated: boolean }
   /** `call`: the call in plain words; `line`: its one-line form, as memory search knows it. */
@@ -48,7 +49,8 @@ export function placeOf(store: LedgerStore, turnId: string): Place | null {
 }
 
 /** Every activity carries its event's sequence number, time, and conversation: "main" or a lane id. */
-export type Activity = { seq: number; at: string; conversation: string } & ActivityBody;
+export interface OriginalRequest { id: string; seq: number; at: string; message: string; attachments: AttachmentView[] }
+export type Activity = { seq: number; at: string; conversation: string; requestSeq?: number; original?: OriginalRequest } & ActivityBody;
 
 const LEDGER_EVENTS = new Set(["goal_created", "task_created", "task_revised", "goal_note_revised", "goal_workspace_bound", "anchor_revised", "goal_renamed", "task_renamed", "goal_archived", "goal_restored", "task_archived", "task_restored"]);
 
@@ -60,7 +62,9 @@ const LEDGER_EVENTS = new Set(["goal_created", "task_created", "task_revised", "
 export function activityOf(store: LedgerStore, event: StoredEvent): Activity | null {
   const turn = event.turn_id ? store.getTurn(event.turn_id) : null;
   const conversation = turn?.laneId ?? "main";
-  const base = { seq: event.seq, at: event.at, conversation };
+  const request = turn ? store.requestRoot(turn.userEventId) : null;
+  const original = request ? {id: request.id, seq: request.seq, at: request.at, message: request.payload.text, attachments: (request.payload.attachments ?? []).map(viewOf)} : undefined;
+  const base = { seq: event.seq, at: event.at, conversation, ...(request ? {requestSeq: request.seq} : {}) };
   const selector = () => {
     const task = store.requireTask(event.task_id!);
     return `g${store.requireGoal(task.goalId).number}/t${task.number}`;
@@ -68,15 +72,24 @@ export function activityOf(store: LedgerStore, event: StoredEvent): Activity | n
   switch (event.type) {
     case "user_message": {
       const p = event.payload as EventPayloads["user_message"];
-      return { ...base, conversation: p.lane_id ?? "main", kind: "message", text: p.text, attachments: (p.attachments ?? []).map(viewOf) };
+      const root = store.requestRoot(event.id);
+      const clarificationId = p.reply_to ?? (root.id !== event.id ? store.requestTurns(root.id).find(t => t.kind === "clarification")?.id : null);
+      if (clarificationId) {
+        const q = store.clarification(clarificationId);
+        return {...base, conversation: q.conversation, requestSeq: root.seq, original: {id: root.id, seq: root.seq, at: root.at, message: root.payload.text, attachments: (root.payload.attachments ?? []).map(viewOf)}, kind: "clarification_changed", turnId: clarificationId, clarification: q};
+      }
+      const chosen = p.chosen_task_id ? store.getTask(p.chosen_task_id) : null;
+      const goal = chosen ? store.getGoal(chosen.goalId) : null;
+      return { ...base, at: root.at, requestId: event.id, ...(chosen && goal ? {target: {goal: {number: goal.number, title: goal.title}, task: {number: chosen.number, title: chosen.title}, chat: 1}} : {}), conversation: p.lane_id ?? "main", kind: "message", text: p.text, attachments: (p.attachments ?? []).map(viewOf) };
     }
     case "turn_bound": {
       if (!turn?.goalId || !turn.taskId) return null;
       const goal = store.requireGoal(turn.goalId);
       const task = store.requireTask(turn.taskId);
+      const q = request ? store.requestTurns(request.id).find(t => t.kind === "clarification") : null;
       const first = store.redoOf(turn.id);
       const redoneFrom = first ? placeOf(store, first.id) : null;
-      return { ...base, kind: "routed", turnId: turn.id, messageSeq: store.getEvent(turn.userEventId)?.seq ?? null, projectTurn: turn.projectTurn, goal: { number: goal.number, title: goal.title }, task: { number: task.number, title: task.title }, chat: turn.chatId ? store.requireChat(turn.chatId).ordinal : 1, lane: turn.laneId ? store.requireLane(turn.laneId).number : null, ...(redoneFrom ? { redoneFrom } : {}) };
+      return { ...base, kind: "routed", turnId: turn.id, ...(q ? {clarification: store.clarification(q.id)} : {}), messageSeq: request?.seq ?? null, ...(request?.id !== turn.userEventId && original ? {original} : {}), projectTurn: turn.projectTurn, goal: { number: goal.number, title: goal.title }, task: { number: task.number, title: task.title }, chat: turn.chatId ? store.requireChat(turn.chatId).ordinal : 1, lane: turn.laneId ? store.requireLane(turn.laneId).number : null, ...(redoneFrom ? { redoneFrom } : {}) };
     }
     case "turn_redone": {
       const to = placeOf(store, (event.payload as EventPayloads["turn_redone"]).redo_turn_id);
@@ -112,8 +125,11 @@ export function activityOf(store: LedgerStore, event: StoredEvent): Activity | n
     case "assistant_response": {
       if (!turn) return null;
       const text = (event.payload as EventPayloads["assistant_response"]).text;
-      return turn.kind === "clarification" ? { ...base, kind: "question", turnId: turn.id, text } : { ...base, kind: "answer", turnId: turn.id, text };
+      return turn.kind === "clarification" ? { ...base, kind: "question", turnId: turn.id, text, clarification: store.clarification(turn.id), ...(original ? {original} : {}) } : { ...base, kind: "answer", turnId: turn.id, text };
     }
+    case "clarification_cancelled":
+    case "clarification_reply_failed":
+      return turn ? {...base, kind: "clarification_changed", turnId: turn.id, clarification: store.clarification(turn.id), ...(original ? {original} : {})} : null;
     case "turn_completed":
       return turn?.kind === "task" ? { ...base, kind: "finished", turnId: turn.id, status: "completed", reason: null, stop: (event.payload as EventPayloads["turn_completed"]).stop ?? null } : null;
     case "turn_interrupted": {

@@ -192,7 +192,7 @@ function moveOf(store: LedgerStore, turn: Turn, route: string | null): Move {
 
 function partsOf(store: LedgerStore, userEventId: string): PartView[] {
   const parts: PartView[] = [];
-  for (const turn of store.turnsForUserEvent(userEventId)) {
+  for (const turn of store.requestTurns(userEventId)) {
     const to = placeOf(store, turn);
     if (!to) continue;
     const before = store.previousTurn(turn);
@@ -208,11 +208,13 @@ function partsOf(store: LedgerStore, userEventId: string): PartView[] {
 }
 
 function questionOf(store: LedgerStore, userEventId: string): QuestionDetail["question"] | null {
-  const event = store.getEvent(userEventId);
-  if (!event || event.type !== "user_message") return null;
+  const found = store.getEvent(userEventId);
+  if (!found || found.type !== "user_message") return null;
+  const event = store.requestRoot(userEventId);
+  userEventId = event.id;
   const payload = event.payload as EventPayloads["user_message"];
   const lane = payload.lane_id ? store.getLane(payload.lane_id)?.number ?? null : null;
-  const turns = store.turnsForUserEvent(userEventId);
+  const turns = store.requestTurns(userEventId);
   const parts = partsOf(store, userEventId).map((p) => ({ to: p.to, move: p.move }));
   const outcome = turns.some((t) => t.kind === "task") ? "routed" : turns.length ? "clarify" : "unrouted";
   return { userEventId, at: event.at, message: cut(payload.text, MESSAGE_CHARS), lane, outcome, parts };
@@ -221,7 +223,7 @@ function questionOf(store: LedgerStore, userEventId: string): QuestionDetail["qu
 /** User messages with calls, newest first. `next` pages backward. */
 export function questions(log: CallLog, store: LedgerStore, options: { range: Range; before?: string; limit: number; now: Date }): { questions: QuestionSummary[]; next: string | null } {
   const since = sinceOf(options.range, options.now);
-  const rows = log.questions({ limit: options.limit, ...(since ? { since } : {}), ...(options.before ? { before: options.before } : {}) });
+  const rows = log.logicalQuestions(id => store.getEvent(id)?.type === "user_message" ? store.requestRoot(id).id : id, { limit: options.limit, ...(since ? { since } : {}), ...(options.before ? { before: options.before } : {}) });
   const out: QuestionSummary[] = [];
   for (const row of rows) {
     const question = questionOf(store, row.userEventId);
@@ -233,7 +235,7 @@ export function questions(log: CallLog, store: LedgerStore, options: { range: Ra
 /** The questions that cost the most in a range, dearest first. */
 export function costly(log: CallLog, store: LedgerStore, range: Range, now: Date): QuestionSummary[] {
   const since = sinceOf(range, now);
-  return log.questions({ limit: 8, sort: "cost", ...(since ? { since } : {}) }).flatMap((row) => {
+  return log.logicalQuestions(id => store.getEvent(id)?.type === "user_message" ? store.requestRoot(id).id : id, { limit: 8, sort: "cost", ...(since ? { since } : {}) }).flatMap((row) => {
     const base = questionOf(store, row.userEventId);
     return base ? [{ ...row, ...base }] : [];
   });
@@ -242,17 +244,20 @@ export function costly(log: CallLog, store: LedgerStore, range: Range, now: Date
 export function question(log: CallLog, store: LedgerStore, userEventId: string): QuestionDetail | null {
   const base = questionOf(store, userEventId);
   if (!base) return null;
-  const turns = store.turnsForUserEvent(userEventId);
-  const first = turns[0];
+  userEventId = base.userEventId;
+  const ids = store.requestMessages(userEventId).map(e => e.id);
+  const turns = store.requestTurns(userEventId);
+  const first = turns.findLast(t => t.kind === "task") ?? turns[0];
+  const clarificationTurn = turns.find(t => t.kind === "clarification");
   const routed = first ? store.listEvents({ turnId: first.id, type: "routing_completed" })[0]?.payload as EventPayloads["routing_completed"] | undefined : undefined;
-  const asked = first ? store.listEvents({ turnId: first.id, type: "clarification_asked" })[0]?.payload as EventPayloads["clarification_asked"] | undefined : undefined;
+  const asked = clarificationTurn ? store.listEvents({ turnId: clarificationTurn.id, type: "clarification_asked" })[0]?.payload as EventPayloads["clarification_asked"] | undefined : undefined;
   return {
     question: base,
-    totals: log.totalsFor(userEventId),
+    totals: log.totalsForRequests(ids),
     routing: routed ? { model: routed.model, attempts: routed.attempts, escalated: routed.escalated, fallback: routed.fallback, ledgerQueries: routed.ledger_queries, reason: routed.reason, decision: routed.decision, validationErrors: routed.validation_errors ?? [] } : null,
     clarification: asked?.question ?? null,
     parts: partsOf(store, userEventId),
-    calls: log.forQuestion(userEventId),
+    calls: log.forRequests(ids),
   };
 }
 
@@ -403,7 +408,7 @@ const messageText = (m: ModelMessage): string =>
  */
 export function trace(log: CallLog, store: LedgerStore, userEventId: string): { question: QuestionDetail["question"]; items: TraceItem[] } | null {
   const detail = question(log, store, userEventId);
-  const event = store.getEvent(userEventId);
+  const event = detail ? store.getEvent(detail.question.userEventId) : null;
   if (!detail || !event) return null;
   const payload = event.payload as EventPayloads["user_message"];
   const items: TraceItem[] = [{ kind: "user", at: event.at, text: payload.text, attachments: (payload.attachments ?? []).map((a) => a.name), lane: detail.question.lane }];
@@ -449,8 +454,17 @@ export function trace(log: CallLog, store: LedgerStore, userEventId: string): { 
     return out;
   };
 
-  // The memory decider is asked first, before routing.
-  items.push(...callsOf("decision", "router"), ...callsOf("router", "router"));
+  const replies = store.requestTurns(event.id).filter(t => t.kind === "clarification").map(t => store.clarification(t.id)).filter(q => q.answerEventId);
+  const inserted = new Set<string>();
+  const routingCalls = [...callsOf("decision", "router"), ...callsOf("router", "router")].sort((a,b) => a.at.localeCompare(b.at));
+  for (const call of routingCalls) {
+    const reply = replies.find(q => q.answerEventId === call.call.userEventId);
+    if (reply?.answerEventId && !inserted.has(reply.answerEventId)) {
+      inserted.add(reply.answerEventId);
+      items.push({kind: "user", at: store.getEvent(reply.answerEventId)!.at, text: `Reply to routing question: ${reply.answer}`, attachments: [], lane: detail.question.lane});
+    }
+    items.push(call);
+  }
   if (detail.routing || detail.clarification) items.push({ kind: "routing", at: detail.calls.filter((c) => c.role === "router").at(-1)?.startedAt ?? event.at, routing: detail.routing ?? { model: "", attempts: 0, escalated: false, fallback: null, ledgerQueries: 0, reason: "", decision: null, validationErrors: [] }, clarification: detail.clarification });
 
   for (const part of detail.parts) {

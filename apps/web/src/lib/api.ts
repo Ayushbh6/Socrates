@@ -1,5 +1,5 @@
 import type { CallDetail, CallRow, DataOverview, DbPage, DeciderStats, DbRow, PriceRow, QuestionDetail, QuestionRow, Range, SeriesData, Summary, Trace } from "./observe";
-import type { Access, ArchivedView, AttachmentView, Evidence, Folders, GoalView, History, LedgerStatus, ListedModel, MemoryKind, MemoryView, Provider, Settings, Status } from "./types";
+import type { Access, ArchivedView, AttachmentView, Evidence, Folders, GoalView, History, HistoryItem, LedgerStatus, ListedModel, MemoryKind, MemoryView, Provider, Settings, Status } from "./types";
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -30,6 +30,7 @@ async function upload(image: Blob, name: string): Promise<AttachmentView> {
 
 export const api = {
   upload,
+  request: (id: string) => call<{conversation: string; item: HistoryItem}>("GET", `/api/requests/${encodeURIComponent(id)}`),
   status: () => call<Status>("GET", "/api/status"),
   settings: () => call<Settings>("GET", "/api/settings"),
   setAccess: (access: Partial<Access>) => call<Settings>("PUT", "/api/settings", { access }),

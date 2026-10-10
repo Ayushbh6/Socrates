@@ -61,6 +61,8 @@ export interface RoutingContext {
 
 export interface BuildContextOptions {
   timeZone: string;
+  /** Explicit question being answered; null means a fresh request. Undefined supports older harness clients. */
+  clarificationTurnId?: string | null;
   /** Names of the images attached to the current message. */
   attachments?: string[];
   historyBudgetTokens?: number;
@@ -83,8 +85,8 @@ export interface BuildContextOptions {
 export const OPEN_GOAL_BOOST = 0.05;
 
 /** What candidate retrieval searches for: the message, plus the pending request it answers. */
-export function candidateQuery(store: LedgerStore, message: string, laneId: string | null = null): string {
-  const pending = store.pendingClarification(laneId);
+export function candidateQuery(store: LedgerStore, message: string, laneId: string | null = null, clarificationTurnId?: string | null): string {
+  const pending = clarificationTurnId === undefined ? store.pendingClarification(laneId) : clarificationTurnId ? store.requireTurn(clarificationTurnId) : null;
   return pending ? `${(store.getEvent(pending.userEventId)!.payload as { text: string }).text} ${message}` : message;
 }
 
@@ -92,7 +94,7 @@ export function buildRoutingContext(store: LedgerStore, message: string, options
   const now = store.clock.now();
   const laneId = options.laneId ?? null;
   const current = (laneId ? store.currentBinding(laneId) : null) ?? store.currentBinding();
-  const pendingTurn = store.pendingClarification(laneId);
+  const pendingTurn = options.clarificationTurnId === undefined ? store.pendingClarification(laneId) : options.clarificationTurnId ? store.requireTurn(options.clarificationTurnId) : null;
   const pending = pendingTurn ? {
     turn: pendingTurn,
     request: (store.getEvent(pendingTurn.userEventId)!.payload as { text: string }).text,
@@ -110,7 +112,7 @@ export function buildRoutingContext(store: LedgerStore, message: string, options
     });
   }
 
-  selectOlderCandidates(store, candidateQuery(store, message, laneId), now, current?.goal.id ?? null, options.semantic ?? []).forEach((goal, i) => {
+  selectOlderCandidates(store, candidateQuery(store, message, laneId, options.clarificationTurnId), now, current?.goal.id ?? null, options.semantic ?? []).forEach((goal, i) => {
     const label = `older_${i + 1}`;
     goals.set(label, {
       label,
@@ -142,10 +144,9 @@ export function buildRoutingContext(store: LedgerStore, message: string, options
     sections.push(
       section(
         "ROUTING_NOTE",
-        "Your previous routing turn asked the user a clarification question, shown last in RECENT_EXACT_HISTORY. " +
+        "This request paused for the routing clarification recorded below. " +
           "The current message answers it. Route the ORIGINAL request to the selected subject, rather than treating the selection as a new objective. You must return a decision now; ask_user is not available." +
-          (pending && (!exchanges.text.includes(pending.request) || !exchanges.text.includes(pending.question))
-            ? `\nPending request (bounded excerpt): ${truncateToTokens(pending.request, 400).text}\nPrevious question and candidates: ${pending.question}` : ""),
+          (pending ? `\nPending request (bounded excerpt): ${truncateToTokens(pending.request, 400).text}\nPrevious question and candidates: ${pending.question}` : ""),
       ),
     );
   }

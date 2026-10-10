@@ -18,7 +18,7 @@ import { Thread } from "./Thread";
  * question, with the id of its first message once sent. Other chats keep
  * working meanwhile, so the new chat follows its own message only.
  */
-type View = null | { chat: { goal: number; task: number; chat: number } } | { fresh: string | null; goal: number | null; sent?: string };
+type View = {request: string} | null | { chat: { goal: number; task: number; chat: number } } | { fresh: string | null; goal: number | null; sent?: string };
 
 /**
  * Standard mode (architecture/web.md, "Standard mode"): the layout of any chat
@@ -32,18 +32,33 @@ export function Standard({ app, mode, dock, onMode, onSettings }: { app: AppStat
   const conversations = app.model.conversations;
   const main = useMemo(() => withoutArchived(allQuestions(conversations), app.goals), [conversations, app.goals]);
   const [view, setView] = useState<View>(null);
+  const [following, setFollowing] = useState<string | null>(null);
   const [focus, setFocus] = useState<{ key: string; request: number } | null>(null);
   const [sidebar, setSidebar] = useState(() => typeof window === "undefined" || window.innerWidth >= 1100);
 
   const route = view && "chat" in view ? { goal: { number: view.chat.goal }, task: { number: view.chat.task }, chat: view.chat.chat } : view ? null : currentRoute(main.filter((e) => e.route));
   const chat = route?.chat ?? 1;
   const shown = useMemo(
-    () => (view && "fresh" in view ? (view.sent ? main.filter((e) => e.sendId === view.sent) : newThread(main, view.fresh).filter((e) => !e.route)) : route ? chatThread(main, route.goal.number, route.task.number, chat) : main.filter((e) => !e.route && (e.state === "sending" || e.state === "working"))),
+    () => (view && "request" in view ? main.filter(e => e.key === view.request) : view && "fresh" in view ? (view.sent ? main.filter((e) => e.sendId === view.sent) : newThread(main, view.fresh).filter((e) => !e.route)) : route ? chatThread(main, route.goal.number, route.task.number, chat) : main.filter((e) => !e.route && (e.state === "sending" || e.state === "working"))),
     [main, view, route?.goal.number, route?.task.number, chat],
   );
   const goals = useMemo(() => groupChats(app.goals, main), [app.goals, main]);
   const goal = route ? app.goals.find((g) => g.number === route.goal.number) : undefined;
   const task = goal?.tasks.find((t) => t.number === route?.task.number);
+
+  useEffect(() => {
+    if (!app.focusedRequest) return;
+    setView({request: app.focusedRequest.key});
+    setFocus({key: app.focusedRequest.key, request: app.focusedRequest.request});
+  }, [app.focusedRequest]);
+  useEffect(() => {
+    const selected = view && "request" in view ? main.find(e => e.key === view.request) : following ? main.find(e => e.sendId === following) : null;
+    if (selected?.route?.projectTurn !== undefined) {
+      setView({chat: {goal: selected.route.goal.number, task: selected.route.task.number, chat: selected.route.chat ?? 1}});
+      setFocus(f => ({key: selected.key, request: (f?.request ?? 0)+1}));
+      setFollowing(null);
+    }
+  }, [view, main, following]);
 
   // A new chat becomes the chat its first question was bound to.
   useEffect(() => {
@@ -80,7 +95,7 @@ export function Standard({ app, mode, dock, onMode, onSettings }: { app: AppStat
         if (narrow()) setSidebar(false);
       }}>
         <div className="chat-title">
-          {task ? <><strong title={task.title}>{chatTitle(task.title, chat)}</strong>{!goal?.chats && <small title={goal?.title}>{goal?.title}</small>}</> : <><strong>New chat</strong>{freshGoal && <small>{freshGoal.title}</small>}</>}
+          {task ? <><strong title={task.title}>{chatTitle(task.title, chat)}</strong>{!goal?.chats && <small title={goal?.title}>{goal?.title}</small>}</> : <><strong>{view && "request" in view ? "Routing question" : "New chat"}</strong>{freshGoal && <small>{freshGoal.title}</small>}</>}
         </div>
       </AppHeader>
       {sidebar && (
@@ -89,7 +104,7 @@ export function Standard({ app, mode, dock, onMode, onSettings }: { app: AppStat
             onClose={() => setSidebar(false)}
             goals={goals}
             current={route ? { goal: route.goal.number, task: route.task.number, chat } : null}
-            onChat={(g, t, c) => { setView({ chat: { goal: g, task: t, chat: c } }); if (narrow()) setSidebar(false); }}
+            onChat={(g, t, c) => { setFollowing(null); setView({ chat: { goal: g, task: t, chat: c } }); if (narrow()) setSidebar(false); }}
             onNew={(g) => { setView({ fresh: main.at(-1)?.key ?? null, goal: g }); if (narrow()) setSidebar(false); }}
             archived={app.archived}
             onRename={(what, title) => (what.task === undefined ? store.renameGoal(what.goal, title) : store.renameChat(what.goal, what.task, title))}
@@ -110,7 +125,7 @@ export function Standard({ app, mode, dock, onMode, onSettings }: { app: AppStat
       <section className="chat-main" aria-label="Chat">
         <Thread app={app} conversation="main" shown={shown} focus={focus} onRedone={(id) => setView({ fresh: main.at(-1)?.key ?? null, goal: null, sent: id })} before={chat > 1 && goal && task ? <Continued onBack={() => setView({ chat: { goal: goal.number, task: task.number, chat: chat - 1 } })} /> : null} empty={fresh || !main.length ? (freshGoal ? `What's next for ${freshGoal.title}?` : "What should we work on?") : "Nothing has been asked in this chat yet."} />
         <div className="chat-composer">
-          <Composer app={app} conversation="main" laneNumber={null} variant="panel" chat={target} placeholder={task ? "Reply…" : "Ask Socrates…"} onModel={onSettings} onNewLane={() => null} onSent={(id) => { if (fresh) setView({ ...fresh, sent: id }); }} />
+          <Composer app={app} conversation="main" laneNumber={null} variant="panel" chat={target} placeholder={task ? "Reply…" : "Ask Socrates…"} onModel={onSettings} onNewLane={() => null} onSent={(id) => { setFollowing(id); if (fresh) setView({ ...fresh, sent: id }); }} />
         </div>
         <TerminalDock app={app} dock={dock} variant="docked" />
       </section>

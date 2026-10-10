@@ -4,6 +4,7 @@ import { Inspect } from "./components/Inspect";
 import { type Mode } from "./components/ModeSwitch";
 import { Onboarding } from "./components/Onboarding";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { RoutingQuestions } from "./components/RoutingQuestion";
 import { Standard } from "./components/Standard";
 import { Welcome } from "./components/Welcome";
 import { inspectTarget } from "./lib/observe";
@@ -52,6 +53,7 @@ export function App() {
     return (
       <>
         {mode === "standard" ? <Standard {...props} /> : <Flow {...props} />}
+        <RoutingQuestions app={app} enabled={!settings} />
         {settings && <SettingsDialog app={app} onClose={() => setSettings(false)} />}
       </>
     );

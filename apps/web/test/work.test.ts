@@ -116,6 +116,7 @@ describe("the work behind an answer", () => {
     );
     expect(workSummary(workSegments(e), e)).toBe("Worked for 1m 14s · thought · read 2 files · ran 1 command");
     expect(workSummary(workSegments(e), { ...e, workedAt: null })).toBe("Thought · read 2 files · ran 1 command");
+    expect(workSummary(workSegments(e), { ...e, workStartedAt: "2026-10-04T10:00:34Z" })).toBe("Worked for 40s · thought · read 2 files · ran 1 command");
     expect(workSummary(workSegments(e), { ...e, state: "working", answers: [] }, Date.parse("2026-10-04T10:00:09Z"))).toBe("Working for 9s · thought · read 2 files · ran 1 command");
     // Once the answer is being written, the clock stops at the last step.
     expect(workSummary(workSegments(e), { ...e, state: "working" }, Date.parse("2026-10-04T10:05:00Z"))).toBe("Worked for 1m 14s · thought · read 2 files · ran 1 command");

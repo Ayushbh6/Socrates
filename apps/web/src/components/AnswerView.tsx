@@ -6,6 +6,7 @@ import { store, useApp } from "../lib/store";
 import type { GoalView, PendingApproval, Place } from "../lib/types";
 import { Prose } from "./Prose";
 import { RedoMenu } from "./RedoMenu";
+import { ClarificationDetails } from "./RoutingQuestion";
 import { Work } from "./Work";
 
 /**
@@ -70,9 +71,10 @@ function Answer({ exchange, approvals }: { exchange: Exchange; approvals: Pendin
   const prose = [...exchange.answers.map((text) => ({ text, writing: false })), ...(draft?.kind === "answer" ? [{ text: draft.text, writing: true }] : [])];
   return (
     <div className="answer-main" data-set-aside={!!exchange.redoneTo}>
+      {exchange.clarification && <ClarificationDetails question={exchange.clarification} finished={exchange.state === "done"} />}
       <Work exchange={exchange} />
       {approvals.map((a) => <ApprovalCard key={a.id} approval={a} />)}
-      {exchange.question && <Prose text={exchange.question} animate={false} writing={false} />}
+      {exchange.question && !exchange.clarification && <Prose text={exchange.question} animate={false} writing={false} />}
       {prose.map((p, i) => <Prose key={i} text={p.text} animate={live} writing={p.writing} />)}
       <MemoryNotes notes={exchange.memories} />
       {exchange.state === "failed" && <p className="answer-note failed">{exchange.note ?? "This message could not be sent."}</p>}

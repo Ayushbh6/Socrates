@@ -3,7 +3,7 @@ import { Store } from '../src/lib/store';
 import { api } from '../src/lib/api';
 import type { History, PendingApproval, Settings, Status } from '../src/lib/types';
 
-vi.mock('../src/lib/api', () => ({ api: { status: vi.fn(), settings: vi.fn(), goals: vi.fn(), history: vi.fn() } }));
+vi.mock('../src/lib/api', () => ({ api: { status: vi.fn(), settings: vi.fn(), goals: vi.fn(), history: vi.fn(), request: vi.fn() } }));
 class Socket {
   static OPEN = 1;
   static all: Socket[] = [];
@@ -171,5 +171,40 @@ describe('attached images', () => {
     const id = socket.sent.at(-1)!.id;
     socket.receive({ type: 'error', id, code: 'queue_full', message: 'The queue is full.' });
     expect(store.get().images.main!.map((i) => [i.status, i.attachment?.id])).toEqual([['ready', image.id]]);
+  });
+});
+
+
+describe('explicit routing replies', () => {
+  const question = {turnId:'question',requestId:'original',messageSeq:1,at:'2026-10-10T13:03:00Z',message:'Retry the terminal test',conversation:'main',question:'Which folder?',detail:'Which folder? Work',answer:null,answerEventId:null,state:'pending' as const,error:null};
+  const item = {id:'original',seq:1,at:question.at,message:question.message,unrouted:false,question:question.detail,clarification:question,parts:[]};
+  it('redos the working turn of a clarified request and retains the original query', async () => {
+    const store = new Store(); await store.start(); const socket = Socket.all[0]!; socket.open(); socket.receive(live());
+    vi.mocked(api.request).mockResolvedValue({conversation:'main',item});
+    await store.openQuestion(question);
+    const original = store.get().model.conversations.main![0]!;
+    store.redo({...original, turns:['question','worker']}, {chat:{goal:1,task:2}});
+    expect(socket.sent.at(-1)).toMatchObject({type:'redo',turn:'worker',chat:{goal:1,task:2}});
+    expect(store.get().model.conversations.main!.at(-1)!.message).toBe(question.message);
+  });
+  it('opens an old request directly without replacing the main composer draft', async () => {
+    const store = new Store(); await store.start(); const socket = Socket.all[0]!; socket.open();
+    socket.receive(live(100,{routingQuestions:[question]}));
+    store.setDraft('main','Unsent independent message');
+    vi.mocked(api.request).mockResolvedValue({conversation:'main',item});
+    await store.openQuestion(question);
+    expect(store.get()).toMatchObject({questionDialog:'question',focusedRequest:{key:'m1'},drafts:{main:'Unsent independent message'}});
+    expect(store.get().model.conversations.main).toHaveLength(1);
+  });
+  it('sends a reply reference without creating another question, and keeps its text when routing fails', async () => {
+    const store = new Store(); await store.start(); const socket = Socket.all[0]!; socket.open();
+    socket.receive(live(100,{routingQuestions:[question]}));
+    store.setDraft('main','Independent draft'); store.setDraft('question:question','yes pls sure');
+    const id = store.replyTo(question,'yes pls sure');
+    expect(socket.sent.at(-1)).toEqual({type:'reply',id,clarification:'question',text:'yes pls sure'});
+    expect(store.get().model.conversations.main).toHaveLength(0);
+    socket.receive(live(101,{routingQuestions:[{...question,state:'resuming',answer:'yes pls sure'}]}));
+    socket.receive({type:'error',id,code:'failed',message:'Routing failed'});
+    expect(store.get()).toMatchObject({questionDialog:'question',questionError:'Routing failed',drafts:{main:'Independent draft','question:question':'yes pls sure'}});
   });
 });

@@ -3,7 +3,7 @@ import { type RefObject, useEffect, useRef } from "react";
 const dialogs: HTMLElement[] = [];
 
 /** Keep focus in the topmost dialog, close only it on Escape, then restore focus. */
-export function useDialog(ref: RefObject<HTMLElement | null>, onClose: () => void, enabled = true) {
+export function useDialog(ref: RefObject<HTMLElement | null>, onClose: () => void, enabled = true, initialFocus?: RefObject<HTMLElement | null>) {
   const close = useRef(onClose);
   close.current = onClose;
   useEffect(() => {
@@ -13,7 +13,7 @@ export function useDialog(ref: RefObject<HTMLElement | null>, onClose: () => voi
     dialogs.push(dialog);
     const focusable = () => [...dialog.querySelectorAll<HTMLElement>('button, input, select, textarea, a[href], summary, [tabindex]')]
       .filter((el) => el.tabIndex >= 0 && !el.matches(":disabled") && el.getClientRects().length > 0);
-    const focus = () => (focusable()[0] ?? dialog).focus();
+    const focus = () => (initialFocus?.current ?? focusable()[0] ?? dialog).focus();
     focus();
     const keys = (event: KeyboardEvent) => {
       if (dialogs.at(-1) !== dialog) return;
@@ -41,5 +41,5 @@ export function useDialog(ref: RefObject<HTMLElement | null>, onClose: () => voi
       dialogs.splice(dialogs.indexOf(dialog), 1);
       if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
     };
-  }, [ref, enabled]);
+  }, [ref, enabled, initialFocus]);
 }

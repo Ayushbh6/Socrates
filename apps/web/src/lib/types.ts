@@ -139,7 +139,7 @@ export interface GoalView {
   /** The goal standard mode shows as its plain chats, outside any goal. */
   chats?: boolean;
   workspace: string | null;
-  tasks: { number: number; title: string; chats?: number; status: string; closed?: ClosedBy | null; note: string | null; objective?: string; completionCriteria?: string | null }[];
+  tasks: { number: number; startedAt?: string; title: string; chats?: number; status: string; closed?: ClosedBy | null; note: string | null; objective?: string; completionCriteria?: string | null }[];
 }
 
 /** A goal's or task's status: open, completed, or superseded (replaced by other work). */
@@ -174,6 +174,21 @@ export interface HistoryPart {
   toolCalls: { handle: string; line: string; status: "ok" | "error" | null }[];
 }
 
+export interface ClarificationView {
+  turnId: string;
+  requestId: string;
+  messageSeq: number;
+  at: string;
+  message: string;
+  conversation: string;
+  question: string;
+  detail: string;
+  answer: string | null;
+  answerEventId: string | null;
+  state: "pending" | "resuming" | "answered" | "cancelled";
+  error: string | null;
+}
+
 export interface HistoryItem {
   attachments?: AttachmentView[];
   throughSeq?: number;
@@ -181,10 +196,13 @@ export interface HistoryItem {
   id: string;
   /** The message event's sequence number. */
   seq: number;
+  pageSeq?: number;
   at: string;
   message: string;
   unrouted: boolean;
   question: string | null;
+  clarification?: ClarificationView | null;
+  target?: Place | null;
   parts: HistoryPart[];
 }
 
@@ -229,13 +247,14 @@ export interface Place {
 }
 
 export type ActivityBody =
-  | { kind: "message"; text: string; attachments?: AttachmentView[] }
-  | { kind: "routed"; turnId: string; messageSeq?: number | null; projectTurn: number; goal: { number: number; title: string }; task: { number: number; title: string }; chat?: number; lane: number | null; redoneFrom?: Place }
+  | { kind: "message"; text: string; attachments?: AttachmentView[]; requestId?: string; target?: Place }
+  | { kind: "routed"; turnId: string; messageSeq?: number | null; projectTurn: number; goal: { number: number; title: string }; task: { number: number; title: string }; chat?: number; lane: number | null; redoneFrom?: Place; clarification?: ClarificationView }
   /** The turn's question was asked again in another task; the turn is set aside. */
   | { kind: "redone"; turnId: string; to: Place }
   /** Memory changed in this turn: saved by its answer, or changed later on the Memory page. */
   | { kind: "memory"; turnId: string; change: "saved" | "edited" | "forgotten"; memory: { handle: string; number: number; text: string; kind: MemoryKind; everywhere: boolean } }
-  | { kind: "question"; turnId: string; text: string }
+  | { kind: "question"; turnId: string; text: string; clarification?: ClarificationView }
+  | { kind: "clarification_changed"; turnId: string; clarification: ClarificationView }
   | { kind: "step"; turnId: string; text: string; thinking?: string | null; thinkingTruncated?: boolean }
   | { kind: "tool_started"; turnId: string; task: string; handle: string; line: string; call: CallView }
   | { kind: "tool_finished"; turnId: string; task: string; handle: string; status: "ok" | "error"; result: ResultView }
@@ -247,7 +266,8 @@ export type ActivityBody =
   | { kind: "warning"; turnId: string | null; detail: string }
   | { kind: "ledger" };
 
-export type Activity = { seq: number; at: string; conversation: string } & ActivityBody;
+export interface OriginalRequest {id: string; seq: number; at: string; message: string; attachments: AttachmentView[]}
+export type Activity = { seq: number; at: string; conversation: string; requestSeq?: number; original?: OriginalRequest } & ActivityBody;
 
 export interface PendingApproval {
   id: string;
@@ -272,8 +292,9 @@ export interface LiveState {
   /** The tasks with a message working in them now (standard mode's busy chats). */
   working?: { goal: number; task: number }[];
   /** Waiting messages: for the main conversation, or for their standard-mode chat. */
-  queue: { id: string; text: string; attachments?: AttachmentView[]; chat?: ChatChoice }[];
+  queue: { id: string; text: string; attachments?: AttachmentView[]; chat?: ChatChoice; replyTo?: string }[];
   approvals: PendingApproval[];
+  routingQuestions?: ClarificationView[];
 }
 
 /** A terminal session the agent started, as the terminal panel lists it (apps/server/src/terminals.ts). */
@@ -321,6 +342,8 @@ export type ServerMessage =
 export type Command =
   | { type: "hello"; after?: number }
   | { type: "send"; id: string; text: string; to: string; attachments?: { id: string; name: string }[]; chat?: ChatChoice; keep?: KeepChoice }
+  | { type: "reply"; id: string; clarification: string; text: string }
+  | { type: "cancel_question"; clarification: string }
   | { type: "queue"; id: string; text: string; attachments?: { id: string; name: string }[]; chat?: ChatChoice; keep?: KeepChoice }
   | { type: "redo"; id: string; turn: string; chat?: ChatChoice; general?: true }
   | { type: "queue_remove"; id: string }
@@ -353,6 +376,7 @@ export interface MemoryView {
   source: (Place & { at: string }) | null;
   createdAt: string;
   updatedAt: string;
+  startedAt?: string;
   /** Shown to Socrates in every request (in its goal, for a goal's own). */
   alwaysOn: boolean;
   /** How often it was offered beyond the always-on part, and when last. */

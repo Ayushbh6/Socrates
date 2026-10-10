@@ -117,18 +117,19 @@ export class GoalRouter {
   }
 
   /** Persist the exact message, route it, and bind it. A lane's message is recorded in that lane. */
-  async route(message: string, signal?: AbortSignal, options: { laneId?: string | null; userEventId?: string; laneActivity?: ReadonlyMap<string, string | null>; remembered?: string | null; beforeBind?: (taskIds: string[]) => Promise<void> } = {}): Promise<RoutingResult> {
+  async route(message: string, signal?: AbortSignal, options: { laneId?: string | null; userEventId?: string; clarificationTurnId?: string | null; laneActivity?: ReadonlyMap<string, string | null>; remembered?: string | null; beforeBind?: (taskIds: string[]) => Promise<void> } = {}): Promise<RoutingResult> {
     signal?.throwIfAborted();
     const laneId = options.laneId ?? null;
     const userEvent = options.userEventId ? this.store.getEvent(options.userEventId) : this.store.recordUserMessage(message, laneId);
     if (!userEvent || userEvent.type !== "user_message" || (userEvent.payload as { text: string }).text !== message || ((userEvent.payload as { lane_id?: string }).lane_id ?? null) !== laneId) throw new Error("The recorded message does not belong to this routing request.");
-    const semantic = this.semantic ? await this.semantic.search(candidateQuery(this.store, message, laneId), { kinds: ["goal", "task"], limit: 30 }, signal) : [];
+    const semantic = this.semantic ? await this.semantic.search(candidateQuery(this.store, message, laneId, options.clarificationTurnId), { kinds: ["goal", "task"], limit: 30 }, signal) : [];
     const attachments = ((userEvent.payload as EventPayloads["user_message"]).attachments ?? []).map((a) => a.name);
     const ctx = buildRoutingContext(this.store, message, {
       timeZone: this.timeZone,
       ...(attachments.length ? { attachments } : {}),
       semantic,
       laneId,
+      ...(options.clarificationTurnId !== undefined ? {clarificationTurnId: options.clarificationTurnId} : {}),
       ...(options.laneActivity ? { laneActivity: options.laneActivity } : {}),
       ...(options.remembered ? { remembered: options.remembered } : {}),
       ...(this.historyBudgetTokens !== undefined ? { historyBudgetTokens: this.historyBudgetTokens } : {}),
@@ -164,7 +165,9 @@ export class GoalRouter {
     const meta = { model: modelId, attempts, escalated, fallback, ledgerQueries: budget.ledgerQueries, errors: budget.errors };
     signal?.throwIfAborted();
     if (final.kind === "clarify") return this.applyClarify(userEvent.id, final.ask, ctx, meta);
-    await options.beforeBind?.(final.route.parts.flatMap((p) => p.target.kind === "existing_task" ? [p.target.task.id] : p.target.kind === "general" ? [this.store.ensureGeneral(this.timeZone).task.id] : []));
+    const requestAt = new Date(this.store.requestRoot(ctx.pending?.turn.userEventId ?? userEvent.id).at);
+    const requestDay = ctx.pending ? (this.store.listEvents({turnId: ctx.pending.turn.id, type: "clarification_asked"})[0]?.payload as EventPayloads["clarification_asked"] | undefined)?.request_day : undefined;
+    await options.beforeBind?.(final.route.parts.flatMap((p) => p.target.kind === "existing_task" ? [p.target.task.id] : p.target.kind === "general" ? [this.store.ensureGeneral(this.timeZone, requestAt, requestDay).task.id] : []));
     return this.applyDecision(userEvent.id, final.route, ctx, meta);
   }
 
@@ -394,7 +397,7 @@ export class GoalRouter {
       const turn = this.store.recordClarification(userEventId, text);
       this.store.appendEvent(
         "clarification_asked",
-        { question: ask.question, candidates: ask.candidates, allow_new: ask.allow_new, zero_history: ask.zero_history ?? false, candidate_bindings: this.candidateBindings(ask, ctx) },
+        { question: ask.question, candidates: ask.candidates, allow_new: ask.allow_new, zero_history: ask.zero_history ?? false, candidate_bindings: this.candidateBindings(ask, ctx), request_day: new Intl.DateTimeFormat("en-CA", {year: "numeric", month: "2-digit", day: "2-digit", timeZone: this.timeZone}).format(new Date(this.store.requestRoot(userEventId).at)) },
         { turn_id: turn.id },
       );
       this.store.appendEvent(
@@ -429,7 +432,9 @@ export class GoalRouter {
       let requestEnd = 0;
       const original = ctx.pending?.request ?? ctx.message;
       for (const part of route.parts) {
-        const { goal, task, created } = this.materialize(part);
+        const requestAt = new Date(this.store.requestRoot(ctx.pending?.turn.userEventId ?? userEventId).at);
+        const requestDay = ctx.pending ? (this.store.listEvents({turnId: ctx.pending.turn.id, type: "clarification_asked"})[0]?.payload as EventPayloads["clarification_asked"] | undefined)?.request_day : undefined;
+        const { goal, task, created } = this.materialize(part, requestAt, requestDay);
         const requestStart = route.compound ? original.indexOf(part.request, requestEnd) : 0;
         requestEnd = requestStart + part.request.length;
         const turn = this.store.bindTurn({
@@ -483,11 +488,11 @@ export class GoalRouter {
     };
   }
 
-  private materialize(part: ResolvedPart): { goal: Goal; task: Task; created: { goal: boolean; task: boolean } } {
+  private materialize(part: ResolvedPart, requestAt: Date, requestDay?: string): { goal: Goal; task: Task; created: { goal: boolean; task: boolean } } {
     const target = part.target;
     switch (target.kind) {
       case "general": {
-        const { goal, task } = this.store.ensureGeneral(this.timeZone);
+        const { goal, task } = this.store.ensureGeneral(this.timeZone, requestAt, requestDay);
         return { goal, task, created: { goal: false, task: false } };
       }
       case "existing_task": {
