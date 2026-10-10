@@ -390,6 +390,15 @@ export class Store {
     await this.reloadGoals();
   }
 
+  /** Undo a memory from under an answer; the change arrives as activity on that answer. A refusal is shown as a notice. */
+  async forgetMemory(number: number): Promise<void> {
+    try {
+      await api.forgetMemory(number);
+    } catch (error) {
+      this.notice(error);
+    }
+  }
+
   /** Set a goal's or task's status as the user chooses; a refusal is shown as a notice. */
   async setStatus(what: { goal: number; task?: number }, status: LedgerStatus): Promise<void> {
     try {

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { countTokens, fixedClock } from "@socrates/shared";
 import { beforeEach, describe, expect, it } from "vitest";
-import { LedgerStore, parseGoalSelector, parseTaskSelector, renderLedgerRow, runLedgerQuery, toFtsQuery } from "../src";
+import { LedgerStore, looksSecret, parseGoalSelector, parseTaskSelector, renderLedgerRow, runLedgerQuery, toFtsQuery } from "../src";
 import { SCHEMA_SQL, SCHEMA_VERSION } from "../src/schema";
 
 const TZ = "UTC";
@@ -687,5 +687,52 @@ describe("renaming and archiving", () => {
     expect(copy.listTasks(goal.id).map((t) => t.id)).toEqual([a.id]);
     expect(copy.searchLedger(toFtsQuery("footer"))).toEqual([]);
     expect(copy.listArchived().tasks.map((t) => t.task.id)).toEqual([b.id]);
+  });
+});
+
+describe("memory", () => {
+  it("numbers entries, keeps them on one line, refuses secrets, and rebuilds them from the log", () => {
+    const { store, clock } = openStore();
+    const goal = store.createGoal({ title: "Shop" });
+    const pnpm = store.saveMemory({ kind: "preference", goalId: null, text: "  Prefers pnpm\n over npm. ", by: "agent" });
+    expect(pnpm).toMatchObject({ created: true, memory: { handle: "m1", text: "Prefers pnpm over npm.", goalId: null, by: "agent", sourceTurnId: null } });
+    expect(store.saveMemory({ kind: "about", goalId: null, text: "prefers PNPM over npm.", by: "user" })).toMatchObject({ created: false, memory: { handle: "m1" } });
+    // The same words in a goal are a different entry.
+    expect(store.saveMemory({ kind: "preference", goalId: goal.id, text: "Prefers pnpm over npm.", by: "user" }).memory.handle).toBe("m2");
+    expect(() => store.saveMemory({ kind: "about", goalId: null, text: "x".repeat(281), by: "user" })).toThrow(/at most 280/);
+    expect(() => store.saveMemory({ kind: "about", goalId: null, text: "My password is hunter22", by: "user" })).toThrow(/does not remember secrets/);
+    expect(() => store.saveMemory({ kind: "about", goalId: null, text: " ", by: "user" })).toThrow(/empty/);
+
+    clock.advance(60_000);
+    store.editMemory(pnpm.memory.id, { text: "Prefers pnpm, never npm.", kind: "preference" }, "user");
+    store.forgetMemory(store.getMemoryByNumber(2)!.id, "user");
+    expect(store.listMemories().map((m) => m.handle)).toEqual(["m1"]);
+    expect(store.listMemories({ includeForgotten: true }).map((m) => [m.handle, m.text, !!m.forgottenAt])).toEqual([["m2", "Prefers pnpm over npm.", true], ["m1", "Prefers pnpm, never npm.", false]]);
+    expect(() => store.editMemory(store.getMemoryByNumber(2)!.id, { text: "Back." }, "user")).toThrow(/forgotten/);
+
+    const recovered = LedgerStore.open({ path: ":memory:" });
+    recovered.restoreEvents(JSON.parse(JSON.stringify(store.listEvents())));
+    expect(recovered.listMemories({ includeForgotten: true })).toEqual(store.listMemories({ includeForgotten: true }));
+  });
+
+  it("keeps the always-on part to who the user is and how they work, here and everywhere, newest first within its budget", () => {
+    const { store } = openStore();
+    const shop = store.createGoal({ title: "Shop" });
+    const other = store.createGoal({ title: "Other" });
+    const save = (text: string, kind: "about" | "preference" | "knowledge", goalId: string | null = null) => store.saveMemory({ kind, goalId, text, by: "user" });
+    save("Lives in Berlin.", "about");
+    save("The launch is on 3 November.", "knowledge");
+    save("Uses tabs here.", "preference", shop.id);
+    save("Writes in British English.", "preference", other.id);
+    save("Prefers short answers.", "preference");
+    expect(store.profileMemories(shop.id).map((m) => m.text)).toEqual(["Prefers short answers.", "Uses tabs here.", "Lives in Berlin."]);
+    expect(store.profileMemories(null).map((m) => m.text)).toEqual(["Prefers short answers.", "Lives in Berlin."]);
+    const one = countTokens("- Prefers short answers. [m5]") + 1;
+    expect(store.profileMemories(null, one).map((m) => m.text)).toEqual(["Prefers short answers."]);
+  });
+
+  it("recognises secret-looking text and leaves ordinary sentences alone", () => {
+    for (const secret of ["sk-proj-abcdefghijklmnopqrstuvwx", "AKIAABCDEFGHIJKLMNOP", "ghp_abcdefghijklmnopqrstuvwxyz123456", "token: abcd1234", "api key = 12345678", "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6", "-----BEGIN RSA PRIVATE KEY-----"]) expect(looksSecret(secret), secret).toBe(true);
+    for (const plain of ["Prefers pnpm over npm.", "Their daughter's birthday is 14 March.", "Works on /Users/me/Documents/Work/Socrates/packages/agent.", "Wants answers under 200 words.", "Keeps the token budget low."]) expect(looksSecret(plain), plain).toBe(false);
   });
 });

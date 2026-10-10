@@ -24,7 +24,7 @@ This file hands the project to whichever agent harness works on it next. Read it
   3. Open the printed link. Each login link works only once.
   4. Stop the server and delete the copy afterwards.
 
-## Where things stand (2026-10-08)
+## Where things stand (2026-10-10)
 
 The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `server.md`, `web.md`, `observability.md`). The trial log numbers each change. Recently shipped, newest last:
 
@@ -38,12 +38,13 @@ The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `serv
 - **Failures look the same:** every failed tool call, or command that exits non-zero, gets the red ✗ and counts as "N tool calls failed".
 - **Lean fixed prompt:** the system prompt and tools are about 5.4k tokens per request (was 7.4k); `packages/agent/test/fixed-overhead.test.ts` holds the budget.
 - **Redo in another task:** a misrouted question is asked again in a chosen task ("Redo in…" on the route line); the first attempt is set aside, never moved (`architecture/agent-harness.md`, "Redo in another task").
+- **Memory, phase M1:** Socrates remembers the user across goals: `<MEMORY>` in every request (who they are, how they like to work), saved from the final answer's `memory` field without asking, shown under the answer with Undo, and listed in Settings > Memory with two switches (`architecture/agent-harness.md`, "Memory"; the full plan is `docs/memory.md`).
 
 ## Next, in the order agreed with the user
 
 Ask before starting each one.
 
-1. **Memory and personalisation:** designed in `docs/memory.md` (awaiting the user's approval; three phases M1–M3, built one at a time).
+1. **Memory and personalisation, M2 then M3** (`docs/memory.md`): M2 finds knowledge entries by meaning (`<MEMORY_CANDIDATES>`, a `context_retrieve` memory action, `pnpm eval:memory`); M3 adds the `pplx-decider` gates (on by default with an OpenRouter key) and the curator.
 2. **Standard to flow:** a richer design for moving between the two modes.
 3. **Continue button:** offer one after a safeguard stop (200 steps, 60 minutes, or the token limit).
 

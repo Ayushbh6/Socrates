@@ -255,6 +255,7 @@ export class Runtime {
     const sent = Object.fromEntries(Object.keys(patch as object).map((key) => [key, parsed[key]]));
     if (sent.access) sent.access = { ...this.settings.access, ...(sent.access as object) };
     if (sent.profile) sent.profile = { ...this.settings.profile, ...(sent.profile as object) };
+    if (sent.memory) sent.memory = { ...this.settings.memory, ...(sent.memory as object) };
     let next = Settings.parse({ ...this.settings, ...sent });
     if ((parsed.access as { folders?: unknown } | undefined)?.folders) {
       next.access.folders = [...new Set(next.access.folders.map((folder) => workspaceFolder(folder, this.config.home)))];
@@ -272,13 +273,13 @@ export class Runtime {
     const sameChat = !!this.socrates && !!next.chat && !!inUse && next.chat.provider === inUse.provider && next.chat.model === inUse.model;
     // The model that names chats is used after an answer, never inside a turn, so it can change while Socrates works.
     const titlerOnly = !!this.socrates && !!this.models.router;
-    if (Object.keys(sent).every((key) => key === "access" || key === "profile" || key === "prices" || (key === "chat" && sameChat) || (key === "titler" && titlerOnly))) {
+    if (Object.keys(sent).every((key) => key === "access" || key === "profile" || key === "memory" || key === "prices" || (key === "chat" && sameChat) || (key === "titler" && titlerOnly))) {
       const effort = next.chat?.effort;
       if (sameChat && effort && !inUse!.effort?.levels.includes(effort)) {
         const levels = inUse!.effort?.levels ?? [];
         throw new SettingsError(levels.length ? `${inUse!.model} cannot think at "${effort}"; choose ${levels.join(", ")}.` : `${inUse!.model} has no thinking levels to choose from.`);
       }
-      // Access, the profile and thinking levels need no rebuild, so they may change while Socrates works; access and thinking levels apply to the next tool call or model request.
+      // Access, the profile, memory's switches and thinking levels need no rebuild, so they may change while Socrates works; access and thinking levels apply to the next tool call or model request, memory to the next turn.
       if (this.changing || this.closing) throw new RuntimeBusyError("Socrates is restarting; change this in a moment.");
       saveSettings(this.config.settingsPath, next);
       this.settings = next;
@@ -470,6 +471,7 @@ export class Runtime {
       approve: async () => false,
       access: () => this.accessPolicy(),
       profile: () => this.settings.profile,
+      memory: () => this.settings.memory,
       resolveWorkspace: () => {
         const folder = this.workingFolder();
         return folder ? { name: folder.name, rootPath: folder.rootPath! } : null;

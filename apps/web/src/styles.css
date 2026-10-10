@@ -577,6 +577,31 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 /* Settings */
 
 .modal.settings { width: min(44rem, 100%); max-height: 88vh; overflow-y: auto; padding: 1.1rem 1.2rem; }
+/* Memory: what an answer saved, and the Memory section of settings */
+.memory-notes { display: flex; flex-direction: column; gap: 0.3rem; margin: 0.6rem 0 0; padding: 0; list-style: none; }
+.memory-notes li { display: flex; align-items: center; gap: 0.4rem; min-width: 0; color: var(--muted); font-size: 0.82rem; }
+.memory-notes li svg { width: 0.9rem; height: 0.9rem; color: var(--accent); }
+.memory-notes li[data-undone="true"] { color: var(--faint); }
+.memory-notes li[data-undone="true"] .memory-note-text { text-decoration: line-through; }
+.memory-notes li[data-undone="true"] svg { color: var(--faint); }
+.memory-note-verb { flex: none; font-weight: 500; }
+.memory-note-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.memory-undo { flex: none; padding: 0.1rem 0.45rem; border: 0; border-radius: 999px; background: transparent; color: var(--accent-strong); font-size: 0.78rem; }
+.memory-undo:hover { background: var(--tint); }
+.memory-switch { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; color: var(--text); font-size: 0.85rem; }
+.memory-group { margin: 0.8rem 0 0.4rem; }
+.memory-group-title { margin: 0 0 0.3rem; color: var(--muted); font-size: 0.78rem; font-weight: 600; }
+.memory-list { margin: 0; padding: 0; list-style: none; }
+.memory-list li { display: grid; grid-template-columns: 1fr auto; column-gap: 0.5rem; padding: 0.4rem 0; }
+.memory-list li .field-row { grid-column: 1 / -1; margin: 0; }
+.memory-list li .field-row input { flex: 1; }
+.memory-text { font-size: 0.88rem; overflow-wrap: anywhere; }
+.memory-meta { grid-column: 1; color: var(--faint); font-size: 0.75rem; }
+.memory-actions { grid-column: 2; grid-row: 1 / span 2; display: flex; align-items: center; }
+.memory-actions .quiet-button { padding: 0.25rem 0.5rem; }
+.field-row.memory-add select { flex: none; width: 11.5rem; }
+.field-row.memory-add input { flex: 1; }
+
 .settings-section { padding: 0.9rem 0 0.4rem; }
 .settings-section h3 { margin: 0 0 0.4rem; color: var(--faint); font-size: 0.7rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
 .settings-hint { margin: 0 0 0.6rem; color: var(--muted); font-size: 0.82rem; }

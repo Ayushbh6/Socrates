@@ -1,5 +1,5 @@
 import type { CallDetail, CallRow, DataOverview, DbPage, DbRow, PriceRow, QuestionDetail, QuestionRow, Range, SeriesData, Summary, Trace } from "./observe";
-import type { Access, ArchivedView, AttachmentView, Evidence, Folders, GoalView, History, LedgerStatus, ListedModel, Provider, Settings, Status } from "./types";
+import type { Access, ArchivedView, AttachmentView, Evidence, Folders, GoalView, History, LedgerStatus, ListedModel, MemoryKind, MemoryView, Provider, Settings, Status } from "./types";
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -68,8 +68,12 @@ export const api = {
     call<DbPage>("GET", `/api/observe/db/${encodeURIComponent(db)}/${encodeURIComponent(table)}?offset=${query.offset}&limit=${query.limit}&dir=${query.dir ?? "desc"}${query.q ? `&q=${encodeURIComponent(query.q)}` : ""}${query.order ? `&order=${encodeURIComponent(query.order)}` : ""}`),
   observeRow: (db: string, table: string, rowid: number) => call<DbRow>("GET", `/api/observe/db/${encodeURIComponent(db)}/${encodeURIComponent(table)}/${rowid}`),
   observeCall: (id: string) => call<CallDetail>("GET", `/api/observe/calls/${encodeURIComponent(id)}`),
+  memories: () => call<MemoryView[]>("GET", "/api/memories"),
+  addMemory: (memory: { text: string; kind: MemoryKind; goal: number | null }) => call<MemoryView>("POST", "/api/memories", memory),
+  editMemory: (number: number, change: { text?: string; kind?: MemoryKind }) => call<MemoryView>("PATCH", `/api/memories/${number}`, change),
+  forgetMemory: (number: number) => call<null>("DELETE", `/api/memories/${number}`),
   evidence: (task: string, handle: string) => call<Evidence>("GET", `/api/evidence?task=${encodeURIComponent(task)}&handle=${encodeURIComponent(handle)}`),
 };
 
-/** What the page changes in settings besides access and the working folder; the profile may be sent in part. */
-export type SettingsPatch = Partial<Omit<Settings, "access" | "workingFolder" | "profile">> & { profile?: Partial<Settings["profile"]> };
+/** What the page changes in settings besides access and the working folder; the profile and memory's switches may be sent in part. */
+export type SettingsPatch = Partial<Omit<Settings, "access" | "workingFolder" | "profile" | "memory">> & { profile?: Partial<Settings["profile"]>; memory?: Partial<Settings["memory"]> };

@@ -5,7 +5,7 @@ import { api } from "../lib/api";
 import { useDialog } from "../lib/dialog";
 import { type AppState, store } from "../lib/store";
 import { PROVIDER_LABELS } from "../lib/models";
-import type { Embeddings, ListedModel, ModelChoice, Provider } from "../lib/types";
+import type { Embeddings, ListedModel, MemoryKind, MemoryView, ModelChoice, Provider } from "../lib/types";
 import { AccessControls } from "./AccessMenu";
 
 const EMBEDDERS: Embeddings["provider"][] = ["ollama", "openrouter", "openai", "custom"];
@@ -29,7 +29,8 @@ export function SettingsDialog({ app, onClose }: { app: AppState; onClose: () =>
         <Models app={app} providers={providers} />
         <ChatNames app={app} providers={providers} />
         <Keys providers={providers} />
-        <Memory app={app} />
+        <MemorySection app={app} />
+        <MemorySearch app={app} />
         <TimeZone app={app} />
         <Section title="Where Socrates works">
           <AccessControls app={app} approvals />
@@ -200,7 +201,83 @@ function Keys({ providers }: { providers: Provider[] }) {
   );
 }
 
-function Memory({ app }: { app: AppState }) {
+const MEMORY_GROUPS: { kind: MemoryKind; title: string }[] = [
+  { kind: "about", title: "About you" },
+  { kind: "preference", title: "How you like to work" },
+  { kind: "knowledge", title: "Facts and decisions" },
+];
+
+/**
+ * What Socrates remembers about the user (architecture/web.md, "Memory"):
+ * the two switches, every entry by kind with where it was said, and edit,
+ * forget and add. Changes apply from the next message, without a restart.
+ */
+function MemorySection({ app }: { app: AppState }) {
+  const [list, setList] = useState<MemoryView[] | null>(null);
+  const [editing, setEditing] = useState<{ number: number; text: string } | null>(null);
+  const [draft, setDraft] = useState<{ text: string; kind: MemoryKind }>({ text: "", kind: "preference" });
+  const { busy, save, feedback } = useSave();
+  const reload = async () => setList(await api.memories());
+  useEffect(() => {
+    api.memories().then(setList, () => setList([]));
+  }, []);
+  const switches = app.settings!.memory;
+  const toggle = (key: "save" | "use", on: boolean) => save(() => store.saveSettings({ memory: { [key]: on } }));
+  const where = (m: MemoryView) => [
+    m.kind === "knowledge" ? "Kept for later" : m.alwaysOn ? "Always on" : "Not always on: no room left",
+    m.goal ? `only in ${m.goal.title}` : null,
+    m.source ? `from ${m.source.goal.title} / ${m.source.task.title}, ${new Date(m.source.at).toLocaleDateString(undefined, { day: "numeric", month: "short" })}` : "added by you",
+  ].filter(Boolean).join(" · ");
+  return (
+    <Section title="Memory">
+      <p className="settings-hint">What Socrates remembers about you, in every goal: who you are and how you like to work, saved when you say it. Undo one under its answer or change it here. Forgetting removes it from what Socrates uses; the conversation it came from stays in your history.</p>
+      <label className="memory-switch"><input type="checkbox" checked={switches.save} disabled={busy} onChange={(e) => void toggle("save", e.target.checked)} /> Save new memories from my conversations</label>
+      <label className="memory-switch"><input type="checkbox" checked={switches.use} disabled={busy} onChange={(e) => void toggle("use", e.target.checked)} /> Use memories when answering</label>
+      {list && !list.length && <p className="settings-hint">Nothing yet. Tell Socrates something about yourself, or add it below.</p>}
+      {MEMORY_GROUPS.map(({ kind, title }) => {
+        const entries = (list ?? []).filter((m) => m.kind === kind);
+        if (!entries.length) return null;
+        return (
+          <div key={kind} className="memory-group">
+            <p className="memory-group-title">{title}</p>
+            <ul className="memory-list">
+              {entries.map((m) => (
+                <li key={m.number}>
+                  {editing?.number === m.number ? (
+                    <form className="field-row" onSubmit={(e: FormEvent) => { e.preventDefault(); void save(async () => { await api.editMemory(m.number, { text: editing.text }); setEditing(null); await reload(); }); }}>
+                      <input value={editing.text} maxLength={280} onChange={(e) => setEditing({ ...editing, text: e.target.value })} aria-label="Memory" autoFocus />
+                      <button type="submit" className="quiet-button" disabled={busy || !editing.text.trim()}>Save</button>
+                      <button type="button" className="quiet-button" onClick={() => setEditing(null)}>Cancel</button>
+                    </form>
+                  ) : (
+                    <>
+                      <span className="memory-text">{m.text}</span>
+                      <span className="memory-meta">{where(m)}</span>
+                      <span className="memory-actions">
+                        <button type="button" className="quiet-button" onClick={() => setEditing({ number: m.number, text: m.text })}>Edit</button>
+                        <button type="button" className="quiet-button" disabled={busy} onClick={() => void save(async () => { await api.forgetMemory(m.number); await reload(); })}>Forget</button>
+                      </span>
+                    </>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      })}
+      <form className="field-row memory-add" onSubmit={(e: FormEvent) => { e.preventDefault(); void save(async () => { await api.addMemory({ text: draft.text, kind: draft.kind, goal: null }); setDraft({ ...draft, text: "" }); await reload(); }); }}>
+        <select value={draft.kind} onChange={(e) => setDraft({ ...draft, kind: e.target.value as MemoryKind })} aria-label="Kind of memory">
+          {MEMORY_GROUPS.map((g) => <option key={g.kind} value={g.kind}>{g.title}</option>)}
+        </select>
+        <input value={draft.text} maxLength={280} placeholder="Add a memory, such as: Prefers short answers." onChange={(e) => setDraft({ ...draft, text: e.target.value })} aria-label="New memory" />
+        <button type="submit" className="quiet-button" disabled={busy || !draft.text.trim()}>Add</button>
+      </form>
+      <div className="settings-actions">{feedback}</div>
+    </Section>
+  );
+}
+
+function MemorySearch({ app }: { app: AppState }) {
   const [embeddings, setEmbeddings] = useState<Embeddings>(app.settings!.embeddings);
   const { busy, save, feedback } = useSave();
   const status = app.status!.embeddings;

@@ -83,6 +83,12 @@ A goal or task is open, completed, or superseded (replaced by other work and no 
 
 Every finished or stopped question has **Redo in…** at the end of its route line, in flow and standard mode (standard hides the goal and task names there, as its header shows them). It opens a list: **Today's general conversation** (not for a question already in it), then each goal with its newest eight chats and **New chat in …**, then **Chats** with the plain chats and **New chat**. Choosing one asks the same question there at once (`server.md`, "Live connection", `redo`); in standard mode the page follows it to that chat. The redo's route line says **Redone from <goal> / <task>**. The first attempt folds to one line, **Redone in <goal> / <task> ›**, which opens it, faded. Names are the chats' names now, so a new chat renamed after its first answer shows its new name. Only a task's latest question can be redone; on an earlier one the button is dimmed and says "Later questions in this task build on this answer". A question still working, a clarifying question, and a message split into parts have no button.
 
+## Memory
+
+What an answer saved to or forgot from memory shows under it, one line each (`agent-harness.md`, "Memory"): **Remembered** with the entry's words and **Undo**, or **Forgot** with them. Memory is saved without asking, so the conversation flows; Undo forgets the entry at once, and the line then reads **Undone**, struck through. An edit made later in settings changes the words shown; the lines come back with the answer's history.
+
+Settings has a **Memory** section: two switches (save new memories from my conversations; use memories when answering), then every entry under **About you**, **How you like to work** and **Facts and decisions**, each with whether it is always on ("Not always on: no room left" past the 500-token budget; knowledge is "Kept for later"), the goal it is limited to, and where it was said ("from Shop / Tooling, 10 Oct", or "added by you"), with **Edit** and **Forget**. A row at the end adds one, of the kind chosen, for everywhere. The section says that forgetting removes an entry from what Socrates uses while the conversation it came from stays in history.
+
 ## Terminal panel
 
 The terminals the agent starts, at the bottom of the page: docked under the chat in standard mode, sliding up over the canvas in flow mode (the composer rises with it). It is the same terminal the agent drives (`server.md`, "Terminal panel"), drawn by xterm.js, which loads with the first terminal opened.
@@ -119,12 +125,13 @@ The gear in either header opens settings:
 
 - **Models:** the chat, routing and compaction models (compaction is the call that summarizes an old part of a long task; automatic is the chat model, and choosing a provider fills in its strong default model): automatic (the first provider with a key, and the chat provider's router model) or a provider with its default model filled in (`GET /api/providers`), which can be edited, with the provider's models suggested while typing (`GET /api/models`). A chat model keeps its thinking level only while it stays the same model. It says which models are in use and whether they were picked from the keys.
 - **API keys:** each key Socrates knows, whether it is set, and a field to set or replace it, or remove it. Keys are never shown.
+- **Memory:** what Socrates remembers about the user, its two switches, and edit, forget and add (see "Memory").
 - **Memory search:** the embedding provider (Ollama on this Mac by default), model and address, and whether memory search is ready and how much it holds.
 - **Chat names:** the model that names a new standard-mode chat after its first answer: automatic (Qwen3 30B Instruct on OpenRouter when there is an OpenRouter key, else the routing model) or a provider with its model, which can be edited. It says which model is in use. A small, fast model that doesn't think suits it.
 - **Time zone:** a time zone, or follow the Mac.
 - **Where Socrates works:** the project folder, my folders or full access, and ask first or work freely: the same controls as the header and composer.
 
-Model, key, memory and time-zone changes restart Socrates, so they wait until it is idle and say so otherwise; the page stays where it is during the restart. Access and chat-name changes apply at once, even while Socrates works.
+Model, key, memory and time-zone changes restart Socrates, so they wait until it is idle and say so otherwise; the page stays where it is during the restart. Access, chat-name and memory changes (the switches and the entries) apply at once, even while Socrates works.
 
 Settings, the folder picker and full tool output contain keyboard focus, close only the topmost dialog on Escape, and restore focus on close. Choosing a typed folder validates that path directly; navigating first with Enter is optional.
 

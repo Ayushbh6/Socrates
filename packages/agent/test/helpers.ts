@@ -47,7 +47,7 @@ export interface World {
   socrates(
     router: ScriptedStep[],
     agent: ScriptedStep[],
-    options?: { limits?: Partial<AgentLimits>; approve?: boolean; now?: () => number; resolveWorkspace?: SocratesOptions["resolveWorkspace"]; budgets?: Partial<ContextBudgets>; compactor?: ScriptedStep[]; catalog?: CapabilityCatalog; shelf?: ShelfOptions; semantic?: SemanticIndex; access?: () => AccessPolicy | null; profile?: () => { name: string | null }; attachments?: string },
+    options?: { limits?: Partial<AgentLimits>; approve?: boolean; now?: () => number; resolveWorkspace?: SocratesOptions["resolveWorkspace"]; budgets?: Partial<ContextBudgets>; compactor?: ScriptedStep[]; catalog?: CapabilityCatalog; shelf?: ShelfOptions; semantic?: SemanticIndex; access?: () => AccessPolicy | null; profile?: () => { name: string | null }; attachments?: string; memory?: SocratesOptions["memory"] },
   ): { socrates: Socrates; routerModel: ScriptedModel; model: ScriptedModel; compactor: ScriptedModel };
 }
 
@@ -97,6 +97,7 @@ export async function world(options: { files?: Record<string, string | Buffer>; 
         ...(o.access ? { access: o.access } : {}),
         ...(o.profile ? { profile: o.profile } : {}),
         ...(o.attachments ? { attachments: o.attachments } : {}),
+        ...(o.memory ? { memory: o.memory } : {}),
         compactorModel: compactor,
       });
       cleanups.push(() => socrates.close());

@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
-import type { Attachment, EventPayloads, EventRefs, EventType, StoredEvent, TurnStop } from "@socrates/contracts";
-import { type Clock, newId, systemClock, truncateToTokens } from "@socrates/shared";
+import { type Attachment, type EventPayloads, type EventRefs, type EventType, MEMORY_PROFILE_MAX_TOKENS, MEMORY_TEXT_MAX_CHARS, type MemoryAuthor, type MemoryKind, type StoredEvent, type TurnStop } from "@socrates/contracts";
+import { type Clock, countTokens, newId, systemClock, truncateToTokens } from "@socrates/shared";
 import { MIGRATIONS, SCHEMA_SQL, SCHEMA_VERSION } from "./schema";
 
 export type LedgerStatus = "open" | "completed" | "superseded";
@@ -184,6 +184,24 @@ export interface HistoryRecord {
   createdAt: string;
 }
 
+/** One thing Socrates remembers about the user (agent-harness.md, "Memory"). */
+export interface Memory {
+  id: string;
+  number: number;
+  /** The permanent handle, "m4". */
+  handle: string;
+  kind: MemoryKind;
+  /** Null: it applies everywhere; else the one goal it belongs to. */
+  goalId: string | null;
+  text: string;
+  by: MemoryAuthor;
+  /** The turn it was said in, or null for one the user added on the Memory page. */
+  sourceTurnId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  forgottenAt: string | null;
+}
+
 export interface TaskWithGoal {
   task: Task;
   goal: Goal;
@@ -203,6 +221,36 @@ const LIVE_TURN = "(turns.task_id IS NULL OR (turns.task_id NOT IN (SELECT id FR
 
 /** A turn not set aside by a redo (`turn_redone`). */
 const NOT_REDONE = "turns.id NOT IN (SELECT turn_id FROM events WHERE type = 'turn_redone' AND turn_id IS NOT NULL)";
+
+/**
+ * What looks like a credential: API keys and tokens of the common providers,
+ * private keys, JWTs, "password: ..." and any long run of letters and digits.
+ * Memory refuses them (agent-harness.md, "Memory").
+ */
+const SECRET_PATTERNS = [
+  /\b(?:sk|pk|rk)[-_][A-Za-z0-9_-]{16,}/,
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\bgh[pousr]_[A-Za-z0-9]{20,}/,
+  /\bxox[abprs]-[A-Za-z0-9-]{10,}/,
+  /\bAIza[0-9A-Za-z_-]{30,}/,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\./,
+  /\b(?:password|passwd|passphrase|api[_ -]?key|secret|token)\s*(?:is|[:=])\s*\S{4,}/i,
+  /(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{32,}/,
+];
+
+export function looksSecret(text: string): boolean {
+  return SECRET_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+/** A memory as it is kept: one line, trimmed, short, and never a secret. */
+function memoryText(text: string): string {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (!clean) throw new StoreError("A memory cannot be empty.");
+  if (clean.length > MEMORY_TEXT_MAX_CHARS) throw new StoreError(`A memory is at most ${MEMORY_TEXT_MAX_CHARS} characters; this one has ${clean.length}.`);
+  if (looksSecret(clean)) throw new StoreError("That looks like a password, key or token; Socrates does not remember secrets.");
+  return clean;
+}
 
 /** A name the user typed: trimmed, on one line, and not empty. */
 function chosenTitle(title: string): string {
@@ -297,6 +345,22 @@ function toHistoryRecord(r: Row): HistoryRecord {
     content: JSON.parse(str(r.content)),
     mechanical: num(r.mechanical) === 1,
     createdAt: str(r.created_at),
+  };
+}
+
+function toMemory(r: Row): Memory {
+  return {
+    id: str(r.id),
+    number: num(r.number),
+    handle: `m${num(r.number)}`,
+    kind: str(r.kind) as MemoryKind,
+    goalId: strOrNull(r.goal_id),
+    text: str(r.text),
+    by: str(r.author) as MemoryAuthor,
+    sourceTurnId: strOrNull(r.source_turn_id),
+    createdAt: str(r.created_at),
+    updatedAt: str(r.updated_at),
+    forgottenAt: strOrNull(r.forgotten_at),
   };
 }
 
@@ -756,10 +820,114 @@ export class LedgerStore {
         }
         break;
       }
+      case "memory_saved": case "memory_edited": case "memory_forgotten": this.projectMemory(e); break;
       case "turn_redone": case "file_changed": case "terminal_started": case "approval_decided": case "history_omitted": case "agent_warning": case "agent_message": case "anchor_question": case "anchor_decided":
       case "mcp_tools_listed": case "skill_shelf_frozen": break;
       default: throw new StoreError(`Unsupported event type: ${e.type}`);
     }
+  }
+
+  // ── Memory ───────────────────────────────────────────────────────────────
+
+  /**
+   * Remember one thing (agent-harness.md, "Memory"). The text is kept on one
+   * line and refused when empty, too long or secret-like. An entry with the
+   * same words in the same place already exists: it is returned, unchanged.
+   * `refs.turn_id` is the turn it was said in.
+   */
+  saveMemory(input: { kind: MemoryKind; goalId: string | null; text: string; by: MemoryAuthor }, refs: EventRefs = {}): { memory: Memory; created: boolean } {
+    const text = memoryText(input.text);
+    return this.transaction(() => {
+      if (input.goalId) this.requireGoal(input.goalId);
+      const same = this.all("SELECT * FROM memories WHERE forgotten_at IS NULL AND goal_id IS ? AND lower(text) = lower(?)", input.goalId, text)[0];
+      if (same) return { memory: toMemory(same), created: false };
+      const number = num(this.get("SELECT COALESCE(MAX(number), 0) + 1 AS next FROM memories")?.next);
+      const event = this.appendEvent("memory_saved", { memory_id: newId("mem"), number, kind: input.kind, goal_id: input.goalId, text, by: input.by }, refs);
+      this.projectMemory(event);
+      return { memory: this.requireMemory(event.payload.memory_id), created: true };
+    });
+  }
+
+  /** Change an entry's words or kind. */
+  editMemory(id: string, change: { text?: string; kind?: MemoryKind }, by: MemoryAuthor, refs: EventRefs = {}): Memory {
+    return this.transaction(() => {
+      const memory = this.requireMemory(id);
+      if (memory.forgottenAt) throw new StoreError(`Memory ${memory.handle} was forgotten.`);
+      const text = change.text === undefined ? memory.text : memoryText(change.text);
+      const kind = change.kind ?? memory.kind;
+      if (text === memory.text && kind === memory.kind) return memory;
+      this.projectMemory(this.appendEvent("memory_edited", { memory_id: id, text, kind, by }, refs));
+      return this.requireMemory(id);
+    });
+  }
+
+  /** Leave an entry out of everything Socrates uses. Forgetting a forgotten one changes nothing. */
+  forgetMemory(id: string, by: MemoryAuthor, refs: EventRefs = {}): Memory {
+    return this.transaction(() => {
+      const memory = this.requireMemory(id);
+      if (memory.forgottenAt) return memory;
+      this.projectMemory(this.appendEvent("memory_forgotten", { memory_id: id, by }, refs));
+      return this.requireMemory(id);
+    });
+  }
+
+  private projectMemory(e: StoredEvent): void {
+    switch (e.type) {
+      case "memory_saved": {
+        const p = e.payload as EventPayloads["memory_saved"];
+        this.run("INSERT INTO memories (id, number, kind, goal_id, text, author, source_turn_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", p.memory_id, p.number, p.kind, p.goal_id, p.text, p.by, e.turn_id, e.at, e.at);
+        break;
+      }
+      case "memory_edited": {
+        const p = e.payload as EventPayloads["memory_edited"];
+        this.run("UPDATE memories SET text = ?, kind = ?, updated_at = ? WHERE id = ?", p.text, p.kind, e.at, p.memory_id);
+        break;
+      }
+      case "memory_forgotten":
+        this.run("UPDATE memories SET forgotten_at = ?, updated_at = ? WHERE id = ?", e.at, e.at, (e.payload as EventPayloads["memory_forgotten"]).memory_id);
+        break;
+    }
+  }
+
+  getMemory(id: string): Memory | null {
+    const r = this.get("SELECT * FROM memories WHERE id = ?", id);
+    return r ? toMemory(r) : null;
+  }
+
+  requireMemory(id: string): Memory {
+    const memory = this.getMemory(id);
+    if (!memory) throw new StoreError(`Unknown memory: ${id}`);
+    return memory;
+  }
+
+  getMemoryByNumber(number: number): Memory | null {
+    const r = this.get("SELECT * FROM memories WHERE number = ?", number);
+    return r ? toMemory(r) : null;
+  }
+
+  /** Every entry, newest first; forgotten ones only when asked. */
+  listMemories(options: { includeForgotten?: boolean } = {}): Memory[] {
+    return this.all(`SELECT * FROM memories${options.includeForgotten ? "" : " WHERE forgotten_at IS NULL"} ORDER BY number DESC`).map(toMemory);
+  }
+
+  /**
+   * The always-on part of memory for work in `goalId` (agent-harness.md,
+   * "Memory"): who the user is and how they want work done, everywhere and in
+   * this goal, newest first while they fit in `maxTokens`. Knowledge entries
+   * are never always on. Returned in the order taken.
+   */
+  profileMemories(goalId: string | null, maxTokens = MEMORY_PROFILE_MAX_TOKENS): Memory[] {
+    const rows = this.all("SELECT * FROM memories WHERE forgotten_at IS NULL AND kind IN ('about', 'preference') AND (goal_id IS NULL OR goal_id IS ?) ORDER BY number DESC", goalId).map(toMemory);
+    const taken: Memory[] = [];
+    let used = 0;
+    for (const memory of rows) {
+      // As `<MEMORY>` shows it: "- text [mN]".
+      const cost = countTokens(`- ${memory.text} [${memory.handle}]`) + 1;
+      if (used + cost > maxTokens) continue;
+      taken.push(memory);
+      used += cost;
+    }
+    return taken;
   }
 
   // ── Workspaces ───────────────────────────────────────────────────────────

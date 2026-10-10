@@ -49,6 +49,9 @@ export type Profile = z.infer<typeof Profile>;
 /** A change to the profile: only the fields sent (a default here would reset the others). */
 const ProfilePatch = z.object({ name: Profile.shape.name.unwrap().nullable().optional(), onboarded: z.boolean().optional() }).strict();
 
+/** Memory's two switches (agent-harness.md, "Memory"): save new memories from what the user says, and show memories to the agent. */
+export const MemorySwitches = z.object({ save: z.boolean(), use: z.boolean() }).strict();
+
 /** What a model costs, in US dollars per million tokens; where cache prices are null, input tokens' price applies. */
 export const PriceSetting = z.object({
   input: z.number().min(0).max(100_000),
@@ -70,6 +73,7 @@ export type PriceSetting = z.infer<typeof PriceSetting>;
  * - workingFolder: the workspace new work is bound to, or null; choosing it adds its folder to `access`;
  * - access: where Socrates may work and when it asks; by default only the user's folders, asking first;
  * - profile: the user's name and whether onboarding is done;
+ * - memory: whether Socrates saves new memories and whether it uses them; both on by default;
  * - prices: what a model costs, by its id ("deepseek:deepseek-flash"), over the list prices Socrates looks up.
  */
 export const Settings = z.object({
@@ -89,12 +93,13 @@ export const Settings = z.object({
   workingFolder: z.string().min(1).nullable().default(null),
   access: Access.default({ scope: "folders", folders: [], approvals: "ask" }),
   profile: Profile.default({ name: null, onboarded: false }),
+  memory: MemorySwitches.default({ save: true, use: true }),
   prices: z.record(z.string().min(1).max(250), PriceSetting).default({}),
 }).strict();
 export type Settings = z.infer<typeof Settings>;
 
-/** What PUT /api/settings accepts: any subset of the settings, and of `access` and `profile`. */
-export const SettingsPatch = Settings.partial().extend({ access: Access.partial().strict().optional(), profile: ProfilePatch.optional() }).strict();
+/** What PUT /api/settings accepts: any subset of the settings, and of `access`, `profile` and `memory`. */
+export const SettingsPatch = Settings.partial().extend({ access: Access.partial().strict().optional(), profile: ProfilePatch.optional(), memory: MemorySwitches.partial().strict().optional() }).strict();
 
 export function loadSettings(file: string): Settings {
   if (!existsSync(file)) return Settings.parse({});

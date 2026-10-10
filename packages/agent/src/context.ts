@@ -6,6 +6,7 @@ import type { Goal, LedgerStore, Task, Turn } from "@socrates/store";
 import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
 import { attachmentLines, requestAttachments, requestText } from "./attachments";
 import { clarificationLine, historyParts, taskHistory } from "./history";
+import { type MemorySettings, memoryBlock } from "./memory";
 import { projectContext } from "./project-context";
 import { retrievedHistory } from "./retrieval";
 
@@ -30,6 +31,8 @@ export interface ContextInput {
   lanes?: string | null;
   /** The user's name as they gave it in onboarding, or null; it opens the first part, which stays the same from turn to turn. */
   user?: string | null;
+  /** The user's memory switches; without them, memory is neither shown nor mentioned. */
+  memory?: MemorySettings | null;
   /** Where tools may work and when they ask, as of the turn's start; null for the workspace boundary. */
   access?: AccessPolicy | null;
   /** The goal's workspace, whose anchors and files fill `<PROJECT_CONTEXT>`. */
@@ -56,7 +59,7 @@ export function assembleContext(input: ContextInput): TextPart[] {
   const goal = store.requireGoal(turn.goalId!);
   const task = store.requireTask(turn.taskId!);
 
-  const parts: TextPart[] = [{ text: `${[userBlock(input.user), goalBlock(store, goal), input.shelf ?? null, activeCapabilities(input.capabilities)].filter(Boolean).join("\n\n")}\n\n` }];
+  const parts: TextPart[] = [{ text: `${[userBlock(input.user), input.memory ? memoryBlock(store, goal, input.memory) : null, goalBlock(store, goal), input.shelf ?? null, activeCapabilities(input.capabilities)].filter(Boolean).join("\n\n")}\n\n` }];
   const budgets = input.budgets ?? DEFAULT_BUDGETS;
   const history = taskHistory(store, turn.id);
   parts.push(...historyParts(store, history, budgets.previousTurn));

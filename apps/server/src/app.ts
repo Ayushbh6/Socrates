@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
-import type { EventPayloads } from "@socrates/contracts";
+import { type EventPayloads, type EventRefs, MEMORY_KINDS } from "@socrates/contracts";
 import { PROVIDER_DEFAULTS } from "@socrates/providers";
 import { callLine } from "@socrates/retrieval";
 import { IMAGE_MAX_BYTES } from "@socrates/tools";
@@ -17,7 +17,8 @@ import { CALL_RETENTION_DAYS, type Runtime, RuntimeBusyError, SettingsError } fr
 import * as observe from "./observe";
 import { DbError, browse, isDb, overview, row as dbRow } from "./dbview";
 import { guard, problem, sameSecret, sessionCookie } from "./security";
-import { FolderError, archivedView, conversationHistory, goalsView, listFolders, workspaceFolder, workspaceFor } from "./views";
+import { StoreError } from "@socrates/store";
+import { FolderError, archivedView, conversationHistory, goalsView, listFolders, memoriesView, workspaceFolder, workspaceFor } from "./views";
 
 export interface ServerOptions {
   runtime: Runtime;
@@ -222,6 +223,48 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
     return { ok: true };
   });
   app.get("/api/archived", async () => archivedView(runtime.store));
+
+  // Memory (agent-harness.md, "Memory"): the Memory page lists, adds, edits and forgets what Socrates remembers.
+  const MemoryParams = z.object({ number: z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER) });
+  const remembered = (params: unknown) => {
+    const memory = runtime.store.getMemoryByNumber(MemoryParams.parse(params).number);
+    return memory && !memory.forgottenAt ? memory : null;
+  };
+  // A change from the page is recorded on the turn the entry was said in, so that exchange shows it.
+  const sourceRefs = (turnId: string | null): EventRefs => {
+    const turn = turnId ? runtime.store.getTurn(turnId) : null;
+    return turn ? { goal_id: turn.goalId, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id } : {};
+  };
+  const refused = (reply: { code(n: number): { send(b: unknown): unknown } }, error: unknown) => {
+    if (error instanceof StoreError) return reply.code(400).send(problem("invalid_request", error.message));
+    throw error;
+  };
+  const noMemory = (reply: { code(n: number): { send(b: unknown): unknown } }) => reply.code(404).send(problem("not_found", "That memory no longer exists."));
+  app.get("/api/memories", async () => memoriesView(runtime.store));
+  app.post("/api/memories", async (request, reply) => {
+    const body = z.object({ text: z.string().max(2000), kind: z.enum(MEMORY_KINDS), goal: z.number().int().positive().nullable().default(null) }).strict().parse(request.body);
+    const goal = body.goal === null ? null : runtime.store.getGoalByNumber(body.goal);
+    if (body.goal !== null && (!goal || goal.general)) return reply.code(404).send(problem("not_found", "That goal no longer exists."));
+    try {
+      const { memory } = runtime.store.saveMemory({ kind: body.kind, goalId: goal?.id ?? null, text: body.text, by: "user" });
+      return memoriesView(runtime.store).find((m) => m.number === memory.number);
+    } catch (error) { return refused(reply, error); }
+  });
+  app.patch("/api/memories/:number", async (request, reply) => {
+    const memory = remembered(request.params);
+    if (!memory) return noMemory(reply);
+    const change = z.object({ text: z.string().max(2000).optional(), kind: z.enum(MEMORY_KINDS).optional() }).strict().parse(request.body);
+    try {
+      runtime.store.editMemory(memory.id, change, "user", sourceRefs(memory.sourceTurnId));
+      return memoriesView(runtime.store).find((m) => m.number === memory.number);
+    } catch (error) { return refused(reply, error); }
+  });
+  app.delete("/api/memories/:number", async (request, reply) => {
+    const memory = remembered(request.params);
+    if (!memory) return noMemory(reply);
+    runtime.store.forgetMemory(memory.id, "user", sourceRefs(memory.sourceTurnId));
+    return reply.code(204).send();
+  });
 
   app.get("/api/history", async (request, reply) => {
     const query = History.parse(request.query);

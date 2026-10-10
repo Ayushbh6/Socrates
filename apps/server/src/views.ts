@@ -1,11 +1,11 @@
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import type { EventPayloads } from "@socrates/contracts";
+import type { EventPayloads, MemoryAuthor, MemoryKind } from "@socrates/contracts";
 import { callLine } from "@socrates/retrieval";
 import type { LedgerStore, Task, Turn, Workspace } from "@socrates/store";
 import { assertSeparateFromClassic } from "./config";
-import { type Activity, activityOf } from "./activity";
+import { type Activity, type Place, activityOf, placeOf } from "./activity";
 import { type AttachmentView, viewOf } from "./attachments";
 
 /** Turns per history page; a message's compound parts always stay on one page. */
@@ -70,7 +70,7 @@ export function conversationHistory(store: LedgerStore, laneId: string | null, b
         .sort((a, b) => a.seq - b.seq)
         .flatMap((event) => {
           const a = activityOf(store, event);
-          return a && ["routed", "redone", "step", "tool_started", "tool_finished", "warning", "approval_decided"].includes(a.kind) ? [a] : [];
+          return a && ["routed", "redone", "step", "tool_started", "tool_finished", "warning", "approval_decided", "memory"].includes(a.kind) ? [a] : [];
         }),
       id: event.id,
       seq: event.seq,
@@ -198,4 +198,46 @@ export function archivedView(store: LedgerStore) {
     goals: goals.map((g) => ({ number: g.number, title: g.title, archivedAt: g.archivedAt!, chats: store.listTasks(g.id, { includeArchived: true }).length })),
     tasks: tasks.map(({ task, goal }) => ({ goal: { number: goal.number, title: goal.title }, number: task.number, title: task.title, archivedAt: task.archivedAt! })),
   };
+}
+
+/** One memory as the Memory page shows it (architecture/server.md, "Memory"). */
+export interface MemoryView {
+  number: number;
+  handle: string;
+  kind: MemoryKind;
+  text: string;
+  by: MemoryAuthor;
+  /** Null: it applies everywhere. */
+  goal: { number: number; title: string } | null;
+  /** Where it was said, or null for one added on the page. */
+  source: (Place & { at: string }) | null;
+  createdAt: string;
+  updatedAt: string;
+  /** Shown to the agent in every request (in its goal, for a goal's own), within the 500-token budget. */
+  alwaysOn: boolean;
+}
+
+/** Every memory, newest first. */
+export function memoriesView(store: LedgerStore): MemoryView[] {
+  const memories = store.listMemories();
+  const always = new Set(store.profileMemories(null).map((m) => m.id));
+  for (const goalId of new Set(memories.flatMap((m) => (m.goalId ? [m.goalId] : [])))) {
+    for (const m of store.profileMemories(goalId)) if (m.goalId) always.add(m.id);
+  }
+  return memories.map((m) => {
+    const goal = m.goalId ? store.requireGoal(m.goalId) : null;
+    const place = m.sourceTurnId ? placeOf(store, m.sourceTurnId) : null;
+    return {
+      number: m.number,
+      handle: m.handle,
+      kind: m.kind,
+      text: m.text,
+      by: m.by,
+      goal: goal ? { number: goal.number, title: goal.title } : null,
+      source: place ? { ...place, at: store.requireTurn(m.sourceTurnId!).createdAt } : null,
+      createdAt: m.createdAt,
+      updatedAt: m.updatedAt,
+      alwaysOn: always.has(m.id),
+    };
+  });
 }

@@ -18,6 +18,7 @@ import { AGENT_SYSTEM_PROMPT } from "./prompt";
 import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
 import { createCompactor } from "./compaction";
 import { applyAnchors, type AnchorDecision, type AnchorChange } from "./anchors";
+import { MEMORY_ON, type MemoryChange, type MemorySettings, applyMemory } from "./memory";
 export { MAX_GOAL_ANCHORS } from "./anchors";
 
 export interface SocratesOptions {
@@ -63,6 +64,8 @@ export interface SocratesOptions {
   access?: () => AccessPolicy | null;
   /** The user's profile, read when a message starts, so a name given or changed in the middle of a chat counts from the next message. */
   profile?: () => { name: string | null };
+  /** The user's memory switches, read when a turn starts and when it ends (agent-harness.md, "Memory"); both on without it. */
+  memory?: () => MemorySettings;
   maxOutputTokens?: number;
   retryDelaysMs?: number[];
   /** Wall clock in milliseconds, for the per-turn time limit. */
@@ -147,6 +150,8 @@ export interface PartResult {
   toolCalls: number;
   /** Quiet, reversible anchor notifications for the application. */
   anchorChanges?: AnchorChange[];
+  /** What the turn's answer saved to or forgot from memory. */
+  memoryChanges?: MemoryChange[];
 }
 
 /** Outside-folder grants last for this whole message, including its compound parts. */
@@ -667,6 +672,8 @@ export class Socrates {
     // Rebuilt from the current active set each time, so compaction mid-turn keeps a Skill activated earlier in the turn.
     // The main conversation sees what its lanes are doing, as of the start of this turn.
     const lanes = turn.laneId ? null : lanesBlock(store, this.laneViews(), store.clock.now(), this.options.timeZone);
+    // Read once, so a compaction mid-turn keeps the same first part.
+    const memorySettings = this.options.memory?.() ?? MEMORY_ON;
     const assemble = (previousTurn?: number) =>
       assembleContext({
         store,
@@ -681,6 +688,7 @@ export class Socrates {
         lanes,
         access: this.options.access?.() ?? null,
         user: this.options.profile?.().name ?? null,
+        memory: memorySettings,
         vision,
         now: store.clock.now(),
         timeZone: this.options.timeZone,
@@ -789,7 +797,9 @@ export class Socrates {
       ...(!task.general && answer.task_complete && !CHAT_ROUTES.has(store.turnRoute(turn.id) ?? "") ? { taskComplete: true, taskCompleteReason: answer.task_complete.reason } : {}),
       stop: outcome.stop,
     });
-    return { ...result("completed", outcome.stop, visible), anchorChanges: anchors.changes };
+    // Saved with the answer, so the agent may say it will remember.
+    const memory = applyMemory({ store, goal, refs, proposal: answer.memory, settings: this.options.memory?.() ?? MEMORY_ON });
+    return { ...result("completed", outcome.stop, visible), anchorChanges: anchors.changes, memoryChanges: memory };
   }
 
   /** A part that never ran because an earlier part was interrupted or the message was cancelled. */

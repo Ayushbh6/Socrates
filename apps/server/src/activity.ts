@@ -1,4 +1,4 @@
-import type { EventPayloads, StoredEvent } from "@socrates/contracts";
+import type { EventPayloads, MemoryKind, StoredEvent } from "@socrates/contracts";
 import { callLine } from "@socrates/retrieval";
 import type { LedgerStore } from "@socrates/store";
 import { type AttachmentView, viewOf } from "./attachments";
@@ -15,6 +15,8 @@ export type ActivityBody =
   | { kind: "routed"; turnId: string; messageSeq: number | null; projectTurn: number; goal: { number: number; title: string }; task: { number: number; title: string }; /** Which chat of the task, from 1. */ chat: number; lane: number | null; /** For a redo: where the question was first asked. */ redoneFrom?: Place }
   /** The turn's question was asked again in another task (`to`); the turn is set aside. */
   | { kind: "redone"; turnId: string; to: Place }
+  /** Memory changed in this turn: saved by its answer, or changed later from the Memory page (on the entry's source turn). */
+  | { kind: "memory"; turnId: string; change: "saved" | "edited" | "forgotten"; memory: { handle: string; number: number; text: string; kind: MemoryKind; everywhere: boolean } }
   | { kind: "question"; turnId: string; text: string }
   /** `text`: narration before tool calls, or "" when the step only thought; `thinking`: the model's readable thinking, or null. */
   | { kind: "step"; turnId: string; text: string; thinking: string | null; thinkingTruncated: boolean }
@@ -37,7 +39,7 @@ export interface Place {
   chat: number;
 }
 
-function placeOf(store: LedgerStore, turnId: string): Place | null {
+export function placeOf(store: LedgerStore, turnId: string): Place | null {
   const turn = store.getTurn(turnId);
   if (!turn?.goalId || !turn.taskId) return null;
   const goal = store.requireGoal(turn.goalId);
@@ -79,6 +81,15 @@ export function activityOf(store: LedgerStore, event: StoredEvent): Activity | n
     case "turn_redone": {
       const to = placeOf(store, (event.payload as EventPayloads["turn_redone"]).redo_turn_id);
       return turn && to ? { ...base, kind: "redone", turnId: turn.id, to } : null;
+    }
+    case "memory_saved":
+    case "memory_edited":
+    case "memory_forgotten": {
+      const p = event.payload as EventPayloads["memory_forgotten"] & Partial<EventPayloads["memory_edited"]>;
+      const memory = store.getMemory(p.memory_id);
+      if (!turn || !memory) return null;
+      const change = event.type === "memory_saved" ? "saved" : event.type === "memory_edited" ? "edited" : "forgotten";
+      return { ...base, kind: "memory", turnId: turn.id, change, memory: { handle: memory.handle, number: memory.number, text: p.text ?? memory.text, kind: p.kind ?? memory.kind, everywhere: !memory.goalId } };
     }
     case "agent_message": {
       const p = event.payload as EventPayloads["agent_message"];

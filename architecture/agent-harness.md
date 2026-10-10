@@ -959,10 +959,19 @@ Blocks are ordered from most stable to most volatile, so that the provider promp
 system prompt · fixed behavioral rules · the ten permanent tool schemas
 (dynamically activated MCP tool schemas are appended after the permanent ones)
 
-[GOAL-STABLE — changes only when the user's name, the goal, its anchors, or its active set change]
+[GOAL-STABLE — changes only when the user's name, memory, the goal, its anchors, or its active set change]
 <USER>
 The user's name is Ada.
 </USER>
+
+<MEMORY>
+About the user:
+- Lives in Berlin (CET). [m2]
+How they like to work:
+- Prefers pnpm over npm. [m1]
+In this goal only:
+- Uses tabs in this repository. [m4]
+</MEMORY>
 
 <GOAL>
 title: Socrates memory system
@@ -1082,6 +1091,18 @@ Rules:
 - A redo (see "Redo in another task") receives `<REDONE_FROM>` after it: facts about the first attempt, never its answer.
 - `<CURRENT_USER_MESSAGE>` holds the user's original message exactly. When the router asked a clarification first, one line after it records the question and the user's answer. In a compound part it still holds the whole message, and `<CURRENT_TASK>` names the part this run handles (`this_turn: part 2 of 2 …`).
 - `<PROJECT_CONTEXT>` (at most `3,000` tokens) shows every active and provisional anchor of the goal: one under `1,500` tokens whole, a larger one as an outline of its headings with their line numbers, followed by at most `3` of its sections. Sections are chosen by fusing a keyword ranking with a meaning ranking; both read the message together with the current task's title and continuation note, because a request such as "let's start today's lesson" names no day while the note "Day 9 completed" does. At most `2` sections of other workspace files follow, on a `strong` meaning match against the current request alone (without the task title or continuation note), labelled `related file`. Text is always read from disk when the context is assembled; the index only picks sections, and a vector of content that has changed since it was indexed selects nothing. A missing anchor is reported in one line, and an anchor that may hold credentials (the same patterns the index skips) is named but never shown. Without a workspace, or with nothing to show, the block is omitted.
+
+## Memory
+
+The ledger remembers the work; memory remembers **the user**, across goals: who they are, how they like to work, and decisions or facts for later. It is the first phase (M1) of the design in `docs/memory.md`; finding entries by meaning (M2) and the cheap gates and curator (M3) come later.
+
+**Entries.** One sentence each, at most `280` characters, kept on one line, with a permanent handle (`m4`), a `kind` (`about`: who they are; `preference`: how they want work done; `knowledge`: a decision or fact for later), and a place: everywhere, or one goal only. Each records who wrote it (the agent or the user) and the turn it was said in. Text that looks like a credential (provider keys and tokens, private keys, JWTs, "password: …", any long run of letters and digits) is refused. The same words in the same place are kept once. Entries live in the event log (`memory_saved`, `memory_edited`, `memory_forgotten`) with a `memories` projection rebuilt from it; forgetting leaves an entry out of everything Socrates uses, while the conversation it came from stays in history like every conversation.
+
+**`<MEMORY>`, always on.** In the goal-stable part of every request, right after `<USER>`: the `about` and `preference` entries that apply everywhere and those of the current goal, newest first while they fit in `500` tokens, grouped as "About the user", "How they like to work" and "In this goal only", each with its handle. It changes only when memory does, so the cached prefix survives; the user's switches are read once per turn, so a compaction mid-turn keeps the same first part. `knowledge` entries are kept but not shown yet: from M2 they are found when a message bears on them. The system prompt says what the block is and that it never overrides `<ACCESS>` or the current message.
+
+**Writing.** The final answer may carry `memory: {save, forget}` (at most `3` saves and `10` forgets), only when the user asked to remember or forget something, stated a lasting fact about themselves or a standing preference, or corrected how the agent works; never from files, tool output or web pages, and never secrets. Models propose, the harness disposes: it is applied in the same transaction as the answer, so the agent may say it will remember. A refused save, an unknown handle, or a handle of another goal's entry becomes a `memory_rejected` warning on the turn and the rest still applies. "goal" scope in the general conversation means everywhere. Each change is shown under the answer ("Remembered: …" with Undo, "Forgot: …"; `web.md`, "Memory").
+
+**The user's switches** (`server.md`, "Settings"): *save new memories* and *use memories*, both on by default, applied from the next turn without a restart. With saving off, saves are dropped (forgetting still works) and `<MEMORY>` says so, so the agent does not promise to remember; with using off, no entries are shown.
 
 ## Redo in another task
 
@@ -1492,6 +1513,10 @@ const FinalAnswer = z.object({
   goal_note: z.string().nullable(),           // ~150 tokens; null when the goal's durable state did not change
   task_complete: z.object({ reason: z.string() }).nullable(), // null while the task continues
   anchors: z.array(z.object({ path: z.string(), role: z.string(), reason: z.string() })),
+  memory: z.object({                          // optional; most turns leave it out ("Memory")
+    save: z.array(z.object({ text: z.string(), kind: z.enum(["about", "preference", "knowledge"]), scope: z.enum(["user", "goal"]) })),
+    forget: z.array(z.string()),              // handles such as "m4"
+  }).nullable().optional(),
 })
 ```
 
@@ -1588,7 +1613,7 @@ Further rules:
 - Keep full Skill instructions out of the prompt until activated.
 - Preserve provider prompt-cache handles when the API supports them, without making the core depend on them.
 - Breakpoints are marked in the normalized request and placed at four points, the most explicit-breakpoint providers accept: after the system prompt and tools, after the last Q&A-only turn, after turn N−1, and on the newest message (rolling, so every step reuses everything before it). Each completed turn is its own part, so a provider's prefix lookback also lands on turn boundaries. Providers that cache prefixes automatically ignore the markers; the byte-stability of everything before the in-flight turn is what makes their caches hit.
-- How well this works is measured on every call, not assumed: the provider's cache-read tokens are recorded with each request, the inspect page shows the hit rate per call, question and day, and `pnpm eval:cache` fails when a real model's later steps fall under a floor (`observability.md`). The system prompt and the ten tool definitions are about 5,400 tokens of every request (2,000 and 3,400), which is why they are the first thing in the prefix, and why they are kept lean: each rule is said once, in the tool description when it is about a tool, and a parameter's description gives only what the tool's does not. Validation-only limits (string lengths, unknown fields) are enforced by the runner and never sent to the model, and an action-based tool lists each action's fields once at the top of its schema. A test fails if the system prompt passes `2,100` tokens or the tool definitions `3,500`.
+- How well this works is measured on every call, not assumed: the provider's cache-read tokens are recorded with each request, the inspect page shows the hit rate per call, question and day, and `pnpm eval:cache` fails when a real model's later steps fall under a floor (`observability.md`). The system prompt and the ten tool definitions are about 5,600 tokens of every request (2,200 and 3,400), which is why they are the first thing in the prefix, and why they are kept lean: each rule is said once, in the tool description when it is about a tool, and a parameter's description gives only what the tool's does not. Validation-only limits (string lengths, unknown fields) are enforced by the runner and never sent to the model, and an action-based tool lists each action's fields once at the top of its schema. A test fails if the system prompt passes `2,250` tokens (raised from `2,100` for memory, about 185 tokens) or the tool definitions `3,500`.
 - Compaction replaces content only in the dynamic suffix, never in the stable prefix. A history checkpoint, once written, is frozen text: it does not change between steps of the same turn, so the post-compaction prompt remains cache-stable from that point forward.
 
 ## Embeddings and hybrid retrieval

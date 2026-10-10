@@ -72,9 +72,21 @@ export interface Exchange {
   redoneTo: Place | null;
   /** For a redo: where its question was first asked. */
   redoneFrom: Place | null;
+  /** What its answer saved to or forgot from memory, and whether a saved one was undone since. */
+  memories: MemoryNote[];
   turns: string[];
   /** Turns still working. */
   open: string[];
+}
+
+/** One memory change shown under an answer: "Remembered: …" (with Undo), or "Forgot: …". */
+export interface MemoryNote {
+  number: number;
+  text: string;
+  /** Saved by this answer. */
+  saved: boolean;
+  /** Forgotten: by this answer, or undone since. */
+  forgotten: boolean;
 }
 
 export interface Model {
@@ -190,7 +202,7 @@ function activity(model: Model, a: Activity | DraftArrived): Model {
   if (index < 0 && a.kind === "routed" && a.messageSeq != null) index = list.findIndex((e) => e.seq === a.messageSeq);
   let next = list;
   // A draft, or a redo of a question not loaded here, has nothing to join.
-  if ((a.kind === "draft" || a.kind === "redone") && index < 0) return model;
+  if ((a.kind === "draft" || a.kind === "redone" || a.kind === "memory") && index < 0) return model;
   if (index < 0) {
     index = list.findLastIndex((e) => e.state !== "sending");
     const last = list[index];
@@ -271,6 +283,13 @@ function applyOne(e: Exchange, a: Activity | DraftArrived): Exchange {
       return { ...x, route: x.route ?? { goal: a.goal, task: a.task, chat: a.chat }, redoneFrom: x.redoneFrom ?? a.redoneFrom ?? null, lastAt: a.at };
     case "redone":
       return { ...e, redoneTo: a.to };
+    case "memory": {
+      // Changes made later on the Memory page arrive on the turn the memory was said in.
+      const known = e.memories.find((m) => m.number === a.memory.number);
+      const note = { number: a.memory.number, text: a.memory.text, saved: (known?.saved ?? false) || a.change === "saved", forgotten: (known?.forgotten ?? false) || a.change === "forgotten" };
+      if (!known && a.change === "edited") return e;
+      return { ...e, memories: known ? e.memories.map((m) => (m === known ? note : m)) : [...e.memories, note] };
+    }
     case "question":
       return { ...x, question: a.text, state: "done", open: x.open.filter((t) => t !== a.turnId) };
     case "step": {
@@ -345,7 +364,7 @@ export function fromHistory(item: HistoryItem, conversation: string): Exchange {
 }
 
 function blank(e: Partial<Exchange> & Pick<Exchange, "key" | "conversation" | "at" | "message">): Exchange {
-  return { seq: null, attachments: [], route: null, steps: [], answers: [], draft: null, thinking: null, workedAt: null, lastAt: null, outputs: {}, draftCalls: {}, throughSeq: 0, question: null, state: "working", note: null, sendId: null, redoneTo: null, redoneFrom: null, turns: [], open: [], ...e };
+  return { seq: null, attachments: [], route: null, steps: [], answers: [], draft: null, thinking: null, workedAt: null, lastAt: null, outputs: {}, draftCalls: {}, throughSeq: 0, question: null, state: "working", note: null, sendId: null, redoneTo: null, redoneFrom: null, memories: [], turns: [], open: [], ...e };
 }
 
 function bySeq(a: Exchange, b: Exchange): number {

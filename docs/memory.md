@@ -1,6 +1,6 @@
 # Memory and personalisation (design, for approval)
 
-Status: proposed 2026-10-10. Not built. When a phase is, `architecture/` describes it and that part of this file goes.
+Status: approved 2026-10-10 (the gate on by default when an OpenRouter key exists; saving without asking, with Undo). **M1 is built**: `architecture/agent-harness.md`, "Memory", `server.md` and `web.md` describe it as built. M2 and M3 below are still the plan.
 
 ## The problem
 

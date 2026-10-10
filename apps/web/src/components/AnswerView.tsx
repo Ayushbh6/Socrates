@@ -1,7 +1,7 @@
-import { ChevronRight } from "lucide-react";
+import { BookmarkCheck, BookmarkX, ChevronRight } from "lucide-react";
 import { motion } from "motion/react";
 import { useState } from "react";
-import type { Exchange } from "../lib/model";
+import type { Exchange, MemoryNote } from "../lib/model";
 import { store, useApp } from "../lib/store";
 import type { GoalView, PendingApproval, Place } from "../lib/types";
 import { Prose } from "./Prose";
@@ -55,9 +55,31 @@ function Answer({ exchange, approvals }: { exchange: Exchange; approvals: Pendin
       {approvals.map((a) => <ApprovalCard key={a.id} approval={a} />)}
       {exchange.question && <Prose text={exchange.question} animate={false} writing={false} />}
       {prose.map((p, i) => <Prose key={i} text={p.text} animate={live} writing={p.writing} />)}
+      <MemoryNotes notes={exchange.memories} />
       {exchange.state === "failed" && <p className="answer-note failed">{exchange.note ?? "This message could not be sent."}</p>}
       {exchange.state === "stopped" && <p className="answer-note">{exchange.note ?? "Stopped."}</p>}
     </div>
+  );
+}
+
+/**
+ * What the answer saved to or forgot from memory (architecture/web.md,
+ * "Memory"): "Remembered: …" with Undo, saved without asking so the
+ * conversation flows; "Forgot: …" when the user asked to forget.
+ */
+function MemoryNotes({ notes }: { notes: MemoryNote[] }) {
+  if (!notes.length) return null;
+  return (
+    <ul className="memory-notes" aria-label="Memory">
+      {notes.map((n) => (
+        <li key={n.number} data-undone={n.saved && n.forgotten}>
+          {n.saved && !n.forgotten ? <BookmarkCheck aria-hidden /> : <BookmarkX aria-hidden />}
+          <span className="memory-note-verb">{!n.saved ? "Forgot" : n.forgotten ? "Undone" : "Remembered"}</span>
+          <span className="memory-note-text">{n.text}</span>
+          {n.saved && !n.forgotten && <button type="button" className="memory-undo" onClick={() => void store.forgetMemory(n.number)}>Undo</button>}
+        </li>
+      ))}
+    </ul>
   );
 }
 

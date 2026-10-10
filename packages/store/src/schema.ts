@@ -20,8 +20,11 @@
  *   capsules under their task-scoped handles `hc-N`.
  * - `lanes` are the parallel lanes; a turn's `lane_id` is the lane it ran in,
  *   null for the main conversation.
+ * - `memories` holds what Socrates remembers about the user (agent-harness.md,
+ *   "Memory"), numbered as permanent handles `mN`; a forgotten entry keeps its
+ *   row with `forgotten_at` set.
  */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 /**
  * In-place upgrades from older schema versions, keyed by the version they
@@ -42,6 +45,8 @@ ALTER TABLE task_revisions ADD COLUMN completion_criteria TEXT;
   4: "ALTER TABLE turns ADD COLUMN lane_id TEXT;",
   // Version 6 adds archiving: a goal or task with a time here is hidden everywhere but the archive.
   5: "ALTER TABLE goals ADD COLUMN archived_at TEXT; ALTER TABLE tasks ADD COLUMN archived_at TEXT;",
+  // Version 7 adds memories, created by SCHEMA_SQL.
+  6: "",
 };
 
 export const SCHEMA_SQL = `
@@ -257,6 +262,19 @@ CREATE TABLE IF NOT EXISTS active_capabilities (
   digest       TEXT NOT NULL,
   activated_at TEXT NOT NULL,
   PRIMARY KEY (goal_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS memories (
+  id             TEXT PRIMARY KEY,
+  number         INTEGER NOT NULL UNIQUE,
+  kind           TEXT NOT NULL CHECK (kind IN ('about', 'preference', 'knowledge')),
+  goal_id        TEXT REFERENCES goals(id),
+  text           TEXT NOT NULL,
+  author         TEXT NOT NULL,
+  source_turn_id TEXT,
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL,
+  forgotten_at   TEXT
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS exchange_fts USING fts5(

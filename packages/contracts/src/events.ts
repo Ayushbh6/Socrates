@@ -1,3 +1,4 @@
+import type { MemoryKind } from "./agent";
 import type { JsonSchema, ModelResponse } from "./model";
 
 /**
@@ -112,7 +113,7 @@ export interface EventPayloads {
    */
   turn_interrupted: { project_turn: number; reason: "cancelled" | "failed" | "restarted"; tool_calls: number; continuation_note: string; partial_answer?: string };
   /** An operational warning about one turn, such as a rejected final answer or anchor proposal. */
-  agent_warning: { kind: "final_answer_invalid" | "anchor_rejected" | "model_error" | "agent_error" | "context_limit" | "compactor_failed" | "compaction_failsafe"; detail: string };
+  agent_warning: { kind: "final_answer_invalid" | "anchor_rejected" | "memory_rejected" | "model_error" | "agent_error" | "context_limit" | "compactor_failed" | "compaction_failsafe"; detail: string };
   /**
    * One working-agent tool call, exactly as the model emitted it. `handle` is
    * the call's permanent evidence handle within its task ("e12").
@@ -151,11 +152,25 @@ export interface EventPayloads {
   capability_deactivated: { kind: "skill" | "mcp"; name: string };
   /** A configured MCP server's tools/list, recorded whenever it differs from the server's previous snapshot. */
   mcp_tools_listed: { server: string; digest: string; tools: McpToolSnapshot[] };
+  /**
+   * Memory (agent-harness.md, "Memory"). `number` is the entry's permanent
+   * handle (m4); `goal_id` is null for an entry that applies everywhere, else
+   * the one goal it belongs to. The event's turn is where it was said: the
+   * source turn for a save, the turn that asked for a change, or for a change
+   * made on the Memory page, the entry's source turn.
+   */
+  memory_saved: { memory_id: string; number: number; kind: MemoryKind; goal_id: string | null; text: string; by: MemoryAuthor };
+  memory_edited: { memory_id: string; text: string; kind: MemoryKind; by: MemoryAuthor };
+  /** Left out of everything Socrates uses; the conversation it came from stays in history. */
+  memory_forgotten: { memory_id: string; by: MemoryAuthor };
   /** The goal's Skill shelf, resolved once and frozen so ordinary turns stay cache-stable. */
   skill_shelf_frozen: { skills: { name: string; description: string }[] };
 }
 
 export type EventType = keyof EventPayloads;
+
+/** Who wrote a memory change: the agent, from what the user said, or the user on the Memory page. */
+export type MemoryAuthor = "agent" | "user";
 
 /** An image the user attached to a message (agent-harness.md, "Images"). */
 export interface Attachment {

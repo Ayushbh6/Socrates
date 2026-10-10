@@ -89,6 +89,8 @@ export interface Settings {
   workingFolder: string | null;
   access: Access;
   profile: Profile;
+  /** Memory's switches: save new memories, and show memories to Socrates. */
+  memory: { save: boolean; use: boolean };
   /** What a model costs, in US dollars per million tokens, by model id; over the list prices Socrates looks up. */
   prices: Record<string, { input: number; cachedInput: number | null; cacheWrite: number | null; output: number }>;
 }
@@ -227,6 +229,8 @@ export type ActivityBody =
   | { kind: "routed"; turnId: string; messageSeq?: number | null; projectTurn: number; goal: { number: number; title: string }; task: { number: number; title: string }; chat?: number; lane: number | null; redoneFrom?: Place }
   /** The turn's question was asked again in another task; the turn is set aside. */
   | { kind: "redone"; turnId: string; to: Place }
+  /** Memory changed in this turn: saved by its answer, or changed later on the Memory page. */
+  | { kind: "memory"; turnId: string; change: "saved" | "edited" | "forgotten"; memory: { handle: string; number: number; text: string; kind: MemoryKind; everywhere: boolean } }
   | { kind: "question"; turnId: string; text: string }
   | { kind: "step"; turnId: string; text: string; thinking?: string | null; thinkingTruncated?: boolean }
   | { kind: "tool_started"; turnId: string; task: string; handle: string; line: string; call: CallView }
@@ -328,3 +332,23 @@ export type Command =
 export const MAX_RUNNING_LANES = 4;
 /** Standard-mode chats that may run at once; another waits in the queue. */
 export const MAX_RUNNING_CHATS = 4;
+
+/** about: who the user is; preference: how they want work done; knowledge: a decision or fact for later. */
+export type MemoryKind = "about" | "preference" | "knowledge";
+
+/** One memory as the Memory page shows it. */
+export interface MemoryView {
+  number: number;
+  handle: string;
+  kind: MemoryKind;
+  text: string;
+  by: "agent" | "user";
+  /** Null: it applies everywhere. */
+  goal: { number: number; title: string } | null;
+  /** Where it was said, or null for one added on the page. */
+  source: (Place & { at: string }) | null;
+  createdAt: string;
+  updatedAt: string;
+  /** Shown to Socrates in every request (in its goal, for a goal's own). */
+  alwaysOn: boolean;
+}

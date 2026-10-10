@@ -18,6 +18,30 @@ export const AnchorProposal = z.strictObject({
 });
 export type AnchorProposal = z.infer<typeof AnchorProposal>;
 
+/** Memory (agent-harness.md, "Memory"): an entry is one short sentence. */
+export const MEMORY_TEXT_MAX_CHARS = 280;
+export const MAX_MEMORY_SAVES = 3;
+export const MAX_MEMORY_FORGETS = 10;
+/** The always-on part of memory, `<MEMORY>`, holds at most this many tokens of entries. */
+export const MEMORY_PROFILE_MAX_TOKENS = 500;
+/** about: who the user is; preference: how they want work done; knowledge: a decision or fact for later. */
+export const MEMORY_KINDS = ["about", "preference", "knowledge"] as const;
+export type MemoryKind = (typeof MEMORY_KINDS)[number];
+
+export const MemorySave = z.strictObject({
+  text: z.string().trim().min(1).max(MEMORY_TEXT_MAX_CHARS),
+  kind: z.enum(MEMORY_KINDS),
+  scope: z.enum(["user", "goal"]),
+});
+export type MemorySave = z.infer<typeof MemorySave>;
+
+/** What the agent asks to remember or forget this turn; the harness validates and applies it with the answer. */
+export const MemoryProposal = z.strictObject({
+  save: z.array(MemorySave).max(MAX_MEMORY_SAVES).default([]),
+  forget: z.array(z.string().regex(/^m[1-9]\d*$/, "Use a memory handle such as m4.")).max(MAX_MEMORY_FORGETS).default([]),
+});
+export type MemoryProposal = z.infer<typeof MemoryProposal>;
+
 /** `full_answer` comes first so the visible answer is written before the short hidden fields. */
 export const FinalAnswer = z.strictObject({
   full_answer: z.string().trim().min(1),
@@ -25,6 +49,8 @@ export const FinalAnswer = z.strictObject({
   goal_note: z.string().trim().min(1).nullable(),
   task_complete: z.strictObject({ reason: z.string().trim().min(1) }).nullable(),
   anchors: z.array(AnchorProposal).max(MAX_ANCHOR_PROPOSALS),
+  /** Optional: most turns leave it out. */
+  memory: MemoryProposal.nullable().optional(),
 });
 export type FinalAnswer = z.infer<typeof FinalAnswer>;
 
