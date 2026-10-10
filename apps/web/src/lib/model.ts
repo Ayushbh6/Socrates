@@ -45,7 +45,7 @@ export interface Exchange {
   /** Images the user attached to the message. */
   attachments: AttachmentView[];
   /** The goal and task of its first part. */
-  route: { goal: { number: number; title: string }; task: { number: number; title: string }; chat?: number } | null;
+  route: { goal: { number: number; title: string }; task: { number: number; title: string }; chat?: number; projectTurn?: number } | null;
   steps: Step[];
   answers: string[];
   draft: Draft | null;
@@ -248,7 +248,7 @@ function activity(model: Model, a: Activity | DraftArrived): Model {
       const lane = result.conversations[laneId] ?? [];
       if (!lane.some((e) => e.turns.includes(a.turnId))) {
         result = withConversation(result, laneId, [...lane, blank({key: `t${a.turnId}`, conversation: laneId, at: a.at, message: updated.message, attachments: updated.attachments,
-          route: a.goal && a.task ? {goal:a.goal,task:a.task} : updated.route, turns:[a.turnId], open:[a.turnId] })]);
+          route: a.goal && a.task ? {goal:a.goal,task:a.task,projectTurn:updated.route?.projectTurn} : updated.route, turns:[a.turnId], open:[a.turnId] })]);
       }
     }
   }
@@ -305,7 +305,7 @@ function applyOne(e: Exchange, a: Activity | DraftArrived): Exchange {
       return { ...x, draftCalls: { ...x.draftCalls, [thinking ? thinkingKey(a.turnId) : a.turnId]: { call: a.call, settled: false } }, ...(thinking ? { thinking: draft } : { draft }) };
     }
     case "routed":
-      return { ...x, route: x.route ?? { goal: a.goal, task: a.task, chat: a.chat }, redoneFrom: x.redoneFrom ?? a.redoneFrom ?? null, lastAt: a.at };
+      return { ...x, route: x.route ?? { goal: a.goal, task: a.task, chat: a.chat, projectTurn: a.projectTurn }, redoneFrom: x.redoneFrom ?? a.redoneFrom ?? null, lastAt: a.at };
     case "redone":
       return { ...e, redoneTo: a.to };
     case "memory": {
@@ -373,7 +373,7 @@ export function fromHistory(item: HistoryItem, conversation: string): Exchange {
     at: item.at,
     message: item.message,
     attachments: item.attachments ?? [],
-    route: first ? { goal: first.goal, task: first.task, chat: first.chat } : null,
+    route: first ? { goal: first.goal, task: first.task, chat: first.chat, projectTurn: first.projectTurn } : null,
     steps: item.parts.flatMap((p): Step[] => (p.handedOff && p.lane !== null ? [{ kind: "handed_off" as const, lane: p.lane }] : [])),
     answers: item.parts.flatMap((p) => (p.answer ? [p.answer] : [])),
     question: item.question,
@@ -398,7 +398,29 @@ function bySeq(a: Exchange, b: Exchange): number {
 }
 
 function withConversation(model: Model, conversation: string, list: Exchange[]): Model {
-  return { ...model, conversations: { ...model.conversations, [conversation]: list } };
+  return { ...model, conversations: { ...model.conversations, [conversation]: taskOrder(list) } };
+}
+
+/** Queued requests may be saved later than a following Flow message. Their bound task turns retain the send order. */
+export function taskOrder(list: Exchange[]): Exchange[] {
+  const groups = new Map<string, Exchange[]>();
+  const key = (e: Exchange) => e.route?.projectTurn !== undefined ? `${e.route.goal.number}/${e.route.task.number}` : null;
+  for (const e of list) {
+    const task = key(e);
+    if (!task) continue;
+    const group = groups.get(task) ?? [];
+    group.push(e);
+    groups.set(task, group);
+  }
+  for (const group of groups.values()) group.sort((a, b) => a.route!.projectTurn! - b.route!.projectTurn!);
+  const positions = new Map<string, number>();
+  return list.map((e) => {
+    const task = key(e);
+    if (!task) return e;
+    const i = positions.get(task) ?? 0;
+    positions.set(task, i + 1);
+    return groups.get(task)![i]!;
+  });
 }
 
 /** Change (or with null, remove) the exchange of a message this page sent, wherever it is. */

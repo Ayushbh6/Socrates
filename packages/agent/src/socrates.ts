@@ -141,6 +141,10 @@ export interface HandleOptions {
   alongside?: boolean;
   /** Receives each part's turn and task once it is bound, before it runs. */
   onBound?: (turnId: string, taskId: string) => void;
+  /** The saved message, before any routing or queue wait. */
+  onRecorded?: (userEventId: string) => void;
+  /** Wait for earlier accepted messages before binding turns. The host owns its unsent queue. */
+  beforeBind?: (taskIds: string[], signal: AbortSignal) => Promise<void>;
   /**
    * With `target`: the message asks this turn's question again in the chosen
    * task, because the router put it in the wrong one (architecture/agent-harness.md,
@@ -231,6 +235,7 @@ interface TaskLock {
   done: Promise<void>;
   previous?: TaskLock;
   cancelled?: boolean;
+  settled?: boolean;
 }
 
 /**
@@ -455,6 +460,13 @@ export class Socrates {
     };
     try {
       const signal = AbortSignal.any([this.lifetime.signal, ...(options.signal ? [options.signal] : [])]);
+      userEventId ??= this.store.recordUserMessage(message, laneId).id;
+      options.onRecorded?.(userEventId);
+      const beforeBind = async (taskIds: string[]) => {
+        try { await options.beforeBind?.(taskIds, signal); }
+        // Still bind a message stopped while waiting, so its saved question has a stopped result.
+        catch (error) { if (!signal.aborted) throw error; }
+      };
       // A lane with a task continues it directly; only its first message, or an answer to its clarification, is routed.
       const target = laneId && !this.store.pendingClarification(laneId) ? this.store.currentBinding(laneId) : null;
       let parts: RoutedPart[];
@@ -468,14 +480,13 @@ export class Socrates {
         const turn = this.store.bindTurn({ userEventId: userEvent.id, taskId: target.task.id, route: "lane" });
         parts = [{ order: 1, request: message, dependsOn: [], turn, goal: target.goal, task: target.task, chat: this.store.currentChat(target.task.id), clarification: null, created: { goal: false, task: false } }];
       } else if (options.target) {
+        reading = this.askGate(message, userEventId, "taskId" in options.target ? options.target.taskId : null, signal);
+        await beforeBind("taskId" in options.target ? [options.target.taskId] : []);
         parts = [this.bindChosen(message, laneId, options.target, userEventId, options.pinned === true)];
-        reading = this.askGate(message, parts[0]!.turn.userEventId, parts[0]!.task.id, signal);
       } else {
-        // The router records the message itself when it is not recorded yet; doing it here only moves it earlier.
-        userEventId ??= this.store.recordUserMessage(message, laneId).id;
         reading = this.askGate(message, userEventId, this.store.currentBinding(laneId)?.task.id ?? null, signal);
         const remembered = await this.rememberedForRouting(message, await reading, signal);
-        const routed = await this.router.route(message, signal, { laneId, userEventId, laneActivity: this.laneActivity(), ...(remembered ? { remembered } : {}) });
+        const routed = await this.router.route(message, signal, { laneId, userEventId, laneActivity: this.laneActivity(), beforeBind, ...(remembered ? { remembered } : {}) });
         if (routed.kind === "clarify") {
           const notice = laneId ? laneNotice(this.store.requireLane(laneId).number, { kind: "clarify", question: routed.text }) : null;
           return { kind: "clarify", text: routed.text, laneId, notice, notices: notice ? [notice] : [] };
@@ -629,6 +640,10 @@ export class Socrates {
     const mine = new Promise<void>((done) => (unlock = done));
     const entry: TaskLock = { laneId, done: previous.then(() => mine), previous: held };
     this.taskLocks.set(taskId, entry);
+    void entry.done.then(() => {
+      entry.settled = true;
+      this.pruneTaskLocks(taskId);
+    });
     const goalId = part.goal.id;
     let acquired = false;
     try {
@@ -651,14 +666,17 @@ export class Socrates {
       unlock();
       if (!acquired) {
         entry.cancelled = true;
-        let tail = this.taskLocks.get(taskId);
-        while (tail?.cancelled) tail = tail.previous;
-        if (tail) this.taskLocks.set(taskId, tail);
-        else this.taskLocks.delete(taskId);
+        this.pruneTaskLocks(taskId);
       }
-      // A cancelled waiter must not erase the still-running predecessor.
-      void entry.done.then(() => { if (this.taskLocks.get(taskId) === entry) this.taskLocks.delete(taskId); });
     }
+  }
+
+  /** A cancelled waiter can expose an owner that already finished; neither should keep the task busy. */
+  private pruneTaskLocks(taskId: string): void {
+    let tail = this.taskLocks.get(taskId);
+    while (tail?.cancelled || tail?.settled) tail = tail.previous;
+    if (tail) this.taskLocks.set(taskId, tail);
+    else this.taskLocks.delete(taskId);
   }
 
   private async runPart(part: RoutedPart, parts: RoutedPart[], signal: AbortSignal, options: RunOptions, fresh: boolean): Promise<PartResult> {

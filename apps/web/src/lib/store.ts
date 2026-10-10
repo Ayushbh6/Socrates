@@ -1,9 +1,10 @@
 import { useSyncExternalStore } from "react";
 import { type SettingsPatch, api } from "./api";
+import { approvalExchange } from "./approvals";
 import { IMAGES_MAX, prepareImage } from "./images";
 import { LiveConnection } from "./live";
 import { type Exchange, type Model, type ModelEvent, emptyModel, reduce, replayFrom } from "./model";
-import type { Access, ArchivedView, AttachmentView, ChatChoice, Command, Effort, GoalView, KeepChoice, LedgerStatus, ServerMessage, Settings, Status, TerminalView } from "./types";
+import type { Access, ArchivedView, AttachmentView, ChatChoice, Command, Effort, GoalView, KeepChoice, LedgerStatus, PendingApproval, ServerMessage, Settings, Status, TerminalView } from "./types";
 
 export interface AppState {
   model: Model;
@@ -53,7 +54,7 @@ export class Store {
   private resume: number | null = null;
   private goalsTimer: ReturnType<typeof setTimeout> | null = null;
   private recovering: Promise<void> | null = null;
-  private readonly loadingOlder = new Set<string>();
+  private readonly loadingOlder = new Map<string, Promise<void>>();
   private statusRequest = 0;
   private readonly pendingQueue = new Map<string, { text: string; attachments: AttachmentView[] }>();
   /** The chat each standard-mode message was sent to, so one that finds main busy is queued for the same chat. */
@@ -271,19 +272,40 @@ export class Store {
     this.set({ settings, status: await api.status() });
   }
 
-  async loadOlder(conversation: string): Promise<void> {
+  loadOlder(conversation: string): Promise<void> {
+    const loading = this.loadingOlder.get(conversation);
+    if (loading) return loading;
     const before = this.state.older[conversation];
-    if (!before || this.loadingOlder.has(conversation)) return;
-    this.loadingOlder.add(conversation);
-    try {
-      const page = await api.history(conversation, before);
+    if (!before) return Promise.resolve();
+    const work = api.history(conversation, before).then((page) => {
       this.dispatch({ type: "history", conversation, items: page.items, older: true });
       this.set({ older: { ...this.state.older, [conversation]: page.next } });
-    } catch (error) {
-      this.notice(error);
-    } finally {
-      this.loadingOlder.delete(conversation);
+    }).catch((error) => this.notice(error)).finally(() => { this.loadingOlder.delete(conversation); });
+    this.loadingOlder.set(conversation, work);
+    return work;
+  }
+
+  /** Find the original question, fetching older pages when needed. A settled approval never opens stale work. */
+  async resolveApproval(approval: PendingApproval): Promise<Exchange | null> {
+    const waiting = () => this.state.model.live?.approvals.some((a) => a.id === approval.id);
+    while (waiting()) {
+      const found = approvalExchange(this.state.model, approval);
+      if (found) return found;
+      const before = this.state.older[approval.conversation];
+      if (before === undefined) {
+        try {
+          const page = await api.history(approval.conversation);
+          this.dispatch({ type: "history", conversation: approval.conversation, items: page.items, older: true });
+          this.set({ older: { ...this.state.older, [approval.conversation]: page.next } });
+        } catch (error) { this.notice(error); return null; }
+      } else {
+        if (!before) break;
+        await this.loadOlder(approval.conversation);
+        if (before === this.state.older[approval.conversation]) return null;
+      }
     }
+    if (waiting()) this.notice("The approval's question could not be loaded. Try again in a moment.");
+    return null;
   }
 
   private async load(snapshot = false): Promise<void> {

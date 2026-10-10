@@ -24,7 +24,7 @@ This file hands the project to whichever agent harness works on it next. Read it
   3. Open the printed link. Each login link works only once.
   4. Stop the server and delete the copy afterwards.
 
-## Where things stand (2026-10-10, through the Continue button and mode-switch decision)
+## Where things stand (2026-10-10, through the Standard/Flow connection fixes)
 
 The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `server.md`, `web.md`, `observability.md`). The trial log numbers each change. Recently shipped, newest last:
 
@@ -46,12 +46,14 @@ The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `serv
 - **Continue:** when a per-turn safeguard ends the work (200 steps, 60 minutes or the token limit), the answer says which limit was reached and a **Continue** button under it sends "Please continue from where you stopped." to the same chat (Standard), the same task without routing (Flow; in General it is routed as usual) or the same lane (`architecture/web.md`, "Work and answer"). The completed turn's `stop` reaches the page in the live `finished` activity and each history part.
 - **Standard and Flow, as built:** a Standard chat is a task and its goal is the goal; both modes read one ledger, so a chat can be continued in Flow and Flow's work in Standard (`architecture/web.md`, "Standard mode"). Flow's General conversation is one task per day, listed under Chats. The user confirmed ordinary Flow routing for both an unsent Standard draft sent after switching and a new Flow message sent while a Standard run continues. Switching modes does not automatically pin the next message to the Standard chat; this already matches the code.
 
+- **Standard and Flow order, Stop and approvals:** messages targeting the same task keep their acceptance order across modes, including queued Standard messages and Flow messages still routing. Binding waits too, so later work sees earlier answers. Task Stop clears both its active owner and routed waiters; stopping only Flow leaves Standard's owner and queue alive. Both headers show **Approval needed** with the count; clicking opens the original question in the current mode, loading older history when needed (`architecture/web.md`, "Approvals").
+
 ## Next, in the order agreed with the user
 
 Ask before starting each one.
 
 1. **Memory follow-ups** (`docs/memory.md`): measure on real use whether later conversations follow the project notes better than without; a Memory-page view of the notes; the Inspect panel's rates are where thresholds get set.
-2. **Standard and Flow verification:** the user confirmed ordinary Flow routing on 2026-10-10, replacing the earlier automatic-pin proposal. No routing change is needed for the two agreed cases. Still to verify on an isolated copy: a Flow message routed into a busy Standard task, visibility of the earlier run's approval after a newer Flow message, and ordering between queued Standard messages and a later Flow message for the same task. Discuss any proposed fixes with the user before implementing them.
+The Standard/Flow verification and its three agreed implementation points are complete (trial log entry 50). Ordinary routing after switching modes remains the agreed behaviour; no automatic pin or routing hint was added.
 
 **Known small issues:**
 - If attaching images fails while saving a Flow message, the main conversation can stay "busy". This is in `packages/agent/src/socrates.ts` `handle`.

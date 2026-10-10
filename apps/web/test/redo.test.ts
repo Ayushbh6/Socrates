@@ -43,4 +43,14 @@ describe("redo in another task, on the page", () => {
     expect(redoBlock({ ...list[1]!, state: "working" }, list)).toBeUndefined();
     expect(redoBlock({ ...list[1]!, redoneTo: general }, list)).toBeUndefined();
   });
+
+  it("uses task order when an earlier queued question was recorded later", () => {
+    const list = run(
+      ...asked("t3", "Flow C.", work, "2026-10-09T10:00:00Z"),
+      ...asked("t2", "Queued B.", work, "2026-10-09T10:01:00Z"),
+    ).conversations.main!;
+    expect(list.map((e) => e.message)).toEqual(["Queued B.", "Flow C."]);
+    expect(redoBlock(list[0]!, list)).toBe("Later questions in this task build on this answer.");
+    expect(redoBlock(list[1]!, list)).toBeNull();
+  });
 });

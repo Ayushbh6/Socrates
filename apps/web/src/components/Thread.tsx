@@ -11,7 +11,7 @@ import { QuestionCard } from "./QuestionCard";
  * One conversation in standard mode (or `shown`, the part of it that is one chat): every question with its answer, oldest
  * first, following the newest work while the reader is at the bottom.
  */
-export function Thread({ app, conversation, shown, before, extra = [], compact = false, empty, onRedone }: { app: AppState; conversation: string; shown?: Exchange[]; before?: ReactNode; extra?: Exchange[]; compact?: boolean; empty: string; onRedone?: (id: string) => void }) {
+export function Thread({ app, conversation, shown, before, extra = [], compact = false, empty, onRedone, focus }: { app: AppState; conversation: string; shown?: Exchange[]; before?: ReactNode; extra?: Exchange[]; compact?: boolean; empty: string; onRedone?: (id: string) => void; focus?: { key: string; request: number } | null }) {
   const list = [...(shown ?? app.model.conversations[conversation] ?? []), ...extra];
   const latest = list.at(-1) ?? null;
   // An approval is shown with the question whose turn asked; one without a turn, with the newest question of its conversation.
@@ -22,6 +22,7 @@ export function Thread({ app, conversation, shown, before, extra = [], compact =
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const following = useFollow(scroller, content);
+  const articles = useRef(new Map<string, HTMLElement>());
   // A new question always brings the thread to its end.
   const newest = useRef(latest?.key);
   if (latest?.key !== newest.current) following.current = true;
@@ -35,6 +36,13 @@ export function Thread({ app, conversation, shown, before, extra = [], compact =
   useLayoutEffect(() => {
     if (restore && scroller.current) scroller.current.scrollTop = restore.top + scroller.current.scrollHeight - restore.height;
   });
+  useLayoutEffect(() => {
+    const item = focus && articles.current.get(focus.key);
+    if (!item) return;
+    following.current = false;
+    item.scrollIntoView({ block: "center", behavior: "instant" });
+    item.focus({ preventScroll: true });
+  }, [focus, following]);
 
   return (
     <div className="thread" data-compact={compact} ref={scroller}>
@@ -45,7 +53,7 @@ export function Thread({ app, conversation, shown, before, extra = [], compact =
         {before}
         {!list.length && <p className="thread-empty">{empty}</p>}
         {list.map((e) => (
-          <article key={e.key} className="thread-item">
+          <article key={e.key} className="thread-item" tabIndex={-1} ref={(el) => { if (el) articles.current.set(e.key, el); else articles.current.delete(e.key); }}>
             <QuestionCard text={e.message} attachments={e.attachments} note={e.state === "working" || e.state === "sending" ? e.note : null} />
             <div className="thread-answer">
               <AnswerView exchange={e} approvals={approvalsFor(e)} redo={redoOffer(e, list, onRedone)} {...(e === latest && e.route ? { onContinue: () => { store.send(CONTINUE_MESSAGE, conversation, [], { goal: e.route!.goal.number, task: e.route!.task.number }); } } : {})} />

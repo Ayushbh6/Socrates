@@ -145,6 +145,8 @@ A page loads the status (which carries `seq`, the event it reflects) and the his
 
 Changes to settings or keys also broadcast state to every subscribed page. `ready` is false during a rebuild; sends receive `busy`, and the main queue resumes when the new runtime is ready. Queue entries and pending approvals survive page disconnections but are held in memory for this server launch. A restart clears the main queue; messages already accepted by the harness remain in history and follow normal interruption recovery.
 
+Accepted messages and queue entries retain a shared acceptance order across Standard and Flow. Before binding, the live hub reports the chosen tasks and waits for older messages targeting those tasks, including messages still queued. A message whose destination is not yet known must finish routing before a later message can decide whether it may run independently. This wait holds no task lock, so older queued messages can start. Removal, queue-to-lane, failure, cancellation and shutdown release the corresponding wait; lane FIFO and task handoff remain the harness's responsibility. Task Stop includes routed waiters even before their turns are bound. Waiting Standard runs count toward the four-chat limit.
+
 **From a page:**
 
 | Command | Effect |
@@ -165,7 +167,7 @@ Changes to settings or keys also broadcast state to every subscribed page. `read
 | Message | Meaning |
 |---|---|
 | `state` | `seq`, readiness and setup needed, access and settings (without key values), whether main is busy, the lanes, `working` (the goal and task numbers of every task with a message working now, so a page knows which chats are busy), the queue (each item with its `chat`, if any), and pending approvals; sent on every change |
-| `accepted { id, conversation, seq? }` | the message started; for `new_lane`, `conversation` is the new lane's id. `seq` is the saved message's sequence number when the message was bound at once (a standard-mode chat's), so the page that queued it knows its question when it starts later |
+| `accepted { id, conversation, seq? }` | the message started; for `new_lane`, `conversation` is the new lane's id. For a chosen chat or kept task, `seq` is the saved message's sequence number, even when binding waits for earlier work, so the page that queued it knows its question when it starts later |
 | `activity` | one saved event (see "Live activity") |
 | `draft { conversation, turnId, call, kind, text, handle? }` | the reply a turn is writing now, its thinking, or what a running tool call prints (see "Live drafts") |
 | `approval` | a new pending approval: its id, conversation and lane, task, kind (`action` or `outside_folder` under an access policy), tool, the one line the user approves, and a `preview` of what will change (an edit's texts, a patch, typed input) or null |

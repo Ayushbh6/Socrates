@@ -32,6 +32,7 @@ export function Standard({ app, mode, dock, onMode, onSettings }: { app: AppStat
   const conversations = app.model.conversations;
   const main = useMemo(() => withoutArchived(allQuestions(conversations), app.goals), [conversations, app.goals]);
   const [view, setView] = useState<View>(null);
+  const [focus, setFocus] = useState<{ key: string; request: number } | null>(null);
   const [sidebar, setSidebar] = useState(() => typeof window === "undefined" || window.innerWidth >= 1100);
 
   const route = view && "chat" in view ? { goal: { number: view.chat.goal }, task: { number: view.chat.task }, chat: view.chat.chat } : view ? null : currentRoute(main.filter((e) => e.route));
@@ -72,7 +73,12 @@ export function Standard({ app, mode, dock, onMode, onSettings }: { app: AppStat
 
   return (
     <div className="standard" data-sidebar={sidebar}>
-      <AppHeader app={app} mode={mode} dock={dock} sidebar={sidebar} sidebarId="standard-sidebar" onSidebar={() => setSidebar(!sidebar)} onMode={onMode} onSettings={onSettings} onStop={working ? () => store.cancel("main", target) : undefined}>
+      <AppHeader app={app} mode={mode} dock={dock} sidebar={sidebar} sidebarId="standard-sidebar" onSidebar={() => setSidebar(!sidebar)} onMode={onMode} onSettings={onSettings} onStop={working ? () => store.cancel("main", target) : undefined} onApproval={(e) => {
+        if (!e.route) return;
+        setView({ chat: { goal: e.route.goal.number, task: e.route.task.number, chat: e.route.chat ?? 1 } });
+        setFocus((f) => ({ key: e.key, request: (f?.request ?? 0) + 1 }));
+        if (narrow()) setSidebar(false);
+      }}>
         <div className="chat-title">
           {task ? <><strong title={task.title}>{chatTitle(task.title, chat)}</strong>{!goal?.chats && <small title={goal?.title}>{goal?.title}</small>}</> : <><strong>New chat</strong>{freshGoal && <small>{freshGoal.title}</small>}</>}
         </div>
@@ -102,7 +108,7 @@ export function Standard({ app, mode, dock, onMode, onSettings }: { app: AppStat
       )}
 
       <section className="chat-main" aria-label="Chat">
-        <Thread app={app} conversation="main" shown={shown} onRedone={(id) => setView({ fresh: main.at(-1)?.key ?? null, goal: null, sent: id })} before={chat > 1 && goal && task ? <Continued onBack={() => setView({ chat: { goal: goal.number, task: task.number, chat: chat - 1 } })} /> : null} empty={fresh || !main.length ? (freshGoal ? `What's next for ${freshGoal.title}?` : "What should we work on?") : "Nothing has been asked in this chat yet."} />
+        <Thread app={app} conversation="main" shown={shown} focus={focus} onRedone={(id) => setView({ fresh: main.at(-1)?.key ?? null, goal: null, sent: id })} before={chat > 1 && goal && task ? <Continued onBack={() => setView({ chat: { goal: goal.number, task: task.number, chat: chat - 1 } })} /> : null} empty={fresh || !main.length ? (freshGoal ? `What's next for ${freshGoal.title}?` : "What should we work on?") : "Nothing has been asked in this chat yet."} />
         <div className="chat-composer">
           <Composer app={app} conversation="main" laneNumber={null} variant="panel" chat={target} placeholder={task ? "Reply…" : "Ask Socrates…"} onModel={onSettings} onNewLane={() => null} onSent={(id) => { if (fresh) setView({ ...fresh, sent: id }); }} />
         </div>

@@ -117,7 +117,7 @@ export class GoalRouter {
   }
 
   /** Persist the exact message, route it, and bind it. A lane's message is recorded in that lane. */
-  async route(message: string, signal?: AbortSignal, options: { laneId?: string | null; userEventId?: string; laneActivity?: ReadonlyMap<string, string | null>; remembered?: string | null } = {}): Promise<RoutingResult> {
+  async route(message: string, signal?: AbortSignal, options: { laneId?: string | null; userEventId?: string; laneActivity?: ReadonlyMap<string, string | null>; remembered?: string | null; beforeBind?: (taskIds: string[]) => Promise<void> } = {}): Promise<RoutingResult> {
     signal?.throwIfAborted();
     const laneId = options.laneId ?? null;
     const userEvent = options.userEventId ? this.store.getEvent(options.userEventId) : this.store.recordUserMessage(message, laneId);
@@ -164,6 +164,7 @@ export class GoalRouter {
     const meta = { model: modelId, attempts, escalated, fallback, ledgerQueries: budget.ledgerQueries, errors: budget.errors };
     signal?.throwIfAborted();
     if (final.kind === "clarify") return this.applyClarify(userEvent.id, final.ask, ctx, meta);
+    await options.beforeBind?.(final.route.parts.flatMap((p) => p.target.kind === "existing_task" ? [p.target.task.id] : p.target.kind === "general" ? [this.store.ensureGeneral(this.timeZone).task.id] : []));
     return this.applyDecision(userEvent.id, final.route, ctx, meta);
   }
 

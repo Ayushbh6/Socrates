@@ -569,6 +569,8 @@ The router reasons about the outcome, not keyword overlap alone.
 
 Router context and working-agent context are separate. The Goal Router receives project-wide evidence to select the owning goal and task. Only after the backend binds the turn to that goal and task does it build the Main Coding Agent's focused context.
 
+After a decision is validated, an optional host `beforeBind` hook receives its existing task destinations (including today's General task) before binding. The server uses it to let earlier accepted messages in the same task finish first, including Standard's queue, so the bound turn's history includes their answers. The router's selection is unchanged; new goals and tasks are still materialized by the binding transaction.
+
 The working-agent request has exactly one layout, defined in `agent-harness.md` ("Working-agent context"). It orders blocks from most stable to most volatile for prompt caching: the stable prefix, then goal-stable blocks (`<GOAL>`, `<AVAILABLE_SKILLS>`, `<ACTIVE_CAPABILITIES>`), then chat history, then turn-volatile blocks (`<GOAL_STATE>`, `<CURRENT_TASK>`, optional `<RECENT_ACTIVITY>`, optional `<LANES>`, `<RETRIEVED_HISTORY>`, `<PROJECT_CONTEXT>`, `<CAPABILITY_CANDIDATES>`), and finally `<CURRENT_USER_MESSAGE>`. This section describes how the goal- and task-specific blocks are filled.
 
 For the German example, the selected sections contain:

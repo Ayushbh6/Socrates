@@ -63,6 +63,13 @@ describe("one chat's questions", () => {
     expect(chatThread(list, 2, 1).map((e) => e.key)).toEqual(["m2", "m4"]);
   });
 
+  it("shows earlier queued messages before a later Flow message by their bound task order", () => {
+    const a = ex("A", "a", [1, 1]); a.route!.projectTurn = 1;
+    const c = ex("C", "b", [1, 1]); c.route!.projectTurn = 3;
+    const b = ex("B", "c", [1, 1]); b.route!.projectTurn = 2;
+    expect(chatThread([a, c, b], 1, 1).map((e) => e.key)).toEqual(["A", "B", "C"]);
+  });
+
   it("starts empty for a new chat, then holds what is asked", () => {
     expect(newThread(list, "m4")).toEqual([]);
     expect(newThread([...list, ex("m5", "e", null, "sending")], "m4").map((e) => e.key)).toEqual(["m5"]);

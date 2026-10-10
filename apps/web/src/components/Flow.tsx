@@ -28,6 +28,7 @@ export function Flow({ app, mode, dock, onMode, onSettings }: { app: AppState; m
   const [selected, setSelected] = useState<string | null>(null);
   const [sidebar, setSidebar] = useState(false);
   const [following, setFollowing] = useState<string | null>(null);
+  const [sent, setSent] = useState<string | null>(null);
   // "Keep my next message in this task", for the main conversation's next message only.
   const [keep, setKeep] = useState<KeepChoice | null>(null);
   useEffect(() => setKeep(null), [conversation]);
@@ -53,7 +54,9 @@ export function Flow({ app, mode, dock, onMode, onSettings }: { app: AppState; m
 
   const list = app.model.conversations[conversation] ?? [];
   const pendingLane = following ? app.model.pending.find((e) => e.sendId === following) ?? null : null;
-  const exchange = viewedExchange(list, selected, pendingLane);
+  // Keep the question just sent on the canvas while earlier queued work is saved and run.
+  const waiting = sent ? list.find((e) => e.sendId === sent && !e.route && (e.state === "working" || e.state === "sending")) ?? null : null;
+  const exchange = viewedExchange(list, selected, pendingLane ?? waiting);
   // An approval belongs to the question whose turn asked (a standard-mode chat's is not this canvas's); one without a turn, to the newest question here.
   const latest = exchange !== null && (exchange === list.at(-1) || exchange === pendingLane);
   const approvals = exchange ? (app.model.live?.approvals ?? []).filter((a) => (a.turnId ? exchange.turns.includes(a.turnId) : latest && a.conversation === conversation)) : [];
@@ -90,7 +93,7 @@ export function Flow({ app, mode, dock, onMode, onSettings }: { app: AppState; m
           {!docked && <Orb state={state} docked={false} />}
         </div>
 
-        <AppHeader app={app} mode={mode} dock={dock} sidebar={sidebar} sidebarId="flow-sidebar" onSidebar={() => setSidebar(!sidebar)} onMode={onMode} onSettings={onSettings}>
+        <AppHeader app={app} mode={mode} dock={dock} sidebar={sidebar} sidebarId="flow-sidebar" onSidebar={() => setSidebar(!sidebar)} onMode={onMode} onSettings={onSettings} onApproval={(e) => { setConversation(e.conversation); setSelected(e.key); setFollowing(null); setSent(null); setSidebar(false); }}>
           {conversation !== "main" && (
             <button type="button" className="chip lane-chip" onClick={() => { setConversation("main"); setSelected(null); }}>
               Lane {lane?.number} <X aria-hidden />
@@ -125,7 +128,7 @@ export function Flow({ app, mode, dock, onMode, onSettings }: { app: AppState; m
         conversation={conversation}
         laneNumber={lane?.number ?? null}
         onModel={onSettings}
-        onSent={() => { setSelected(null); setKeep(null); }}
+        onSent={(id) => { setSent(id); setSelected(null); setKeep(null); }}
         keep={conversation === "main" && keep ? { choice: keep, title: app.goals.find((g) => g.number === keep.goal)?.tasks.find((t) => t.number === keep.task)?.title ?? "this task" } : undefined}
         onUnkeep={() => setKeep(null)}
         onNewLane={(text, attachments) => {
@@ -144,11 +147,13 @@ export function Flow({ app, mode, dock, onMode, onSettings }: { app: AppState; m
         selected={selected}
         onClose={() => setSidebar(false)}
         onConversation={(c) => {
+          setSent(null);
           setConversation(c);
           setSelected(null);
           setSidebar(false);
         }}
         onSelect={(key) => {
+          setSent(null);
           setSelected(key);
           setSidebar(false);
         }}

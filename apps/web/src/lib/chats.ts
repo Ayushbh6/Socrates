@@ -1,4 +1,4 @@
-import type { Exchange } from "./model";
+import { type Exchange, taskOrder } from "./model";
 import type { GoalView } from "./types";
 
 /** Standard mode's sidebar: a goal holds chats, and a chat is one task of it (or, for a very long task, one stretch of it). */
@@ -98,7 +98,7 @@ export function allQuestions(conversations: Record<string, Exchange[]>): Exchang
 export function chatThread(exchanges: Exchange[], goal: number, task: number, chat = 1): Exchange[] {
   const here = (e: Exchange) => e.route?.goal.number === goal && e.route.task.number === task && (e.route.chat ?? 1) === chat;
   const last = exchanges.reduce((at, e, i) => (here(e) ? i : at), -1);
-  return exchanges.filter((e, i) => (e.route ? here(e) : i > last));
+  return taskOrder(exchanges.filter((e, i) => (e.route ? here(e) : i > last)));
 }
 
 /** What was asked after a new chat was started: the questions newer than the one that was last when it began. */

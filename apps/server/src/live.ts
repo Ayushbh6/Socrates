@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { type AnchorDecision, type Draft, type HandleResult, MAX_RUNNING_CHATS, MAX_RUNNING_LANES, RedoError, SocratesBusyError } from "@socrates/agent";
 import type { Attachment } from "@socrates/contracts";
+import { abortable } from "@socrates/shared";
 import type { ApprovalOrigin, ApprovalRequest } from "@socrates/tools";
 import type { WebSocket } from "ws";
 import { z } from "zod";
@@ -112,6 +113,19 @@ interface Run {
   controller: AbortController;
   /** Settles once the message's work is recorded, however it ended. */
   settled?: Promise<unknown>;
+  schedule: Schedule;
+}
+
+/** Acceptance order survives queuing. Binding and finishing also settle on removal, failure and Stop. */
+interface Schedule {
+  order: number;
+  tasks: Set<string>;
+  bound: Promise<void>;
+  bind: () => void;
+  done: Promise<void>;
+  finish: () => void;
+  handedOff: Promise<void>;
+  handOff: () => void;
 }
 
 /** A message waiting to start: for the main conversation, or for its standard-mode chat. */
@@ -121,6 +135,7 @@ interface Queued {
   attachments: Attachment[];
   chat?: ChatChoice;
   keep?: KeepChoice;
+  schedule: Schedule;
 }
 
 /**
@@ -138,6 +153,7 @@ export class LiveHub {
   private readonly queue: Queued[] = [];
   private readonly approvals = new Map<string, { view: PendingApproval; runId: string; resolve: (granted: boolean) => void }>();
   private readonly runs = new Map<string, Run>();
+  private nextOrder = 0;
   /** Accepted IDs remain reserved across reconnects for this server launch. */
   private readonly acceptedIds = new Set<string>();
   private readonly unsubscribe: () => void;
@@ -198,6 +214,7 @@ export class LiveHub {
     this.drafts.clear();
     this.draftsUnsent.clear();
     for (const run of this.runs.values()) run.controller.abort();
+    for (const item of this.queue) { item.schedule.bind(); item.schedule.finish(); }
     for (const approval of this.approvals.values()) approval.resolve(false);
     this.approvals.clear();
     for (const socket of this.clients) socket.close(1001, "Socrates is stopping.");
@@ -257,7 +274,10 @@ export class LiveHub {
         const attachments = this.attachments(command.attachments);
         this.acceptedIds.add(command.id);
         if (command.keep) this.keptTask(command.keep);
-        this.queue.push({ id: command.id, text: command.text, attachments, ...(command.chat ? { chat: command.chat } : {}), ...(command.keep ? { keep: command.keep } : {}) });
+        const schedule = this.schedule();
+        const taskId = command.chat ? this.chatTask(command.chat)?.id : command.keep ? this.keptTask(command.keep).taskId : undefined;
+        if (taskId) { schedule.tasks.add(taskId); schedule.bind(); }
+        this.queue.push({ id: command.id, text: command.text, attachments, schedule, ...(command.chat ? { chat: command.chat } : {}), ...(command.keep ? { keep: command.keep } : {}) });
         this.publishState();
         return this.drain();
       }
@@ -279,13 +299,19 @@ export class LiveHub {
         item.text = command.text;
         return this.publishState();
       }
-      case "queue_remove":
-        this.queue.splice(this.queue.indexOf(this.queued(command.id)), 1);
+      case "queue_remove": {
+        const item = this.queued(command.id);
+        this.queue.splice(this.queue.indexOf(item), 1);
+        item.schedule.bind();
+        item.schedule.finish();
         return this.publishState();
+      }
       case "queue_to_lane": {
         const item = this.queued(command.id);
         this.start(item.id, item.text, "new_lane", undefined, true, item.attachments);
         this.queue.splice(this.queue.indexOf(item), 1);
+        item.schedule.bind();
+        item.schedule.finish();
         return this.publishState();
       }
       case "cancel": {
@@ -394,7 +420,7 @@ export class LiveHub {
     });
   }
 
-  private start(id: string, text: string, to: string, anchorDecisions?: AnchorDecision[], fromQueue = false, attachments: Attachment[] = [], chat?: ChatChoice, keep?: KeepChoice, redoOf?: string): void {
+  private start(id: string, text: string, to: string, anchorDecisions?: AnchorDecision[], fromQueue = false, attachments: Attachment[] = [], chat?: ChatChoice, keep?: KeepChoice, redoOf?: string, queuedSchedule?: Schedule): void {
     const socrates = this.socrates();
     if (!fromQueue) this.assertNewId(id);
     if ((chat || keep) && to !== "main") throw new LiveError("bad_request", "A message for a chosen chat or task is sent in the main conversation.");
@@ -403,7 +429,7 @@ export class LiveHub {
     const refused = redoOf ? socrates.redoProblem(redoOf, target && "taskId" in target ? target.taskId : null) : null;
     if (refused) throw new LiveError("redo_refused", refused);
     // A chat runs beside the main conversation, one message at a time: while it works, or another chat message waits for it, this one waits in the queue.
-    if (chat && (this.chatWorking(chat) || (!fromQueue && chat.task !== null && this.queue.some((q) => q.chat && sameChat(q.chat, chat))))) throw new LiveError("chat_busy", "Socrates is working in this chat; queue this message.");
+    if (chat && (this.chatWorking(chat, queuedSchedule?.order) || (!fromQueue && chat.task !== null && this.queue.some((q) => q.chat && sameChat(q.chat, chat))))) throw new LiveError("chat_busy", "Socrates is working in this chat; queue this message.");
     if (chat && socrates.runningChats >= MAX_RUNNING_CHATS) throw new LiveError("chat_busy", `${MAX_RUNNING_CHATS} chats are already working; queue this message.`);
     if (to !== "main" && to !== "new_lane") {
       const lane = this.runtime.store.getLane(to);
@@ -414,7 +440,9 @@ export class LiveHub {
     if (to !== "main" && !running.some((l) => l.id === to) && running.length >= MAX_RUNNING_LANES) {
       throw new LiveError("lane_limit", `${MAX_RUNNING_LANES} lanes are already working; wait for one to finish or stop one.`);
     }
-    const run: Run = { id, conversation: to === "new_lane" ? "starting" : to, chat: !!chat, tasks: new Set(target && "taskId" in target ? [target.taskId] : []), controller: new AbortController() };
+    const schedule = queuedSchedule ?? this.schedule();
+    if (target && "taskId" in target) schedule.tasks.add(target.taskId);
+    const run: Run = { id, conversation: to === "new_lane" ? "starting" : to, chat: !!chat, tasks: schedule.tasks, schedule, controller: new AbortController() };
     this.acceptedIds.add(id);
     this.runs.set(id, run);
     const work = socrates.handle(text, {
@@ -426,8 +454,11 @@ export class LiveHub {
       // Standard mode: no routing, a chat that never rolls over, and one that runs beside the others. A message kept in its task is not routed, and rolls over as usual.
       ...(target ? (keep ? { target, pinned: true } : { target, rollover: false, alongside: true }) : {}),
       ...(redoOf ? { redoOf } : {}),
+      beforeBind: (taskIds, signal) => this.beforeBind(run, taskIds, signal),
+      onRecorded: (userEventId) => { if (target) run.seq = this.runtime.store.getEvent(userEventId)?.seq; },
       onBound: (turnId, taskId) => {
         run.tasks.add(taskId);
+        schedule.bind();
         run.seq ??= this.runtime.store.getEvent(this.runtime.store.requireTurn(turnId).userEventId)?.seq;
         this.scheduleState();
       },
@@ -439,6 +470,7 @@ export class LiveHub {
         run.handedTurnId = turnId;
         // Single-part handoffs free main. A compound message still owns it. A chat never held it.
         if (run.chat || !socrates.busy) run.conversation = laneId;
+        if (run.conversation === laneId) schedule.handOff();
         this.broadcast({ type: "handed_off", id, conversation: laneId, lane: this.runtime.store.requireLane(laneId).number, mainReleased: !socrates.busy });
         this.publishState();
         this.drain();
@@ -465,6 +497,8 @@ export class LiveHub {
       })
       .finally(() => {
         this.runs.delete(id);
+        schedule.bind();
+        schedule.finish();
         for (const entry of [...this.drafts.values()]) if (entry.runId === id) this.settleDraft(entry.message.turnId);
         // An approval the run never got an answer for is refused.
         for (const [key, approval] of this.approvals) if (approval.runId === id) {
@@ -496,9 +530,33 @@ export class LiveHub {
   }
 
   /** Whether a message is working (or waiting) in this chat's task now, in any conversation. */
-  private chatWorking(chat: ChatChoice): boolean {
+  private chatWorking(chat: ChatChoice, before = Infinity): boolean {
     const task = this.chatTask(chat);
-    return !!task && !!this.runtime.socrates?.taskBusy(task.id);
+    return !!task && (!!this.runtime.socrates?.taskBusy(task.id) || [...this.runs.values()].some((r) => r.schedule.order < before && r.tasks.has(task.id)));
+  }
+
+  private schedule(): Schedule {
+    let bind!: () => void, finish!: () => void, handOff!: () => void;
+    return { order: ++this.nextOrder, tasks: new Set(), bound: new Promise<void>((resolve) => { bind = resolve; }), bind,
+      done: new Promise<void>((resolve) => { finish = resolve; }), finish,
+      handedOff: new Promise<void>((resolve) => { handOff = resolve; }), handOff };
+  }
+
+  /** Do not reserve the task ahead of an older message still in the host's queue or router. */
+  private async beforeBind(run: Run, taskIds: string[], signal: AbortSignal): Promise<void> {
+    for (const id of taskIds) run.tasks.add(id);
+    run.schedule.bind();
+    this.scheduleState();
+    // Lanes keep their own FIFO and handoff rules in the harness.
+    if (run.conversation !== "main") return;
+    const earlier = [
+      ...[...this.runs.values()].filter((r) => r.conversation === "main").map((r) => r.schedule),
+      ...this.queue.map((q) => q.schedule),
+    ].filter((s) => s.order < run.schedule.order);
+    await abortable(Promise.all(earlier.map(async (s) => {
+      await s.bound;
+      if (taskIds.some((id) => s.tasks.has(id))) await Promise.race([s.done, s.handedOff]);
+    })), signal);
   }
 
   /** The tasks with a message working in them now, as goal and task numbers, so a page knows which chats are busy. */
@@ -536,13 +594,15 @@ export class LiveHub {
       const place = next.chat ? (next.chat.task === null ? next.id : `${next.chat.goal ?? "chats"}/${next.chat.task}`) : "main";
       if (seen.has(place)) continue;
       seen.add(place);
-      const free = next.chat ? socrates.runningChats < MAX_RUNNING_CHATS && !this.chatWorking(next.chat) : !socrates.busy;
+      const free = next.chat ? socrates.runningChats < MAX_RUNNING_CHATS && !this.chatWorking(next.chat, next.schedule.order) : !socrates.busy;
       if (!free) continue;
       this.queue.splice(this.queue.indexOf(next), 1);
       started = true;
       try {
-        this.start(next.id, next.text, "main", undefined, true, next.attachments, next.chat, next.keep);
+        this.start(next.id, next.text, "main", undefined, true, next.attachments, next.chat, next.keep, undefined, next.schedule);
       } catch (error) {
+        next.schedule.bind();
+        next.schedule.finish();
         this.broadcast({ type: "error", id: next.id, conversation: "main", ...problemOf(error) });
       }
     }

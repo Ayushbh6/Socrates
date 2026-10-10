@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Store } from '../src/lib/store';
 import { api } from '../src/lib/api';
-import type { History, Settings, Status } from '../src/lib/types';
+import type { History, PendingApproval, Settings, Status } from '../src/lib/types';
 
 vi.mock('../src/lib/api', () => ({ api: { status: vi.fn(), settings: vi.fn(), goals: vi.fn(), history: vi.fn() } }));
 class Socket {
@@ -110,6 +110,47 @@ describe('history recovery and unsent text', () => {
     socket.receive(live(101,{settings:changed}));
     await vi.waitFor(() => expect(store.get().status?.timeZone).toBe('Europe/Vienna'));
     expect(store.get().settings?.timeZone).toBe('Europe/Vienna');
+  });
+});
+
+describe('opening pending approvals', () => {
+  const approval: PendingApproval = {id:'approval',conversation:'main',lane:null,turnId:'turn',task:'g1/t1 Task',kind:'action',tool:'terminal',detail:'printf check',preview:null};
+
+  it('loads the original older question without changing the draft or sending anything', async () => {
+    vi.mocked(api.history).mockResolvedValueOnce({items:[],next:50});
+    const store = new Store(); await store.start(); const socket = Socket.all[0]!; socket.open();
+    socket.receive(live(200,{approvals:[approval]}));
+    store.setDraft('main','My unsent reply');
+    vi.mocked(api.history).mockResolvedValueOnce({...snapshot,next:null});
+    expect(await store.resolveApproval(approval)).toMatchObject({message:'Still working',turns:['turn']});
+    expect(api.history).toHaveBeenLastCalledWith('main',50);
+    expect(store.get().drafts.main).toBe('My unsent reply');
+    expect(socket.sent).toHaveLength(1); // hello only
+  });
+
+  it('shares an older-page request and ignores an approval resolved while that page loads', async () => {
+    vi.mocked(api.history).mockResolvedValueOnce({items:[],next:50});
+    const store = new Store(); await store.start(); const socket = Socket.all[0]!; socket.open();
+    socket.receive(live(200,{approvals:[approval]}));
+    let release!: (page: History) => void;
+    vi.mocked(api.history).mockImplementationOnce(() => new Promise(resolve => {release=resolve;}));
+    const older = store.loadOlder('main');
+    const opening = store.resolveApproval(approval);
+    socket.receive(live(201,{approvals:[]}));
+    release({...snapshot,next:null});
+    await older;
+    expect(await opening).toBeNull();
+    expect(api.history).toHaveBeenCalledTimes(2);
+  });
+
+  it('finds a handed-off approval in its lane even when it originated in main', async () => {
+    vi.mocked(api.history).mockResolvedValueOnce({items:[],next:null});
+    const store = new Store(); await store.start(); const socket = Socket.all[0]!; socket.open();
+    const inLane = {...approval,conversation:'lane-id',lane:1};
+    socket.receive(live(200,{approvals:[inLane]}));
+    vi.mocked(api.history).mockResolvedValueOnce(snapshot);
+    expect(await store.resolveApproval(inLane)).toMatchObject({conversation:'lane-id',turns:['turn']});
+    expect(api.history).toHaveBeenLastCalledWith('lane-id');
   });
 });
 

@@ -110,6 +110,15 @@ svg { width: 1rem; height: 1rem; flex: none; }
 .app-header .access-menu { width: min(26rem, calc(100vw - 5rem)); min-width: 0; }
 .app-header-context { min-width: 0; }
 .app-header-actions { justify-content: flex-end; }
+.approval-indicator { position: relative; }
+.approval-notice { color: var(--warm); background: #fff7e8; }
+.approval-notice-count { display: none; }
+.approval-menu { max-height: min(24rem, calc(100vh - 8rem)); overflow-y: auto; pointer-events: auto; }
+.approval-menu button { display: flex; flex-direction: column; align-items: flex-start; gap: 0.25rem; width: 100%; padding: 0.75rem; border: 0; border-radius: 0.6rem; background: transparent; text-align: left; }
+.approval-menu button:hover, .approval-menu button:focus-visible { background: #fff7e8; }
+.approval-menu strong { font-size: 0.8rem; }
+.approval-menu span { font-size: 0.8rem; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.approval-menu small { color: var(--warm); }
 .sidebar-toggle { flex: none; width: 2.4rem; height: 2.4rem; }
 @media (max-width: 760px) {
   .flow, .standard { --app-header-h: 6.6rem; }
@@ -117,6 +126,8 @@ svg { width: 1rem; height: 1rem; flex: none; }
   .app-header-left { grid-column: 1 / -1; }
   .app-header-left > .chip-anchor { max-width: calc(100% - 3rem); }
   .app-header-actions { gap: 0.2rem; }
+  .approval-notice-label { display: none; }
+  .approval-notice-count { display: inline; }
   .app-header-actions .reconnecting { position: absolute; top: var(--app-header-h); right: 0.75rem; background: var(--bg); }
   .app-header-context .chat-title small { display: none; }
 }

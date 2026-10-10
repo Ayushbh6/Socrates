@@ -162,7 +162,7 @@ describe("the conversation model", () => {
 describe("standard mode helpers", () => {
   it("finds the newest routed question and describes work in progress", () => {
     let m = run(emptyModel(), act("main", { kind: "message", text: "One" }), act("main", { kind: "routed", turnId: "a", projectTurn: 1, ...route, lane: null }), act("main", { kind: "message", text: "Two" }));
-    expect(currentRoute(m.conversations.main!)).toEqual(route);
+    expect(currentRoute(m.conversations.main!)).toEqual({ ...route, projectTurn: 1 });
     const latest = m.conversations.main!.at(-1)!;
     // The answer's own work says when it thinks or works; the thread line covers only approvals and sending.
     expect(workLine(orbState(latest, []), latest)).toBeNull();

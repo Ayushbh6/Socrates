@@ -85,6 +85,7 @@ export function redoBlock(exchange: Exchange, list: Exchange[]): string | null |
   const route = exchange.route;
   if (!route || exchange.redoneTo || exchange.question || exchange.turns.length !== 1) return undefined;
   if (exchange.state !== "done" && exchange.state !== "stopped") return undefined;
-  const later = list.some((o) => o !== exchange && !o.redoneTo && o.route?.goal.number === route.goal.number && o.route.task.number === route.task.number && o.at > exchange.at);
+  const later = list.some((o) => o !== exchange && !o.redoneTo && o.route?.goal.number === route.goal.number && o.route.task.number === route.task.number &&
+    (o.route.projectTurn !== undefined && route.projectTurn !== undefined ? o.route.projectTurn > route.projectTurn : o.at > exchange.at));
   return later ? "Later questions in this task build on this answer." : null;
 }

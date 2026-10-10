@@ -404,6 +404,28 @@ it("cancels queued lane work promptly while retaining its single recorded messag
   hold.open(); await first; await s.close();
 });
 
+it("clears both an aborted task owner and its aborted waiter, and accepts new work", async () => {
+  const w = await world();
+  const started = gate(), hold = gate(), bound = gate();
+  const s = socrates(w.store, new Responder("router", () => continueTask()), new Responder("agent", async (m) => {
+    if (m === "Owner") { started.open(); await hold.opened; }
+    return final();
+  }));
+  const ownerStop = new AbortController(), waiterStop = new AbortController();
+  const owner = s.handle("Owner", { target: { taskId: w.taskId }, alongside: true, signal: ownerStop.signal });
+  await started.opened;
+  const waiter = s.handle("Waiter", { signal: waiterStop.signal, onBound: () => bound.open() });
+  await bound.opened;
+  ownerStop.abort(); waiterStop.abort();
+  await Promise.all([owner, waiter]);
+  expect(s.taskBusy(w.taskId)).toBe(false);
+  expect(s.busy).toBe(false);
+  expect(s.runningChats).toBe(0);
+  expect(await s.handle("Next", { target: { taskId: w.taskId }, alongside: true })).toMatchObject({ kind: "answered" });
+  expect(s.taskBusy(w.taskId)).toBe(false);
+  await s.close();
+});
+
 it("a cancelled waiter does not redirect handoffs into its now-closed lane", async () => {
   const w = await world();
   const started = gate(), hold = gate(), handed = gate();

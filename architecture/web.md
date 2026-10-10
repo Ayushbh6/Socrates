@@ -159,6 +159,12 @@ Drop images on the composer, paste a screenshot into it, or choose them with the
 
 An approval appears in the answer of the conversation that asked, at the point where the work stopped: what will happen, a preview of the change when there is one, and **Refuse** or **Approve**. Every open page sees it; the first answer counts.
 
+Both modes' shared header shows **Approval needed**, or the pending count when several are waiting, even while another question or chat is open. With one approval, clicking opens its original question; with several, a menu lists the waiting requests. Flow selects the original question in main or its lane. Standard opens its task and continuation chat, then scrolls to and focuses the original question. Older history is loaded when necessary. Opening an approval keeps the current mode and unsent draft, and sends no message. The indicator follows live state, including after reload; resolving or cancelling a request removes it everywhere.
+
+Messages for the same task keep the server's acceptance order across Standard and Flow. If A is working and B is queued in Standard, a later Flow C routed to that task waits for B before being bound and run, so C sees both earlier answers. A later Standard message also waits for an earlier Flow routing decision before it can pass it; unrelated tasks can run once their destinations are known. Stopping Flow's waiting message leaves the Standard owner and queue alone. Stopping the task in Standard stops both its active owner and bound or routed waiters, and the task becomes available again; queued messages follow the existing queue rules.
+
+The page retains each exchange's project-turn number from history and live routing. Questions within a task display in that order, even when a queued request was saved after a following Flow request; the same order decides whether a question is still eligible for **Redo in…**. Flow keeps the question just sent on its canvas while earlier queued work is saved and run.
+
 ## Conversations
 
 The page builds each conversation from history pages and the live connection, with one pure model (`apps/web/src/lib/model.ts`):
