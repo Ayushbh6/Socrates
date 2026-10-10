@@ -224,7 +224,8 @@ function MemorySection({ app }: { app: AppState }) {
   const switches = app.settings!.memory;
   const toggle = (key: "save" | "use", on: boolean) => save(() => store.saveSettings({ memory: { [key]: on } }));
   const where = (m: MemoryView) => [
-    m.kind === "knowledge" ? "Kept for later" : m.alwaysOn ? "Always on" : "Not always on: no room left",
+    m.alwaysOn ? "Always on" : m.kind === "knowledge" ? "Recalled when relevant" : "Recalled when relevant: no room left to keep it always on",
+    m.uses ? `shown to Socrates ${m.uses === 1 ? "once" : m.uses === 2 ? "twice" : `${m.uses} times`}` : null,
     m.goal ? `only in ${m.goal.title}` : null,
     m.source ? `from ${m.source.goal.title} / ${m.source.task.title}, ${new Date(m.source.at).toLocaleDateString(undefined, { day: "numeric", month: "short" })}` : "added by you",
   ].filter(Boolean).join(" · ");

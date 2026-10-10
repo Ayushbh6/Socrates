@@ -130,6 +130,7 @@ export function describeCall(tool: string, input: unknown): CallView {
     }
     case "context_retrieve": {
       const q = str(i.query) || str(i.ref) || str(i.target);
+      if (i.action === "memory") return q ? view("memory", "Recalled what it remembers about", "Recalling what it remembers about", cut(q, TARGET_CHARS)) : view("memory", "Recalled what it remembers", "Recalling what it remembers", "");
       return view("memory", i.action === "inspect" ? "Looked back at" : "Looked back for", i.action === "inspect" ? "Looking back at" : "Looking back for", cut(q, TARGET_CHARS));
     }
     case "capability_search":
@@ -243,6 +244,11 @@ export function describeResult(
       const output = screen || str(r.output);
       const summary = r.event === "timeout" ? "timed out" : typeof r.event === "string" && r.action === "wait" && r.event !== "exit" ? String(r.event).replace(/_/g, " ") : r.status === "running" && r.action === undefined ? (r.ready === true ? "running, ready" : "still running") : exitSummary(r) ?? (r.input_required === true ? "waiting for input" : null);
       return { ...base, summary, ...tail(output), failed: commandFailed(tool, r) };
+    }
+    case "context_retrieve": {
+      if (r.action !== "memory" || !Array.isArray(r.memories)) return { ...base, ...head(p.content) };
+      const found = r.memories as { ref?: string; text?: string }[];
+      return { ...base, summary: found.length ? plural(found.length, "memory", "memories") : "nothing remembered", ...head(found.map((m) => `${m.ref ?? ""}: ${m.text ?? ""}`).join("\n")) };
     }
     default:
       return { ...base, ...head(p.content) };

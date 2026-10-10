@@ -12,9 +12,11 @@ import type { LedgerStore } from "@socrates/store";
  * - tool_call: one line per call naming the tool and its input; outputs are not
  *   embedded, the call's evidence handle opens them;
  * - capability: an installed Skill's or MCP tool's name and description;
- * - file_section: one section of a workspace file (see files.ts).
+ * - file_section: one section of a workspace file (see files.ts);
+ * - memory: one active memory's words (agent-harness.md, "Memory"); its goal
+ *   is the one goal it belongs to, or null for everywhere.
  */
-export type DocumentKind = "goal" | "task" | "exchange" | "tool_call" | "capability" | "file_section";
+export type DocumentKind = "goal" | "task" | "exchange" | "tool_call" | "capability" | "file_section" | "memory";
 
 export interface SourceDocument {
   id: string;
@@ -84,6 +86,11 @@ export function turnDocuments(store: LedgerStore, turnId: string): SourceDocumen
     docs.push({ ...base, id: `tool_call:${exchange.taskId}:${ev.handle}`, kind: "tool_call", sourceId: turnId, at: exchange.at, text: callLine(ev.tool, ev.input) });
   }
   return docs;
+}
+
+/** Every active memory as a document; forgotten ones are left out, so a sync removes them. */
+export function memoryDocuments(store: LedgerStore): SourceDocument[] {
+  return store.listMemories().map((m) => ({ id: `memory:${m.id}`, kind: "memory", sourceId: m.id, goalId: m.goalId, taskId: null, turnId: null, projectTurn: null, at: m.updatedAt, text: m.text }));
 }
 
 export function capabilityDocument(entry: { kind: "skill" | "mcp"; name: string; description: string }, at: string): SourceDocument {

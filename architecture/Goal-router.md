@@ -784,7 +784,7 @@ The second chat starts with a visible, collapsible card: "Automatically continue
 
 **Reader 2 — The router, via `ledger_query`.** When the message references the past beyond the notepad's windows, the router queries the ledger directly under the caps described under "Router output."
 
-**Reader 3 — The working agent, via `context_retrieve`.** The agent has three bounded actions over the same SQL-backed memory authority: `ledger_search` discovers goals and tasks across `current_goal` or `all_goals`; `search` searches exact Q&A inside `current_task`, `current_goal`, `all_goals`, or an explicit `gN`/`tN`/`gN/tN` target; and `inspect` expands one selected record or evidence reference.
+**Reader 3 — The working agent, via `context_retrieve`.** The agent has four bounded actions over the same SQL-backed memory authority: `ledger_search` discovers goals and tasks across `current_goal` or `all_goals`; `search` searches exact Q&A inside `current_task`, `current_goal`, `all_goals`, or an explicit `gN`/`tN`/`gN/tN` target; `inspect` expands one selected record, evidence reference or memory; and `memory` finds what is remembered about the user (`agent-harness.md`, "Memory").
 
 ```json
 { "action": "search", "query": "checkout bugs", "target": "current_goal",

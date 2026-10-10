@@ -165,6 +165,10 @@ export const ContextRetrieveInput = z.discriminatedUnion("action", [
     ref: z.string().min(1).max(32).optional(),
     turn_number: z.number().int().min(1).optional(),
   }),
+  z.strictObject({
+    action: z.literal("memory"),
+    query: z.string().min(1).max(500).optional(),
+  }),
 ]);
 
 export const CapabilitySearchInput = z.strictObject({

@@ -163,6 +163,8 @@ export interface EventPayloads {
   memory_edited: { memory_id: string; text: string; kind: MemoryKind; by: MemoryAuthor };
   /** Left out of everything Socrates uses; the conversation it came from stays in history. */
   memory_forgotten: { memory_id: string; by: MemoryAuthor };
+  /** Entries offered to the agent this turn beyond `<MEMORY>`: as `<MEMORY_CANDIDATES>`, or found by `context_retrieve`. */
+  memory_surfaced: { memory_ids: string[]; how: "candidates" | "search" };
   /** The goal's Skill shelf, resolved once and frozen so ordinary turns stay cache-stable. */
   skill_shelf_frozen: { skills: { name: string; description: string }[] };
 }

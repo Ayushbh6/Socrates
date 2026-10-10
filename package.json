@@ -20,6 +20,7 @@
     "eval:compaction": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/agent/eval/run-compaction-e2e.ts",
     "eval:capabilities": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/capabilities/eval/run-capabilities-e2e.ts",
     "eval:embeddings": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/retrieval/eval/run-embeddings-e2e.ts",
+    "eval:memory": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/retrieval/eval/run-memory-eval.ts",
     "eval:lanes": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/agent/eval/run-lanes-e2e.ts",
     "eval:server": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx apps/server/eval/run-server-e2e.ts",
     "eval:server-core": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx apps/server/eval/run-server-core-e2e.ts",

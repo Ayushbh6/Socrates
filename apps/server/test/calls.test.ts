@@ -41,6 +41,8 @@ describe("tool calls in plain words", () => {
 
   it("names memory, capability and MCP calls", () => {
     expect(words("context_retrieve", { action: "search", query: "login bug" })).toBe("Looked back for login bug");
+    expect(words("context_retrieve", { action: "memory", query: "Berlin trip" })).toBe("Recalled what it remembers about Berlin trip");
+    expect(words("context_retrieve", { action: "memory" })).toBe("Recalled what it remembers");
     expect(words("capability_control", { action: "activate", ref: "c2" })).toBe("Turned on c2");
     expect(describeCall("playwright.browser_navigate", { url: "http://localhost:5173" })).toMatchObject({ kind: "other", verb: "Used", target: "playwright.browser_navigate", detail: "http://localhost:5173" });
   });
@@ -49,6 +51,8 @@ describe("tool calls in plain words", () => {
 describe("tool results in plain words", () => {
   it("shows a command's output, its end first kept, and how it ended", () => {
     expect(describeResult("terminal", ok({ status: "completed", exit_code: 1, output: "FAIL a.test.ts\n" }))).toMatchObject({ summary: "exit 1", preview: "FAIL a.test.ts\n", truncated: false, ms: 1200 });
+    expect(describeResult("context_retrieve", ok({ action: "memory", memories: [{ ref: "m1", text: "Trip in March." }] }))).toMatchObject({ summary: "1 memory", preview: "m1: Trip in March." });
+    expect(describeResult("context_retrieve", ok({ action: "memory", memories: [] })).summary).toBe("nothing remembered");
     const long = `${"x".repeat(3000)}\nlast line\n`;
     expect(describeResult("terminal", ok({ status: "completed", exit_code: 0, output: long }))).toMatchObject({ preview: expect.stringMatching(/^x+\nlast line\n$/), truncated: true });
     expect(describeResult("terminal", ok({ status: "running", terminal: "web", ready: true, output: "" })).summary).toBe("running, ready");

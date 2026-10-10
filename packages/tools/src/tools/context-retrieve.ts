@@ -1,7 +1,7 @@
 import { ContextRetrieveInput, type EventPayloads } from "@socrates/contracts";
 import { countTokens, nextDay, truncateToTokens, zonedDayStart, zonedParts } from "@socrates/shared";
-import { type Evidence, type Goal, type Task, type Turn, excerpt, foldText, goalSelector, parseGoalSelector, parseTaskSelector, taskSelector, toFtsQuery } from "@socrates/store";
-import { fuse, recencyBoost } from "@socrates/retrieval";
+import { type Evidence, type Goal, type Memory, type Task, type Turn, excerpt, foldText, goalSelector, parseGoalSelector, parseTaskSelector, taskSelector, toFtsQuery } from "@socrates/store";
+import { fuse, rankMemories, recencyBoost } from "@socrates/retrieval";
 import { RESULT_CEILING_TOKENS, headTail } from "../bounds";
 import type { HandlerContext } from "../context";
 import { ToolError } from "../errors";
@@ -21,6 +21,10 @@ const PREVIEW_TOKENS = 500;
 type Query = Extract<ContextRetrieveInput, { action: "ledger_search" }>;
 type Search = Extract<ContextRetrieveInput, { action: "search" }>;
 type Inspect = Extract<ContextRetrieveInput, { action: "inspect" }>;
+type MemorySearch = Extract<ContextRetrieveInput, { action: "memory" }>;
+
+/** At most this many memories are returned by one memory search. */
+export const MEMORY_SEARCH_LIMIT = 8;
 
 function dateOf(ctx: HandlerContext, iso: string): string {
   return zonedParts(new Date(iso), ctx.timeZone).date;
@@ -436,6 +440,41 @@ function evidenceView(e: Evidence, ctx: HandlerContext, scale: number) {
   };
 }
 
+// ── memory ──────────────────────────────────────────────────────────────────
+
+/** One memory as context_retrieve shows it: its handle, kind, words, where it applies and when it was said. */
+function memoryItem(ctx: HandlerContext, m: Memory) {
+  const turn = m.sourceTurnId ? ctx.store.getTurn(m.sourceTurnId) : null;
+  return { ref: m.handle, kind: m.kind, text: m.text, applies: m.goalId ? "this goal" : "everywhere", date: dateOf(ctx, m.updatedAt), said_in_turn: turn?.projectTurn ?? null };
+}
+
+/**
+ * What Socrates remembers about the user that applies here (everywhere, or
+ * this goal): with a query, the best keyword and meaning matches; without
+ * one, the newest. Entries found are recorded as offered (agent-harness.md,
+ * "Memory").
+ */
+async function memorySearch(input: MemorySearch, ctx: HandlerContext) {
+  if (ctx.memoryInUse === false) return { action: "memory", memories: [], note: "The user turned off using memories." };
+  const goalId = ctx.binding.goalId;
+  // What <MEMORY> already shows is not repeated.
+  const shown = new Set(ctx.store.profileMemories(goalId).map((m) => m.id));
+  let found: Memory[];
+  if (input.query) {
+    const semantic = (await ctx.semantic?.search(input.query, { kinds: ["memory"], goalIdsOrNone: [goalId], limit: 20, min: "related" }, ctx.signal)) ?? [];
+    found = rankMemories(ctx.store, { query: input.query, goalId, semantic, exclude: shown, strict: false, meaningFloor: 0, limit: MEMORY_SEARCH_LIMIT, now: ctx.store.clock.now() }).map((r) => r.memory);
+  } else {
+    found = ctx.store.listMemories().filter((m) => (!m.goalId || m.goalId === goalId) && !shown.has(m.id)).slice(0, MEMORY_SEARCH_LIMIT);
+  }
+  if (ctx.binding.turnId) ctx.store.recordMemoriesSurfaced(found.map((m) => m.id), "search", { goal_id: goalId, task_id: ctx.binding.taskId, chat_id: ctx.binding.chatId, turn_id: ctx.binding.turnId });
+  return {
+    action: "memory",
+    ...(input.query ? { query: input.query } : {}),
+    memories: found.map((m) => memoryItem(ctx, m)),
+    ...(found.length ? {} : { note: input.query ? "Nothing remembered matches. Try other words, or search past exchanges with search target all_goals." : "Nothing is remembered yet beyond <MEMORY>." }),
+  };
+}
+
 function inspect(input: Inspect, ctx: HandlerContext) {
   if ((input.ref === undefined) === (input.turn_number === undefined)) {
     throw new ToolError("one_reference_required", "inspect takes exactly one of ref or turn_number.", 'Pass ref (gN, tN, gN/tN, rN, eN, hc-N) or turn_number, for example {"action":"inspect","ref":"e3"}.');
@@ -448,6 +487,13 @@ function inspect(input: Inspect, ctx: HandlerContext) {
       throw new ToolError("turn_not_found", `Project turn ${input.turn_number} does not exist.`, latest ? `Use context_retrieve search, or inspect an existing project turn between 1 and ${latest}.` : "There are no earlier turns yet.");
     }
     build = (scale) => turnView(turn, null, ctx, scale);
+  } else if (/^m\d+$/i.test(input.ref!.trim())) {
+    const ref = input.ref!.trim().toLowerCase();
+    const memory = ctx.store.getMemoryByNumber(Number(ref.slice(1)));
+    if (!memory || memory.forgottenAt || (memory.goalId && memory.goalId !== ctx.binding.goalId) || ctx.memoryInUse === false) {
+      throw new ToolError("memory_not_found", `${ref} is not a memory that applies here.`, "Use context_retrieve memory to find what is remembered.");
+    }
+    build = () => ({ action: "inspect", memory: { ...memoryItem(ctx, memory), by: memory.by }, ...(memory.sourceTurnId ? { hint: "inspect turn_number said_in_turn returns the exchange it was said in" } : {}) });
   } else {
     const ref = input.ref!.trim();
     // A qualified gN/tN/eM names evidence of another task, as compound-part handoffs do.
@@ -578,14 +624,15 @@ export const contextRetrieveTool: ToolHandler<ContextRetrieveInput> = {
     "Recall earlier work from Socrates' memory.",
     "ledger_search: goals and tasks by their metadata; returns selectors such as g7 and g7/t4.",
     "search: exact past questions and answers by query and/or dates, in target: current_task (default), current_goal, all_goals, gN, tN (a task of the current goal) or gN/tN; top_n default 5; returns refs such as r1.",
-    "inspect: one record by ref (gN, tN, gN/tN, rN, eN: a tool call of this task, gN/tN/eN, hc-N) or turn_number (any [TURN k]).",
+    "inspect: one record by ref (gN, tN, gN/tN, rN, eN: a tool call of this task, gN/tN/eN, hc-N, mN: a memory) or turn_number (any [TURN k]).",
+    "memory: what is remembered about the user beyond <MEMORY>, best matches for query, else the newest.",
     "Dates are YYYY-MM-DD. Output is bounded; omissions name refs to inspect.",
   ].join(" "),
   schema: ContextRetrieveInput,
   concurrency: "parallel",
   mutating: false,
   async execute(input, ctx) {
-    const result = enforceBounds(input.action === "ledger_search" ? await ledgerSearch(input, ctx) : input.action === "search" ? await search(input, ctx) : inspect(input, ctx));
+    const result = enforceBounds(input.action === "ledger_search" ? await ledgerSearch(input, ctx) : input.action === "search" ? await search(input, ctx) : input.action === "memory" ? await memorySearch(input, ctx) : inspect(input, ctx));
     return { content: json(result), result };
   },
 };

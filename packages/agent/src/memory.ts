@@ -1,4 +1,6 @@
 import type { EventRefs, MemoryProposal } from "@socrates/contracts";
+import { DEFAULT_THRESHOLDS, type SemanticHit, rankMemories } from "@socrates/retrieval";
+import { countTokens, zonedParts } from "@socrates/shared";
 import { type Goal, type LedgerStore, type Memory, StoreError } from "@socrates/store";
 
 /** The user's two memory switches (architecture/server.md, "Settings"). */
@@ -30,6 +32,36 @@ export function memoryBlock(store: LedgerStore, goal: Goal, settings: MemorySett
     ...(settings.save ? [] : ["Saving new memories is turned off by the user: leave memory.save out, and if asked to remember something, say it is off."]),
   ];
   return lines.length ? `<MEMORY>\n${lines.join("\n")}\n</MEMORY>` : null;
+}
+
+/** At most this many entries are offered in `<MEMORY_CANDIDATES>`, within this many tokens. */
+export const MEMORY_CANDIDATES_MAX = 4;
+export const MEMORY_CANDIDATES_MAX_TOKENS = 250;
+
+/**
+ * `<MEMORY_CANDIDATES>` (agent-harness.md, "Memory"): entries not in
+ * `<MEMORY>` (knowledge, and who the user is or how they work beyond its
+ * budget) whose words or meaning match the message, for everywhere and this
+ * goal, best first, each with its handle, kind and date. Offered strictly:
+ * one shared common word is not enough. Null when nothing qualifies or
+ * memories are not used.
+ */
+export function memoryCandidates(store: LedgerStore, input: { goal: Goal; message: string; semantic: SemanticHit[]; settings: MemorySettings; now: Date; timeZone: string; meaningFloor?: number }): { block: string | null; ids: string[] } {
+  if (!input.settings.use) return { block: null, ids: [] };
+  const shown = new Set(store.profileMemories(input.goal.id).map((m) => m.id));
+  const ranked = rankMemories(store, { query: input.message, goalId: input.goal.id, semantic: input.semantic, exclude: shown, strict: true, meaningFloor: input.meaningFloor ?? DEFAULT_THRESHOLDS.suggest, limit: MEMORY_CANDIDATES_MAX, now: input.now });
+  const lines: string[] = [];
+  const ids: string[] = [];
+  let used = countTokens("<MEMORY_CANDIDATES>\n</MEMORY_CANDIDATES>");
+  for (const { memory } of ranked) {
+    const line = `- [${memory.handle} · ${memory.kind}${memory.goalId ? " · this goal" : ""} · ${zonedParts(new Date(memory.updatedAt), input.timeZone).date}] ${memory.text}`;
+    const cost = countTokens(line) + 1;
+    if (used + cost > MEMORY_CANDIDATES_MAX_TOKENS) continue;
+    lines.push(line);
+    ids.push(memory.id);
+    used += cost;
+  }
+  return lines.length ? { block: `<MEMORY_CANDIDATES>\n${lines.join("\n")}\n</MEMORY_CANDIDATES>`, ids } : { block: null, ids: [] };
 }
 
 /** One change a turn made to memory. */

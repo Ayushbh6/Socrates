@@ -1,6 +1,6 @@
 # Memory and personalisation (design, for approval)
 
-Status: approved 2026-10-10 (the gate on by default when an OpenRouter key exists; saving without asking, with Undo). **M1 is built**: `architecture/agent-harness.md`, "Memory", `server.md` and `web.md` describe it as built. M2 and M3 below are still the plan.
+Status: approved 2026-10-10 (the gate on by default when an OpenRouter key exists; saving without asking, with Undo). **M1 and M2 are built**: `architecture/agent-harness.md`, "Memory", `server.md` and `web.md` describe them as built (M2 added a second floor, `0.30` with a shared word, after `pnpm eval:memory` showed the related floor let wrong entries in). M3 below is still the plan.
 
 ## The problem
 

@@ -736,3 +736,47 @@ describe("memory", () => {
     for (const plain of ["Prefers pnpm over npm.", "Their daughter's birthday is 14 March.", "Works on /Users/me/Documents/Work/Socrates/packages/agent.", "Wants answers under 200 words.", "Keeps the token budget low."]) expect(looksSecret(plain), plain).toBe(false);
   });
 });
+
+describe("memory search and use", () => {
+  it("finds active entries by their words in the right place, follows edits and forgetting, and counts what was offered", () => {
+    const { store } = openStore();
+    const shop = store.createGoal({ title: "Shop" });
+    const other = store.createGoal({ title: "Other" });
+    const deploy = store.saveMemory({ kind: "knowledge", goalId: shop.id, text: "Deploys go to Fly.io in Frankfurt.", by: "user" }).memory;
+    const trip = store.saveMemory({ kind: "knowledge", goalId: null, text: "The Berlin trip is in March.", by: "user" }).memory;
+    const handles = (fts: string, goalId?: string | null) => store.searchMemories(fts, { goalId, limit: 10 }).map((m) => m.handle);
+    expect(handles(toFtsQuery("deploying to Frankfurt"), shop.id)).toEqual([deploy.handle]);
+    expect(handles(toFtsQuery("deploying to Frankfurt"), other.id)).toEqual([]);
+    expect(handles(toFtsQuery("Berlin deploys"))).toEqual(expect.arrayContaining([deploy.handle, trip.handle]));
+    store.editMemory(trip.id, { text: "The Vienna trip is in March." }, "user");
+    expect(handles(toFtsQuery("Berlin"), null)).toEqual([]);
+    expect(handles(toFtsQuery("Vienna"), null)).toEqual([trip.handle]);
+    store.forgetMemory(trip.id, "user");
+    expect(handles(toFtsQuery("Vienna"), null)).toEqual([]);
+
+    const turn = { goal_id: shop.id };
+    store.recordMemoriesSurfaced([deploy.id, deploy.id], "candidates", turn);
+    store.recordMemoriesSurfaced([], "search", turn);
+    store.recordMemoriesSurfaced([deploy.id], "search", turn);
+    expect(store.getMemory(deploy.id)).toMatchObject({ uses: 2, lastUsedAt: expect.any(String) });
+    const recovered = LedgerStore.open({ path: ":memory:" });
+    recovered.restoreEvents(JSON.parse(JSON.stringify(store.listEvents())));
+    expect(recovered.getMemory(deploy.id)).toMatchObject({ uses: 2 });
+    expect(recovered.searchMemories(toFtsQuery("Frankfurt"), { limit: 5 }).map((m) => m.handle)).toEqual([deploy.handle]);
+  });
+
+  it("upgrades a version 7 store: memories get use counts and their words are indexed", () => {
+    const dir = mkdtempSync(join(tmpdir(), "socrates-v7-"));
+    const file = join(dir, "ledger.db");
+    const first = LedgerStore.open({ path: file });
+    first.saveMemory({ kind: "knowledge", goalId: null, text: "Waters the plants on Sundays.", by: "user" });
+    first.db.exec("DELETE FROM memory_fts; ALTER TABLE memories DROP COLUMN use_count; ALTER TABLE memories DROP COLUMN last_used_at;");
+    first.setMeta("schema_version", "7");
+    first.close();
+    const upgraded = LedgerStore.open({ path: file });
+    expect(upgraded.getMeta("schema_version")).toBe(String(SCHEMA_VERSION));
+    expect(upgraded.searchMemories(toFtsQuery("plants"), { limit: 5 })).toMatchObject([{ handle: "m1", uses: 0, lastUsedAt: null }]);
+    upgraded.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+});

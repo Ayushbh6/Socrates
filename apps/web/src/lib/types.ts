@@ -351,4 +351,7 @@ export interface MemoryView {
   updatedAt: string;
   /** Shown to Socrates in every request (in its goal, for a goal's own). */
   alwaysOn: boolean;
+  /** How often it was offered beyond the always-on part, and when last. */
+  uses: number;
+  lastUsedAt: string | null;
 }

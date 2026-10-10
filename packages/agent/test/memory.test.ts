@@ -1,7 +1,23 @@
+import type { SemanticHit, SemanticIndex, SemanticQuery } from "@socrates/retrieval";
 import { describe, expect, it } from "vitest";
 import { createGoal, continueTask, general } from "../../router/test/helpers";
 import { validateFinalAnswer } from "../src";
-import { contextParts, final, world } from "./helpers";
+import { call, contextParts, contextText, final, world } from "./helpers";
+
+/** A meaning index that answers memory searches from fixed similarities, honouring the place filter. */
+function memoryIndex(similar: () => { id: string; goalId: string | null; similarity: number }[]): SemanticIndex & { queries: SemanticQuery[] } {
+  const index = {
+    queries: [] as SemanticQuery[],
+    async search(_query: string, filter: SemanticQuery): Promise<SemanticHit[]> {
+      index.queries.push(filter);
+      if (!filter.kinds.includes("memory")) return [];
+      return similar().filter((m) => !m.goalId || filter.goalIdsOrNone?.includes(m.goalId)).map((m) => ({ kind: "memory" as const, sourceId: m.id, goalId: m.goalId, taskId: null, turnId: null, projectTurn: null, at: "2026-09-01T10:00:00Z", similarity: m.similarity }));
+    },
+    scheduleSync() {},
+    async close() {},
+  };
+  return index;
+}
 
 /** The stable first part of a request, where `<MEMORY>` lives. */
 const firstPart = (request: Parameters<typeof contextParts>[0]) => contextParts(request)[0]!.text;
@@ -79,5 +95,39 @@ describe("memory", () => {
     expect(bad({ save: Array(4).fill({ text: "Likes tea.", kind: "about", scope: "user" }) })).toMatchObject({ ok: false });
     expect(bad({ save: [{ text: "x".repeat(281), kind: "about", scope: "user" }] })).toMatchObject({ ok: false });
     expect(bad({ forget: ["4"] })).toMatchObject({ ok: false, errors: [expect.stringContaining("m4")] });
+  });
+
+  it("offers matching entries beyond <MEMORY> once per turn, records them as offered, and lets the agent search and inspect memory", async () => {
+    const w = await world();
+    const trip = w.store.saveMemory({ kind: "knowledge", goalId: null, text: "The Berlin trip is from 14 to 18 March.", by: "user" }).memory;
+    const pnpm = w.store.saveMemory({ kind: "preference", goalId: null, text: "Prefers pnpm over npm.", by: "user" }).memory;
+    const elsewhere = w.store.saveMemory({ kind: "knowledge", goalId: w.store.createGoal({ title: "Other" }).id, text: "Flights to Berlin leave at 7:10.", by: "user" }).memory;
+    const settings = { save: true, use: true };
+    const semantic = memoryIndex(() => [{ id: trip.id, goalId: null, similarity: 0.6 }, { id: pnpm.id, goalId: null, similarity: 0.6 }, { id: elsewhere.id, goalId: elsewhere.goalId, similarity: 0.9 }]);
+    const { socrates, model } = w.socrates([continueTask(), continueTask()], [
+      { toolCalls: [call("context_retrieve", { action: "memory", query: "Berlin trip" }), call("context_retrieve", { action: "inspect", ref: "m1" }), call("context_retrieve", { action: "inspect", ref: "m3" })] },
+      final(),
+      final(),
+    ], { semantic, memory: () => settings });
+    await socrates.handle("When is my Berlin trip?");
+    const first = contextText(model.requests[0]!);
+    // Only the entry not already always on; another goal's entry never.
+    expect(/<MEMORY_CANDIDATES>\n([\s\S]*?)\n<\/MEMORY_CANDIDATES>/.exec(first)?.[1]).toBe("- [m1 · knowledge · 2026-09-01] The Berlin trip is from 14 to 18 March.");
+    expect(first.indexOf("<MEMORY_CANDIDATES>")).toBeGreaterThan(first.indexOf("<CURRENT_TASK>"));
+    expect(semantic.queries.find((q) => q.kinds.includes("memory"))).toEqual({ kinds: ["memory"], goalIdsOrNone: [w.goalId], limit: 20, min: "related" });
+
+    const results = model.requests[1]!.messages.filter((m) => m.role === "tool").map((m) => JSON.parse(m.content as string));
+    expect(results[0]).toMatchObject({ action: "memory", memories: [{ ref: "m1", kind: "knowledge", applies: "everywhere", said_in_turn: null }] });
+    expect(results[0].memories.map((m: { ref: string }) => m.ref)).not.toContain("m3");
+    expect(results[1]).toMatchObject({ memory: { ref: "m1", text: "The Berlin trip is from 14 to 18 March.", by: "user" } });
+    expect(results[2]).toMatchObject({ error: { code: "memory_not_found" } });
+    // Offered as a candidate, then found by the search.
+    expect(w.store.getMemory(trip.id)).toMatchObject({ uses: 2 });
+    expect(w.store.listEvents({ type: "memory_surfaced" }).map((e) => (e.payload as { how: string }).how)).toEqual(["candidates", "search"]);
+
+    settings.use = false;
+    await socrates.handle("And the trip again?");
+    expect(contextText(model.requests.at(-1)!)).not.toContain("<MEMORY_CANDIDATES>");
+    expect(w.store.getMemory(trip.id)!.uses).toBe(2);
   });
 });

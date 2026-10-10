@@ -3,3 +3,4 @@ export * from "./documents";
 export * from "./files";
 export * from "./vector-index";
 export * from "./retrieval";
+export * from "./memory";

@@ -200,6 +200,9 @@ export interface Memory {
   createdAt: string;
   updatedAt: string;
   forgottenAt: string | null;
+  /** How often it was offered to the agent beyond the always-on part, and when last. */
+  uses: number;
+  lastUsedAt: string | null;
 }
 
 export interface TaskWithGoal {
@@ -361,6 +364,8 @@ function toMemory(r: Row): Memory {
     createdAt: str(r.created_at),
     updatedAt: str(r.updated_at),
     forgottenAt: strOrNull(r.forgotten_at),
+    uses: num(r.use_count ?? 0),
+    lastUsedAt: strOrNull(r.last_used_at),
   };
 }
 
@@ -430,11 +435,13 @@ export class LedgerStore {
           while (current < SCHEMA_VERSION) {
             const migration = MIGRATIONS[current];
             if (migration === undefined) throw new StoreError(`No migration from store schema version ${current}.`);
-            db.exec(migration);
+            if (typeof migration === "function") migration(db);
+            else db.exec(migration);
             current++;
             store.setMeta("schema_version", String(current));
           }
           if (from < 3) store.rebuildExchangeIndex();
+          if (from < 8) store.rebuildMemoryIndex();
         });
       }
       return store;
@@ -695,6 +702,7 @@ export class LedgerStore {
       for (const g of this.listGoals()) this.indexGoal(g.id);
       for (const t of this.allTasks()) this.indexTask(t.task.id);
       this.rebuildExchangeIndex();
+      this.rebuildMemoryIndex();
     });
   }
 
@@ -820,7 +828,7 @@ export class LedgerStore {
         }
         break;
       }
-      case "memory_saved": case "memory_edited": case "memory_forgotten": this.projectMemory(e); break;
+      case "memory_saved": case "memory_edited": case "memory_forgotten": case "memory_surfaced": this.projectMemory(e); break;
       case "turn_redone": case "file_changed": case "terminal_started": case "approval_decided": case "history_omitted": case "agent_warning": case "agent_message": case "anchor_question": case "anchor_decided":
       case "mcp_tools_listed": case "skill_shelf_frozen": break;
       default: throw new StoreError(`Unsupported event type: ${e.type}`);
@@ -876,17 +884,54 @@ export class LedgerStore {
       case "memory_saved": {
         const p = e.payload as EventPayloads["memory_saved"];
         this.run("INSERT INTO memories (id, number, kind, goal_id, text, author, source_turn_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", p.memory_id, p.number, p.kind, p.goal_id, p.text, p.by, e.turn_id, e.at, e.at);
+        this.indexMemory(p.memory_id);
         break;
       }
       case "memory_edited": {
         const p = e.payload as EventPayloads["memory_edited"];
         this.run("UPDATE memories SET text = ?, kind = ?, updated_at = ? WHERE id = ?", p.text, p.kind, e.at, p.memory_id);
+        this.indexMemory(p.memory_id);
         break;
       }
-      case "memory_forgotten":
-        this.run("UPDATE memories SET forgotten_at = ?, updated_at = ? WHERE id = ?", e.at, e.at, (e.payload as EventPayloads["memory_forgotten"]).memory_id);
+      case "memory_forgotten": {
+        const id = (e.payload as EventPayloads["memory_forgotten"]).memory_id;
+        this.run("UPDATE memories SET forgotten_at = ?, updated_at = ? WHERE id = ?", e.at, e.at, id);
+        this.indexMemory(id);
+        break;
+      }
+      case "memory_surfaced":
+        for (const id of (e.payload as EventPayloads["memory_surfaced"]).memory_ids) this.run("UPDATE memories SET use_count = use_count + 1, last_used_at = ? WHERE id = ?", e.at, id);
         break;
     }
+  }
+
+  /** Keep one active entry's words in the keyword index; a forgotten one leaves it. */
+  private indexMemory(id: string): void {
+    this.run("DELETE FROM memory_fts WHERE memory_id = ?", id);
+    const r = this.get("SELECT text FROM memories WHERE id = ? AND forgotten_at IS NULL", id);
+    if (r) this.run("INSERT INTO memory_fts (memory_id, text) VALUES (?, ?)", id, str(r.text));
+  }
+
+  rebuildMemoryIndex(): void {
+    this.run("DELETE FROM memory_fts");
+    for (const r of this.all("SELECT id FROM memories WHERE forgotten_at IS NULL")) this.indexMemory(str(r.id));
+  }
+
+  /**
+   * Active entries whose words match an FTS expression, best first by BM25,
+   * that apply in `goalId` (everywhere, or that goal); all goals when it is
+   * undefined.
+   */
+  searchMemories(fts: string, options: { goalId?: string | null; limit: number }): Memory[] {
+    const scope = options.goalId === undefined ? "" : " AND (m.goal_id IS NULL OR m.goal_id IS ?)";
+    const params: (string | number | null)[] = [fts, ...(options.goalId === undefined ? [] : [options.goalId]), options.limit];
+    return this.all(`SELECT m.* FROM memory_fts f JOIN memories m ON m.id = f.memory_id WHERE memory_fts MATCH ? AND m.forgotten_at IS NULL${scope} ORDER BY bm25(memory_fts), m.number DESC LIMIT ?`, ...params).map(toMemory);
+  }
+
+  /** Record the entries offered to the agent this turn beyond `<MEMORY>` (`refs` is the turn). */
+  recordMemoriesSurfaced(ids: string[], how: EventPayloads["memory_surfaced"]["how"], refs: EventRefs): void {
+    if (!ids.length) return;
+    this.transaction(() => this.projectMemory(this.appendEvent("memory_surfaced", { memory_ids: [...new Set(ids)], how }, refs)));
   }
 
   getMemory(id: string): Memory | null {

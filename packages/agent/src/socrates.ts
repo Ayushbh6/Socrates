@@ -18,7 +18,7 @@ import { AGENT_SYSTEM_PROMPT } from "./prompt";
 import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
 import { createCompactor } from "./compaction";
 import { applyAnchors, type AnchorDecision, type AnchorChange } from "./anchors";
-import { MEMORY_ON, type MemoryChange, type MemorySettings, applyMemory } from "./memory";
+import { MEMORY_ON, type MemoryChange, type MemorySettings, applyMemory, memoryCandidates } from "./memory";
 export { MAX_GOAL_ANCHORS } from "./anchors";
 
 export interface SocratesOptions {
@@ -283,6 +283,7 @@ export class Socrates {
       },
       ...(options.catalog ? { catalog: options.catalog } : {}),
       ...(options.semantic ? { semantic: options.semantic } : {}),
+      memoryInUse: () => (options.memory?.() ?? MEMORY_ON).use,
       ...(options.terminals ? { terminals: options.terminals } : {}),
       ...(options.access ? { access: options.access } : {}),
       ...(options.log ? { log: options.log } : {}),
@@ -627,7 +628,7 @@ export class Socrates {
     const setupTimer = setTimeout(() => setupDeadline.abort(), Math.max(0, this.limits.maxWallMs - ((this.options.now ?? Date.now)() - startedAt)));
     let initialTools = this.runner.definitions;
     const request = store.requestForTurn(turn.id).request;
-    const semantic = { task: [] as SemanticHit[], siblings: [] as SemanticHit[], capabilities: [] as SemanticHit[], anchors: [] as SemanticHit[], related: [] as SemanticHit[] };
+    const semantic = { task: [] as SemanticHit[], siblings: [] as SemanticHit[], capabilities: [] as SemanticHit[], anchors: [] as SemanticHit[], related: [] as SemanticHit[], memories: [] as SemanticHit[] };
     const access = this.options.access?.() ?? null;
     const historyBoundary = () => {
       const history = taskHistory(store, turn.id);
@@ -644,12 +645,13 @@ export class Socrates {
         const workspaceId = workspace && canReadAutomatically(access, workspace.root) ? store.requireGoal(goal.id).workspaceId : null;
         const anchorPaths = store.listAnchors(goal.id).filter((a) => a.status !== "superseded").map((a) => a.path);
         const files = workspaceId ? projectQuery(store.requireTask(turn.taskId!), request) : "";
-        [semantic.task, semantic.siblings, semantic.capabilities, semantic.anchors, semantic.related] = await Promise.all([
+        [semantic.task, semantic.siblings, semantic.capabilities, semantic.anchors, semantic.related, semantic.memories] = await Promise.all([
           ownHistory(setupSignal),
           search.search(request, { kinds: ["exchange", "tool_call"], goalIds: [goal.id], excludeTaskIds: [turn.taskId!], excludeTurnIds: parts.map((p) => p.turn.id), limit: 3, min: "strong" }, setupSignal),
           search.search(request, { kinds: ["capability"], limit: 5, min: "suggest" }, setupSignal),
           workspaceId && anchorPaths.length ? search.search(files, { kinds: ["file_section"], workspaceIds: [workspaceId], paths: anchorPaths, limit: 10 }, setupSignal) : [],
           workspaceId ? search.search(request, { kinds: ["file_section"], workspaceIds: [workspaceId], excludePaths: anchorPaths, limit: RELATED_MAX_SECTIONS, min: "strong" }, setupSignal) : [],
+          search.search(request, { kinds: ["memory"], goalIdsOrNone: [goal.id], limit: 20, min: "related" }, setupSignal),
         ]);
       }
       if (capabilities.catalog.refresh) {
@@ -674,6 +676,9 @@ export class Socrates {
     const lanes = turn.laneId ? null : lanesBlock(store, this.laneViews(), store.clock.now(), this.options.timeZone);
     // Read once, so a compaction mid-turn keeps the same first part.
     const memorySettings = this.options.memory?.() ?? MEMORY_ON;
+    // Chosen once per turn, like the capability candidates, and recorded as offered.
+    const remembered = memoryCandidates(store, { goal, message: request, semantic: semantic.memories, settings: memorySettings, now: store.clock.now(), timeZone: this.options.timeZone });
+    store.recordMemoriesSurfaced(remembered.ids, "candidates", { goal_id: goal.id, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id });
     const assemble = (previousTurn?: number) =>
       assembleContext({
         store,
@@ -689,6 +694,7 @@ export class Socrates {
         access: this.options.access?.() ?? null,
         user: this.options.profile?.().name ?? null,
         memory: memorySettings,
+        memoryCandidates: remembered.block,
         vision,
         now: store.clock.now(),
         timeZone: this.options.timeZone,

@@ -44,6 +44,7 @@ The harness assembles the first message:
 - <ACCESS>: where file and command tools may work, where they start, and when the user approves first. Paths elsewhere are absolute or start with ~/. A refused path or action stays refused: do not retry it.
 - <EVIDENCE_FROM_PART_N>: what an earlier part of a split message did, when this part depends on it.
 - <RETRIEVED_HISTORY>: older exchanges of this task that match the message and are no longer in the history above, and at most one closely related exchange of another task of this goal (labelled), oldest first with dates.
+- <MEMORY_CANDIDATES>: other remembered entries whose words or meaning match the message, dated. Use one only if it bears on it.
 - <PROJECT_CONTEXT>: the anchor files as on disk now, small ones whole, larger ones as an outline with the sections that matter here, and at most two related sections of other workspace files; each names its file and lines. Read the file for more.
 - <CAPABILITY_CANDIDATES>: at most one Skill and one MCP tool that may fit, with refs (c1) for capability_control. Hints: activate one only when the work needs it.
 - <CURRENT_USER_MESSAGE>: what the user just said. Act on it.

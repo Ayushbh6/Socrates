@@ -22,6 +22,8 @@ export interface IndexRow {
 export interface IndexFilter {
   kinds: DocumentKind[];
   goalIds?: string[];
+  /** Documents of no goal, or of one of these goals (memories that apply everywhere or here). */
+  goalIdsOrNone?: string[];
   taskIds?: string[];
   sourceIds?: string[];
   excludeTurnIds?: string[];
@@ -42,6 +44,7 @@ const list = (values: string[]) => `(${values.map(quote).join(", ")})`;
 export function wherePredicate(f: IndexFilter): string {
   const parts = [`kind IN ${list(f.kinds)}`];
   if (f.goalIds) parts.push(f.goalIds.length ? `goal_id IN ${list(f.goalIds)}` : "false");
+  if (f.goalIdsOrNone) parts.push(f.goalIdsOrNone.length ? `(goal_id IS NULL OR goal_id IN ${list(f.goalIdsOrNone)})` : "goal_id IS NULL");
   if (f.sourceIds) parts.push(f.sourceIds.length ? `source_id IN ${list(f.sourceIds)}` : "false");
   if (f.excludeTurnIds?.length) parts.push(`(turn_id IS NULL OR turn_id NOT IN ${list(f.excludeTurnIds)})`);
   if (f.taskIds) parts.push(f.taskIds.length ? `task_id IN ${list(f.taskIds)}` : "false");

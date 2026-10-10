@@ -1,3 +1,5 @@
+import type { DatabaseSync } from "node:sqlite";
+
 /**
  * SQLite schema for the event log and the ledger (Goal-router.md, "The ledger").
  *
@@ -22,16 +24,18 @@
  *   null for the main conversation.
  * - `memories` holds what Socrates remembers about the user (agent-harness.md,
  *   "Memory"), numbered as permanent handles `mN`; a forgotten entry keeps its
- *   row with `forgotten_at` set.
+ *   row with `forgotten_at` set, and `memory_fts` indexes the active ones'
+ *   words. `use_count` and `last_used_at` say how often an entry was offered
+ *   to the agent beyond the always-on part (`memory_surfaced`).
  */
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 /**
  * In-place upgrades from older schema versions, keyed by the version they
  * upgrade from. Added columns are nullable, so existing rows stay valid and
  * restoration of older event logs projects them as null.
  */
-export const MIGRATIONS: Record<number, string> = {
+export const MIGRATIONS: Record<number, string | ((db: DatabaseSync) => void)> = {
   1: `
 ALTER TABLE goals ADD COLUMN objective TEXT;
 ALTER TABLE tasks ADD COLUMN completion_criteria TEXT;
@@ -47,6 +51,13 @@ ALTER TABLE task_revisions ADD COLUMN completion_criteria TEXT;
   5: "ALTER TABLE goals ADD COLUMN archived_at TEXT; ALTER TABLE tasks ADD COLUMN archived_at TEXT;",
   // Version 7 adds memories, created by SCHEMA_SQL.
   6: "",
+  // Version 8 adds memory_fts (created by SCHEMA_SQL, filled on upgrade) and how often each memory was offered;
+  // a store older than 7 got the new memories table from SCHEMA_SQL already.
+  7: (db) => {
+    const columns = new Set((db.prepare("PRAGMA table_info(memories)").all() as { name: string }[]).map((c) => c.name));
+    if (!columns.has("use_count")) db.exec("ALTER TABLE memories ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0;");
+    if (!columns.has("last_used_at")) db.exec("ALTER TABLE memories ADD COLUMN last_used_at TEXT;");
+  },
 };
 
 export const SCHEMA_SQL = `
@@ -274,7 +285,15 @@ CREATE TABLE IF NOT EXISTS memories (
   source_turn_id TEXT,
   created_at     TEXT NOT NULL,
   updated_at     TEXT NOT NULL,
-  forgotten_at   TEXT
+  forgotten_at   TEXT,
+  use_count      INTEGER NOT NULL DEFAULT 0,
+  last_used_at   TEXT
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+  memory_id UNINDEXED,
+  text,
+  tokenize = 'porter unicode61'
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS exchange_fts USING fts5(

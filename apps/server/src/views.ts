@@ -215,6 +215,9 @@ export interface MemoryView {
   updatedAt: string;
   /** Shown to the agent in every request (in its goal, for a goal's own), within the 500-token budget. */
   alwaysOn: boolean;
+  /** How often it was offered beyond the always-on part (as a candidate, or found by a search), and when last. */
+  uses: number;
+  lastUsedAt: string | null;
 }
 
 /** Every memory, newest first. */
@@ -238,6 +241,8 @@ export function memoriesView(store: LedgerStore): MemoryView[] {
       createdAt: m.createdAt,
       updatedAt: m.updatedAt,
       alwaysOn: always.has(m.id),
+      uses: m.uses,
+      lastUsedAt: m.lastUsedAt,
     };
   });
 }

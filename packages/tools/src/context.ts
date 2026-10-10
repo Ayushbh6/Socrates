@@ -111,6 +111,8 @@ export interface HandlerContext {
   catalog: CapabilityCatalog;
   /** Meaning-based search over memory; absent or unavailable means keyword search alone. */
   semantic?: SemanticSearch;
+  /** False when the user turned off using memories: the memory action finds nothing. */
+  memoryInUse?: boolean;
   /** Resolve read-only access to an active Skill resource, or fall back to workspace policy. */
   resolveReadPath?: (input: string) => Promise<ResolvedPath>;
   /** The access policy this call runs under, or null for the workspace boundary. */

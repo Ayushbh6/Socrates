@@ -39,12 +39,13 @@ The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `serv
 - **Lean fixed prompt:** the system prompt and tools are about 5.4k tokens per request (was 7.4k); `packages/agent/test/fixed-overhead.test.ts` holds the budget.
 - **Redo in another task:** a misrouted question is asked again in a chosen task ("Redo in…" on the route line); the first attempt is set aside, never moved (`architecture/agent-harness.md`, "Redo in another task").
 - **Memory, phase M1:** Socrates remembers the user across goals: `<MEMORY>` in every request (who they are, how they like to work), saved from the final answer's `memory` field without asking, shown under the answer with Undo, and listed in Settings > Memory with two switches (`architecture/agent-harness.md`, "Memory"; the full plan is `docs/memory.md`).
+- **Memory, phase M2:** other entries (knowledge, and what does not fit in `<MEMORY>`) are recalled when a message bears on them (`<MEMORY_CANDIDATES>`, from keywords and meaning) and found with `context_retrieve` `memory`; `pnpm eval:memory` measures recall and precision with the local embedder.
 
 ## Next, in the order agreed with the user
 
 Ask before starting each one.
 
-1. **Memory and personalisation, M2 then M3** (`docs/memory.md`): M2 finds knowledge entries by meaning (`<MEMORY_CANDIDATES>`, a `context_retrieve` memory action, `pnpm eval:memory`); M3 adds the `pplx-decider` gates (on by default with an OpenRouter key) and the curator.
+1. **Memory and personalisation, M3** (`docs/memory.md`): the `pplx-decider` gates (on by default with an OpenRouter key) and the curator.
 2. **Standard to flow:** a richer design for moving between the two modes.
 3. **Continue button:** offer one after a safeguard stop (200 steps, 60 minutes, or the token limit).
 

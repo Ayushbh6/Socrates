@@ -30,6 +30,8 @@ export interface ToolRunnerOptions {
   catalog?: CapabilityCatalog;
   /** Meaning-based memory search for context_retrieve. */
   semantic?: SemanticSearch;
+  /** Whether the user lets Socrates use memories (agent-harness.md, "Memory"), read at each call; on without it. */
+  memoryInUse?: () => boolean;
   terminals?: SupervisorOptions;
   /**
    * Where tools may work and when they ask (agent-harness.md, "Access"), read
@@ -260,6 +262,7 @@ export class ToolRunner {
       catalog: this.catalog,
       access: policy,
       ...(this.options.semantic ? { semantic: this.options.semantic } : {}),
+      memoryInUse: this.options.memoryInUse?.() ?? true,
       ...(scope.onOutput ? { progress: (output: string) => {
         try { scope.onOutput!(handle, output); } catch {}
       } } : {}),
