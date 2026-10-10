@@ -1,4 +1,4 @@
-import type { EventPayloads, MemoryKind, StoredEvent } from "@socrates/contracts";
+import type { EventPayloads, MemoryKind, StoredEvent, TurnStop } from "@socrates/contracts";
 import { callLine } from "@socrates/retrieval";
 import type { LedgerStore } from "@socrates/store";
 import { type AttachmentView, viewOf } from "./attachments";
@@ -25,7 +25,7 @@ export type ActivityBody =
   /** `result`: what the call returned, in a form to read: output, matches, a diff. */
   | { kind: "tool_finished"; turnId: string; task: string; handle: string; status: "ok" | "error"; result: ResultView }
   | { kind: "answer"; turnId: string; text: string }
-  | { kind: "finished"; turnId: string; status: "completed" | "interrupted"; reason: EventPayloads["turn_interrupted"]["reason"] | null; partial?: string | null }
+  | { kind: "finished"; turnId: string; status: "completed" | "interrupted"; reason: EventPayloads["turn_interrupted"]["reason"] | null; partial?: string | null; /** Why a completed turn ended (a limit means it can be continued). */ stop?: TurnStop | null }
   | { kind: "handed_off"; turnId: string; lane: number; laneId: string; goal: { number: number; title: string }; task: { number: number; title: string } }
   | { kind: "lane"; laneId: string; number: number; state: "opened" | "closed" }
   | { kind: "approval_decided"; turnId: string | null; granted: boolean; detail: string }
@@ -115,7 +115,7 @@ export function activityOf(store: LedgerStore, event: StoredEvent): Activity | n
       return turn.kind === "clarification" ? { ...base, kind: "question", turnId: turn.id, text } : { ...base, kind: "answer", turnId: turn.id, text };
     }
     case "turn_completed":
-      return turn?.kind === "task" ? { ...base, kind: "finished", turnId: turn.id, status: "completed", reason: null } : null;
+      return turn?.kind === "task" ? { ...base, kind: "finished", turnId: turn.id, status: "completed", reason: null, stop: (event.payload as EventPayloads["turn_completed"]).stop ?? null } : null;
     case "turn_interrupted": {
       // A stopped answer keeps what had been written.
       const p = event.payload as EventPayloads["turn_interrupted"];

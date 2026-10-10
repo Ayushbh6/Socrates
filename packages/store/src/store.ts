@@ -1717,6 +1717,12 @@ export class LedgerStore {
   }
 
   /** The interruption record of a turn, when it ended without an answer. */
+  /** Why a completed turn ended: its own final answer, or the limit it reached; null for a turn that has not completed (or predates the record). */
+  stopOf(turnId: string): TurnStop | null {
+    const event = this.listEvents({ turnId, type: "turn_completed" })[0];
+    return event ? ((event.payload as EventPayloads["turn_completed"]).stop ?? null) : null;
+  }
+
   interruption(turnId: string): EventPayloads["turn_interrupted"] | null {
     const event = this.listEvents({ turnId, type: "turn_interrupted" })[0];
     return event ? (event.payload as EventPayloads["turn_interrupted"]) : null;

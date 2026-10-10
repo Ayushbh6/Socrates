@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type Model, asked, currentRoute, dayLabel, emptyModel, orbDocked, orbState, reduce, replayFrom, sendTarget, viewedExchange, workLine } from "../src/lib/model";
+import { type Model, asked, continueKeep, currentRoute, dayLabel, emptyModel, limitOf, orbDocked, orbState, reduce, replayFrom, sendTarget, viewedExchange, workLine } from "../src/lib/model";
 import type { Activity, ActivityBody, HistoryItem, ServerMessage } from "../src/lib/types";
 
 let seq = 100;
@@ -119,6 +119,30 @@ describe("the conversation model", () => {
     expect(m.conversations.main!.at(-1)).toMatchObject({ seq: 20, steps: [], answers: [], state: "working" });
     const stopped = reduce(emptyModel(), { type: "history", conversation: "main", items: [item({ parts: [{ ...item({}).parts[0]!, status: "interrupted", interrupted: "restarted", answer: null }] })] });
     expect(stopped.conversations.main![0]).toMatchObject({ state: "stopped", note: "Stopped when Socrates restarted." });
+  });
+
+  it("knows when a safeguard ended the work, from the live finish and from history", () => {
+    // Only the three per-turn limits can be continued: a final answer, the context ceiling and old records cannot.
+    expect(["steps", "time", "tokens", "final", "context", null, undefined].map(limitOf)).toEqual(["steps", "time", "tokens", null, null, null, null]);
+    let m = run(reduce(emptyModel(), { type: "sent", id: "c1", text: "Do it all.", to: "main", at }),
+      act("main", { kind: "message", text: "Do it all." }),
+      act("main", { kind: "routed", turnId: "t1", projectTurn: 4, ...route, lane: null }),
+      act("main", { kind: "answer", turnId: "t1", text: "Part of it is done." }),
+      act("main", { kind: "finished", turnId: "t1", status: "completed", reason: null, stop: "steps" }),
+    );
+    expect(m.conversations.main![0]).toMatchObject({ state: "done", limit: "steps" });
+    const part = item({}).parts[0]!;
+    m = reduce(emptyModel(), { type: "history", conversation: "main", items: [item({ seq: 30, parts: [{ ...part, stop: "time" }] }), item({ seq: 20, parts: [{ ...part, stop: "final" }] }), item({ seq: 10 })] });
+    expect(m.conversations.main!.map((e) => e.limit)).toEqual([null, null, "time"]);
+  });
+
+  it("keeps a continued message in its task in the main conversation, but not in General or a lane", () => {
+    const exchange = reduce(emptyModel(), { type: "history", conversation: "main", items: [item({})] }).conversations.main![0]!;
+    const goals = [{ number: 2, general: false }, { number: 1, general: true }];
+    expect(continueKeep(exchange, "main", goals)).toEqual({ goal: 2, task: 3 });
+    expect(continueKeep(exchange, "lane_1", goals)).toBeUndefined();
+    expect(continueKeep(exchange, "main", [{ number: 2, general: true }])).toBeUndefined();
+    expect(continueKeep({ ...exchange, route: null }, "main", goals)).toBeUndefined();
   });
 
   it("replays from just before the oldest unfinished message, or from the status", () => {

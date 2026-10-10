@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import type { TurnStop } from "@socrates/contracts";
 import type { LedgerStore } from "@socrates/store";
 import { describe, expect, it } from "vitest";
 import { HISTORY_PAGE_TURNS } from "../src";
@@ -101,16 +102,27 @@ describe("workspaces and folders", () => {
 
 describe("history and goals", () => {
   /** A finished exchange in a task, sent to main or a lane, with the given tool calls. */
-  function exchange(store: LedgerStore, taskId: string, text: string, laneId: string | null = null, calls: { tool: string; input: unknown; ok: boolean }[] = []) {
+  function exchange(store: LedgerStore, taskId: string, text: string, laneId: string | null = null, calls: { tool: string; input: unknown; ok: boolean }[] = [], stop?: TurnStop) {
     const turn = store.bindTurn({ userEventId: store.recordUserMessage(text, laneId).id, taskId, route: "test" });
     const refs = { goal_id: turn.goalId!, task_id: taskId, chat_id: turn.chatId, turn_id: turn.id };
     for (const [i, c] of calls.entries()) {
       const evidence = store.recordToolCall(refs, { callId: `call_${turn.id}_${i}`, tool: c.tool, input: c.input });
       store.recordToolResult(refs, { call_id: `call_${turn.id}_${i}`, handle: evidence.handle, tool: c.tool, status: c.ok ? "ok" : "error", content: "{}", result: null, error: c.ok ? null : { code: "failed", message: "failed" }, diagnostics: null, observed: [], facts: [], wall_time_ms: 5 } as never);
     }
-    store.completeTurn(turn.id, { responseEventId: store.recordResponse(`Re: ${text}`, { turn_id: turn.id }).id });
+    store.completeTurn(turn.id, { responseEventId: store.recordResponse(`Re: ${text}`, { turn_id: turn.id }).id, ...(stop ? { stop } : {}) });
     return store.requireTurn(turn.id);
   }
+
+  it("says why a finished part ended, so a limit can be continued", async () => {
+    const { request, rt } = await server(home({ settings: SCRIPTED }), models());
+    const store = rt.store;
+    const task = store.createTask(store.createGoal({ title: "Shop" }).id, { title: "Checkout" });
+    exchange(store, task.id, "Fix it all.", null, [], "steps");
+    exchange(store, task.id, "Small thing.", null, [], "final");
+    exchange(store, task.id, "Older record.");
+    const items = (await request("GET", "/api/history")).json().items;
+    expect(items.map((i: { parts: { stop: string | null }[] }) => i.parts[0]!.stop)).toEqual([null, "final", "steps"]);
+  });
 
   it("shows each conversation's messages with goal, task, lane, tool calls and handoffs, newest first and paged", async () => {
     const { request, rt } = await server(home({ settings: SCRIPTED }), models());

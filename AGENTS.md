@@ -24,7 +24,7 @@ This file hands the project to whichever agent harness works on it next. Read it
   3. Open the printed link. Each login link works only once.
   4. Stop the server and delete the copy afterwards.
 
-## Where things stand (2026-10-10, through `44fd7b0`)
+## Where things stand (2026-10-10, through the Continue button)
 
 The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `server.md`, `web.md`, `observability.md`). The trial log numbers each change. Recently shipped, newest last:
 
@@ -43,14 +43,15 @@ The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `serv
 - **Memory, phase M3a:** a small decider (`perplexity/pplx-decider-v1.1-27b` through OpenRouter, on by default with an OpenRouter key, switchable in Settings > Memory) is asked two yes/no questions about each message first, before routing (the router waits for it): would a recall help (widens `<MEMORY_CANDIDATES>`, or tells the agent to look first), and is something worth saving (a one-line `<MEMORY_HINT>`; the same agent saves, there is no curator model). Calls are logged with role `decision`, the Inspect overview has a **Memory decider** panel, and `pnpm eval:decider` (needs `SOCRATES_ENV_FILE=.env`) scores it on 78 labelled messages (`architecture/agent-harness.md`, "Memory"; `docs/memory.md`). The decider is asked first, once per message; in the main conversation the router waits for it and, when a recall is likely, is shown the matching memories (`REMEMBERED`).
 - **Memory, phase M3b:** work memory, per project: `<workspace>/.socrates/MEMORY.md` is an index (one line per topic, with the turns it came from) shown as `<WORK_MEMORY>` in every request, and each topic is a short file in `.socrates/memory/`. After verified work (three or more tool calls, one a change or command) the decider is asked whether it established a repeatable procedure or lesson; on yes the agent gets a bundled writing guide and a short extra step after its answer to write the notes. Edits touching only those files skip the ask-first approval (`architecture/agent-harness.md`, "Work memory"; `docs/memory.md`).
 - **Router model:** with an OpenRouter key and no router chosen, routing uses `openai/gpt-6-luna` with thinking off (`pnpm eval:router-compare` compares models on the routing fixtures; DeepSeek's own default is now V4 Flash).
+- **Continue:** when a per-turn safeguard ends the work (200 steps, 60 minutes or the token limit), the answer says which limit was reached and a **Continue** button under it sends "Please continue from where you stopped." to the same chat (Standard), the same task without routing (Flow; in General it is routed as usual) or the same lane (`architecture/web.md`, "Work and answer"). The completed turn's `stop` reaches the page in the live `finished` activity and each history part.
+- **Standard and Flow, as built:** a Standard chat is a task and its goal is the goal; both modes read one ledger, so a chat can be continued in Flow and Flow's work in Standard (`architecture/web.md`, "Standard mode"). Flow's General conversation is one task per day, listed under Chats.
 
 ## Next, in the order agreed with the user
 
 Ask before starting each one.
 
 1. **Memory follow-ups** (`docs/memory.md`): measure on real use whether later conversations follow the project notes better than without; a Memory-page view of the notes; the Inspect panel's rates are where thresholds get set.
-2. **Standard to flow:** a richer design for moving between the two modes.
-3. **Continue button:** offer one after a safeguard stop (200 steps, 60 minutes, or the token limit).
+2. **Standard to flow, the one open piece:** when the user switches to Flow in the middle of a chat, the first Flow message should run in that chat's task, with that chat's context, as if "Keep my next message in this task" were on (the chat is the task, its goal is the goal, shown in the notes), and routing then applies from the next message. Today the switch does nothing: the first Flow message is routed like any other. Agreed in the user's words of 2026-10-10; not built yet.
 
 **Known small issues:**
 - If attaching images fails while saving a Flow message, the main conversation can stay "busy". This is in `packages/agent/src/socrates.ts` `handle`.

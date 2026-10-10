@@ -1,4 +1,4 @@
-import type { Activity, AttachmentView, CallView, HistoryItem, LiveState, PendingApproval, Place, ResultView, ServerMessage } from "./types";
+import type { Activity, AttachmentView, CallView, HistoryItem, KeepChoice, LiveState, PendingApproval, Place, ResultView, ServerMessage } from "./types";
 
 /**
  * What the page knows, built from history pages and the live connection
@@ -68,6 +68,8 @@ export interface Exchange {
   note: string | null;
   /** The page's id for a message this page sent. */
   sendId: string | null;
+  /** The safeguard that ended its work (steps, time or tokens): the answer says what was done so far, and it can be continued. */
+  limit: Limit | null;
   /** Where its question was asked again, once the user redid it in another task; it is then set aside. */
   redoneTo: Place | null;
   /** For a redo: where its question was first asked. */
@@ -77,6 +79,29 @@ export interface Exchange {
   turns: string[];
   /** Turns still working. */
   open: string[];
+}
+
+/** A per-turn safeguard that ends the work early (architecture/agent-harness.md, "Safety and long-running work"). */
+export type Limit = "steps" | "time" | "tokens";
+
+/** What Continue sends: an ordinary message, so the turn picks up from the saved work and continuation note. */
+export const CONTINUE_MESSAGE = "Please continue from where you stopped.";
+
+/**
+ * Where Continue sends in flow mode: in the main conversation, the same task
+ * without routing (the server only keeps a message in a task the user can
+ * see, not in General, whose day task only the router chooses, so there it
+ * is routed as usual); in a lane, the lane itself carries it.
+ */
+export function continueKeep(exchange: Exchange, conversation: string, goals: { number: number; general: boolean }[]): KeepChoice | undefined {
+  const route = exchange.route;
+  if (conversation !== "main" || !route || goals.find((g) => g.number === route.goal.number)?.general) return undefined;
+  return { goal: route.goal.number, task: route.task.number };
+}
+
+/** The limit a turn's stop names, or null for a final answer (or the context ceiling, which continuing would meet again). */
+export function limitOf(stop: string | null | undefined): Limit | null {
+  return stop === "steps" || stop === "time" || stop === "tokens" ? stop : null;
 }
 
 /** One memory change shown under an answer: "Remembered: …" (with Undo), or "Forgot: …". */
@@ -324,7 +349,7 @@ function applyOne(e: Exchange, a: Activity | DraftArrived): Exchange {
       // A stopped answer keeps what had been written, in the place its draft had.
       const answers = a.status === "interrupted" && a.partial ? [...x.answers, a.partial] : x.answers;
       if (a.status === "interrupted") return { ...x, answers, open, outputs, state: open.length ? x.state : "stopped", note: stopReason(a.reason) };
-      return { ...x, open, outputs, state: open.length || x.state === "stopped" ? x.state : "done" };
+      return { ...x, open, outputs, limit: limitOf(a.stop), state: open.length || x.state === "stopped" ? x.state : "done" };
     }
     default:
       return x;
@@ -354,6 +379,7 @@ export function fromHistory(item: HistoryItem, conversation: string): Exchange {
     question: item.question,
     state: working ? "working" : interrupted ? "stopped" : "done",
     note: interrupted ? stopReason(interrupted.interrupted) : null,
+    limit: limitOf(item.parts.at(-1)?.stop),
     turns: item.parts.flatMap((p) => p.turnId ? [p.turnId] : []),
     open: item.parts.flatMap((p) => p.turnId && p.status === "in_progress" && !p.handedOff ? [p.turnId] : []),
     throughSeq: item.throughSeq ?? 0,
@@ -364,7 +390,7 @@ export function fromHistory(item: HistoryItem, conversation: string): Exchange {
 }
 
 function blank(e: Partial<Exchange> & Pick<Exchange, "key" | "conversation" | "at" | "message">): Exchange {
-  return { seq: null, attachments: [], route: null, steps: [], answers: [], draft: null, thinking: null, workedAt: null, lastAt: null, outputs: {}, draftCalls: {}, throughSeq: 0, question: null, state: "working", note: null, sendId: null, redoneTo: null, redoneFrom: null, memories: [], turns: [], open: [], ...e };
+  return { seq: null, attachments: [], route: null, steps: [], answers: [], draft: null, thinking: null, workedAt: null, lastAt: null, outputs: {}, draftCalls: {}, throughSeq: 0, question: null, state: "working", note: null, limit: null, sendId: null, redoneTo: null, redoneFrom: null, memories: [], turns: [], open: [], ...e };
 }
 
 function bySeq(a: Exchange, b: Exchange): number {

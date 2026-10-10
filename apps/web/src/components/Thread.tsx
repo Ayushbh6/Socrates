@@ -1,7 +1,7 @@
 import { LoaderCircle } from "lucide-react";
 import { type ReactNode, useLayoutEffect, useRef } from "react";
 import { useFollow } from "../lib/follow";
-import { type Exchange, orbState, workLine } from "../lib/model";
+import { CONTINUE_MESSAGE, type Exchange, orbState, workLine } from "../lib/model";
 import { type AppState, store } from "../lib/store";
 import { AnswerView } from "./AnswerView";
 import { redoOffer } from "./RedoMenu";
@@ -48,7 +48,7 @@ export function Thread({ app, conversation, shown, before, extra = [], compact =
           <article key={e.key} className="thread-item">
             <QuestionCard text={e.message} attachments={e.attachments} note={e.state === "working" || e.state === "sending" ? e.note : null} />
             <div className="thread-answer">
-              <AnswerView exchange={e} approvals={approvalsFor(e)} redo={redoOffer(e, list, onRedone)} />
+              <AnswerView exchange={e} approvals={approvalsFor(e)} redo={redoOffer(e, list, onRedone)} {...(e === latest && e.route ? { onContinue: () => { store.send(CONTINUE_MESSAGE, conversation, [], { goal: e.route!.goal.number, task: e.route!.task.number }); } } : {})} />
             </div>
           </article>
         ))}

@@ -1,7 +1,7 @@
-import { BookmarkCheck, BookmarkX, ChevronRight } from "lucide-react";
+import { BookmarkCheck, BookmarkX, ChevronRight, RotateCw } from "lucide-react";
 import { motion } from "motion/react";
 import { useState } from "react";
-import type { Exchange, MemoryNote } from "../lib/model";
+import type { Exchange, Limit, MemoryNote } from "../lib/model";
 import { store, useApp } from "../lib/store";
 import type { GoalView, PendingApproval, Place } from "../lib/types";
 import { Prose } from "./Prose";
@@ -12,8 +12,10 @@ import { Work } from "./Work";
  * Everything Socrates did for one question: its work, folded apart from the
  * answer, its approvals, and the answer. `redo` offers "Redo in…" (null: why
  * not now); an answer set aside by a redo folds to one line that opens it.
+ * `onContinue` is given for the newest answer of its conversation: when a
+ * safeguard ended its work, it offers to carry on.
  */
-export function AnswerView({ exchange, approvals, redo }: { exchange: Exchange; approvals: PendingApproval[]; redo?: { blocked: string | null; onRedone?: (id: string) => void } }) {
+export function AnswerView({ exchange, approvals, redo, onContinue }: { exchange: Exchange; approvals: PendingApproval[]; redo?: { blocked: string | null; onRedone?: (id: string) => void }; onContinue?: () => void }) {
   const [unfolded, setUnfolded] = useState(false);
   const goals = useApp().goals;
   return (
@@ -32,7 +34,24 @@ export function AnswerView({ exchange, approvals, redo }: { exchange: Exchange; 
         </button>
       )}
       {(!exchange.redoneTo || unfolded) && <Answer exchange={exchange} approvals={approvals} />}
+      {onContinue && exchange.limit && exchange.state === "done" && !exchange.redoneTo && <ContinueOffer limit={exchange.limit} onContinue={onContinue} />}
     </div>
+  );
+}
+
+const LIMIT_NOTE: Record<Limit, string> = {
+  steps: "Socrates stopped at its step limit for one turn.",
+  time: "Socrates stopped at its time limit for one turn.",
+  tokens: "Socrates stopped at its token limit for one turn.",
+};
+
+/** After a safeguard stop: the work so far is saved, and one click carries on from it. */
+function ContinueOffer({ limit, onContinue }: { limit: Limit; onContinue: () => void }) {
+  return (
+    <p className="answer-continue">
+      <span>{LIMIT_NOTE[limit]}</span>
+      <button type="button" className="quiet-button" onClick={onContinue}><RotateCw aria-hidden /> Continue</button>
+    </p>
   );
 }
 

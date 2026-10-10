@@ -1,7 +1,7 @@
 import { X } from "lucide-react";
 import { LayoutGroup } from "motion/react";
 import { type CSSProperties, type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
-import { currentRoute, orbDocked, orbState, viewedExchange } from "../lib/model";
+import { CONTINUE_MESSAGE, continueKeep, currentRoute, orbDocked, orbState, viewedExchange } from "../lib/model";
 import { useFollow } from "../lib/follow";
 import { type AppState, store } from "../lib/store";
 import type { Dock } from "../lib/terminals";
@@ -112,7 +112,7 @@ export function Flow({ app, mode, dock, onMode, onSettings }: { app: AppState; m
                 <QuestionCard text={exchange.message} attachments={exchange.attachments} note={exchange.state === "working" || exchange.state === "sending" ? exchange.note : null} />
                 <section className="answer" aria-live="polite">
                   <div className="answer-dock">{docked && <Orb state={state} docked />}</div>
-                  <AnswerView key={exchange.key} exchange={exchange} approvals={approvals} redo={redoOffer(exchange, list, () => setSelected(null))} />
+                  <AnswerView key={exchange.key} exchange={exchange} approvals={approvals} redo={redoOffer(exchange, list, () => setSelected(null))} {...(latest ? { onContinue: () => { store.send(CONTINUE_MESSAGE, conversation, [], undefined, continueKeep(exchange, conversation, app.goals)); setSelected(null); } } : {})} />
                 </section>
               </>
             )}

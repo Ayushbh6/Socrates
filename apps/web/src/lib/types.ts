@@ -169,6 +169,8 @@ export interface HistoryPart {
   handedOff: boolean;
   answer: string | null;
   interrupted: string | null;
+  /** Why a completed part ended: "final", or the limit it reached. */
+  stop?: string | null;
   toolCalls: { handle: string; line: string; status: "ok" | "error" | null }[];
 }
 
@@ -238,7 +240,7 @@ export type ActivityBody =
   | { kind: "tool_started"; turnId: string; task: string; handle: string; line: string; call: CallView }
   | { kind: "tool_finished"; turnId: string; task: string; handle: string; status: "ok" | "error"; result: ResultView }
   | { kind: "answer"; turnId: string; text: string }
-  | { kind: "finished"; turnId: string; status: "completed" | "interrupted"; reason: string | null; partial?: string | null }
+  | { kind: "finished"; turnId: string; status: "completed" | "interrupted"; reason: string | null; partial?: string | null; stop?: string | null }
   | { kind: "handed_off"; turnId: string; lane: number; laneId?: string; goal?: { number: number; title: string }; task?: { number: number; title: string } }
   | { kind: "lane"; laneId: string; number: number; state: "opened" | "closed" }
   | { kind: "approval_decided"; turnId: string | null; granted: boolean; detail: string }

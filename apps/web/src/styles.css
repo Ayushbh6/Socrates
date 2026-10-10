@@ -255,6 +255,9 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .approval-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.85rem; }
 .answer-note { color: var(--faint); font-size: 0.85rem; }
 .answer-note.failed { color: var(--danger); }
+.answer-continue { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.9rem; margin: 0.9rem 0 0; color: var(--faint); font-size: 0.85rem; }
+.answer-continue .quiet-button { display: inline-flex; align-items: center; gap: 0.4rem; }
+.answer-continue .quiet-button svg { width: 0.9rem; height: 0.9rem; }
 .prose { font-size: 1rem; line-height: 1.72; overflow-wrap: anywhere; }
 .prose > :first-child { margin-top: 0; }
 .prose p, .prose ul, .prose ol { margin: 0 0 0.9rem; }

@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import type { EventPayloads, MemoryAuthor, MemoryKind } from "@socrates/contracts";
+import type { EventPayloads, MemoryAuthor, MemoryKind, TurnStop } from "@socrates/contracts";
 import { callLine } from "@socrates/retrieval";
 import type { LedgerStore, Task, Turn, Workspace } from "@socrates/store";
 import { assertSeparateFromClassic } from "./config";
@@ -27,6 +27,8 @@ export interface HistoryPart {
   answer: string | null;
   /** Why an interrupted part ended. */
   interrupted: EventPayloads["turn_interrupted"]["reason"] | null;
+  /** Why a completed part ended: "final", or the limit it reached (steps, time, tokens, context). */
+  stop: TurnStop | null;
   toolCalls: { handle: string; line: string; status: "ok" | "error" | null }[];
 }
 
@@ -103,6 +105,7 @@ function part(store: LedgerStore, t: Turn, laneId: string | null): HistoryPart {
     // A stopped part shows its answer as far as it was written.
     answer: responseText(store, t) ?? interruption?.partial_answer ?? null,
     interrupted: interruption?.reason ?? null,
+    stop: store.stopOf(t.id),
     toolCalls: store.evidenceForTurn(t.id).map((e) => ({ handle: e.handle, line: callLine(e.tool, e.input), status: e.status })),
   };
 }
