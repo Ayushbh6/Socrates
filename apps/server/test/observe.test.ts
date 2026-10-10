@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { final } from "../../../packages/agent/test/helpers";
 import { continueTask, createGoal } from "../../../packages/router/test/helpers";
 import { SCRIPTED, home, server, tempDir } from "./helpers";
-import { series as chartSeries, summary as overviewSummary } from "../src/observe";
+import { series as chartSeries, summary as overviewSummary, writesWorkMemory } from "../src/observe";
 
 /** A scripted model whose replies report this usage and provider metadata, the way a provider's would. */
 function metered(inner: ScriptedModel, usage: ModelUsage, meta: Record<string, unknown> = { id: "resp_1" }): ModelClient {
@@ -352,5 +352,19 @@ describe("the database view", () => {
     expect((await request("GET", "/api/observe/db/ledger/events/1abc")).statusCode).toBe(404);
     expect((await request("GET", "/api/observe/db/ledger/events/999999")).statusCode).toBe(404);
     expect((await request("GET", "/api/observe/db/ledger/events?limit=9999")).statusCode).toBe(400);
+  });
+});
+
+describe("writesWorkMemory", () => {
+  it("is true only for edits and patches of the index and its topic files", () => {
+    expect(writesWorkMemory("edit", { path: ".socrates/MEMORY.md" })).toBe(true);
+    expect(writesWorkMemory("edit", { path: "./.socrates/memory/store-schema.md" })).toBe(true);
+    expect(writesWorkMemory("apply_patch", { patch: "*** Begin Patch\n*** Add File: .socrates/memory/x.md\n+a\n*** End Patch" })).toBe(true);
+    expect(writesWorkMemory("apply_patch", { patch: "*** Begin Patch\n*** Update File: /home/me/proj/.socrates/memory/x.md\n@@\n-a\n+b\n*** End Patch" })).toBe(true);
+    expect(writesWorkMemory("edit", { path: "/home/me/proj/.socrates/MEMORY.md" })).toBe(true);
+    expect(writesWorkMemory("edit", { path: "/home/me/proj/.socrates/handover.md" })).toBe(false);
+    expect(writesWorkMemory("edit", { path: ".socrates/handover.md" })).toBe(false);
+    expect(writesWorkMemory("edit", { path: "src/a.ts" })).toBe(false);
+    expect(writesWorkMemory("terminal", { command: "echo > .socrates/MEMORY.md" })).toBe(false);
   });
 });

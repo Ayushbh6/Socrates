@@ -83,6 +83,18 @@ export interface RunInput {
    * and never saved; when given, the turn's requests are streamed.
    */
   onDraft?: (draft: Draft) => void;
+  /**
+   * Called when the turn has a valid final answer (not one forced by a limit),
+   * before it is returned. A string is one more instruction for the agent: it
+   * is given as a harness message after the answer and the agent may take up
+   * to `followUpMaxSteps` more steps (calling tools) before the turn ends, with
+   * the answer unchanged and nothing of the extra step streamed. Used for
+   * writing the project's work memory (agent-harness.md, "Work memory").
+   * Failures and null mean nothing more happens.
+   */
+  afterAnswer?: (info: { answer: FinalAnswer; toolCalls: number }, signal: AbortSignal) => Promise<string | null>;
+  /** The most requests the extra step may make; 8 by default. */
+  followUpMaxSteps?: number;
 }
 
 export type RunOutcome =
@@ -172,7 +184,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
     for (let i = 0; i < next.length; i++) if (next[i] !== messages[i]) sizes[i] = messageTokens(next[i]!);
     messages.splice(0, messages.length, ...next);
   };
-  const call = async (phase: Phase, signal: AbortSignal): Promise<CallResult> => {
+  const call = async (phase: Phase, signal: AbortSignal, quiet = false): Promise<CallResult> => {
     syncCapabilities();
     const harnessCount = baseTokens + sizes.reduce((a, b) => a + b, 0);
     for (let attempt = 0; ; attempt++) {
@@ -182,7 +194,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
       if (input.calibration.measure(model.id, harnessCount) >= budgets.ceiling) return { kind: "context" };
       let streaming = true;
       const request = ++requests;
-      const onDraft = input.onDraft;
+      const onDraft = quiet ? undefined : input.onDraft;
       const onText = onDraft ? streamDrafts((draft) => {
         // Repair corrects a candidate already shown. Keep provider streaming
         // and recording, but publish the validated result once at completion.
@@ -252,13 +264,32 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
     if (result.kind === "context") return contextFallback(stop === "final" ? "context" : stop);
     return interrupted("failed", result.kind === "failed" ? result.detail : "The final-answer deadline expired.");
   };
+  /** The extra step after a valid final answer: the answer stays as it was, its steps are not streamed, and any failure ends it. */
+  const followUp = async (response: ModelResponse, answer: FinalAnswer, stop: TurnStop) => {
+    if (!input.afterAnswer || stop !== "final" || scope.signal.aborted) return;
+    let instruction: string | null = null;
+    try { instruction = await input.afterAnswer({ answer, toolCalls }, workSignal); } catch { return; }
+    if (!instruction || scope.signal.aborted || workSignal.aborted) return;
+    push({ role: "assistant", content: response.text, ...(response.raw ? { raw: response.raw } : {}) });
+    push({ role: "user", content: instruction });
+    for (let i = 0; i < (input.followUpMaxSteps ?? 8); i++) {
+      if (timeExpired() || steps >= limits.maxSteps || spent >= limits.maxTokens) return;
+      const result = await call("work", workSignal, true);
+      if (result.kind !== "response") return;
+      if (!result.response.toolCalls.length) { push({ role: "assistant", content: result.response.text, ...(result.response.raw ? { raw: result.response.raw } : {}) }); return; }
+      await appendResponse(result.response, workSignal);
+    }
+  };
   const finish = async (response: ModelResponse, stop: TurnStop): Promise<RunOutcome> => {
     if (scope.signal.aborted) {
       if (response.toolCalls.length) await appendResponse(response, refused);
       return interrupted("cancelled");
     }
     const first = validate(response);
-    if (first.ok) return { kind: "answer", answer: first.value, stop, toolCalls, steps };
+    if (first.ok) {
+      await followUp(response, first.value, stop);
+      return { kind: "answer", answer: first.value, stop, toolCalls, steps };
+    }
     await appendResponse(response, refused);
     push({ role: "user", content: repairRequest(first.errors) });
     const repaired = await call("repair", finalization());
@@ -267,7 +298,10 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
     if (scope.signal.aborted) return interrupted("cancelled");
     if (finalSignal!.aborted) return interrupted("failed", "The final-answer deadline expired.");
     const second = validate(repaired.response);
-    if (second.ok) return { kind: "answer", answer: second.value, stop, toolCalls, steps };
+    if (second.ok) {
+      await followUp(repaired.response, second.value, stop);
+      return { kind: "answer", answer: second.value, stop, toolCalls, steps };
+    }
     return invalid(repaired.response.text.trim() ? repaired.response.text : response.text, second.errors, stop);
   };
   const wrapUp = async (stop: Exclude<TurnStop, "final">): Promise<RunOutcome> => {

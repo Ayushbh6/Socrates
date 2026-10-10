@@ -11,8 +11,11 @@ import { AGENT_SYSTEM_PROMPT } from "../src";
  * from growing back unnoticed. Raise one only on purpose, with the reason.
  * - system 2,100 → 2,250 (2026-10-10): memory, `<MEMORY>` and the final
  *   answer's `memory` field, about 185 tokens.
+ * - system 2,250 → 2,400 (2026-10-10): `<WORK_MEMORY>`, how to read the project's
+ *   notes (the always-on half of work memory; the writing guide is attached only
+ *   after verified work), about 100 tokens.
  */
-const BUDGET = { system: 2_250, tools: 3_500 };
+const BUDGET = { system: 2_400, tools: 3_500 };
 
 describe("the fixed part of every request", () => {
   it("stays within its token budget", () => {

@@ -1,4 +1,5 @@
-import { RECALL_AT, SAVE_AT } from "@socrates/agent";
+import { RECALL_AT, SAVE_AT, WORK_AT } from "@socrates/agent";
+import { isWorkMemoryPath } from "@socrates/tools";
 import type { EventPayloads, ModelMessage, TextPart } from "@socrates/contracts";
 import { countTokens } from "@socrates/shared";
 import type { CallBreakdown, CallBucket, CallDetail, CallLog, CallRow, CallTotals, LedgerStore, Turn } from "@socrates/store";
@@ -62,23 +63,42 @@ export interface DeciderStats {
   costUsd: number;
   recall: { likely: number; likelyOffered: number; unlikely: number; unlikelyOffered: number };
   save: { likely: number; likelySaved: number; unlikely: number; unlikelySaved: number };
+  /** Finished turns the decider was asked about, and in how many of the likely ones the agent wrote the project's notes. */
+  work: { likely: number; likelyWrote: number; unlikely: number };
 }
 
 const STATS_LIMIT = 500;
+
+/** Whether a recorded call changed the work-memory index or one of its topic files, named relative to the project or in full. */
+export function writesWorkMemory(tool: string, input: unknown): boolean {
+  const i = (input ?? {}) as { path?: unknown; patch?: unknown };
+  const notes = (p: string) => isWorkMemoryPath(p.trim().replace(/^\.\//, "")) || /\/\.socrates\/(?:MEMORY\.md|memory\/[A-Za-z0-9][A-Za-z0-9._-]*\.md)$/.test(p.trim());
+  if (tool === "edit") return typeof i.path === "string" && notes(i.path);
+  if (tool === "apply_patch") return [...String(i.patch ?? "").matchAll(/^\*\*\* (?:Add|Update) File: (.+)$/gm)].some((m) => notes(m[1]!));
+  return false;
+}
 
 export function deciderStats(log: CallLog, store: LedgerStore, range: Range, now: Date): DeciderStats {
   const rows = log.list({ role: "decision", limit: STATS_LIMIT, ...(sinceOf(range, now) ? { since: sinceOf(range, now)! } : {}) });
   const offered = new Set(store.listEvents({ type: "memory_surfaced" }).filter((e) => (e.payload as EventPayloads["memory_surfaced"]).how === "candidates").map((e) => e.turn_id));
   const saved = new Set(store.listEvents({ type: "memory_saved" }).filter((e) => (e.payload as EventPayloads["memory_saved"]).by === "agent").map((e) => e.turn_id));
-  const stats: DeciderStats = { range, answered: 0, failed: 0, medianMs: null, costUsd: 0, recall: { likely: 0, likelyOffered: 0, unlikely: 0, unlikelyOffered: 0 }, save: { likely: 0, likelySaved: 0, unlikely: 0, unlikelySaved: 0 } };
+  const stats: DeciderStats = { range, answered: 0, failed: 0, medianMs: null, costUsd: 0, recall: { likely: 0, likelyOffered: 0, unlikely: 0, unlikelyOffered: 0 }, save: { likely: 0, likelySaved: 0, unlikely: 0, unlikelySaved: 0 }, work: { likely: 0, likelyWrote: 0, unlikely: 0 } };
   const times: number[] = [];
   for (const row of rows) {
     if (!row.ok) { stats.failed++; continue; }
     stats.answered++;
     stats.costUsd += row.costUsd ?? 0;
     times.push(row.ms);
-    let p: { recall?: number; save?: number } = {};
+    let p: { recall?: number; save?: number; work?: number } = {};
     try { p = JSON.parse(log.get(row.id)?.response?.text ?? "{}"); } catch {}
+    if (typeof p.work === "number") {
+      if (p.work < WORK_AT) stats.work.unlikely++;
+      else {
+        stats.work.likely++;
+        if (row.turnId && store.evidenceForTurn(row.turnId).some((e) => writesWorkMemory(e.tool, e.input))) stats.work.likelyWrote++;
+      }
+      continue;
+    }
     if (typeof p.recall === "number") {
       const bucket = p.recall >= RECALL_AT ? "likely" : "unlikely";
       stats.recall[bucket]++;

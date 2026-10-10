@@ -279,3 +279,27 @@ describe("access review regressions", () => {
     expect(["two", "three"]).toContain(readFileSync(file, "utf8"));
   });
 });
+
+describe("the project's work-memory files", () => {
+  const memory = { folders: [] as string[], approvals: "ask" as const, protected: [] as string[] };
+
+  it("are written without asking, and nothing else is", async () => {
+    const { h } = setup({ ...memory, folders: null });
+    const index = await h.call("edit", { path: ".socrates/MEMORY.md", old_text: "", new_text: "- Change the schema → memory/schema.md · turns 4\n" });
+    expect(index.isError).toBe(false);
+    const topic = await h.call("apply_patch", { patch: "*** Begin Patch\n*** Add File: .socrates/memory/schema.md\n+Steps\n*** End Patch" });
+    expect(topic.isError).toBe(false);
+    expect(readFileSync(path.join(h.root, ".socrates/memory/schema.md"), "utf8")).toBe("Steps\n");
+    expect(h.approvals).toEqual([]);
+
+    // Other files of `.socrates/`, other files, and a patch that also touches one of them still ask (and are refused here).
+    for (const input of [
+      ["edit", { path: ".socrates/handover.md", old_text: "", new_text: "x\n" }],
+      ["edit", { path: ".socrates/memory/nested/deep.md", old_text: "", new_text: "x\n" }],
+      ["edit", { path: "src/a.ts", old_text: "const a = 1;", new_text: "const a = 2;" }],
+      ["apply_patch", { patch: "*** Begin Patch\n*** Add File: .socrates/memory/ok.md\n+x\n*** Add File: src/b.ts\n+y\n*** End Patch" }],
+      ["apply_patch", { patch: "*** Begin Patch\n*** Update File: .socrates/memory/schema.md\n*** Move to: src/moved.md\n@@\n-Steps\n+Steps\n*** End Patch" }],
+    ] as const) await h.call(input[0], input[1]);
+    expect(h.approvals).toHaveLength(5);
+  });
+});

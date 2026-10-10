@@ -231,7 +231,7 @@ function MemorySection({ app }: { app: AppState }) {
   ].filter(Boolean).join(" · ");
   return (
     <Section title="Memory">
-      <p className="settings-hint">What Socrates remembers about you, in every goal: who you are and how you like to work, saved when you say it. Undo one under its answer or change it here. Forgetting removes it from what Socrates uses; the conversation it came from stays in your history.</p>
+      <p className="settings-hint">What Socrates remembers about you, in every goal: who you are and how you like to work, saved when you say it. Undo one under its answer or change it here. Forgetting removes it from what Socrates uses; the conversation it came from stays in your history. After work that went well, Socrates also keeps short notes on how things are done in a project, in the project's own .socrates/ folder (MEMORY.md and memory/); they are plain files you can edit or delete, and the first switch below covers them.</p>
       <label className="memory-switch"><input type="checkbox" checked={switches.save} disabled={busy} onChange={(e) => void toggle("save", e.target.checked)} /> Save new memories from my conversations</label>
       <label className="memory-switch"><input type="checkbox" checked={switches.use} disabled={busy} onChange={(e) => void toggle("use", e.target.checked)} /> Use memories when answering</label>
       <label className="memory-switch"><input type="checkbox" checked={switches.decider} disabled={busy} onChange={(e) => void toggle("decider", e.target.checked)} /> Ask a small model when to recall and save</label>

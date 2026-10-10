@@ -35,6 +35,8 @@ export interface ContextInput {
   memory?: MemorySettings | null;
   /** This turn's `<MEMORY_CANDIDATES>` block, chosen once per turn, or null. */
   memoryCandidates?: string | null;
+  /** The project's `<WORK_MEMORY>` index, read when the turn started, or null (agent-harness.md, "Work memory"). */
+  workMemory?: string | null;
   /** This turn's `<MEMORY_HINT>` block, from the save gate, or null. */
   memoryHint?: string | null;
   /** Where tools may work and when they ask, as of the turn's start; null for the workspace boundary. */
@@ -63,7 +65,7 @@ export function assembleContext(input: ContextInput): TextPart[] {
   const goal = store.requireGoal(turn.goalId!);
   const task = store.requireTask(turn.taskId!);
 
-  const parts: TextPart[] = [{ text: `${[userBlock(input.user), input.memory ? memoryBlock(store, goal, input.memory) : null, goalBlock(store, goal), input.shelf ?? null, activeCapabilities(input.capabilities)].filter(Boolean).join("\n\n")}\n\n` }];
+  const parts: TextPart[] = [{ text: `${[userBlock(input.user), input.memory ? memoryBlock(store, goal, input.memory) : null, input.workMemory ?? null, goalBlock(store, goal), input.shelf ?? null, activeCapabilities(input.capabilities)].filter(Boolean).join("\n\n")}\n\n` }];
   const budgets = input.budgets ?? DEFAULT_BUDGETS;
   const history = taskHistory(store, turn.id);
   parts.push(...historyParts(store, history, budgets.previousTurn));

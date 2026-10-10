@@ -2,7 +2,7 @@ import type { EventPayloads, ImageData, ToolCall, ToolDefinition, ToolErrorBody 
 import { abortable, countTokens } from "@socrates/shared";
 import type { SemanticSearch } from "@socrates/retrieval";
 import type { LedgerStore, TaskRefs } from "@socrates/store";
-import { type AccessPolicy, isProtected, protectedPath, within } from "./access";
+import { type AccessPolicy, isProtected, isWorkMemoryPath, protectedPath, within } from "./access";
 import { realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { RESULT_CEILING_TOKENS, headTail } from "./bounds";
@@ -203,7 +203,8 @@ export class ToolRunner {
       throwIfCancelled(scope.signal);
       const policy = this.options.access?.() ?? null;
       const ctx = this.context(scope, refs, call.name, policy, evidence.handle);
-      const mutating = typeof handler.mutating === "function" ? handler.mutating(parsed.data) : handler.mutating;
+      // Writing the work-memory files is not asked about: they are Socrates' own notes, named in full, and visible in the project.
+      const mutating = (typeof handler.mutating === "function" ? handler.mutating(parsed.data) : handler.mutating) && !writesOnlyWorkMemory(call.name, parsed.data, scope.workspace);
       if (mutating && policy?.approvals === "ask") {
         const input = (parsed.data ?? {}) as Record<string, unknown>;
         await ctx.requireApproval({ kind: "action", tool: call.name, detail: actionDetail(call.name, input), ...preview(call.name, input) });
@@ -331,6 +332,19 @@ function normalizeInput(input: unknown): unknown {
 const APPROVAL_PREVIEW_CHARS = 20_000;
 
 /** One line naming what a changing call is about to do, for the user to approve. */
+/** Whether an edit or patch changes only the work-memory index and its topic files of the workspace. */
+function writesOnlyWorkMemory(tool: string, input: unknown, workspace: WorkspaceRoot | null | undefined): boolean {
+  if (!workspace || (tool !== "edit" && tool !== "apply_patch")) return false;
+  const i = (input ?? {}) as Record<string, unknown>;
+  const paths = tool === "edit"
+    ? [i.path]
+    : [...String(i.patch ?? "").matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map((m) => m[1]);
+  if (!paths.length || /^\*\*\* Move to:/m.test(String(i.patch ?? ""))) return false;
+  try {
+    return paths.every((p) => typeof p === "string" && isWorkMemoryPath(workspace.resolve(p).rel));
+  } catch { return false; }
+}
+
 function actionDetail(tool: string, input: Record<string, unknown>): string {
   const text = (value: unknown) => String(value ?? "").slice(0, 300);
   switch (tool) {

@@ -36,6 +36,13 @@ export const GATE_QUESTIONS = {
   },
 } as const satisfies Record<string, DecisionQuestion>;
 
+/** What is asked of a finished turn (agent-harness.md, "Work memory"): is it worth writing down for the project? */
+export const WORK_QUESTION = {
+  instructions: "The assistant just finished a piece of work for the user in a software project. Did the work succeed (its checks passed, or the user's goal was reached) and establish something worth writing down for next time: a repeatable procedure for this project (the steps of a kind of change that will come up again), or a lesson (a surprise or mistake and how it was fixed)? A one-off edit, a question, exploration, and work that failed or is unfinished are not worth writing down.",
+  yes: "A verified, repeatable procedure or lesson for this project.",
+  no: "A one-off change, a question, exploration, or work that failed or is unfinished.",
+} as const satisfies DecisionQuestion;
+
 /** The decider's chance of yes for each question it was asked; null for one that was not. */
 export interface GateReading {
   recall: number | null;
@@ -71,14 +78,25 @@ export class MemoryGate {
 
   /** The reading for one message, or null when nothing was asked, the decider is paused, or it failed or was too slow. Never throws. */
   async read(input: GateInput, signal?: AbortSignal): Promise<GateReading | null> {
-    const now = (this.options.now ?? Date.now)();
-    if ((!input.ask.recall && !input.ask.save) || !input.message.trim() || signal?.aborted || now < this.unavailableUntil) return null;
-    const limit = AbortSignal.any([AbortSignal.timeout(this.options.timeoutMs ?? GATE_TIMEOUT_MS), ...(signal ? [signal] : [])]);
+    if ((!input.ask.recall && !input.ask.save) || !input.message.trim()) return null;
     const questions = { ...(input.ask.recall ? { recall: GATE_QUESTIONS.recall } : {}), ...(input.ask.save ? { save: GATE_QUESTIONS.save } : {}) };
+    const answer = await this.ask(gateState(input), questions, input.trace, signal);
+    return answer && { recall: answer.recall ?? null, save: answer.save ?? null };
+  }
+
+  /** The chance that a finished turn is worth writing down for the project, or null when it could not be asked. Never throws. */
+  async readWork(input: { state: string; trace: CallTrace }, signal?: AbortSignal): Promise<number | null> {
+    const answer = await this.ask(input.state, { work: WORK_QUESTION }, input.trace, signal);
+    return answer?.work ?? null;
+  }
+
+  private async ask(state: string, questions: Record<string, DecisionQuestion>, trace: CallTrace, signal?: AbortSignal): Promise<Record<string, number> | null> {
+    const now = (this.options.now ?? Date.now)();
+    if (signal?.aborted || now < this.unavailableUntil) return null;
+    const limit = AbortSignal.any([AbortSignal.timeout(this.options.timeoutMs ?? GATE_TIMEOUT_MS), ...(signal ? [signal] : [])]);
     try {
       // Raced as well as passed down, so a client that ignores the signal cannot hold up the reply.
-      const answer = await abortable(this.options.decider.decide({ state: gateState(input), questions, trace: input.trace }, limit), limit);
-      return { recall: answer.probabilities.recall ?? null, save: answer.probabilities.save ?? null };
+      return (await abortable(this.options.decider.decide({ state, questions, trace }, limit), limit)).probabilities;
     } catch (error) {
       if (!signal?.aborted) {
         this.unavailableUntil = now + RETRY_AFTER_MS;

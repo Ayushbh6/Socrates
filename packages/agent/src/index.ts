@@ -14,3 +14,4 @@ export * from "./lanes";
 export * from "./draft";
 export * from "./memory";
 export * from "./gates";
+export * from "./work-memory";

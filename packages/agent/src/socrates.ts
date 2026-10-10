@@ -1,4 +1,4 @@
-import type { Attachment, Effort, EventRefs, ModelClient, TurnStop } from "@socrates/contracts";
+import type { Attachment, Effort, EventRefs, FinalAnswer, ModelClient, TurnStop } from "@socrates/contracts";
 import { homedir } from "node:os";
 import { abortable } from "@socrates/shared";
 import { TokenCalibration } from "@socrates/providers";
@@ -19,6 +19,7 @@ import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
 import { createCompactor } from "./compaction";
 import { applyAnchors, type AnchorDecision, type AnchorChange } from "./anchors";
 import { type GateReading, type MemoryGate, RECALL_AT } from "./gates";
+import { WORK_AT, WORK_FOLLOW_UP_MAX_STEPS, didRealWork, workMemoryBlock, workMemorySkill, workState } from "./work-memory";
 import { MEMORY_ON, type MemoryChange, type MemorySettings, applyMemory, memoryCandidates, memoryForRouting, memoryHint } from "./memory";
 export { MAX_GOAL_ANCHORS } from "./anchors";
 
@@ -728,6 +729,8 @@ export class Socrates {
     const gated = await (options.reading ?? Promise.resolve(null));
     const remembered = memoryCandidates(store, { goal, message: request, semantic: semantic.memories, settings: memorySettings, now: store.clock.now(), timeZone: this.options.timeZone, reading: gated });
     const hint = memoryHint(memorySettings, gated);
+    // The project's notes on how things are done, read once per turn so the first part stays the same.
+    const workMemory = workMemoryBlock(workspace, this.options.access?.() ?? null, memorySettings);
     store.recordMemoriesSurfaced(remembered.ids, "candidates", { goal_id: goal.id, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id });
     const assemble = (previousTurn?: number) =>
       assembleContext({
@@ -746,6 +749,7 @@ export class Socrates {
         memory: memorySettings,
         memoryCandidates: remembered.block,
         memoryHint: hint,
+        workMemory,
         vision,
         now: store.clock.now(),
         timeZone: this.options.timeZone,
@@ -782,6 +786,19 @@ export class Socrates {
       compact,
       ...(options.onDraft ? { onDraft: (draft: Draft) => options.onDraft!(turn.id, draft) } : {}),
       onResponse: (response, phase) => store.appendEvent("agent_message", { response, phase }, { goal_id: goal.id, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id }),
+      // After verified work the decider may say it is worth recording; the agent then writes the project's notes in one short extra step.
+      ...(workspace && memorySettings.save && this.options.gate?.() && canReadAutomatically(this.options.access?.() ?? null, workspace.root) ? {
+        followUpMaxSteps: WORK_FOLLOW_UP_MAX_STEPS,
+        afterAnswer: async ({ answer }: { answer: FinalAnswer }, followSignal: AbortSignal) => {
+          const calls = store.evidenceForTurn(turn.id);
+          if (!didRealWork(calls)) return null;
+          const work = await this.options.gate?.()?.readWork({
+            state: workState({ request, calls, answer: answer.full_answer }),
+            trace: { role: "decision", userEventId: turn.userEventId, turnId: turn.id, goalId: goal.id, taskId: turn.taskId, chatId: turn.chatId },
+          }, followSignal);
+          return work !== null && work !== undefined && work >= WORK_AT ? workMemorySkill(turn.projectTurn) : null;
+        },
+      } : {}),
       ...(this.options.maxOutputTokens ? { maxOutputTokens: this.options.maxOutputTokens } : {}),
       trace: { userEventId: turn.userEventId, laneId: turn.laneId },
       ...(this.options.retryDelaysMs ? { retryDelaysMs: this.options.retryDelaysMs } : {}),

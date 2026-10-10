@@ -224,6 +224,7 @@ function DeciderPanel({ d }: { d: DeciderStats }) {
           <thead><tr><th>Question</th><th>Said likely</th><th>Then</th><th>Said unlikely</th><th>Then anyway</th></tr></thead>
           <tbody>
             <tr><td>Would a recall help?</td><td>{d.recall.likely}</td><td>{of(d.recall.likelyOffered, d.recall.likely)} offered</td><td>{d.recall.unlikely}</td><td>{of(d.recall.unlikelyOffered, d.recall.unlikely)} offered</td></tr>
+            {d.work.likely + d.work.unlikely > 0 && <tr><td>Was the work worth recording?</td><td>{d.work.likely}</td><td>{of(d.work.likelyWrote, d.work.likely)} wrote project notes</td><td>{d.work.unlikely}</td><td>–</td></tr>}
             <tr><td>Is something worth saving?</td><td>{d.save.likely}</td><td>{of(d.save.likelySaved, d.save.likely)} saved</td><td>{d.save.unlikely}</td><td>{of(d.save.unlikelySaved, d.save.unlikely)} saved</td></tr>
           </tbody>
         </table>

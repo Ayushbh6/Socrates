@@ -23,6 +23,20 @@ export interface AccessGrant {
   recursive: boolean;
 }
 
+/**
+ * Socrates' notes on how things are done in a project (agent-harness.md,
+ * "Work memory"): the index and its topic files, inside the workspace. These
+ * files, and no others of `.socrates/`, are the only ones Socrates changes
+ * without asking.
+ */
+export const WORK_MEMORY_INDEX = ".socrates/MEMORY.md";
+const WORK_MEMORY_PATH = /^\.socrates\/(?:MEMORY\.md|memory\/[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.md)$/;
+
+/** Whether a workspace-relative path (forward slashes) is the work-memory index or one of its topic files. */
+export function isWorkMemoryPath(rel: string): boolean {
+  return WORK_MEMORY_PATH.test(rel);
+}
+
 /** Canonical paths retain their case, including on case-sensitive macOS volumes. */
 export function within(folder: string, candidate: string): boolean {
   const rel = path.relative(folder, candidate);

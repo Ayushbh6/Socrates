@@ -22,7 +22,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { OpenRouterDecider } from "@socrates/providers";
 import { loadEvaluationEnvironment } from "../../router/eval/environment";
-import { GATE_QUESTIONS, RECALL_AT, RECALL_STRONG_AT, SAVE_AT, gateState } from "../src";
+import { GATE_QUESTIONS, RECALL_AT, RECALL_STRONG_AT, SAVE_AT, WORK_AT, WORK_QUESTION, gateState, workState } from "../src";
 
 loadEvaluationEnvironment();
 const apiKey = process.env.OPENROUTER_API_KEY;
@@ -146,10 +146,67 @@ const mistakes = rows.flatMap((r) => [
 ]);
 console.log(mistakes.length ? `Disagreements at the shipped thresholds:\n${mistakes.join("\n")}\n` : "No disagreements at the shipped thresholds.\n");
 
+// ── Finished turns: is the work worth writing down for the project? (docs/memory.md, M3b) ──
+type Call = [tool: string, input: unknown, ok?: boolean];
+/** [request, tool calls in order, answer, worth recording 0|1] */
+type WorkCase = [string, Call[], string, 0 | 1];
+const T = (command: string, ok = true): Call => ["terminal", { command }, ok];
+const E = (path: string): Call => ["edit", { path }];
+const R = (path: string): Call => ["read", { path }];
+const WORK: WorkCase[] = [
+  ["Add an archived_at column to the tasks table.", [R("packages/store/src/schema.ts"), E("packages/store/src/schema.ts"), E("packages/store/src/store.ts"), E("packages/store/test/store.test.ts"), T("pnpm typecheck"), T("pnpm test")], "Added archived_at: bumped SCHEMA_VERSION to 9, added an upgrade step to MIGRATIONS, rebuilt the index in replay, and an upgrade test from version 8. Typecheck and tests pass.", 1],
+  ["Cut release 0.2.0.", [T("git status --short"), E("package.json"), E("CHANGELOG.md"), T("pnpm build"), T("pnpm test"), T("git tag v0.2.0")], "Released 0.2.0: version bumped in package.json, changelog entry written, build and tests pass, tagged v0.2.0. The order matters: tests run on the built output, so build first.", 1],
+  ["CI fails on Windows paths in the loader tests.", [R("src/loader.ts"), E("src/loader.ts"), T("pnpm test", false), E("test/loader.test.ts"), T("pnpm test")], "Fixed. The loader joined paths with a template string, so backslashes broke the glob; it now uses path.posix for globs and path for files. The tests pass on both.", 1],
+  ["Add a /api/reports route.", [R("apps/server/src/app.ts"), E("apps/server/src/app.ts"), E("apps/server/src/views.ts"), E("apps/server/test/reports.test.ts"), T("pnpm test"), E("architecture/server.md")], "Added GET /api/reports: the route in app.ts, its view in views.ts, a test, and the table in architecture/server.md. Every route here follows that four-file pattern. Tests pass.", 1],
+  ["The generated client is out of date, regenerate it.", [T("pnpm codegen", false), E("openapi.yaml"), T("pnpm codegen"), T("pnpm typecheck"), E("src/client/index.ts")], "Regenerated. Codegen failed until the spec's operation ids were unique; after fixing them it ran and typecheck passes. Always run codegen before typecheck, since typecheck reads the generated files.", 1],
+  ["The retry test is flaky, find out why.", [R("test/retry.test.ts"), T("pnpm vitest run test/retry.test.ts", false), E("test/retry.test.ts"), T("pnpm vitest run test/retry.test.ts --repeat 20")], "It slept for real and raced the 40 ms deadline. Switched it to fake timers; 20 runs in a row pass. Tests that wait on a clock should use fake timers here.", 1],
+  ["Upgrade zod to v4.", [T("pnpm up zod@4"), E("src/schema.ts"), E("src/validate.ts"), T("pnpm typecheck", false), E("src/validate.ts"), T("pnpm typecheck"), T("pnpm test")], "Upgraded to zod 4. The breaking changes here were z.string().email() moving to z.email() and ZodError.errors becoming .issues; both fixed, typecheck and tests pass.", 1],
+  ["Add a provider adapter for Mistral.", [R("packages/providers/src/openai.ts"), E("packages/providers/src/mistral.ts"), E("packages/providers/src/config.ts"), E("packages/providers/test/mistral.test.ts"), T("pnpm test"), E("architecture/agent-harness.md")], "Added the Mistral adapter by following the OpenAI-compatible one: the class, its entry in PROVIDER_DEFAULTS, a test with a local server, and a docs line. Tests pass.", 1],
+  ["Set up a new live eval for the router.", [R("packages/router/eval/run-router-eval.ts"), E("packages/router/eval/run-compare.ts"), E("package.json"), T("SOCRATES_ENV_FILE=.env pnpm eval:compare"), E("docs/trial-log.md")], "Added the eval: the script, an eval:compare entry in package.json, and a trial-log entry. It needs SOCRATES_ENV_FILE=.env and prints a table; it passed.", 1],
+  ["The docs build breaks after moving files.", [T("pnpm docs:build", false), E("docs/index.md"), E("docs/guide/setup.md"), T("pnpm docs:build")], "Fixed: the build resolves links relative to the sidebar config, so every moved page also needed its sidebar entry updated. The build passes now.", 1],
+  ["Rename the variable foo to bar in utils.ts.", [["grep", { pattern: "foo", path: "src" }], R("src/utils.ts"), E("src/utils.ts"), E("src/index.ts")], "Renamed foo to bar in utils.ts and the one place it was imported.", 0],
+  ["What does the router do?", [R("packages/router/src/router.ts"), R("architecture/Goal-router.md"), ["grep", { pattern: "route" }], R("packages/router/src/prompt.ts")], "The router decides which goal and task a message belongs to before the agent runs, using a short context and two tools.", 0],
+  ["Fix the typo in the README.", [R("README.md"), E("README.md"), ["grep", { pattern: "teh" }]], "Fixed 'teh' to 'the' in the README.", 0],
+  ["Fix the failing test in the importer.", [T("pnpm test", false), R("src/importer.ts"), E("src/importer.ts"), T("pnpm test", false), E("src/importer.ts"), T("pnpm test", false)], "I could not fix it. The test still fails on the empty-file case and I am not sure why. I tried two changes; neither worked. Tell me if you know of a fixture I should check.", 0],
+  ["Show me what changed.", [T("git status"), T("git diff --stat"), T("git diff src/")], "Three files changed: schema.ts, store.ts and a test; the diff is above.", 0],
+  ["Why is the build so slow?", [R("package.json"), ["grep", { pattern: "tsc" }], T("time pnpm build"), R("tsconfig.json")], "The build takes 41 s; the likely cause is that tsc checks every package on every run. I have not changed anything.", 0],
+  ["Add a console.log to see what the parser gets.", [R("src/parser.ts"), E("src/parser.ts"), T("pnpm dev")], "Added a console.log of the input at the top of parse().", 0],
+  ["Run the tests.", [T("pnpm test"), T("pnpm test --reporter=verbose"), T("pnpm typecheck")], "All 884 tests pass and typecheck is clean.", 0],
+  ["Summarize the project structure.", [["glob", { pattern: "**/*.ts" }], R("package.json"), R("README.md"), ["glob", { pattern: "packages/*" }]], "A pnpm monorepo: packages for the store, router, agent and tools, and apps for the server and web.", 0],
+  ["Make the primary button blue.", [R("src/styles.css"), E("src/styles.css"), E("src/Button.tsx"), T("pnpm build")], "The primary button is blue now: changed the --primary color in styles.css and the Button's class.", 0],
+  ["Delete the temp folder.", [T("ls tmp"), T("rm -rf tmp"), T("ls")], "Deleted tmp/.", 0],
+  ["Start migrating the importer to the new API.", [R("src/importer.ts"), E("src/importer.ts"), T("pnpm typecheck", false), E("src/importer.ts"), T("pnpm typecheck", false)], "I got the first half of the importer moved, but typecheck still fails in three places and I stopped there. Say if you want me to carry on.", 0],
+  ["Add the two numbers and return the sum.", [E("src/sum.ts"), E("test/sum.test.ts"), T("pnpm test")], "Added sum(a, b) with a test; it passes.", 0],
+  ["Change the default port to 4300.", [["grep", { pattern: "4200" }], E("src/config.ts"), E("README.md"), T("pnpm test")], "Changed the default port to 4300 in config.ts and the README. Tests pass.", 0],
+];
+const evidence = (calls: Call[]) => calls.map(([tool, input, ok = true], i) => ({ taskId: "t", number: i + 1, handle: `e${i + 1}`, callId: `c${i}`, tool, turnId: "x", input, status: ok ? ("ok" as const) : ("error" as const), result: null, createdAt: "" }));
+const workRows: { request: string; p: number; want: number; ms: number }[] = [];
+for (const [request, calls, answer, want] of WORK) {
+  const t0 = performance.now();
+  const reply = await decider.decide({ state: workState({ request, calls: evidence(calls), answer }), questions: { work: WORK_QUESTION } });
+  cost += reply.usage.costUsd ?? 0;
+  workRows.push({ request, p: reply.probabilities.work!, want, ms: performance.now() - t0 });
+}
+const workScore = (at: number) => {
+  const positives = workRows.filter((r) => r.want === 1), negatives = workRows.filter((r) => r.want === 0);
+  const found = positives.filter((r) => r.p >= at).length, wrong = negatives.filter((r) => r.p >= at).length;
+  return { found, positives: positives.length, wrong, negatives: negatives.length };
+};
+console.log(`work: ${workRows.length} finished turns (${workRows.filter((r) => r.want).length} worth recording); at or above  found  wrongly asked`);
+for (const at of [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.85]) {
+  const w = workScore(at);
+  console.log(`  ${at.toFixed(2).padStart(13)}  ${pct(w.found, w.positives).padStart(6)}  ${`${w.wrong}/${w.negatives}`.padStart(13)}${at === WORK_AT ? " ← shipped" : ""}`);
+}
+const workMistakes = workRows.filter((r) => (r.p >= WORK_AT) !== (r.want === 1)).map((r) => `  work ${r.p.toFixed(2)} (wanted ${r.want ? "yes" : "no"}): "${r.request.slice(0, 70)}"`);
+console.log(workMistakes.length ? `\nDisagreements at the shipped threshold:\n${workMistakes.join("\n")}\n` : "\nNo disagreements at the shipped threshold.\n");
+
 // Measured 2026-10-10 (see docs/memory.md): the floors below leave room under what was measured.
 const saves = score("save", SAVE_AT), recalls = score("recall", RECALL_AT);
 assert.ok(saves.recall >= 0.85, `save: only ${pct(saves.found, saves.positives)} of the messages worth saving reach ${SAVE_AT}`);
 assert.ok(saves.falsePositives / saves.negatives <= 0.2, `save: ${saves.falsePositives}/${saves.negatives} messages not worth saving reach ${SAVE_AT}`);
 assert.ok(recalls.recall >= 0.8, `recall: only ${pct(recalls.found, recalls.positives)} of the messages needing a recall reach ${RECALL_AT}`);
 assert.ok(recalls.falsePositives / recalls.negatives <= 0.15, `recall: ${recalls.falsePositives}/${recalls.negatives} messages not needing a recall reach ${RECALL_AT}`);
+const works = workScore(WORK_AT);
+assert.ok(works.found / works.positives >= 0.8, `work: only ${pct(works.found, works.positives)} of the turns worth recording reach ${WORK_AT}`);
+assert.ok(works.wrong / works.negatives <= 0.2, `work: ${works.wrong}/${works.negatives} turns not worth recording reach ${WORK_AT}`);
 console.log("Passed.");

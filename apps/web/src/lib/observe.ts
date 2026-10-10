@@ -53,6 +53,7 @@ export interface DeciderStats {
   costUsd: number;
   recall: { likely: number; likelyOffered: number; unlikely: number; unlikelyOffered: number };
   save: { likely: number; likelySaved: number; unlikely: number; unlikelySaved: number };
+  work: { likely: number; likelyWrote: number; unlikely: number };
 }
 
 export interface Place {
