@@ -157,7 +157,7 @@ describe("a turn with the gate", () => {
     expect(first).toContain("<MEMORY_CANDIDATES>\n- [m1 · knowledge · 2026-09-01] The Berlin trip");
     expect(first).toMatch(/<MEMORY_HINT>[\s\S]*memory\.save[\s\S]*<\/MEMORY_HINT>/);
     const turn = w.store.turnsForTask(w.taskId).at(-1)!;
-    expect(asked[0]!.trace).toMatchObject({ role: "decision", userEventId: turn.userEventId, turnId: turn.id, goalId: w.goalId, taskId: w.taskId });
+    expect(asked[0]!.trace).toEqual({ role: "decision", userEventId: turn.userEventId });
     // The fixture's chat already has an answer, which this message follows.
     expect(asked[0]!.state).toBe("The assistant's previous reply (cut short):\nStarted.\n\nThe user's latest message:\nWhich airline am I flying with?");
     expect(w.store.getMemory(trip.id)!.uses).toBe(1);
@@ -185,5 +185,30 @@ describe("a turn with the gate", () => {
     await socrates.handle("I live in Berlin and always want short answers.");
     expect(asked).toHaveLength(0);
     expect(contextText(model.requests[0]!)).not.toContain("<MEMORY_HINT>");
+  });
+
+  it("asks the decider before the router, and shows the router what is remembered only when a recall is likely", async () => {
+    const w = await world();
+    const shop = w.store.createGoal({ title: "Shop" });
+    const stripe = w.store.saveMemory({ kind: "knowledge", goalId: shop.id, text: "Stripe is the payment provider; PayPal was dropped in September.", by: "user" }).memory;
+    w.store.saveMemory({ kind: "knowledge", goalId: null, text: "The Berlin trip is from 14 to 18 March.", by: "user" });
+    let answer: { recall?: number; save?: number } = { recall: 0.9 };
+    const order: string[] = [];
+    const { decider } = fakeDecider(() => { order.push("decider"); return answer; });
+    const { socrates, routerModel } = w.socrates([continueTask(), continueTask()], [final(), final()], { gate: () => new MemoryGate({ decider }), semantic: memoryIndex(() => [{ id: stripe.id, similarity: 0.5 }]) });
+    const original = routerModel.complete.bind(routerModel);
+    routerModel.complete = (request) => { order.push("router"); return original(request); };
+
+    await socrates.handle("Why did we drop PayPal?");
+    expect(order).toEqual(["decider", "router"]);
+    const routed = routerModel.requests[0]!.messages[0]!.content as string;
+    expect(routed).toContain('<REMEMBERED>\n- [knowledge');
+    expect(routed).toContain('limited to goal "Shop"] Stripe is the payment provider');
+    expect(routed).not.toContain("Berlin");
+    expect(routed.indexOf("<REMEMBERED>")).toBeLessThan(routed.indexOf("<CURRENT_USER_MESSAGE>"));
+
+    answer = { recall: 0.2 };
+    await socrates.handle("Why did we drop PayPal?");
+    expect(routerModel.requests[1]!.messages[0]!.content as string).not.toContain("<REMEMBERED>");
   });
 });

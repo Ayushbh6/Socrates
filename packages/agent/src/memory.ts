@@ -76,6 +76,33 @@ export function memoryCandidates(store: LedgerStore, input: { goal: Goal; messag
   return { block: null, ids: [] };
 }
 
+/** What the router is shown (Goal-router.md, "REMEMBERED"): at most this many entries, within this many tokens. */
+export const MEMORY_ROUTING_MAX = 6;
+export const MEMORY_ROUTING_MAX_TOKENS = 250;
+
+/**
+ * The saved memories that may bear on a message, for the router, which runs
+ * before the goal is known: entries of every goal, matching by words or
+ * meaning at the related floor, each with its date and, when it is limited to
+ * one goal, that goal's title, so the router can see what the message is
+ * about (a trip, a person, a project) instead of asking the user. No handles:
+ * the router does not use them. Null when nothing matches.
+ */
+export function memoryForRouting(store: LedgerStore, input: { message: string; semantic: SemanticHit[]; now: Date; timeZone: string }): string | null {
+  const ranked = rankMemories(store, { query: input.message, goalId: undefined, semantic: input.semantic, strict: true, meaningFloor: DEFAULT_THRESHOLDS.related, limit: MEMORY_ROUTING_MAX, now: input.now });
+  const lines: string[] = [];
+  let used = 0;
+  for (const { memory } of ranked) {
+    const goal = memory.goalId ? store.getGoal(memory.goalId) : null;
+    const line = `- [${memory.kind} · ${zonedParts(new Date(memory.updatedAt), input.timeZone).date}${goal ? ` · limited to goal "${goal.title}"` : ""}] ${memory.text}`;
+    const cost = countTokens(line) + 1;
+    if (used + cost > MEMORY_ROUTING_MAX_TOKENS) continue;
+    lines.push(line);
+    used += cost;
+  }
+  return lines.length ? lines.join("\n") : null;
+}
+
 /**
  * `<MEMORY_HINT>`: when the gate thinks the message states something lasting
  * (`reading.save`), one line reminds the agent that it can save it. The agent

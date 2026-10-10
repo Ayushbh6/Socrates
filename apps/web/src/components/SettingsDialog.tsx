@@ -114,7 +114,7 @@ function Models({ app, providers }: { app: AppState; providers: Provider[] }) {
         {inUse.compactor ? `; compaction with ${inUse.compactor.model}` : ""}.
       </p>
       {row("Chat", chat, "main", setChat, "Automatic: the first provider with a key", chatModels)}
-      {row("Routing", router, "router", setRouter, "Automatic: the chat provider's router model", routerModels)}
+      {row("Routing", router, "router", setRouter, "Automatic: GPT-6 Luna on OpenRouter, else the chat provider's router model", routerModels)}
       {row("Compaction", compactor, "main", setCompactor, "Automatic: the chat model", compactorModels)}
       <p className="settings-hint">Compaction is the call that summarizes an old part of a long task so the work can go on. It copies the user's open requests word for word, so a strong model suits it; by default it is the chat model.</p>
       <div className="settings-actions">

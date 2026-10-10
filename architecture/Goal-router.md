@@ -305,9 +305,13 @@ Present only when work runs or recently finished in parallel lanes beside the co
 
 A message that only asks how a lane's work is going routes to `general`, even when the lane works on the current task, and is answered from `<LANES>` without disturbing the lane. A message that changes or adds to a lane's work routes to that lane's task by its selectors and is handed to the lane. New, separate work is never routed into a lane's task merely because the lane exists.
 
-#### 5. `CURRENT_USER_MESSAGE`
+#### 5. `REMEMBERED`
 
-This is the exact current query. It appears once, after both context sections, and is always the final block read by the router. When the message has images, `CURRENT_ATTACHMENTS` names them just before it. A message that is only images has no text; in its place the router reads "(No text: the user sent only the images in CURRENT_ATTACHMENTS.)". Such a message continues the conversation: the current task, or `general` when there is none. It is never asked about and never compound, and the stored message stays empty.
+Present only when the memory gate (`agent-harness.md`, "Memory") expects the message to lean on something the user asked Socrates to remember (recall at least `0.5`). At most `6` saved memories of any goal that match the message by words or meaning, within `250` tokens, one per line as `- [kind · date · limited to goal "Title"] text`; the goal is named only for a memory limited to one goal, and there are no handles. They tell the router what the message is about (a trip, a person, a project), which a bare "my trip" does not; they are not goals or tasks, so it routes only to labels it was given, and a message that depends on one is not unclear: it does not ask what it refers to. Without the gate, or when it expects no recall, the block is absent and the router is unchanged.
+
+#### 6. `CURRENT_USER_MESSAGE`
+
+This is the exact current query. It appears once, after both context sections, and is always the final block read by the router. When the message has images, `CURRENT_ATTACHMENTS` names them just before it (and `REMEMBERED`, when present, comes before that). A message that is only images has no text; in its place the router reads "(No text: the user sent only the images in CURRENT_ATTACHMENTS.)". Such a message continues the conversation: the current task, or `general` when there is none. It is never asked about and never compound, and the stored message stays empty.
 
 ### Recent-history token budget
 

@@ -77,7 +77,7 @@ describe("memory", () => {
     expect(asked[0]!.state).toBe("I always want short answers.");
     expect(Object.keys(asked[0]!.questions)).toEqual(["recall", "save"]);
     const [decision] = live.rt.calls!.list({ role: "decision" });
-    expect(decision).toMatchObject({ role: "decision", model: "openrouter:perplexity/pplx-decider-v1.1-27b", ok: true, promptTokens: 40, costUsd: 0.0000008, goalId: expect.any(String), turnId: expect.any(String) });
+    expect(decision).toMatchObject({ role: "decision", model: "openrouter:perplexity/pplx-decider-v1.1-27b", ok: true, promptTokens: 40, costUsd: 0.0000008, userEventId: expect.any(String) });
     expect(live.rt.calls!.get(decision!.id)?.response?.text).toBe('{"recall":0.2,"save":0.95}');
 
     // The Inspect page's rates: a likely save the agent did not take up shows as such.

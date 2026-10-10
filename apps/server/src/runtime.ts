@@ -16,6 +16,14 @@ import { Settings, SettingsPatch, loadSettings, saveSettings } from "./settings"
 import { DEFAULT_TITLER, nameChat } from "./titles";
 import { workspaceFolder } from "./views";
 
+/**
+ * The routing model when none is chosen and there is an OpenRouter key: GPT-6 Luna, with thinking off.
+ * `pnpm eval:router-compare` on the routing fixtures (2026-10-10): 22/22 and 20/22 at the model's own
+ * thinking level, 20/22 with it off at a median 1.9 s and $0.0002 a decision, against 18/22 at $0.005
+ * for DeepSeek V4 Pro, and 21, 17 and 16 of 22 for Claude Haiku 5.5 at five times Luna's price.
+ */
+export const DEFAULT_ROUTER = { provider: "openrouter", model: "openai/gpt-6-luna" } as const;
+
 /** The order in which a chat provider is picked when none is chosen: the first with a key. */
 const DETECTION_ORDER: Provider[] = ["anthropic", "openai", "gemini", "openrouter", "deepseek"];
 
@@ -459,9 +467,12 @@ export class Runtime {
       this.setup.push(`Add an API key (${DETECTION_ORDER.map((p) => PROVIDER_DEFAULTS[p].keys[0]).join(", ")}) or choose a chat model.`);
       return;
     }
+    // A router the user did not choose is DEFAULT_ROUTER when there is an OpenRouter key, else the chat provider's own.
+    const automatic = PROVIDER_DEFAULTS.openrouter.keys.some((k) => env[k]);
     const router: ModelInUse = this.settings.router
       ? { ...this.settings.router, source: "settings" }
-      : { provider: chat.provider, model: PROVIDER_DEFAULTS[chat.provider as Provider].router, source: chat.source };
+      : automatic ? { ...DEFAULT_ROUTER, source: "detected" } : { provider: chat.provider, model: PROVIDER_DEFAULTS[chat.provider as Provider].router, source: chat.source };
+    const routerEffort: Effort | undefined = !this.settings.router && automatic ? "off" : undefined;
     // Only the chat model reads files and attachments, so only it needs to know whether it can see; the router keeps its own thinking level.
     const [vision, efforts] = await Promise.all([
       (this.deps.detectVision ?? detectVision)(chat.provider, chat.model, env),
@@ -490,6 +501,7 @@ export class Runtime {
       store: this.store,
       model,
       routerModel,
+      ...(routerEffort ? { routerEffort } : {}),
       ...(compactorModel ? { compactorModel } : {}),
       timeZone: this.timeZone,
       // Every approval comes from the message that asked (architecture/server.md, "Approvals").

@@ -75,6 +75,8 @@ export interface BuildContextOptions {
   laneId?: string | null;
   /** Host snapshot: active lanes mapped to their executing turn, or null while routing/queued. */
   laneActivity?: ReadonlyMap<string, string | null>;
+  /** Saved memories that may bear on the message, one per line, or null (Goal-router.md, "REMEMBERED"). */
+  remembered?: string | null;
 }
 
 /** An open goal whose scope matched gets this much, in fused-rank units. */
@@ -147,6 +149,7 @@ export function buildRoutingContext(store: LedgerStore, message: string, options
       ),
     );
   }
+  if (options.remembered) sections.push(section("REMEMBERED", options.remembered));
   // Images are named apart from the message, whose exact text request ranges index.
   if (options.attachments?.length) sections.push(section("CURRENT_ATTACHMENTS", attachedLine(options.attachments)));
   sections.push(section("CURRENT_USER_MESSAGE", message.trim() ? message : IMAGES_ONLY));

@@ -1,4 +1,4 @@
-import type { Attachment, EventRefs, ModelClient, TurnStop } from "@socrates/contracts";
+import type { Attachment, Effort, EventRefs, ModelClient, TurnStop } from "@socrates/contracts";
 import { homedir } from "node:os";
 import { abortable } from "@socrates/shared";
 import { TokenCalibration } from "@socrates/providers";
@@ -18,8 +18,8 @@ import { AGENT_SYSTEM_PROMPT } from "./prompt";
 import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
 import { createCompactor } from "./compaction";
 import { applyAnchors, type AnchorDecision, type AnchorChange } from "./anchors";
-import { type MemoryGate } from "./gates";
-import { MEMORY_ON, type MemoryChange, type MemorySettings, applyMemory, memoryCandidates, memoryHint } from "./memory";
+import { type GateReading, type MemoryGate, RECALL_AT } from "./gates";
+import { MEMORY_ON, type MemoryChange, type MemorySettings, applyMemory, memoryCandidates, memoryForRouting, memoryHint } from "./memory";
 export { MAX_GOAL_ANCHORS } from "./anchors";
 
 export interface SocratesOptions {
@@ -28,6 +28,8 @@ export interface SocratesOptions {
   model: ModelClient;
   /** The Goal Router's model; defaults to the working agent's. */
   routerModel?: ModelClient;
+  /** The routing model's thinking level; without it the model's own default applies. */
+  routerEffort?: Effort;
   /** IANA time zone of the user. */
   timeZone: string;
   /** The application's approval callback; each message may supply its own. */
@@ -162,7 +164,8 @@ export interface PartResult {
 }
 
 /** Outside-folder grants last for this whole message, including its compound parts. */
-type RunOptions = HandleOptions & { accessGrants: AccessGrant[] };
+/** `reading`: what the memory gate said about the message, asked once for all its parts. */
+type RunOptions = HandleOptions & { accessGrants: AccessGrant[]; reading?: Promise<GateReading | null> };
 
 /**
  * `notices` contains one line per lane part (or clarification), each with its
@@ -268,7 +271,7 @@ export class Socrates {
     this.store = options.store;
     this.limits = { ...DEFAULT_LIMITS, ...options.limits };
     this.budgets = { ...DEFAULT_BUDGETS, ...options.budgets };
-    this.router = new GoalRouter({ store: options.store, routerModel: options.routerModel ?? options.model, mainModel: options.model, timeZone: options.timeZone, ...(options.semantic ? { semantic: options.semantic } : {}) });
+    this.router = new GoalRouter({ store: options.store, routerModel: options.routerModel ?? options.model, mainModel: options.model, timeZone: options.timeZone, ...(options.semantic ? { semantic: options.semantic } : {}), ...(options.routerEffort ? { effort: options.routerEffort } : {}) });
     this.runner = new ToolRunner({
       store: options.store,
       timeZone: options.timeZone,
@@ -456,14 +459,22 @@ export class Socrates {
       let parts: RoutedPart[];
       let acknowledgment: string | null = null;
       let setupError: { error: unknown } | null = null;
+      // The memory gate is asked first, as soon as the message is recorded: the router may use what it says, and the agent does.
+      let reading: Promise<GateReading | null> = Promise.resolve(null);
       if (laneId && target) {
         const userEvent = userEventId ? this.store.getEvent(userEventId)! : this.store.recordUserMessage(message, laneId);
+        reading = this.askGate(message, userEvent.id, target.task.id, signal);
         const turn = this.store.bindTurn({ userEventId: userEvent.id, taskId: target.task.id, route: "lane" });
         parts = [{ order: 1, request: message, dependsOn: [], turn, goal: target.goal, task: target.task, chat: this.store.currentChat(target.task.id), clarification: null, created: { goal: false, task: false } }];
       } else if (options.target) {
         parts = [this.bindChosen(message, laneId, options.target, userEventId, options.pinned === true)];
+        reading = this.askGate(message, parts[0]!.turn.userEventId, parts[0]!.task.id, signal);
       } else {
-        const routed = await this.router.route(message, signal, { laneId, userEventId, laneActivity: this.laneActivity() });
+        // The router records the message itself when it is not recorded yet; doing it here only moves it earlier.
+        userEventId ??= this.store.recordUserMessage(message, laneId).id;
+        reading = this.askGate(message, userEventId, this.store.currentBinding(laneId)?.task.id ?? null, signal);
+        const remembered = await this.rememberedForRouting(message, await reading, signal);
+        const routed = await this.router.route(message, signal, { laneId, userEventId, laneActivity: this.laneActivity(), ...(remembered ? { remembered } : {}) });
         if (routed.kind === "clarify") {
           const notice = laneId ? laneNotice(this.store.requireLane(laneId).number, { kind: "clarify", question: routed.text }) : null;
           return { kind: "clarify", text: routed.text, laneId, notice, notices: notice ? [notice] : [] };
@@ -478,7 +489,7 @@ export class Socrates {
       catch (error) { setupError ??= { error }; }
 
       const results: PartResult[] = [];
-      const runOptions: RunOptions = { ...options, accessGrants: [] };
+      const runOptions: RunOptions = { ...options, accessGrants: [], reading };
       let stopped = false;
       for (const part of parts) {
         // A part runs only after every earlier part finished with an answer.
@@ -540,14 +551,33 @@ export class Socrates {
     return null;
   }
 
-  /** The answer this turn's message follows in its chat: the task's latest earlier exchange, or null. */
-  private previousAnswer(turn: Turn): string | null {
-    const earlier = this.store.turnsForTask(turn.taskId!).filter((t) => t.projectTurn < turn.projectTurn);
-    for (const t of earlier.reverse()) {
+  /** The answer a message follows in its chat: the task's latest answered exchange, or null. */
+  private previousAnswer(taskId: string): string | null {
+    for (const t of this.store.turnsForTask(taskId).reverse()) {
       const exchange = this.store.exchangeForTurn(t.id);
       if (exchange) return exchange.response;
     }
     return null;
+  }
+
+  /**
+   * Ask the memory gate about a message once, right after it is recorded
+   * (agent-harness.md, "Memory"): never throws, and reads as nothing without a
+   * gate, with memory switched off, or when the decider fails or is slow.
+   */
+  private askGate(message: string, userEventId: string, taskId: string | null, signal: AbortSignal): Promise<GateReading | null> {
+    const gate = this.options.gate?.() ?? null;
+    if (!gate) return Promise.resolve(null);
+    const settings = this.options.memory?.() ?? MEMORY_ON;
+    const attachments = ((this.store.getEvent(userEventId)?.payload as { attachments?: { name: string }[] } | undefined)?.attachments ?? []).map((a) => a.name);
+    return gate.read({ message, previousAnswer: taskId ? this.previousAnswer(taskId) : null, attachments, ask: { recall: settings.use, save: settings.save }, trace: { role: "decision", userEventId } }, signal);
+  }
+
+  /** What the router is told the user has asked to be remembered, when the gate expects the message to lean on it. */
+  private async rememberedForRouting(message: string, reading: GateReading | null, signal: AbortSignal): Promise<string | null> {
+    if (!(this.options.memory?.() ?? MEMORY_ON).use || (reading?.recall ?? 0) < RECALL_AT) return null;
+    const semantic = this.options.semantic ? await this.options.semantic.search(message, { kinds: ["memory"], limit: 20, min: "related" }, signal) : [];
+    return memoryForRouting(this.store, { message, semantic, now: this.store.clock.now(), timeZone: this.options.timeZone });
   }
 
   /** A standard-mode message, bound where the user sent it: its task, or a new one in its goal. */
@@ -656,17 +686,6 @@ export class Socrates {
     }, signal);
     // Read once, so a compaction mid-turn keeps the same first part.
     const memorySettings = this.options.memory?.() ?? MEMORY_ON;
-    // Asked while the searches below run, so it adds no wait beyond the slowest of them; a failed or slow decider reads as nothing.
-    const gate = this.options.gate?.() ?? null;
-    const reading = gate
-      ? gate.read({
-          message: request,
-          previousAnswer: this.previousAnswer(turn),
-          attachments: store.requestForTurn(turn.id).attachments.map((a) => a.name),
-          ask: { recall: memorySettings.use, save: memorySettings.save },
-          trace: { role: "decision", userEventId: turn.userEventId, turnId: turn.id, laneId: turn.laneId, goalId: goal.id, taskId: turn.taskId, chatId: turn.chatId },
-        }, setupSignal)
-      : Promise.resolve(null);
     try {
       if (this.options.semantic) {
         // One query embedding (cached) serves the history and capability searches, and one more the
@@ -705,7 +724,8 @@ export class Socrates {
     // The main conversation sees what its lanes are doing, as of the start of this turn.
     const lanes = turn.laneId ? null : lanesBlock(store, this.laneViews(), store.clock.now(), this.options.timeZone);
     // Chosen once per turn, like the capability candidates, and recorded as offered.
-    const gated = await reading;
+    // Asked when the message arrived, so it is long done; it reads as nothing when it failed or was slow.
+    const gated = await (options.reading ?? Promise.resolve(null));
     const remembered = memoryCandidates(store, { goal, message: request, semantic: semantic.memories, settings: memorySettings, now: store.clock.now(), timeZone: this.options.timeZone, reading: gated });
     const hint = memoryHint(memorySettings, gated);
     store.recordMemoriesSurfaced(remembered.ids, "candidates", { goal_id: goal.id, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id });

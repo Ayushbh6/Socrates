@@ -1,6 +1,7 @@
 import { abortable } from "@socrates/shared";
 import {
   type AskUserInput,
+  type Effort,
   type EventPayloads,
   LEDGER_QUERY_MAX_CALLS,
   type ModelClient,
@@ -37,6 +38,8 @@ export interface GoalRouterOptions {
   maxSteps?: number;
   /** Meaning-based goal and task search; without it, candidates are keyword and recency only. */
   semantic?: SemanticSearch;
+  /** The routing model's thinking level; without it the model's own default applies. */
+  effort?: Effort;
 }
 
 export interface RoutedPart {
@@ -100,9 +103,11 @@ export class GoalRouter {
   private readonly historyBudgetTokens: number | undefined;
   private readonly maxSteps: number;
   private readonly semantic: SemanticSearch | undefined;
+  private readonly effort: Effort | undefined;
 
   constructor(options: GoalRouterOptions) {
     this.semantic = options.semantic;
+    this.effort = options.effort;
     this.store = options.store;
     this.routerModel = options.routerModel;
     this.mainModel = options.mainModel && options.mainModel !== options.routerModel ? options.mainModel : undefined;
@@ -112,7 +117,7 @@ export class GoalRouter {
   }
 
   /** Persist the exact message, route it, and bind it. A lane's message is recorded in that lane. */
-  async route(message: string, signal?: AbortSignal, options: { laneId?: string | null; userEventId?: string; laneActivity?: ReadonlyMap<string, string | null> } = {}): Promise<RoutingResult> {
+  async route(message: string, signal?: AbortSignal, options: { laneId?: string | null; userEventId?: string; laneActivity?: ReadonlyMap<string, string | null>; remembered?: string | null } = {}): Promise<RoutingResult> {
     signal?.throwIfAborted();
     const laneId = options.laneId ?? null;
     const userEvent = options.userEventId ? this.store.getEvent(options.userEventId) : this.store.recordUserMessage(message, laneId);
@@ -125,6 +130,7 @@ export class GoalRouter {
       semantic,
       laneId,
       ...(options.laneActivity ? { laneActivity: options.laneActivity } : {}),
+      ...(options.remembered ? { remembered: options.remembered } : {}),
       ...(this.historyBudgetTokens !== undefined ? { historyBudgetTokens: this.historyBudgetTokens } : {}),
     });
     const seen = emptySeen();
@@ -184,6 +190,7 @@ export class GoalRouter {
           tools,
           maxOutputTokens: 8_000,
           temperature: 0,
+          ...(this.effort ? { effort: this.effort } : {}),
           // Ask adapters for readable thinking when the provider exposes it;
           // the completed reply is recorded even though routing is not streamed.
           onReasoning: () => {},

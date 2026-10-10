@@ -25,7 +25,7 @@ export interface RankedMemory {
  * matches (BM25 over the memory's words) and meaning matches (`semantic`,
  * memory hits already at the "related" floor) fused into one ranking with a
  * small recency boost. Only entries that apply in `goalId` (everywhere, or
- * that goal) and are not in `exclude`.
+ * that goal; every goal's when it is undefined) and are not in `exclude`.
  *
  * `strict` is for offering entries unasked (`<MEMORY_CANDIDATES>`): an entry
  * qualifies on a strong enough meaning match (`meaningFloor`), on a weaker one
@@ -33,8 +33,8 @@ export interface RankedMemory {
  * alone is not enough. Without it (the agent searching on purpose) any match
  * counts.
  */
-export function rankMemories(store: LedgerStore, input: { query: string; goalId: string | null; semantic: SemanticHit[]; exclude?: Set<string>; strict: boolean; meaningFloor: number; weakFloor?: number; limit: number; now: Date }): RankedMemory[] {
-  const usable = (m: Memory | null): m is Memory => !!m && !m.forgottenAt && (!m.goalId || m.goalId === input.goalId) && !input.exclude?.has(m.id);
+export function rankMemories(store: LedgerStore, input: { query: string; goalId: string | null | undefined; semantic: SemanticHit[]; exclude?: Set<string>; strict: boolean; meaningFloor: number; weakFloor?: number; limit: number; now: Date }): RankedMemory[] {
+  const usable = (m: Memory | null): m is Memory => !!m && !m.forgottenAt && (input.goalId === undefined || !m.goalId || m.goalId === input.goalId) && !input.exclude?.has(m.id);
   const fts = toFtsQuery(input.query);
   const lexical = fts ? store.searchMemories(fts, { goalId: input.goalId, limit: KEYWORD_CANDIDATES }).filter(usable) : [];
   const similarity = new Map<string, number>();

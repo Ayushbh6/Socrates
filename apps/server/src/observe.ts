@@ -82,12 +82,14 @@ export function deciderStats(log: CallLog, store: LedgerStore, range: Range, now
     if (typeof p.recall === "number") {
       const bucket = p.recall >= RECALL_AT ? "likely" : "unlikely";
       stats.recall[bucket]++;
-      if (offered.has(row.turnId)) stats.recall[bucket === "likely" ? "likelyOffered" : "unlikelyOffered"]++;
+      const turns = row.userEventId ? store.turnsForUserEvent(row.userEventId).map((t) => t.id) : [];
+      if (turns.some((id) => offered.has(id))) stats.recall[bucket === "likely" ? "likelyOffered" : "unlikelyOffered"]++;
     }
     if (typeof p.save === "number") {
       const bucket = p.save >= SAVE_AT ? "likely" : "unlikely";
       stats.save[bucket]++;
-      if (saved.has(row.turnId)) stats.save[bucket === "likely" ? "likelySaved" : "unlikelySaved"]++;
+      const turns = row.userEventId ? store.turnsForUserEvent(row.userEventId).map((t) => t.id) : [];
+      if (turns.some((id) => saved.has(id))) stats.save[bucket === "likely" ? "likelySaved" : "unlikelySaved"]++;
     }
   }
   times.sort((a, b) => a - b);
@@ -389,7 +391,7 @@ export function trace(log: CallLog, store: LedgerStore, userEventId: string): { 
   // Group the calls: the router's together, then each turn's.
   const groups = new Map<string, CallRow[]>();
   for (const c of detail.calls) {
-    const key = c.role === "router" ? "router" : c.turnId ?? "other";
+    const key = c.role === "router" ? "router" : c.role === "decision" ? "decision" : c.turnId ?? "other";
     groups.set(key, [...(groups.get(key) ?? []), c]);
   }
   const callsOf = (key: string, group: "router" | "turn"): TraceCall[] => {
@@ -427,7 +429,8 @@ export function trace(log: CallLog, store: LedgerStore, userEventId: string): { 
     return out;
   };
 
-  items.push(...callsOf("router", "router"));
+  // The memory decider is asked first, before routing.
+  items.push(...callsOf("decision", "router"), ...callsOf("router", "router"));
   if (detail.routing || detail.clarification) items.push({ kind: "routing", at: detail.calls.filter((c) => c.role === "router").at(-1)?.startedAt ?? event.at, routing: detail.routing ?? { model: "", attempts: 0, escalated: false, fallback: null, ledgerQueries: 0, reason: "", decision: null, validationErrors: [] }, clarification: detail.clarification });
 
   for (const part of detail.parts) {

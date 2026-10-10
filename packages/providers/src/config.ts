@@ -7,7 +7,7 @@ import { OpenAICompatibleModel } from "./openai";
 export const PROVIDER_DEFAULTS = {
   anthropic: { router: "claude-haiku-4-5", main: "claude-opus-5-5", keys: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] },
   openai: { router: "gpt-5-mini", main: "gpt-5", keys: ["OPENAI_API_KEY"] },
-  deepseek: { router: "deepseek-v4-pro", main: "deepseek-v4-pro", keys: ["DEEPSEEK_API_KEY"] },
+  deepseek: { router: "deepseek-v4-flash", main: "deepseek-v4-pro", keys: ["DEEPSEEK_API_KEY"] },
   openrouter: { router: "google/gemini-3.8-flash", main: "google/gemini-3.8-flash", keys: ["OPENROUTER_API_KEY"] },
   gemini: { router: "gemini-3.8-flash", main: "gemini-3.8-flash", keys: ["GEMINI_API_KEY", "GOOGLE_API_KEY"] },
 } as const;

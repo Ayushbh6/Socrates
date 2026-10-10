@@ -14,6 +14,7 @@
     "test": "NODE_OPTIONS=--disable-warning=ExperimentalWarning vitest run",
     "test:watch": "NODE_OPTIONS=--disable-warning=ExperimentalWarning vitest",
     "eval:router": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/router/eval/run-router-eval.ts",
+    "eval:router-compare": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/router/eval/run-router-compare.ts",
     "eval:goal": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/router/eval/run-goal-e2e.ts",
     "eval:tools": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/tools/eval/run-tools-e2e.ts",
     "eval:agent": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/agent/eval/run-agent-e2e.ts",

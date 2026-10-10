@@ -13,7 +13,7 @@ Every call to a model is saved once it ends, whatever it was for:
 | `wrap_up`, `repair` | the tool-free final answer after a limit, and the one retry of an invalid final answer |
 | `compaction` | a history checkpoint or handover capsule (`agent-harness.md`, "Context and compaction") |
 | `embedding` | an embedding request for memory search, without tokens: what was embedded, how long it took, whether it worked |
-| `decision` | one request to the memory decider (`agent-harness.md`, "Memory"): the questions and the text it was asked about as the request, the probabilities as the reply (`{"recall":0.12,"save":0.98}`), its tokens and the price OpenRouter reported; it has the turn, goal, task and chat |
+| `decision` | one request to the memory decider (`agent-harness.md`, "Memory"): the questions and the text it was asked about as the request, the probabilities as the reply (`{"recall":0.12,"save":0.98}`), its tokens and the price OpenRouter reported; it is asked before routing, so it has the user message but no turn, and a message's trace lists it first |
 
 A request carries a `trace` (`CallTrace` in `packages/contracts`): its role, the user message it works on, and whatever else the call site knows (turn, lane, goal, task, chat, step). The router has the message but no turn yet; the working agent and the compactor have both. Providers ignore it.
 
@@ -51,7 +51,7 @@ Cache reads and writes are part of the prompt tokens and cost their own rates; w
 | Route | Returns |
 |---|---|
 | `GET /api/observe/summary?range=24h\|7d\|30d\|all` | totals over the range (calls, failed, stopped, tokens, cache hit rate, cost, speed, first-token time), the same for the working agent alone, a breakdown by role and model, the models with no price and how many calls that is, the size of the log and the retention |
-| `GET /api/observe/decider?range=` | how the memory decider behaved: decisions answered and failed, median time, cost, and for each question how often it said likely (recall at least `0.5`, save at least `0.4`) and, in those turns, how often memories were offered or the agent saved (and the same for unlikely, which is how a missed save shows); the latest `500` decisions of the range, joined to the ledger by turn |
+| `GET /api/observe/decider?range=` | how the memory decider behaved: decisions answered and failed, median time, cost, and for each question how often it said likely (recall at least `0.5`, save at least `0.4`) and, in those turns, how often memories were offered or the agent saved (and the same for unlikely, which is how a missed save shows); the latest `500` decisions of the range, joined to the ledger by the user message (and so to its turns) |
 | `GET /api/observe/series?range=` | model calls per time bucket (hour, six hours or day) and role, with every bucket of the range present, for the charts; embeddings are left out |
 | `GET /api/observe/recent?limit=` | the latest calls, for the live feed |
 | `GET /api/observe/costly?range=` | the eight questions that cost the most |
