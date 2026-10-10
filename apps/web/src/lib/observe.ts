@@ -26,7 +26,7 @@ export interface Totals {
   firstTokenSamples?: number;
 }
 
-export type Role = "router" | "work" | "wrap_up" | "repair" | "compaction" | "embedding" | "other";
+export type Role = "router" | "work" | "wrap_up" | "repair" | "compaction" | "embedding" | "decision" | "other";
 
 export interface Breakdown extends Totals {
   role: Role;
@@ -42,6 +42,17 @@ export interface Summary {
   unpricedCalls: number;
   storedBytes: number;
   retentionDays: number;
+}
+
+/** How the memory decider has behaved: how often it said a recall or a save was likely, and what followed in the turn. */
+export interface DeciderStats {
+  range: Range;
+  answered: number;
+  failed: number;
+  medianMs: number | null;
+  costUsd: number;
+  recall: { likely: number; likelyOffered: number; unlikely: number; unlikelyOffered: number };
+  save: { likely: number; likelySaved: number; unlikely: number; unlikelySaved: number };
 }
 
 export interface Place {
@@ -214,6 +225,7 @@ export function roleLabel(call: Pick<CallRow, "role" | "step">): string {
     case "repair": return "Answer repair";
     case "compaction": return `Compaction${call.step && call.step > 1 ? ` retry` : ""}`;
     case "embedding": return "Embedding";
+    case "decision": return "Memory decider";
     default: return "Call";
   }
 }
@@ -265,7 +277,7 @@ export function inspectTarget(hash: string): Target | null {
 export const inspectHref = (tab: Tab, ...rest: (string | null | undefined)[]): string => `#/inspect${tab === "overview" ? "" : `/${tab}`}${rest.filter(Boolean).map((p) => `/${p}`).join("")}`;
 
 /** The chart series a call's role belongs to (embeddings are not charted). */
-export const GROUPS = ["Agent", "Router", "Compaction", "Wrap-up and repair", "Other"] as const;
+export const GROUPS = ["Agent", "Router", "Compaction", "Wrap-up and repair", "Decider", "Other"] as const;
 export type Group = (typeof GROUPS)[number];
 export function groupOf(role: Role): Group | null {
   switch (role) {
@@ -273,6 +285,7 @@ export function groupOf(role: Role): Group | null {
     case "router": return "Router";
     case "compaction": return "Compaction";
     case "wrap_up": case "repair": return "Wrap-up and repair";
+    case "decision": return "Decider";
     case "other": return "Other";
     default: return null;
   }

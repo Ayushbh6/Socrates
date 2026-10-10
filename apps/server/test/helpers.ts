@@ -46,6 +46,8 @@ export async function runtime(config: ServerConfig, deps: RuntimeDeps = {}) {
     env: {},
     clock: fixedClock("2026-10-04T10:00:00Z"),
     makeEmbedder: () => new HashEmbedder(),
+    // Never ask the real decider about a test's messages.
+    makeDecider: () => null,
     // Never ask a real provider which models can see.
     detectVision: async (provider, model) => knownVision(provider, model),
     detectEfforts: async () => NO_EFFORTS,

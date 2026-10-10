@@ -40,12 +40,13 @@ The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `serv
 - **Redo in another task:** a misrouted question is asked again in a chosen task ("Redo in…" on the route line); the first attempt is set aside, never moved (`architecture/agent-harness.md`, "Redo in another task").
 - **Memory, phase M1:** Socrates remembers the user across goals: `<MEMORY>` in every request (who they are, how they like to work), saved from the final answer's `memory` field without asking, shown under the answer with Undo, and listed in Settings > Memory with two switches (`architecture/agent-harness.md`, "Memory"; the full plan is `docs/memory.md`).
 - **Memory, phase M2:** other entries (knowledge, and what does not fit in `<MEMORY>`) are recalled when a message bears on them (`<MEMORY_CANDIDATES>`, from keywords and meaning) and found with `context_retrieve` `memory`; `pnpm eval:memory` measures recall and precision with the local embedder.
+- **Memory, phase M3a:** a small decider (`perplexity/pplx-decider-v1.1-27b` through OpenRouter, on by default with an OpenRouter key, switchable in Settings > Memory) is asked two yes/no questions about each message beside the turn's searches: would a recall help (widens `<MEMORY_CANDIDATES>`, or tells the agent to look first), and is something worth saving (a one-line `<MEMORY_HINT>`; the same agent saves, there is no curator model). Calls are logged with role `decision`, the Inspect overview has a **Memory decider** panel, and `pnpm eval:decider` (needs `SOCRATES_ENV_FILE=.env`) scores it on 78 labelled messages (`architecture/agent-harness.md`, "Memory"; `docs/memory.md`).
 
 ## Next, in the order agreed with the user
 
 Ask before starting each one.
 
-1. **Memory and personalisation, M3** (`docs/memory.md`): M3a, the `pplx-decider` gates (on by default with an OpenRouter key) nudging the same agent to recall and to save (no separate curator model); then M3b, per-project work memory in `<repo>/.socrates/MEMORY.md`, written with the edit tools after verified work and read as an anchor.
+1. **Memory and personalisation, M3b** (`docs/memory.md`): per-project work memory in `<repo>/.socrates/MEMORY.md` (how things are done here, lessons, where things are), written with the edit tools after verified work, read as an anchor, and nudged by a decider question after a turn of real work. Also on the list from the M3a trial: let the router see the profile and the matching entries, so "my trip" does not stop at a clarification.
 2. **Standard to flow:** a richer design for moving between the two modes.
 3. **Continue button:** offer one after a safeguard stop (200 steps, 60 minutes, or the token limit).
 

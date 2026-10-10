@@ -35,6 +35,8 @@ export interface ContextInput {
   memory?: MemorySettings | null;
   /** This turn's `<MEMORY_CANDIDATES>` block, chosen once per turn, or null. */
   memoryCandidates?: string | null;
+  /** This turn's `<MEMORY_HINT>` block, from the save gate, or null. */
+  memoryHint?: string | null;
   /** Where tools may work and when they ask, as of the turn's start; null for the workspace boundary. */
   access?: AccessPolicy | null;
   /** The goal's workspace, whose anchors and files fill `<PROJECT_CONTEXT>`. */
@@ -88,6 +90,7 @@ export function assembleContext(input: ContextInput): TextPart[] {
       timeZone: input.timeZone,
     }),
     input.memoryCandidates ?? null,
+    input.memoryHint ?? null,
     projectContext({
       store,
       goalId: goal.id,

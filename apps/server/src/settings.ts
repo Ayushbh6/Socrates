@@ -49,8 +49,11 @@ export type Profile = z.infer<typeof Profile>;
 /** A change to the profile: only the fields sent (a default here would reset the others). */
 const ProfilePatch = z.object({ name: Profile.shape.name.unwrap().nullable().optional(), onboarded: z.boolean().optional() }).strict();
 
-/** Memory's two switches (agent-harness.md, "Memory"): save new memories from what the user says, and show memories to the agent. */
-export const MemorySwitches = z.object({ save: z.boolean(), use: z.boolean() }).strict();
+/**
+ * Memory's switches (agent-harness.md, "Memory"): save new memories from what the user says, show memories to the agent,
+ * and let a small model (the decider, through OpenRouter) say when a message may need a recall or hold something to save.
+ */
+export const MemorySwitches = z.object({ save: z.boolean(), use: z.boolean(), decider: z.boolean().default(true) }).strict();
 
 /** What a model costs, in US dollars per million tokens; where cache prices are null, input tokens' price applies. */
 export const PriceSetting = z.object({
@@ -73,7 +76,7 @@ export type PriceSetting = z.infer<typeof PriceSetting>;
  * - workingFolder: the workspace new work is bound to, or null; choosing it adds its folder to `access`;
  * - access: where Socrates may work and when it asks; by default only the user's folders, asking first;
  * - profile: the user's name and whether onboarding is done;
- * - memory: whether Socrates saves new memories and whether it uses them; both on by default;
+ * - memory: whether Socrates saves new memories, whether it uses them, and whether the decider is asked about each message; all on by default (the decider also needs an OpenRouter key);
  * - prices: what a model costs, by its id ("deepseek:deepseek-flash"), over the list prices Socrates looks up.
  */
 export const Settings = z.object({
@@ -93,7 +96,7 @@ export const Settings = z.object({
   workingFolder: z.string().min(1).nullable().default(null),
   access: Access.default({ scope: "folders", folders: [], approvals: "ask" }),
   profile: Profile.default({ name: null, onboarded: false }),
-  memory: MemorySwitches.default({ save: true, use: true }),
+  memory: MemorySwitches.default({ save: true, use: true, decider: true }),
   prices: z.record(z.string().min(1).max(250), PriceSetting).default({}),
 }).strict();
 export type Settings = z.infer<typeof Settings>;

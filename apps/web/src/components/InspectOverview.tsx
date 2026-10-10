@@ -2,13 +2,13 @@ import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { asked, dayLabel } from "../lib/model";
 import {
-  average, type Breakdown, bytes, duration, inspectHref, type PriceRow, percent, type Range, ratio, roleLabel, shortModel, speed, stacked, type Summary, tokenRows, tokens, totalPerBucket, usd,
+  average, type Breakdown, bytes, type DeciderStats, duration, inspectHref, type PriceRow, percent, type Range, ratio, roleLabel, shortModel, speed, stacked, type Summary, tokenRows, tokens, totalPerBucket, usd,
 } from "../lib/observe";
 import { ChartCard, HBars, Lines, type SeriesDef, StackedColumns } from "./charts";
 import { MoveChip, PromptBar, Tile, usePolled } from "./inspect-kit";
 
-const GROUP_COLORS: Record<string, string> = { Agent: "var(--s1)", Router: "var(--s2)", Compaction: "var(--s3)", "Wrap-up and repair": "var(--s4)", Other: "var(--s5)" };
-const ROLE_NAME: Record<string, string> = { work: "Agent", wrap_up: "Wrap-up", repair: "Repair", router: "Router", compaction: "Compaction", embedding: "Embeddings", other: "Other" };
+const GROUP_COLORS: Record<string, string> = { Agent: "var(--s1)", Router: "var(--s2)", Compaction: "var(--s3)", "Wrap-up and repair": "var(--s4)", Decider: "var(--s6)", Other: "var(--s5)" };
+const ROLE_NAME: Record<string, string> = { work: "Agent", wrap_up: "Wrap-up", repair: "Repair", router: "Router", compaction: "Compaction", embedding: "Embeddings", decision: "Memory decider", other: "Other" };
 
 /** The overview: totals with their trends, the day's calls, tokens, cache, speed and cost over time, and what is happening now. */
 export function InspectOverview({ range, ms, onCall }: { range: Range; ms: number; onCall: (id: string) => void }) {
@@ -16,6 +16,7 @@ export function InspectOverview({ range, ms, onCall }: { range: Range; ms: numbe
   const series = usePolled(() => api.observeSeries(range), [range], ms);
   const recent = usePolled(() => api.observeRecent(14), [], ms);
   const costly = usePolled(() => api.observeCostly(range), [range], ms);
+  const decider = usePolled(() => api.observeDecider(range), [range], ms);
   const error = summary.error ?? series.error;
   const s = summary.data;
   const sr = series.data;
@@ -102,6 +103,8 @@ export function InspectOverview({ range, ms, onCall }: { range: Range; ms: numbe
             </table>
           </div>
         </section>
+
+      {decider.data && decider.data.answered + decider.data.failed > 0 && <DeciderPanel d={decider.data} />}
 
       <div className="grid-2">
         <section className="panel" aria-label="Cost by model">
@@ -206,6 +209,26 @@ function Prices({ summary }: { summary: Summary }) {
         ))}
       </ul>
       {problem && <p className="inspect-note" role="alert">{problem}</p>}
+    </section>
+  );
+}
+
+/** What the memory decider said and what followed: the rates its thresholds are set from. */
+function DeciderPanel({ d }: { d: DeciderStats }) {
+  const of = (n: number, total: number) => (total ? `${n} of ${total}` : "–");
+  return (
+    <section className="panel" aria-label="Memory decider">
+      <h3>Memory decider</h3>
+      <div className="table-scroll">
+        <table>
+          <thead><tr><th>Question</th><th>Said likely</th><th>Then</th><th>Said unlikely</th><th>Then anyway</th></tr></thead>
+          <tbody>
+            <tr><td>Would a recall help?</td><td>{d.recall.likely}</td><td>{of(d.recall.likelyOffered, d.recall.likely)} offered</td><td>{d.recall.unlikely}</td><td>{of(d.recall.unlikelyOffered, d.recall.unlikely)} offered</td></tr>
+            <tr><td>Is something worth saving?</td><td>{d.save.likely}</td><td>{of(d.save.likelySaved, d.save.likely)} saved</td><td>{d.save.unlikely}</td><td>{of(d.save.unlikelySaved, d.save.unlikely)} saved</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p className="inspect-foot">{d.answered} answered{d.failed ? `, ${d.failed} failed` : ""} · median {duration(d.medianMs)} · {usd(d.costUsd)}. A save the agent made when the decider said unlikely is a miss; a likely one it ignored cost one line.</p>
     </section>
   );
 }

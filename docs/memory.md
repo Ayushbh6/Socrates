@@ -1,6 +1,6 @@
 # Memory and personalisation (design, for approval)
 
-Status: approved 2026-10-10 (the gate on by default when an OpenRouter key exists; saving without asking, with Undo). **M1 and M2 are built**: `architecture/agent-harness.md`, "Memory", `server.md` and `web.md` describe them as built (M2 added a second floor, `0.30` with a shared word, after `pnpm eval:memory` showed the related floor let wrong entries in). M3 below is still the plan.
+Status: approved 2026-10-10 (the gate on by default when an OpenRouter key exists; saving without asking, with Undo). **M1, M2 and M3a are built**: `architecture/agent-harness.md`, "Memory", `server.md`, `observability.md` and `web.md` describe them as built (M2 added a second floor, `0.30` with a shared word, after `pnpm eval:memory` showed the related floor let wrong entries in; M3a's results and the two places it differs from this plan are under "The gates"). M3b below is still the plan.
 
 ## The problem
 
@@ -54,10 +54,10 @@ Forgetting removes an entry from everything Socrates uses and from the index. Th
 
 ### The gates (M3a)
 
-One decider request per user message, sent **at the same time as the router** so it adds no wait. State: the user's message and the last answer in that chat, truncated. Two yes/no questions:
+**Built 2026-10-10.** One decider request per user message, sent **at the same time as the turn's searches** so it adds no wait beyond the slowest of them. (The plan said "beside the router"; the router does not run in Standard mode, in lanes, or for a chosen task, and the turn's ids are only known once the message is bound, so the call starts at the top of the turn's setup instead. One code path serves every mode, and each call is logged with its turn, goal, task and chat.) State: the user's message and the last answer in that chat, truncated. Two yes/no questions:
 
 - `recall`: would the reply be better if Socrates first looked up what it knows about this user or an earlier conversation?
-- `save`: does the user state a lasting fact, standing preference, or correction that would matter later?
+- `save`: does the user state a lasting fact, standing preference or rule, decision, or correction that would matter later? (The first wording left out decisions and rules; with it, save found 19 of 22 worth saving at 0.4, with the new wording 22 of 22.)
 
 Use of the answers:
 
@@ -66,7 +66,9 @@ Use of the answers:
 
 Without a key or when the call fails (timeout 2 s, then skipped for 30 s like the embedder), nothing breaks: candidates use their normal floor, and only explicit saves happen. The gate improves memory; it is not required for it.
 
-**Logs.** Every gate call is recorded in `calls.db` (kind `decision`): both probabilities, tokens, cost, latency, and afterwards what it led to (entries surfaced, whether the agent saved). `#/inspect` shows rates, so thresholds are calibrated on real traffic, as Perplexity's own guidance advises.
+**Logs.** Every gate call is recorded in `calls.db` (role `decision`): both probabilities, tokens, cost and latency, with the turn it belongs to. What it led to is not stored twice: `#/inspect` joins the calls to the ledger by turn (memories offered, memories the agent saved) and shows the rates, so thresholds are calibrated on real traffic, as Perplexity's own guidance advises.
+
+**Result (`pnpm eval:decider`, 78 labelled messages: 17 that need a recall, 22 worth saving, 40 that need neither; ten are the user's real phrasing and are not committed).** Recall at 0.5 found 17 of 17, and 3 of the other 61 also reached it; at 0.85 it found 15 of 17, and none of the others did. Save at 0.4 found 22 of 22, and 2 of the other 56 reached it ("Use my usual commit message style" at 0.90 is a real miss: it reads as a standing preference). Median 272 ms, one call in 78 near 3 s (which our 2 s limit would drop), about $0.000007 a message. Limits: the labels and most messages are mine, and the user's real ledger held only three messages, so no real sample of it could be labelled; the Inspect page's live rates replace this once there is traffic. The thresholds stay at 0.5, 0.85 and 0.4 for now.
 
 **Images.** The decider accepts them. The first version sends the message text and the image names; passing the pixels (resized, base64) is a small follow-up.
 
@@ -100,7 +102,7 @@ User memory is facts about the user. Work memory is **how things are done in one
 |---|---|---|
 | **M1: memory you can see** | Events (`memory_saved`, `memory_edited`, `memory_forgotten`), projection with handles `m1…`, `<MEMORY>`, the final-answer `memory` field, "Remembered / Undo", the Memory page, the two switches. No embeddings, no decider. | "Remember I prefer pnpm" in one goal changes the next goal's answer. Fixed overhead stays within a deliberately raised budget (about +150 tokens). |
 | **M2: resurfacing** | Entries in the embedding index and keyword search, `<MEMORY_CANDIDATES>`, the `context_retrieve` memory action, use tracking. `pnpm eval:memory` (retrieval part). | Right entry surfaced, wrong ones not, at the chosen floor; added tokens and latency per turn. |
-| **M3a: gates** | Decider client (OpenRouter, on by default with a key) with logging and a circuit breaker; the recall gate on M2 and the save nudge, both into the same agent; Settings. | The decider on Socrates' own messages (labelled sample of the real ledger): precision and recall at each threshold; saves with the nudge vs M1 alone; cost and added wait per turn (none expected, it runs beside the router). |
+| **M3a: gates** (built) | Decider client (OpenRouter, on by default with a key) with logging and a circuit breaker; the recall gate on M2 and the save nudge, both into the same agent; Settings. | `pnpm eval:decider`: precision and recall at each threshold on 78 labelled messages (above); cost about $0.000007 a message; added wait at most the slowest of the turn's searches or the decider (median 0.27 s), dropped after 2 s. Not yet measured: saves with the nudge against M1 alone, which needs real traffic. |
 | **M3b: work memory** | `.socrates/MEMORY.md` per project, anchored automatically, written with the edit tools after verified work, nudged by the decider. | A recurring change done twice: the second time follows the recorded procedure; the file stays within its budget. |
 
 Later, only if the numbers ask for it: a sweep over un-reviewed turns at compaction or day change; tidying (merge duplicates, fade entries unused for a long time, as Codex does); a private chat that reads and writes nothing; images to the decider; the router seeing the profile.
@@ -113,5 +115,5 @@ A knowledge graph; a general "user model"; memory from tool output; per-workspac
 
 - M1: a saved entry appears in the next goal's `<MEMORY>` and not after Forget; goal-scoped entries stay in their goal; the profile respects its budget; the final-answer field is validated (too many, bad kind, unknown handle); replay of the log rebuilds the table; with "use memories" off nothing is shown; a tool result containing "remember…" saves nothing.
 - M2: candidates by meaning and by keywords alone; floors; budget; nothing shown when nothing matches.
-- M3a: gate thresholds against a scripted decider; fail-open on timeout and error; the nudges appear only above their thresholds; logs written.
+- M3a (done): gate thresholds against a scripted decider; fail-open on timeout and error, a user stop not counted as one; the nudges appear only above their thresholds; only the needed questions are sent; logs written with the price and the turn; the Inspect rates; the switch and the no-key state.
 - M3b: the file is created and anchored; the nudge appears only after work that the gate marks; edits stay inside the file's budget.

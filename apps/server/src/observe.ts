@@ -1,3 +1,4 @@
+import { RECALL_AT, SAVE_AT } from "@socrates/agent";
 import type { EventPayloads, ModelMessage, TextPart } from "@socrates/contracts";
 import { countTokens } from "@socrates/shared";
 import type { CallBreakdown, CallBucket, CallDetail, CallLog, CallRow, CallTotals, LedgerStore, Turn } from "@socrates/store";
@@ -43,6 +44,55 @@ export function summary(log: CallLog, range: Range, now: Date, retentionDays: nu
     storedBytes: log.storedBytes(),
     retentionDays,
   };
+}
+
+/**
+ * How the memory decider has behaved (architecture/observability.md, "The
+ * decider"): how often it asked, how often it said yes, and what followed in
+ * the turn, read from the call log and the ledger. Thresholds are set from
+ * these rates: recall "likely" at RECALL_AT and above, save "likely" at
+ * SAVE_AT and above.
+ */
+export interface DeciderStats {
+  range: Range;
+  /** Decisions in the range that were answered (up to the latest 500), and the ones that failed. */
+  answered: number;
+  failed: number;
+  medianMs: number | null;
+  costUsd: number;
+  recall: { likely: number; likelyOffered: number; unlikely: number; unlikelyOffered: number };
+  save: { likely: number; likelySaved: number; unlikely: number; unlikelySaved: number };
+}
+
+const STATS_LIMIT = 500;
+
+export function deciderStats(log: CallLog, store: LedgerStore, range: Range, now: Date): DeciderStats {
+  const rows = log.list({ role: "decision", limit: STATS_LIMIT, ...(sinceOf(range, now) ? { since: sinceOf(range, now)! } : {}) });
+  const offered = new Set(store.listEvents({ type: "memory_surfaced" }).filter((e) => (e.payload as EventPayloads["memory_surfaced"]).how === "candidates").map((e) => e.turn_id));
+  const saved = new Set(store.listEvents({ type: "memory_saved" }).filter((e) => (e.payload as EventPayloads["memory_saved"]).by === "agent").map((e) => e.turn_id));
+  const stats: DeciderStats = { range, answered: 0, failed: 0, medianMs: null, costUsd: 0, recall: { likely: 0, likelyOffered: 0, unlikely: 0, unlikelyOffered: 0 }, save: { likely: 0, likelySaved: 0, unlikely: 0, unlikelySaved: 0 } };
+  const times: number[] = [];
+  for (const row of rows) {
+    if (!row.ok) { stats.failed++; continue; }
+    stats.answered++;
+    stats.costUsd += row.costUsd ?? 0;
+    times.push(row.ms);
+    let p: { recall?: number; save?: number } = {};
+    try { p = JSON.parse(log.get(row.id)?.response?.text ?? "{}"); } catch {}
+    if (typeof p.recall === "number") {
+      const bucket = p.recall >= RECALL_AT ? "likely" : "unlikely";
+      stats.recall[bucket]++;
+      if (offered.has(row.turnId)) stats.recall[bucket === "likely" ? "likelyOffered" : "unlikelyOffered"]++;
+    }
+    if (typeof p.save === "number") {
+      const bucket = p.save >= SAVE_AT ? "likely" : "unlikely";
+      stats.save[bucket]++;
+      if (saved.has(row.turnId)) stats.save[bucket === "likely" ? "likelySaved" : "unlikelySaved"]++;
+    }
+  }
+  times.sort((a, b) => a - b);
+  stats.medianMs = times.length ? times[Math.floor(times.length / 2)]! : null;
+  return stats;
 }
 
 /** What a message did to where the work stood. */

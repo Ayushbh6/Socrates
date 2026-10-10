@@ -109,7 +109,7 @@ export interface ModelRequest {
 }
 
 /** Which part of Socrates makes a model call. */
-export const CALL_ROLES = ["router", "work", "wrap_up", "repair", "compaction", "embedding", "other"] as const;
+export const CALL_ROLES = ["router", "work", "wrap_up", "repair", "compaction", "embedding", "decision", "other"] as const;
 export type CallRole = (typeof CALL_ROLES)[number];
 
 /**
@@ -197,4 +197,41 @@ export interface EmbeddingClient {
   /** Stable identity of the vector space, including model and endpoint; vectors of different ids never mix. */
   readonly id: string;
   embed(texts: string[], purpose: "query" | "document", signal?: AbortSignal): Promise<number[][]>;
+}
+
+/** One yes/no question for the decider: what to judge, and what a yes and a no mean. */
+export interface DecisionQuestion {
+  instructions: string;
+  yes: string;
+  no: string;
+}
+
+export interface DecisionRequest {
+  /** The text the questions are about. */
+  state: string;
+  /** Questions by name; the answers come back under the same names. */
+  questions: Record<string, DecisionQuestion>;
+  /** Who is asking, so the call can be recorded and found again. Providers ignore it. */
+  trace?: CallTrace;
+}
+
+export interface DecisionResponse {
+  /** The model that answered, as the provider names it. */
+  model: string;
+  /** The probability of yes for each question, from 0 to 1. */
+  probabilities: Record<string, number>;
+  /** `costUsd` is what the provider charged, in dollars, when it says. */
+  usage: { inputTokens: number; outputTokens: number; costUsd: number | null };
+  id: string | null;
+}
+
+/**
+ * A model that answers yes/no questions with probabilities instead of text
+ * (agent-harness.md, "Memory"): a cheap, fast gate that decides whether a
+ * slower step is worth taking. It is not a chat model.
+ */
+export interface DeciderClient {
+  /** The model's identity, such as "openrouter:perplexity/pplx-decider-v1.1-27b". */
+  readonly id: string;
+  decide(request: DecisionRequest, signal?: AbortSignal): Promise<DecisionResponse>;
 }

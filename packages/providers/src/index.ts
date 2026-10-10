@@ -5,6 +5,7 @@ export * from "./gemini";
 export * from "./calibration";
 export * from "./config";
 export * from "./embeddings";
+export * from "./decider";
 export * from "./stream";
 export * from "./catalog";
 export * from "./recorder";

@@ -57,6 +57,8 @@ export interface Status {
   profile: Profile;
   models: { chat: ModelInUse | null; router: ModelInUse | null; /** null: compaction uses the chat model. */ compactor: ModelInUse | null; /** Names standard-mode chats. */ titler?: ModelInUse | null };
   embeddings: Embeddings & { state: "ready" | "unavailable"; detail: string | null; index: { documents: number } | null };
+  /** The memory decider: asked about each message ("ready"), switched "off", or without an OpenRouter key ("no_key"). */
+  decider: "ready" | "off" | "no_key";
   timeZone: string;
   busy: boolean;
   lanes: Lane[];
@@ -90,7 +92,7 @@ export interface Settings {
   access: Access;
   profile: Profile;
   /** Memory's switches: save new memories, and show memories to Socrates. */
-  memory: { save: boolean; use: boolean };
+  memory: { save: boolean; use: boolean; decider: boolean };
   /** What a model costs, in US dollars per million tokens, by model id; over the list prices Socrates looks up. */
   prices: Record<string, { input: number; cachedInput: number | null; cacheWrite: number | null; output: number }>;
 }

@@ -222,7 +222,7 @@ function MemorySection({ app }: { app: AppState }) {
     api.memories().then(setList, () => setList([]));
   }, []);
   const switches = app.settings!.memory;
-  const toggle = (key: "save" | "use", on: boolean) => save(() => store.saveSettings({ memory: { [key]: on } }));
+  const toggle = (key: "save" | "use" | "decider", on: boolean) => save(() => store.saveSettings({ memory: { [key]: on } }));
   const where = (m: MemoryView) => [
     m.alwaysOn ? "Always on" : m.kind === "knowledge" ? "Recalled when relevant" : "Recalled when relevant: no room left to keep it always on",
     m.uses ? `shown to Socrates ${m.uses === 1 ? "once" : m.uses === 2 ? "twice" : `${m.uses} times`}` : null,
@@ -234,6 +234,10 @@ function MemorySection({ app }: { app: AppState }) {
       <p className="settings-hint">What Socrates remembers about you, in every goal: who you are and how you like to work, saved when you say it. Undo one under its answer or change it here. Forgetting removes it from what Socrates uses; the conversation it came from stays in your history.</p>
       <label className="memory-switch"><input type="checkbox" checked={switches.save} disabled={busy} onChange={(e) => void toggle("save", e.target.checked)} /> Save new memories from my conversations</label>
       <label className="memory-switch"><input type="checkbox" checked={switches.use} disabled={busy} onChange={(e) => void toggle("use", e.target.checked)} /> Use memories when answering</label>
+      <label className="memory-switch"><input type="checkbox" checked={switches.decider} disabled={busy} onChange={(e) => void toggle("decider", e.target.checked)} /> Ask a small model when to recall and save</label>
+      <p className="settings-hint">{app.status!.decider === "no_key"
+        ? "Needs an OpenRouter key; without one, Socrates recalls from keywords and meaning alone and saves when you ask."
+        : "Sends each message, and the answer before it (cut short), to Perplexity's pplx-decider through OpenRouter, so Socrates knows when to look something up or when you have said something worth keeping. About $0.00001 a message; calls are listed under Inspect."}</p>
       {list && !list.length && <p className="settings-hint">Nothing yet. Tell Socrates something about yourself, or add it below.</p>}
       {MEMORY_GROUPS.map(({ kind, title }) => {
         const entries = (list ?? []).filter((m) => m.kind === kind);

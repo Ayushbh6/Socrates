@@ -104,6 +104,7 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
       profile: runtime.settings.profile,
       models: runtime.models,
       embeddings: { ...runtime.settings.embeddings, ...runtime.embeddings, index },
+      decider: runtime.deciderState(),
       timeZone: runtime.timeZone,
       busy: runtime.socrates?.busy ?? false,
       lanes: runtime.lanes(),
@@ -333,6 +334,11 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
     const { range } = z.object({ range: Range }).strict().parse(request.query);
     const log = calls();
     return log ? observe.summary(log, range, new Date(), CALL_RETENTION_DAYS) : unavailable(reply);
+  });
+  app.get("/api/observe/decider", async (request, reply) => {
+    const { range } = z.object({ range: Range }).strict().parse(request.query);
+    const log = calls();
+    return log ? observe.deciderStats(log, runtime.store, range, new Date()) : unavailable(reply);
   });
   app.get("/api/observe/prices", async () => runtime.priceTable());
   app.get("/api/observe/series", async (request, reply) => {

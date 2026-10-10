@@ -18,7 +18,8 @@ import { AGENT_SYSTEM_PROMPT } from "./prompt";
 import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
 import { createCompactor } from "./compaction";
 import { applyAnchors, type AnchorDecision, type AnchorChange } from "./anchors";
-import { MEMORY_ON, type MemoryChange, type MemorySettings, applyMemory, memoryCandidates } from "./memory";
+import { type MemoryGate } from "./gates";
+import { MEMORY_ON, type MemoryChange, type MemorySettings, applyMemory, memoryCandidates, memoryHint } from "./memory";
 export { MAX_GOAL_ANCHORS } from "./anchors";
 
 export interface SocratesOptions {
@@ -66,6 +67,12 @@ export interface SocratesOptions {
   profile?: () => { name: string | null };
   /** The user's memory switches, read when a turn starts and when it ends (agent-harness.md, "Memory"); both on without it. */
   memory?: () => MemorySettings;
+  /**
+   * The memory gate (agent-harness.md, "Memory"), read when a turn starts: the
+   * decider that says whether a message may depend on something remembered or
+   * state something to save. Null, or without it, turns go on without.
+   */
+  gate?: () => MemoryGate | null;
   maxOutputTokens?: number;
   retryDelaysMs?: number[];
   /** Wall clock in milliseconds, for the per-turn time limit. */
@@ -533,6 +540,16 @@ export class Socrates {
     return null;
   }
 
+  /** The answer this turn's message follows in its chat: the task's latest earlier exchange, or null. */
+  private previousAnswer(turn: Turn): string | null {
+    const earlier = this.store.turnsForTask(turn.taskId!).filter((t) => t.projectTurn < turn.projectTurn);
+    for (const t of earlier.reverse()) {
+      const exchange = this.store.exchangeForTurn(t.id);
+      if (exchange) return exchange.response;
+    }
+    return null;
+  }
+
   /** A standard-mode message, bound where the user sent it: its task, or a new one in its goal. */
   private bindChosen(message: string, laneId: string | null, target: NonNullable<HandleOptions["target"]>, userEventId?: string, pinned = false): RoutedPart {
     return this.store.transaction(() => {
@@ -637,6 +654,19 @@ export class Socrates {
     const ownHistory = (signal: AbortSignal) => this.options.semantic!.search(request, {
       kinds: ["exchange", "tool_call"], taskIds: [turn.taskId!], throughTurn: historyBoundary(), limit: 20,
     }, signal);
+    // Read once, so a compaction mid-turn keeps the same first part.
+    const memorySettings = this.options.memory?.() ?? MEMORY_ON;
+    // Asked while the searches below run, so it adds no wait beyond the slowest of them; a failed or slow decider reads as nothing.
+    const gate = this.options.gate?.() ?? null;
+    const reading = gate
+      ? gate.read({
+          message: request,
+          previousAnswer: this.previousAnswer(turn),
+          attachments: store.requestForTurn(turn.id).attachments.map((a) => a.name),
+          ask: { recall: memorySettings.use, save: memorySettings.save },
+          trace: { role: "decision", userEventId: turn.userEventId, turnId: turn.id, laneId: turn.laneId, goalId: goal.id, taskId: turn.taskId, chatId: turn.chatId },
+        }, setupSignal)
+      : Promise.resolve(null);
     try {
       if (this.options.semantic) {
         // One query embedding (cached) serves the history and capability searches, and one more the
@@ -674,10 +704,10 @@ export class Socrates {
     // Rebuilt from the current active set each time, so compaction mid-turn keeps a Skill activated earlier in the turn.
     // The main conversation sees what its lanes are doing, as of the start of this turn.
     const lanes = turn.laneId ? null : lanesBlock(store, this.laneViews(), store.clock.now(), this.options.timeZone);
-    // Read once, so a compaction mid-turn keeps the same first part.
-    const memorySettings = this.options.memory?.() ?? MEMORY_ON;
     // Chosen once per turn, like the capability candidates, and recorded as offered.
-    const remembered = memoryCandidates(store, { goal, message: request, semantic: semantic.memories, settings: memorySettings, now: store.clock.now(), timeZone: this.options.timeZone });
+    const gated = await reading;
+    const remembered = memoryCandidates(store, { goal, message: request, semantic: semantic.memories, settings: memorySettings, now: store.clock.now(), timeZone: this.options.timeZone, reading: gated });
+    const hint = memoryHint(memorySettings, gated);
     store.recordMemoriesSurfaced(remembered.ids, "candidates", { goal_id: goal.id, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id });
     const assemble = (previousTurn?: number) =>
       assembleContext({
@@ -695,6 +725,7 @@ export class Socrates {
         user: this.options.profile?.().name ?? null,
         memory: memorySettings,
         memoryCandidates: remembered.block,
+        memoryHint: hint,
         vision,
         now: store.clock.now(),
         timeZone: this.options.timeZone,

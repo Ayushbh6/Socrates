@@ -21,7 +21,7 @@ function prefixed(model: string, texts: string[], purpose: "query" | "document")
   return p ? texts.map(p[purpose]) : texts;
 }
 
-async function post(url: string, body: unknown, headers: Record<string, string>, signal: AbortSignal | undefined, what: string): Promise<unknown> {
+export async function postJson(url: string, body: unknown, headers: Record<string, string>, signal: AbortSignal | undefined, what: string): Promise<unknown> {
   let res: Response;
   try {
     res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body), ...(signal ? { signal } : {}) });
@@ -48,7 +48,7 @@ export class OllamaEmbedder implements EmbeddingClient {
     const out: number[][] = [];
     for (let i = 0; i < texts.length; i += BATCH) {
       const input = prefixed(this.options.model, texts.slice(i, i + BATCH), purpose);
-      const body = (await post(`${this.options.baseURL ?? EMBEDDING_DEFAULTS.ollamaURL}/api/embed`, { model: this.options.model, input, truncate: true }, {}, signal, `Ollama (${this.options.model})`)) as { embeddings?: number[][] };
+      const body = (await postJson(`${this.options.baseURL ?? EMBEDDING_DEFAULTS.ollamaURL}/api/embed`, { model: this.options.model, input, truncate: true }, {}, signal, `Ollama (${this.options.model})`)) as { embeddings?: number[][] };
       if (!Array.isArray(body.embeddings) || body.embeddings.length !== input.length) throw new ModelError(`Ollama (${this.options.model}) returned no embeddings.`, "server");
       out.push(...body.embeddings);
     }
@@ -68,7 +68,7 @@ export class OpenAICompatibleEmbedder implements EmbeddingClient {
     const headers: Record<string, string> = this.options.apiKey ? { authorization: `Bearer ${this.options.apiKey}` } : {};
     for (let i = 0; i < texts.length; i += BATCH) {
       const input = prefixed(this.options.model, texts.slice(i, i + BATCH), purpose);
-      const body = (await post(`${this.options.baseURL.replace(/\/$/, "")}/embeddings`, { model: this.options.model, input, encoding_format: "float" }, headers, signal, `${this.options.provider} embeddings (${this.options.model})`)) as { data?: { embedding: number[]; index: number }[] };
+      const body = (await postJson(`${this.options.baseURL.replace(/\/$/, "")}/embeddings`, { model: this.options.model, input, encoding_format: "float" }, headers, signal, `${this.options.provider} embeddings (${this.options.model})`)) as { data?: { embedding: number[]; index: number }[] };
       if (!Array.isArray(body.data) || body.data.length !== input.length) throw new ModelError(`${this.options.provider} returned no embeddings.`, "server");
       out.push(...[...body.data].sort((a, b) => a.index - b.index).map((d) => d.embedding));
     }

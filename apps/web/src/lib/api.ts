@@ -1,4 +1,4 @@
-import type { CallDetail, CallRow, DataOverview, DbPage, DbRow, PriceRow, QuestionDetail, QuestionRow, Range, SeriesData, Summary, Trace } from "./observe";
+import type { CallDetail, CallRow, DataOverview, DbPage, DeciderStats, DbRow, PriceRow, QuestionDetail, QuestionRow, Range, SeriesData, Summary, Trace } from "./observe";
 import type { Access, ArchivedView, AttachmentView, Evidence, Folders, GoalView, History, LedgerStatus, ListedModel, MemoryKind, MemoryView, Provider, Settings, Status } from "./types";
 
 export class ApiError extends Error {
@@ -56,6 +56,7 @@ export const api = {
   addWorkspace: (path: string) => call<{ id: string; name: string; path: string }>("POST", "/api/workspaces", { path }),
   thinking: (seq: number) => call<{ seq: number; text: string }>("GET", `/api/thinking?seq=${seq}`),
   observeSummary: (range: Range) => call<Summary>("GET", `/api/observe/summary?range=${range}`),
+  observeDecider: (range: Range) => call<DeciderStats>("GET", `/api/observe/decider?range=${range}`),
   observePrices: () => call<PriceRow[]>("GET", "/api/observe/prices"),
   observeQuestions: (range: Range, before?: string) => call<{ questions: QuestionRow[]; next: string | null }>("GET", `/api/observe/questions?range=${range}${before ? `&before=${encodeURIComponent(before)}` : ""}`),
   observeQuestion: (id: string) => call<QuestionDetail>("GET", `/api/observe/questions/${encodeURIComponent(id)}`),

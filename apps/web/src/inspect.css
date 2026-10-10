@@ -1,13 +1,13 @@
 /* Inspect: the console (architecture/web.md, "Inspect"). Dark by default, light on request. Soft panels, hairline chart grids, no other lines. */
 
 .inspect { --accent: #2db3ac; --accent-text: #6fd6cf; --good: #3fbf6a; --warn: #e5a13a; --danger: #e66767;
-  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #8b7ae6;
   --bg: #111110; --panel: #1a1a19; --panel-2: #232321; --text: #f2f1ec; --text-2: #c3c2b7; --muted: #8e8d84; --faint: #6b6a63;
   --grid: rgba(255, 255, 255, 0.07); --hover: rgba(255, 255, 255, 0.05); --tint: rgba(45, 179, 172, 0.13); --code: rgba(255, 255, 255, 0.055);
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 28px rgba(0, 0, 0, 0.3); --scrim: rgba(0, 0, 0, 0.55); --warn-tint: rgba(229, 161, 58, 0.14);
   display: grid; grid-template-columns: 15.5rem minmax(0, 1fr); height: 100%; overflow: hidden; background: var(--bg); color: var(--text); color-scheme: dark; }
 .inspect[data-theme="light"] { --accent: #159f9f; --accent-text: #087f7f; --good: #0c8a3a; --warn: #a8691d; --danger: #b85555;
-  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #7a63e0;
   --bg: #f4f2ec; --panel: #fcfcfb; --panel-2: #efede6; --text: #2d3748; --text-2: #52514e; --muted: #718096; --faint: #9aa6b8;
   --grid: rgba(17, 40, 32, 0.09); --hover: rgba(17, 40, 32, 0.05); --tint: rgba(21, 159, 159, 0.1); --code: rgba(45, 55, 72, 0.055);
   --shadow: 0 1px 2px rgba(45, 55, 72, 0.05), 0 6px 18px rgba(45, 55, 72, 0.07); --scrim: rgba(17, 40, 32, 0.25); --warn-tint: rgba(255, 236, 218, 0.9); color-scheme: light; }

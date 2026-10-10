@@ -2,6 +2,7 @@ import type { EventRefs, MemoryProposal } from "@socrates/contracts";
 import { DEFAULT_THRESHOLDS, type SemanticHit, rankMemories } from "@socrates/retrieval";
 import { countTokens, zonedParts } from "@socrates/shared";
 import { type Goal, type LedgerStore, type Memory, StoreError } from "@socrates/store";
+import { type GateReading, RECALL_AT, RECALL_STRONG_AT, SAVE_AT } from "./gates";
 
 /** The user's two memory switches (architecture/server.md, "Settings"). */
 export interface MemorySettings {
@@ -34,8 +35,9 @@ export function memoryBlock(store: LedgerStore, goal: Goal, settings: MemorySett
   return lines.length ? `<MEMORY>\n${lines.join("\n")}\n</MEMORY>` : null;
 }
 
-/** At most this many entries are offered in `<MEMORY_CANDIDATES>`, within this many tokens. */
+/** At most this many entries are offered in `<MEMORY_CANDIDATES>` (more when the gate expects a recall), within this many tokens. */
 export const MEMORY_CANDIDATES_MAX = 4;
+export const MEMORY_CANDIDATES_RECALL_MAX = 6;
 export const MEMORY_CANDIDATES_MAX_TOKENS = 250;
 
 /**
@@ -45,11 +47,19 @@ export const MEMORY_CANDIDATES_MAX_TOKENS = 250;
  * goal, best first, each with its handle, kind and date. Offered strictly:
  * one shared common word is not enough. Null when nothing qualifies or
  * memories are not used.
+ *
+ * When the gate thinks the message depends on something remembered
+ * (`reading.recall`), the meaning floor drops to "related" and six entries
+ * may be offered; when it is nearly sure and nothing matched, the block says
+ * so and points at the search tools, so the agent looks before it guesses or
+ * asks the user.
  */
-export function memoryCandidates(store: LedgerStore, input: { goal: Goal; message: string; semantic: SemanticHit[]; settings: MemorySettings; now: Date; timeZone: string; meaningFloor?: number }): { block: string | null; ids: string[] } {
+export function memoryCandidates(store: LedgerStore, input: { goal: Goal; message: string; semantic: SemanticHit[]; settings: MemorySettings; now: Date; timeZone: string; meaningFloor?: number; reading?: GateReading | null }): { block: string | null; ids: string[] } {
   if (!input.settings.use) return { block: null, ids: [] };
+  const recall = input.reading?.recall ?? 0;
+  const widened = recall >= RECALL_AT;
   const shown = new Set(store.profileMemories(input.goal.id).map((m) => m.id));
-  const ranked = rankMemories(store, { query: input.message, goalId: input.goal.id, semantic: input.semantic, exclude: shown, strict: true, meaningFloor: input.meaningFloor ?? DEFAULT_THRESHOLDS.suggest, limit: MEMORY_CANDIDATES_MAX, now: input.now });
+  const ranked = rankMemories(store, { query: input.message, goalId: input.goal.id, semantic: input.semantic, exclude: shown, strict: true, meaningFloor: input.meaningFloor ?? (widened ? DEFAULT_THRESHOLDS.related : DEFAULT_THRESHOLDS.suggest), limit: widened ? MEMORY_CANDIDATES_RECALL_MAX : MEMORY_CANDIDATES_MAX, now: input.now });
   const lines: string[] = [];
   const ids: string[] = [];
   let used = countTokens("<MEMORY_CANDIDATES>\n</MEMORY_CANDIDATES>");
@@ -61,7 +71,20 @@ export function memoryCandidates(store: LedgerStore, input: { goal: Goal; messag
     ids.push(memory.id);
     used += cost;
   }
-  return lines.length ? { block: `<MEMORY_CANDIDATES>\n${lines.join("\n")}\n</MEMORY_CANDIDATES>`, ids } : { block: null, ids: [] };
+  if (lines.length) return { block: `<MEMORY_CANDIDATES>\n${lines.join("\n")}\n</MEMORY_CANDIDATES>`, ids };
+  if (recall >= RECALL_STRONG_AT) return { block: `<MEMORY_CANDIDATES>\nNothing remembered matches closely, but this message seems to depend on something about the user or an earlier conversation. Before guessing or asking, look: context_retrieve with action "memory", then "ledger_search" over all goals.\n</MEMORY_CANDIDATES>`, ids: [] };
+  return { block: null, ids: [] };
+}
+
+/**
+ * `<MEMORY_HINT>`: when the gate thinks the message states something lasting
+ * (`reading.save`), one line reminds the agent that it can save it. The agent
+ * still decides; a hint it does not need costs one line. Null when saving is
+ * off or the gate did not say so.
+ */
+export function memoryHint(settings: MemorySettings, reading: GateReading | null | undefined): string | null {
+  if (!settings.save || (reading?.save ?? 0) < SAVE_AT) return null;
+  return "<MEMORY_HINT>\nA small model reads this message as possibly stating something lasting: a fact about the user, a standing preference, or a correction of how you work. If it does, save it with memory.save in your answer; if not, ignore this.\n</MEMORY_HINT>";
 }
 
 /** One change a turn made to memory. */

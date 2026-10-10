@@ -1,10 +1,10 @@
 import { appendFileSync, existsSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { type LaneState, Socrates, interruptUnfinishedTurns } from "@socrates/agent";
+import { type LaneState, MemoryGate, Socrates, interruptUnfinishedTurns } from "@socrates/agent";
 import { InstalledCatalog } from "@socrates/capabilities";
-import { type CallRecord, type Effort, type EmbeddingClient, type ModelClient, ModelError } from "@socrates/contracts";
-import { type EffortLevels, type ListedModel, PROVIDER_DEFAULTS, type Price, type Provider, costOf, detectEfforts, detectVision, listModels, listPrice, makeEmbedder, makeModel, reportedCost, splitModelId, withRecording } from "@socrates/providers";
+import { type CallRecord, type DeciderClient, type Effort, type EmbeddingClient, type ModelClient, ModelError } from "@socrates/contracts";
+import { type EffortLevels, type ListedModel, PROVIDER_DEFAULTS, type Price, type Provider, costOf, detectEfforts, detectVision, listModels, listPrice, makeDecider, makeEmbedder, makeModel, reportedCost, splitModelId, withDecisionRecording, withRecording } from "@socrates/providers";
 import { Retrieval } from "@socrates/retrieval";
 import { abortable, type Clock, newId } from "@socrates/shared";
 import { CallLog, type Goal, LedgerStore, type Turn, type Workspace } from "@socrates/store";
@@ -46,6 +46,8 @@ export interface RuntimeDeps {
   /** The thinking levels a model accepts; production asks the provider's model list. */
   detectEfforts?: (provider: string, model: string, env: Record<string, string | undefined>) => Promise<EffortLevels>;
   makeEmbedder?: (env: Record<string, string | undefined>) => EmbeddingClient;
+  /** The memory decider; production uses Perplexity's through OpenRouter when there is an OpenRouter key, else none. */
+  makeDecider?: (env: Record<string, string | undefined>) => DeciderClient | null;
   /** A model's list price; production reads OpenRouter's public list. */
   listPrice?: (provider: string, model: string, env: Record<string, string | undefined>) => Promise<Price | null>;
   clock?: Clock;
@@ -80,6 +82,8 @@ export class Runtime {
   models: { chat: ModelInUse | null; router: ModelInUse | null; compactor: ModelInUse | null; titler: ModelInUse | null } = { chat: null, router: null, compactor: null, titler: null };
   /** The model that names standard-mode chats; null when it could not start (chats keep their first words). */
   private titler: ModelClient | null = null;
+  /** Asks the decider about each message; null without an OpenRouter key. */
+  private gate: MemoryGate | null = null;
   embeddings: { state: "ready" | "unavailable"; detail: string | null } = { state: "unavailable", detail: null };
   private retrieval: Retrieval | null = null;
   private catalog: InstalledCatalog | null = null;
@@ -414,9 +418,30 @@ export class Runtime {
     catch (error) { this.titler = null; this.log(`chat names unavailable: ${redact(message(error), env)}`); }
   }
 
+  /**
+   * The decider that tells Socrates when a message may need a recall or hold
+   * something to save (agent-harness.md, "Memory"): made when there is an
+   * OpenRouter key. One that cannot start leaves memory working without it.
+   */
+  private startDecider(env: Record<string, string | undefined>): void {
+    this.gate = null;
+    try {
+      const decider = (this.deps.makeDecider ?? makeDecider)(env);
+      if (decider) this.gate = new MemoryGate({ decider: withDecisionRecording(decider, (call) => this.saveCall(call, env)), log: this.log });
+    } catch (error) {
+      this.log(`the memory decider is unavailable: ${redact(message(error), env)}`);
+    }
+  }
+
+  /** Whether the decider is asked about messages: "ready", "off" (switched off in settings), or "no_key" (no OpenRouter key). */
+  deciderState(): "ready" | "off" | "no_key" {
+    return !this.gate ? "no_key" : this.settings.memory.decider ? "ready" : "off";
+  }
+
   private async start(): Promise<void> {
     const env = this.env();
     this.setup = [];
+    this.startDecider(env);
     try {
       this.catalog = await InstalledCatalog.open({ store: this.store, home: this.config.home, env, log: this.log }, this.deps.signal);
     } catch (error) {
@@ -472,6 +497,7 @@ export class Runtime {
       access: () => this.accessPolicy(),
       profile: () => this.settings.profile,
       memory: () => this.settings.memory,
+      gate: () => (this.settings.memory.decider ? this.gate : null),
       resolveWorkspace: () => {
         const folder = this.workingFolder();
         return folder ? { name: folder.name, rootPath: folder.rootPath! } : null;
