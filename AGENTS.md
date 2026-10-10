@@ -24,7 +24,7 @@ This file hands the project to whichever agent harness works on it next. Read it
   3. Open the printed link. Each login link works only once.
   4. Stop the server and delete the copy afterwards.
 
-## Where things stand (2026-10-10)
+## Where things stand (2026-10-10, through `44fd7b0`)
 
 The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `server.md`, `web.md`, `observability.md`). The trial log numbers each change. Recently shipped, newest last:
 
@@ -40,7 +40,7 @@ The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `serv
 - **Redo in another task:** a misrouted question is asked again in a chosen task ("Redo in…" on the route line); the first attempt is set aside, never moved (`architecture/agent-harness.md`, "Redo in another task").
 - **Memory, phase M1:** Socrates remembers the user across goals: `<MEMORY>` in every request (who they are, how they like to work), saved from the final answer's `memory` field without asking, shown under the answer with Undo, and listed in Settings > Memory with two switches (`architecture/agent-harness.md`, "Memory"; the full plan is `docs/memory.md`).
 - **Memory, phase M2:** other entries (knowledge, and what does not fit in `<MEMORY>`) are recalled when a message bears on them (`<MEMORY_CANDIDATES>`, from keywords and meaning) and found with `context_retrieve` `memory`; `pnpm eval:memory` measures recall and precision with the local embedder.
-- **Memory, phase M3a:** a small decider (`perplexity/pplx-decider-v1.1-27b` through OpenRouter, on by default with an OpenRouter key, switchable in Settings > Memory) is asked two yes/no questions about each message beside the turn's searches: would a recall help (widens `<MEMORY_CANDIDATES>`, or tells the agent to look first), and is something worth saving (a one-line `<MEMORY_HINT>`; the same agent saves, there is no curator model). Calls are logged with role `decision`, the Inspect overview has a **Memory decider** panel, and `pnpm eval:decider` (needs `SOCRATES_ENV_FILE=.env`) scores it on 78 labelled messages (`architecture/agent-harness.md`, "Memory"; `docs/memory.md`). The decider is asked first, once per message; in the main conversation the router waits for it and, when a recall is likely, is shown the matching memories (`REMEMBERED`).
+- **Memory, phase M3a:** a small decider (`perplexity/pplx-decider-v1.1-27b` through OpenRouter, on by default with an OpenRouter key, switchable in Settings > Memory) is asked two yes/no questions about each message first, before routing (the router waits for it): would a recall help (widens `<MEMORY_CANDIDATES>`, or tells the agent to look first), and is something worth saving (a one-line `<MEMORY_HINT>`; the same agent saves, there is no curator model). Calls are logged with role `decision`, the Inspect overview has a **Memory decider** panel, and `pnpm eval:decider` (needs `SOCRATES_ENV_FILE=.env`) scores it on 78 labelled messages (`architecture/agent-harness.md`, "Memory"; `docs/memory.md`). The decider is asked first, once per message; in the main conversation the router waits for it and, when a recall is likely, is shown the matching memories (`REMEMBERED`).
 - **Memory, phase M3b:** work memory, per project: `<workspace>/.socrates/MEMORY.md` is an index (one line per topic, with the turns it came from) shown as `<WORK_MEMORY>` in every request, and each topic is a short file in `.socrates/memory/`. After verified work (three or more tool calls, one a change or command) the decider is asked whether it established a repeatable procedure or lesson; on yes the agent gets a bundled writing guide and a short extra step after its answer to write the notes. Edits touching only those files skip the ask-first approval (`architecture/agent-harness.md`, "Work memory"; `docs/memory.md`).
 - **Router model:** with an OpenRouter key and no router chosen, routing uses `openai/gpt-6-luna` with thinking off (`pnpm eval:router-compare` compares models on the routing fixtures; DeepSeek's own default is now V4 Flash).
 
@@ -55,3 +55,5 @@ Ask before starting each one.
 **Known small issues:**
 - If attaching images fails while saving a Flow message, the main conversation can stay "busy". This is in `packages/agent/src/socrates.ts` `handle`.
 - In Standard mode, the composer's unsent text is shared across chats.
+- The router can still stop at a clarification for a message about a brand-new project folder (it knows no goal for it); answering "start something new" works.
+- Browser-pane trials need the pane displayed: open it with `preview_start` and a `url` if screenshots time out.
