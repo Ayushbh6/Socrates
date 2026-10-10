@@ -644,6 +644,92 @@ All three actions pass through one limiter at the end: if a result would still e
 
 The backend owns canonical goal, task, message, turn, and event identifiers. Model-facing structure uses permanent human-facing selectors (`gN`, goal-local `tN`, and `gN/tN`); search results use short run-scoped handles such as `r1`; nested evidence uses handles such as `e1`; and `project_turn` is a permanent chronological number that is never renumbered. Exactness comes from backend resolution, not from asking the model to copy opaque identifiers.
 
+#### `memory` — what is remembered about the user
+
+Finds entries of memory (see "Memory") beyond what `<MEMORY>` already shows: knowledge, and entries past its budget. The examples below are checked against the tool by `packages/agent/test/memory-docs.test.ts`.
+
+Memory input:
+
+```json
+{
+  "action": "memory",
+  "query": "Berlin trip"
+}
+```
+
+Memory defaults and validation:
+
+- `query` is optional (1–500 characters). With it, entries are ranked by the one hybrid ranking (BM25 over the entries' words fused with the meaning search at the `related` floor, plus recency), and any keyword or meaning match counts: the strict rule of `<MEMORY_CANDIDATES>` is only for entries offered unasked. Without it, the newest entries are listed.
+- Only entries that apply here: everywhere, or the current goal. Entries already in `<MEMORY>` and forgotten ones are never returned.
+- At most `8` entries. Each has `ref` (its permanent handle), `kind`, `text`, `applies` (`everywhere` or `this goal`), `date` (last changed, in the user's time zone) and `said_in_turn` (the project turn it was said in, or null for one the user added on the Memory page).
+- Entries returned are recorded as offered (`memory_surfaced`), which the Memory page counts.
+- With "use memories" off, it returns no entries and says so.
+
+Memory output:
+
+```json
+{
+  "action": "memory",
+  "query": "Berlin trip",
+  "memories": [
+    {
+      "ref": "m2",
+      "kind": "knowledge",
+      "text": "The Berlin trip is from 14 to 18 March.",
+      "applies": "everywhere",
+      "date": "2026-09-01",
+      "said_in_turn": 1
+    },
+    {
+      "ref": "m3",
+      "kind": "knowledge",
+      "text": "Flights for the Berlin trip leave Vienna at 7:10.",
+      "applies": "this goal",
+      "date": "2026-09-01",
+      "said_in_turn": null
+    }
+  ]
+}
+```
+
+When nothing matches:
+
+```json
+{
+  "action": "memory",
+  "query": "dentist",
+  "memories": [],
+  "note": "Nothing remembered matches. Try other words, or search past exchanges with search target all_goals."
+}
+```
+
+One entry opens with `inspect` and its handle:
+
+```json
+{
+  "action": "inspect",
+  "ref": "m2"
+}
+```
+
+```json
+{
+  "action": "inspect",
+  "memory": {
+    "ref": "m2",
+    "kind": "knowledge",
+    "text": "The Berlin trip is from 14 to 18 March.",
+    "applies": "everywhere",
+    "date": "2026-09-01",
+    "said_in_turn": 1,
+    "by": "agent"
+  },
+  "hint": "inspect turn_number 1 returns the exchange it was said in"
+}
+```
+
+A forgotten entry, one of another goal, or an unknown handle fails with `memory_not_found`, directing the agent to the `memory` action.
+
 ### Conditional capabilities
 
 Socrates uses three progressive discovery layers. It does not place every installed Skill or MCP schema in the base prompt, and it does not rely entirely on the model remembering to search.

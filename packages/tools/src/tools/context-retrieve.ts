@@ -493,7 +493,8 @@ function inspect(input: Inspect, ctx: HandlerContext) {
     if (!memory || memory.forgottenAt || (memory.goalId && memory.goalId !== ctx.binding.goalId) || ctx.memoryInUse === false) {
       throw new ToolError("memory_not_found", `${ref} is not a memory that applies here.`, "Use context_retrieve memory to find what is remembered.");
     }
-    build = () => ({ action: "inspect", memory: { ...memoryItem(ctx, memory), by: memory.by }, ...(memory.sourceTurnId ? { hint: "inspect turn_number said_in_turn returns the exchange it was said in" } : {}) });
+    const item = { ...memoryItem(ctx, memory), by: memory.by };
+    build = () => ({ action: "inspect", memory: item, ...(item.said_in_turn ? { hint: `inspect turn_number ${item.said_in_turn} returns the exchange it was said in` } : {}) });
   } else {
     const ref = input.ref!.trim();
     // A qualified gN/tN/eM names evidence of another task, as compound-part handoffs do.
