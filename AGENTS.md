@@ -45,7 +45,7 @@ The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `serv
 
 Ask before starting each one.
 
-1. **Memory and personalisation, M3** (`docs/memory.md`): the `pplx-decider` gates (on by default with an OpenRouter key) and the curator.
+1. **Memory and personalisation, M3** (`docs/memory.md`): M3a, the `pplx-decider` gates (on by default with an OpenRouter key) nudging the same agent to recall and to save (no separate curator model); then M3b, per-project work memory in `<repo>/.socrates/MEMORY.md`, written with the edit tools after verified work and read as an anchor.
 2. **Standard to flow:** a richer design for moving between the two modes.
 3. **Continue button:** offer one after a safeguard stop (200 steps, 60 minutes, or the token limit).
 

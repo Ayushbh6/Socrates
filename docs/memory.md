@@ -34,7 +34,7 @@ An entry is one plain sentence (at most 280 characters) with:
 
 - `kind`: `about` (who the user is: role, place, languages, tools, people they named), `preference` (how they want work done), or `knowledge` (a decision or fact that may matter later).
 - `scope`: `user` (everywhere) or `goal` (only inside one goal, such as "tabs in this repo"). No per-workspace scope: a goal already has its workspace.
-- `by`: the agent, the curator, or the user; the source turn; when it was last used.
+- `by`: the agent or the user; the source turn; when it was last used.
 
 `about` and `preference` entries of user scope are the **profile**. `knowledge` entries, and anything over the profile's budget, are searchable only.
 
@@ -47,12 +47,12 @@ An entry is one plain sentence (at most 280 characters) with:
 ### Writing
 
 1. **Explicit requests.** The final answer gets an optional `memory: {save: [{text, kind, scope}], forget: ["m4"]}`, like `anchors` (a proposal the harness validates and applies, at most three per turn). Used only when the user asked ("remember…", "from now on…", "forget…") or corrected the agent. The agent never saves from tool results, web pages or files. This costs no tool definition.
-2. **Everything else, behind the reply.** After a turn, if the save gate fires, a small **curator** model reads the user's message, the answer (truncated), and the five most similar existing entries, and returns `add`, `update m3`, `supersede m3` or `nothing`. Its JSON is checked and repaired once; a failure is logged and skipped. It is skipped when the agent already saved something this turn.
+2. **Nudged by the save gate (M3a).** There is no second model: when the save gate fires, the turn's context says the message seems to hold a lasting fact, preference or correction, and Socrates itself decides whether to use the `memory` field. (Agreed 2026-10-10, replacing a separate curator model.)
 3. **The user**, from the Memory page.
 
 Forgetting removes an entry from everything Socrates uses and from the index. The event log is append-only, and the conversation it came from stays in history like every conversation does; the page says so.
 
-### The gates (M3)
+### The gates (M3a)
 
 One decider request per user message, sent **at the same time as the router** so it adds no wait. State: the user's message and the last answer in that chat, truncated. Two yes/no questions:
 
@@ -62,13 +62,22 @@ One decider request per user message, sent **at the same time as the router** so
 Use of the answers:
 
 - `recall` ≥ 0.5 relaxes the candidate floor and raises the count to six. At ≥ 0.85, when nothing matched, `<MEMORY_CANDIDATES>` says so and points at `context_retrieve` across all goals: this is the moment to "stop and recall" instead of guessing or asking the user. The agent still judges relevance itself.
-- `save` ≥ 0.4 starts the curator. A false positive costs one cheap call that answers `nothing`; a miss costs a forgotten fact, so the bar is low. Both thresholds are starting points, to be set from logged data.
+- `save` ≥ 0.4 adds the nudge to the turn. A false positive costs one line the agent ignores; a miss costs a forgotten fact, so the bar is low. Both thresholds are starting points, to be set from logged data.
 
 Without a key or when the call fails (timeout 2 s, then skipped for 30 s like the embedder), nothing breaks: candidates use their normal floor, and only explicit saves happen. The gate improves memory; it is not required for it.
 
-**Logs.** Every gate call is recorded in `calls.db` (kind `decision`): both probabilities, tokens, cost, latency, and afterwards what it led to (entries surfaced, curator result). `#/inspect` shows rates, so thresholds are calibrated on real traffic, as Perplexity's own guidance advises.
+**Logs.** Every gate call is recorded in `calls.db` (kind `decision`): both probabilities, tokens, cost, latency, and afterwards what it led to (entries surfaced, whether the agent saved). `#/inspect` shows rates, so thresholds are calibrated on real traffic, as Perplexity's own guidance advises.
 
 **Images.** The decider accepts them. The first version sends the message text and the image names; passing the pixels (resized, base64) is a small follow-up.
+
+### Work memory (M3b, agreed 2026-10-10)
+
+User memory is facts about the user. Work memory is **how things are done in one project**, distilled, so Socrates stays consistent ("last time the schema changed: bump the version, add an upgrade step, rebuild the index in replay, update the restore test") without digging through raw transcripts.
+
+- **One Markdown file per project, inside the repository**: `<workspace>/.socrates/MEMORY.md`, visible, editable and versionable by the user. Three short sections: *How things are done here* (recurring procedures as steps), *Lessons* (symptom → fix), *Where things are*. Kept short (a budget, to be measured), like Codex's `MEMORY.md` and Claude Code's per-project memory.
+- **Written with the ordinary edit tools**, at the end of a turn whose work is verified: no new tool and no new final-answer field. Writing mid-turn is avoided because a method is only known to work once the turn's checks pass.
+- **Read through anchors**: the file becomes one of the goal's anchors automatically, so `<PROJECT_CONTEXT>` already shows its sections that bear on the message, and `read` or `context_retrieve` reach the rest mid-turn.
+- **Nudged by the decider**: after a turn that did real work (tool calls), one more yes/no question on the turn's request, tool lines and answer: did it establish a reusable procedure or lesson? If so, the next step of that turn, or the wrap-up, asks Socrates to update the file.
 
 **Privacy.** The gate sends each user message and the last answer's opening to OpenRouter and Perplexity. The chat model already sees everything when it is hosted, but a user running local models would not expect it. Settings gets "Memory gates" with a switch and the model name, and says what is sent.
 
@@ -76,13 +85,13 @@ Without a key or when the call fails (timeout 2 s, then skipped for 30 s like th
 
 - Under an answer that saved something: **Remembered: Prefers pnpm over npm. · Undo**.
 - A **Memory** page: entries grouped by kind, an "always on" mark, edit, forget, "From: Fix checkout, 3 Oct ›" to the source, and Add a memory. A saved entry the page was not open for waits there as new.
-- Two switches, as in Codex: save new memories, and use memories. Settings also gets the curator's model, chosen like the compactor's (default: the chat model).
+- Two switches, as in Codex: save new memories, and use memories.
 
 ## Safety rules
 
 - Only what the user said or confirmed: no inferred traits, moods or psychological notes. (A 2026 study of ChatGPT memories found over half held "psychological insights", 96% written without being asked; we do neither silently.)
-- Never from tool output, web pages or files, so a page cannot plant a standing instruction. The curator never sees tool results.
-- No secrets: keys, passwords and tokens are refused by a pattern check and by the curator's instructions.
+- Never from tool output, web pages or files, so a page cannot plant a standing instruction. The nudges come only from the user's message.
+- No secrets: keys, passwords and tokens are refused by a pattern check and by the agent's instructions.
 - Everything is visible, editable and removable, with provenance.
 
 ## Phases (one at a time, each shippable)
@@ -91,16 +100,18 @@ Without a key or when the call fails (timeout 2 s, then skipped for 30 s like th
 |---|---|---|
 | **M1: memory you can see** | Events (`memory_saved`, `memory_edited`, `memory_forgotten`), projection with handles `m1…`, `<MEMORY>`, the final-answer `memory` field, "Remembered / Undo", the Memory page, the two switches. No embeddings, no decider. | "Remember I prefer pnpm" in one goal changes the next goal's answer. Fixed overhead stays within a deliberately raised budget (about +150 tokens). |
 | **M2: resurfacing** | Entries in the embedding index and keyword search, `<MEMORY_CANDIDATES>`, the `context_retrieve` memory action, use tracking. `pnpm eval:memory` (retrieval part). | Right entry surfaced, wrong ones not, at the chosen floor; added tokens and latency per turn. |
-| **M3: gates and curator** | Decider client with logging and a circuit breaker, the recall gate on M2, the save gate and curator, Settings. | The decider on Socrates' own messages (labelled sample of the real ledger): precision and recall at each threshold; saves with the gate vs M1 alone; cost per turn. |
+| **M3a: gates** | Decider client (OpenRouter, on by default with a key) with logging and a circuit breaker; the recall gate on M2 and the save nudge, both into the same agent; Settings. | The decider on Socrates' own messages (labelled sample of the real ledger): precision and recall at each threshold; saves with the nudge vs M1 alone; cost and added wait per turn (none expected, it runs beside the router). |
+| **M3b: work memory** | `.socrates/MEMORY.md` per project, anchored automatically, written with the edit tools after verified work, nudged by the decider. | A recurring change done twice: the second time follows the recorded procedure; the file stays within its budget. |
 
 Later, only if the numbers ask for it: a sweep over un-reviewed turns at compaction or day change; tidying (merge duplicates, fade entries unused for a long time, as Codex does); a private chat that reads and writes nothing; images to the decider; the router seeing the profile.
 
 ## Not in this design
 
-A knowledge graph; a general "user model"; memory from tool output; per-workspace memory; changes to routing; summaries of recent chats like ChatGPT's (General already shows `<RECENT_ACTIVITY>`).
+A knowledge graph; a general "user model"; memory from tool output; per-workspace user memory (work memory is per project, M3b); changes to routing; summaries of recent chats like ChatGPT's (General already shows `<RECENT_ACTIVITY>`).
 
 ## Tests to write
 
 - M1: a saved entry appears in the next goal's `<MEMORY>` and not after Forget; goal-scoped entries stay in their goal; the profile respects its budget; the final-answer field is validated (too many, bad kind, unknown handle); replay of the log rebuilds the table; with "use memories" off nothing is shown; a tool result containing "remember…" saves nothing.
 - M2: candidates by meaning and by keywords alone; floors; budget; nothing shown when nothing matches.
-- M3: gate thresholds against a scripted decider; fail-open on timeout and error; the curator's four outcomes and its repair path; skipped when the agent saved; logs written.
+- M3a: gate thresholds against a scripted decider; fail-open on timeout and error; the nudges appear only above their thresholds; logs written.
+- M3b: the file is created and anchored; the nudge appears only after work that the gate marks; edits stay inside the file's budget.
