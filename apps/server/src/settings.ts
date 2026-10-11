@@ -53,6 +53,15 @@ const ProfilePatch = z.object({ name: Profile.shape.name.unwrap().nullable().opt
  * Memory's switches (agent-harness.md, "Memory"): save new memories from what the user says, show memories to the agent,
  * and let a small model (the decider, through OpenRouter) say when a message may need a recall or hold something to save.
  */
+/** Saved terminal output (docs/terminal-output-and-memory.md, T1): how much the agent sees without asking, and how long and how much is kept. */
+export const TerminalSettings = z.object({
+  previewTokens: z.number().int().min(4_000).max(5_000).default(4_500),
+  retentionDays: z.number().int().min(1).max(365).default(15),
+  totalCapMB: z.number().int().min(50).max(1_000_000).default(1_024),
+  perOutputCapMB: z.number().int().min(1).max(100_000).default(100),
+}).strict();
+export type TerminalSettings = z.infer<typeof TerminalSettings>;
+
 export const MemorySwitches = z.object({ save: z.boolean(), use: z.boolean(), decider: z.boolean().default(true) }).strict();
 
 /** What a model costs, in US dollars per million tokens; where cache prices are null, input tokens' price applies. */
@@ -77,7 +86,8 @@ export type PriceSetting = z.infer<typeof PriceSetting>;
  * - access: where Socrates may work and when it asks; by default only the user's folders, asking first;
  * - profile: the user's name and whether onboarding is done;
  * - memory: whether Socrates saves new memories, whether it uses them, and whether the decider is asked about each message; all on by default (the decider also needs an OpenRouter key);
- * - prices: what a model costs, by its id ("deepseek:deepseek-flash"), over the list prices Socrates looks up.
+ * - prices: what a model costs, by its id ("deepseek:deepseek-flash"), over the list prices Socrates looks up;
+ * - terminal: how much of a long command output the agent is shown (4,000–5,000 tokens), and how long (15 days) and how much (1 GB in all, 100 MB for one output) saved output is kept.
  */
 export const Settings = z.object({
   chat: ChatChoice.nullable().default(null),
@@ -98,11 +108,12 @@ export const Settings = z.object({
   profile: Profile.default({ name: null, onboarded: false }),
   memory: MemorySwitches.default({ save: true, use: true, decider: true }),
   prices: z.record(z.string().min(1).max(250), PriceSetting).default({}),
+  terminal: TerminalSettings.default({ previewTokens: 4_500, retentionDays: 15, totalCapMB: 1_024, perOutputCapMB: 100 }),
 }).strict();
 export type Settings = z.infer<typeof Settings>;
 
 /** What PUT /api/settings accepts: any subset of the settings, and of `access`, `profile` and `memory`. */
-export const SettingsPatch = Settings.partial().extend({ access: Access.partial().strict().optional(), profile: ProfilePatch.optional(), memory: MemorySwitches.partial().strict().optional() }).strict();
+export const SettingsPatch = Settings.partial().extend({ access: Access.partial().strict().optional(), profile: ProfilePatch.optional(), memory: MemorySwitches.partial().strict().optional(), terminal: TerminalSettings.partial().strict().optional() }).strict();
 
 export function loadSettings(file: string): Settings {
   if (!existsSync(file)) return Settings.parse({});

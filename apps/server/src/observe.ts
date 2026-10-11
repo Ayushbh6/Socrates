@@ -118,6 +118,54 @@ export function deciderStats(log: CallLog, store: LedgerStore, range: Range, now
   return stats;
 }
 
+/**
+ * Whether the shorter terminal preview helps (docs/terminal-output-and-memory.md,
+ * T1, "Checking that the smaller preview helps"): commands whose output was
+ * longer than their preview, how many of those the agent read again by id,
+ * and what those reads cost. Many reads with no saving would argue for a
+ * larger preview.
+ */
+export interface TerminalOutputStats {
+  range: Range;
+  previewTokens: number;
+  /** Commands whose output was cut to a preview and saved by id. */
+  longOutputs: number;
+  /** Of those, how many the agent read again. */
+  readAgain: number;
+  /** Reads of saved output by id, and the tokens they returned. */
+  reads: number;
+  readTokens: number;
+  /** Tokens the previews themselves returned. */
+  previewTokensUsed: number;
+}
+
+export function terminalOutputStats(store: LedgerStore, range: Range, now: Date, previewTokens: number): TerminalOutputStats {
+  const since = sinceOf(range, now);
+  const stats: TerminalOutputStats = { range, previewTokens, longOutputs: 0, readAgain: 0, reads: 0, readTokens: 0, previewTokensUsed: 0 };
+  const inputs = new Map(store.listEvents({ type: "tool_called" }).map((e) => [(e.payload as EventPayloads["tool_called"]).call_id, (e.payload as EventPayloads["tool_called"]).input]));
+  const long = new Set<string>();
+  const read = new Set<string>();
+  for (const e of store.listEvents({ type: "tool_completed" })) {
+    if (since && e.at < since) continue;
+    const p = e.payload as EventPayloads["tool_completed"];
+    if (p.status !== "ok") continue;
+    const r = p.result as { output_id?: unknown; truncated?: unknown; output?: unknown } | null;
+    if (p.tool === "terminal" && typeof r?.output_id === "string" && r.truncated === true) {
+      long.add(r.output_id);
+      stats.previewTokensUsed += typeof r.output === "string" ? countTokens(r.output) : 0;
+    }
+    const input = inputs.get(p.call_id) as { action?: unknown; output?: unknown } | undefined;
+    if (p.tool === "terminal_control" && input?.action === "read" && typeof input.output === "string") {
+      stats.reads++;
+      stats.readTokens += countTokens(p.content);
+      read.add(input.output);
+    }
+  }
+  stats.longOutputs = long.size;
+  stats.readAgain = [...long].filter((id) => read.has(id)).length;
+  return stats;
+}
+
 /** What a message did to where the work stood. */
 export type Move = "first" | "continued" | "switched_task" | "new_task" | "switched_goal" | "new_goal" | "general";
 

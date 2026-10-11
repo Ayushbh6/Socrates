@@ -3,6 +3,7 @@ import type { LedgerStore } from "@socrates/store";
 import { type AccessGrant, type AccessPolicy, within } from "./access";
 import type { CapabilityCatalog } from "./catalog";
 import { ToolError } from "./errors";
+import type { OutputArchive } from "./output-archive";
 import type { TerminalSupervisor } from "./terminals";
 import type { WorkspaceRoot, ResolvedPath } from "./workspace";
 
@@ -129,6 +130,8 @@ export interface HandlerContext {
   visible(abs: string): boolean;
   /** The terminal supervisor of the selected workspace, when there is one. */
   terminals: TerminalSupervisor | null;
+  /** Saved terminal output, by output id, for evidence of earlier calls. */
+  outputs?: OutputArchive | null;
   /** Whether the working model can see images; `read` shows it an image only then. */
   vision: boolean;
   /** Ask the user, record the decision, and fail with a corrective error when denied or cancelled. */

@@ -162,9 +162,11 @@ export class TerminalPanel {
     const goal = input.goal ? this.runtime.store.getGoalByNumber(input.goal) : null;
     if (input.task && (!goal || !this.runtime.store.getTaskByNumber(goal.id, input.task))) throw new TerminalPanelError("not_found", "That chat is no longer available.");
     const origin = input.goal && input.task ? `g${input.goal}/t${input.task}` : null;
+    const task = goal && input.task ? this.runtime.store.getTaskByNumber(goal.id, input.task) : null;
     const session = supervisor.launch({ command: shell, shell, cwd: folder.cwd, cwdRel: folder.cwd,
       env: commandEnvironment(), timeoutMs: null, background: true, name: input.name ?? `Shell ${n}`,
       ready: null, pty: { cols: 120, rows: 30 }, origin,
+      owner: { goalId: goal?.id ?? null, taskId: task?.id ?? null, chatId: null, turnId: null },
     }, { onStart() {}, onExit() {} });
     this.publish();
     return session.id;

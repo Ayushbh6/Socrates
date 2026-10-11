@@ -56,6 +56,17 @@ export interface DeciderStats {
   work: { likely: number; likelyWrote: number; unlikely: number };
 }
 
+/** Whether the shorter terminal preview helps: long outputs, and how often the agent read them again (docs/terminal-output-and-memory.md, T1). */
+export interface TerminalOutputStats {
+  range: Range;
+  previewTokens: number;
+  longOutputs: number;
+  readAgain: number;
+  reads: number;
+  readTokens: number;
+  previewTokensUsed: number;
+}
+
 export interface Place {
   goal: { number: number; title: string };
   task: { number: number; title: string };

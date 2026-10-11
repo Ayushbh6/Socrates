@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import net from "node:net";
 import { constants } from "node:os";
 import { ToolError } from "./errors";
+import type { OutputArchive, OutputCapture } from "./output-archive";
 import { forgetProcess, recordProcess } from "./process-registry";
 import { TerminalText, loadPty } from "./pty";
 import { Screen } from "./screen";
@@ -35,7 +36,12 @@ export interface LaunchSpec {
   pty?: { cols: number; rows: number } | null;
   /** The goal and task the launching call belongs to, such as "g2/t3", for listings. */
   origin?: string | null;
+  /** Who it belongs to, by id: the launching call's goal, task, chat and turn (a user's shell has no chat or turn). */
+  owner?: { goalId: string | null; taskId: string | null; chatId: string | null; turnId: string | null } | null;
 }
+
+/** How much of a long output the agent is shown without asking (docs/terminal-output-and-memory.md, T1). */
+export const DEFAULT_PREVIEW_TOKENS = 4_500;
 
 /** A running command, over pipes or in a pseudo-terminal. */
 export interface SessionProcess {
@@ -138,6 +144,8 @@ export class TerminalSession {
   screen: Screen | null = null;
   /** When the user last typed into it from the page's terminal panel. */
   userInputAt = 0;
+  /** Where its output is being saved; null without an archive or when saving could not start. */
+  capture: OutputCapture | null = null;
   /** What records its start and exit; a restart from the page runs the same launch with the same hooks. */
   hooks: SessionHooks | null = null;
   readonly startedAt = new Date();
@@ -158,6 +166,20 @@ export class TerminalSession {
 
   get selector(): string {
     return this.spec.name ?? this.id;
+  }
+
+  /** A tab restored after a restart: the output its last run saved. */
+  restoredOutputId: string | null = null;
+
+  /** This run's saved output, or null. */
+  get outputId(): string | null {
+    return this.capture?.id ?? this.restoredOutputId;
+  }
+
+  /** Output that is printed: kept for cursor reads and saved. */
+  append(chunk: string): void {
+    this.output.append(chunk);
+    this.capture?.write(chunk);
   }
 
   /**
@@ -250,6 +272,12 @@ export interface SupervisorOptions {
   registry?: string;
   onChange?: () => void;
   retainTabs?: boolean;
+  /** Where every run's output is saved, by output id. */
+  archive?: OutputArchive | null;
+  /** The workspace folder this supervisor runs in, recorded with saved output. */
+  workspaceRoot?: string;
+  /** How much of a long output the agent is shown without asking. */
+  previewTokens?: () => number;
 }
 
 /** Grace period before leftover processes of a finished command are force-killed. */
@@ -266,6 +294,8 @@ export class TerminalSupervisor {
   /** Process groups whose leader exited while other members were still running. */
   private readonly lingering = new Map<number, NodeJS.Timeout>();
   private readonly onProcessExit = () => this.killAllNow();
+  /** Each run's saved output, by session id, including runs no longer listed. */
+  private readonly runs = new Map<string, string>();
 
   constructor(private readonly options: SupervisorOptions = {}) {
     this.maxSessions = options.maxSessions ?? 16;
@@ -274,6 +304,19 @@ export class TerminalSupervisor {
     this.recentExited = options.recentExited ?? 10;
     this.registry = options.registry ?? null;
     process.on("exit", this.onProcessExit);
+  }
+
+  get archive(): OutputArchive | null {
+    return this.options.archive ?? null;
+  }
+
+  get previewTokens(): number {
+    return this.options.previewTokens?.() ?? DEFAULT_PREVIEW_TOKENS;
+  }
+
+  /** The saved output of a run of this workspace, by session id; null when it was not saved. */
+  outputOf(sessionId: string): string | null {
+    return this.runs.get(sessionId) ?? null;
   }
 
   /** Fail before launching when the name is taken or the session limit is reached. */
@@ -295,7 +338,7 @@ export class TerminalSupervisor {
     let session: TerminalSession;
     const onData = (chunk: string) => {
       session.lastOutputAt = Date.now();
-      output.append(chunk);
+      session.append(chunk);
       if (!session.proc?.pty) session.show(chunk.replace(/\n/g, "\r\n"));
       session.notify();
     };
@@ -309,6 +352,7 @@ export class TerminalSupervisor {
       session.exitReason ??= reason;
       session.exitedAt = new Date();
       session.stdinOpen = false;
+      session.capture?.end({ exit_code: code, signal, reason: session.exitReason });
       this.live.delete(id);
       this.exited.unshift(session);
       this.exited.length = Math.min(this.exited.length, this.recentExited);
@@ -319,7 +363,7 @@ export class TerminalSupervisor {
     };
     // A command's own process group is reaped when its leader exits (see reapGroup).
     const exited = (pid: number | undefined) => {
-      if (pid) this.reapGroup(pid, session.exitReason === null ? output : null);
+      if (pid) this.reapGroup(pid, session.exitReason === null ? session : null);
     };
 
     if (spec.pty) {
@@ -342,6 +386,7 @@ export class TerminalSupervisor {
       }, output);
       session.screen = screen;
       session.hooks = hooks;
+      this.save(session);
       this.live.set(id, session);
       if (this.registry) recordProcess(this.registry, term.pid, spec.command);
       hooks.onStart(session);
@@ -386,6 +431,7 @@ export class TerminalSupervisor {
         },
       }, output);
       session.hooks = hooks;
+      this.save(session);
       this.live.set(id, session);
       if (this.registry && child.pid) recordProcess(this.registry, child.pid, spec.command);
       hooks.onStart(session);
@@ -397,7 +443,7 @@ export class TerminalSupervisor {
         session.stdinOpen = false;
       });
       child.on("error", (error) => {
-        output.append(`\n[failed to start: ${error.message}]\n`);
+        session.append(`\n[failed to start: ${error.message}]\n`);
         finish(null, null, "failed");
       });
       // Descendants can inherit the pipes and prevent `close` after the shell
@@ -418,10 +464,30 @@ export class TerminalSupervisor {
     return session;
   }
 
+  /** Start saving a run's output, with whose run it is. */
+  private save(session: TerminalSession): void {
+    const archive = this.options.archive;
+    if (!archive) return;
+    const { spec } = session;
+    session.capture = archive.begin({
+      workspace: this.options.workspaceRoot ?? spec.cwd,
+      session_id: session.id,
+      name: spec.name,
+      command: spec.command,
+      cwd: spec.cwd,
+      pty: !!spec.pty,
+      background: spec.background,
+      origin: { by: spec.shell ? "user" : "agent", goalId: spec.owner?.goalId ?? null, taskId: spec.owner?.taskId ?? null, chatId: spec.owner?.chatId ?? null, turnId: spec.owner?.turnId ?? null, label: spec.origin ?? null },
+    });
+    if (session.capture) this.runs.set(session.id, session.capture.id);
+  }
+
   /** Restore only tab metadata. Never execute commands during startup. */
-  restore(id: string, spec: LaunchSpec, startedAt: string): void {
+  restore(id: string, spec: LaunchSpec, startedAt: string, outputId: string | null = null): void {
     sessionCounter = Math.max(sessionCounter, Number(id.replace("term-", "")) || 0);
     const session = new TerminalSession(id, spec, null, new OutputBuffer(this.retainChars));
+    session.restoredOutputId = outputId;
+    if (outputId) this.runs.set(id, outputId);
     session.status = "exited";
     session.exitReason = "terminated";
     session.stdinOpen = false;
@@ -529,9 +595,9 @@ export class TerminalSupervisor {
    * left in its process group are stopped when it exits, so nothing escapes
    * supervision. Use `background: true` for a long-running service instead.
    */
-  private reapGroup(pid: number, output: OutputBuffer | null): void {
+  private reapGroup(pid: number, session: TerminalSession | null): void {
     if (!groupAlive(pid)) return;
-    output?.append("\n[The command left background processes running; they were stopped.]\n");
+    session?.append("\n[The command left background processes running; they were stopped.]\n");
     killGroup(pid, "SIGTERM");
     const timer = setTimeout(() => {
       if (groupAlive(pid)) killGroup(pid, "SIGKILL");

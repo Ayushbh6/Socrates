@@ -148,7 +148,7 @@ export interface EventPayloads {
   };
   /** One file mutation with complete before/after text (null for absent files). */
   file_changed: { call_id: string; path: string; action: "created" | "updated" | "deleted" | "moved"; from_path: string | null; before: string | null; after: string | null };
-  terminal_started: { session_id: string; name: string | null; command: string; cwd: string; background: boolean };
+  terminal_started: { session_id: string; name: string | null; command: string; cwd: string; background: boolean; /** Where its output is saved (absent before saved output, or when saving could not start). */ output_id?: string };
   /** A session's exit, with the facts derived from it (a test run's outcome) for the launching task. */
   terminal_exited: { session_id: string; exit_code: number | null; signal: string | null; reason: "exited" | "terminated" | "timeout" | "failed"; facts?: { kind: "test"; value: string }[] };
   /** One approval decision. An MCP tool approval names the tool's catalog name as its subject. */

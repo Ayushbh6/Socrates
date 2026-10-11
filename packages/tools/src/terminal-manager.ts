@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { z } from "zod";
 import { reapLeftovers } from "./process-registry";
+import type { OutputArchive } from "./output-archive";
 import { commandEnvironment, TerminalSupervisor, type SupervisorOptions } from "./terminals";
 
 const SavedTab = z.object({
@@ -10,7 +11,9 @@ const SavedTab = z.object({
     timeoutMs: z.number().nullable(), background: z.boolean(), name: z.string().nullable(),
     ready: z.object({ pattern: z.string().nullable(), port: z.number().nullable(), timeoutMs: z.number() }).nullable(),
     pty: z.object({ cols: z.number(), rows: z.number() }).nullable().optional(), origin: z.string().nullable().optional(),
+    owner: z.object({ goalId: z.string().nullable(), taskId: z.string().nullable(), chatId: z.string().nullable(), turnId: z.string().nullable() }).nullable().optional(),
   }),
+  output: z.string().nullable().optional(),
 });
 
 /** Host-owned sessions. Model rebuilds borrow this manager; only host shutdown closes it. */
@@ -31,16 +34,26 @@ export class TerminalManager {
         for (const tab of tabs) {
           if (seen.has(tab.id)) continue;
           seen.add(tab.id);
-          this.forWorkspace(tab.root).restore(tab.id, { ...tab.spec, env: commandEnvironment() }, tab.startedAt);
+          this.forWorkspace(tab.root).restore(tab.id, { ...tab.spec, env: commandEnvironment() }, tab.startedAt, tab.output ?? null);
         }
       } catch { log("Saved terminal tabs could not be restored."); }
       finally { this.restoring = false; }
     }
   }
+  /** Where every run's output is saved; null when output is only kept in memory. */
+  get archive(): OutputArchive | null {
+    return this.options.archive ?? null;
+  }
+
+  /** Output ids of runs still saving, which cleanup must not remove. */
+  activeOutputs(): Set<string> {
+    return new Set(this.sessions().filter(({ session }) => session.status === "running").flatMap(({ session }) => session.outputId ? [session.outputId] : []));
+  }
+
   forWorkspace(root: string): TerminalSupervisor {
     let supervisor = this.supervisors.get(root);
     if (!supervisor) {
-      supervisor = new TerminalSupervisor({ ...this.options, ...(this.file ? { recentExited: Number.POSITIVE_INFINITY, retainTabs: true } : {}), onChange: () => this.save() });
+      supervisor = new TerminalSupervisor({ ...this.options, workspaceRoot: root, ...(this.file ? { recentExited: Number.POSITIVE_INFINITY, retainTabs: true } : {}), onChange: () => this.save() });
       this.supervisors.set(root, supervisor);
     }
     return supervisor;
@@ -53,7 +66,7 @@ export class TerminalManager {
     // Environment variables and output are deliberately not persisted. Restarts get a fresh, filtered environment.
     const tabs = this.sessions().map(({ root, session }) => {
       const { env: _env, ...spec } = session.spec;
-      return { id: session.id, root, startedAt: session.startedAt.toISOString(), spec };
+      return { id: session.id, root, startedAt: session.startedAt.toISOString(), spec, output: session.outputId };
     });
     try {
       writeFileSync(`${this.file}.tmp`, JSON.stringify(tabs), { mode: 0o600 });

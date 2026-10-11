@@ -24,7 +24,7 @@ This file hands the project to whichever agent harness works on it next. Read it
   3. Open the printed link. Each login link works only once.
   4. Stop the server and delete the copy afterwards.
 
-## Where things stand (2026-10-11, through the persistent terminal workspace)
+## Where things stand (2026-10-11, through saved terminal output, T1)
 
 The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `server.md`, `web.md`, `observability.md`). The trial log numbers each change. Recently shipped, newest last:
 
@@ -51,6 +51,7 @@ The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `serv
 - **Routing questions:** a premium freeform dialog and global **Reply needed** indicator resume the explicitly selected original request. Question, reply and final answer stay one visible turn across modes, history and Inspect. Pending state survives other activity and restart; duplicates are refused and failures can be retried. General freezes the original request day, fresh Standard General sends use today with earlier context, and legacy default General names are dated from their start (`architecture/web.md`, "Routing questions"; trial log entry 51).
 
 - **Reliable notes and General continuity:** notes target 1,200/2,000 characters with 25% tolerance; tool-free note repairs preserve valid answers and full evidence, with stale-note warnings on failure. General workers share a 30k chronological cross-day history (20k newest-turn evidence), shared timestamped activity and frozen turn time. Inspect explains history, memory gating and note freshness. Historical corrections append revisions only. Trial log entry 56 records deterministic checks, three isolated DeepSeek replays and remaining model-quality limits.
+- **Saved terminal output (T1):** every process run, agent or user, gets an output id; its output is appended to `~/.socrates-v2/artifacts/terminal/<id>/output.log` with `meta.json` (whose run: goal/task/chat/turn or the user). Events keep only a preview (4,500 tokens by default) and the id. `terminal_control read` with `output` pages by `from_line` or finds lines by `search`. Every read carries a `source` line saying whose run it is; cursors name their run (`term-5:c120`), so a restarted tab's old cursor is refused. Cleanup: 15 days, 1 GB total, 100 MB per output, all in `settings.json` under `terminal`. Inspect overview has a **Long terminal output** panel; `pnpm eval:terminal-output` (needs `SOCRATES_ENV_FILE=.env`) compares preview sizes live (`architecture/agent-harness.md`, "Saved output"; trial log entry 58).
 
 ## Next, in the order agreed with the user
 
@@ -58,7 +59,7 @@ Ask before starting each one.
 
 Plan agreed 2026-10-11: `docs/terminal-output-and-memory.md` (trial log entry 57).
 
-1. **T1, long terminal output:** each run's output saved under `~/.socrates-v2/artifacts/terminal/<output-id>/`, no longer inside events; every output scoped to its origin (chat, turn, call, or the user) and labelled when read; a 4,500-token preview plus the output id; cleanup at 15 days and 1 GB, both settings.
+1. ~~**T1, long terminal output**~~: done (trial log entry 58).
 2. **M4a, work memory out of repositories:** same index-plus-topics structure, moved to `~/.socrates-v2/memory/projects/<project-id>/`; memory-only writer that runs after the answer is saved; repository files (including live v0.1.20's `.socrates/MEMORY.md`, which shares the old path) are never read or written as Socrates' memory.
 3. **G1, answer grounding and routing:** no stronger claims than the user made (the Amsterdam case), times as recorded with no invented causes, the General follow-up misroute and avoidable router retries.
 

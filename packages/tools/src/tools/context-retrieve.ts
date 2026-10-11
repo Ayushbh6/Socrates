@@ -326,13 +326,26 @@ function compactInput(input: unknown, tokens: number): string {
   return headTail(text, tokens).text;
 }
 
-/** The complete stored output of one call, as text. */
-function storedOutput(e: Evidence): string {
+/**
+ * The stored output of one call, as text. A terminal command's output saved
+ * by id is read from its start and end, with the id to read the rest
+ * (terminal_control read output); before saved output, the whole retained
+ * text went with the call.
+ */
+function storedOutput(e: Evidence, ctx?: HandlerContext, tokens = 6_500): string {
   const r = e.result;
   if (!r) return "(no result recorded; the call was interrupted)";
   if (r.status === "error") return JSON.stringify({ error: r.error, failure_detail: r.failure_detail ?? null });
-  const full = (r.result as { output_full?: unknown } | null)?.output_full;
-  return typeof full === "string" ? full : JSON.stringify(r.result);
+  const result = r.result as { output_full?: unknown; output_id?: unknown; output?: unknown } | null;
+  if (typeof result?.output_full === "string") return result.output_full;
+  const id = typeof result?.output_id === "string" ? result.output_id : null;
+  if (id && ctx?.outputs?.available(id)) {
+    const meta = ctx.outputs.meta(id);
+    const excerpt = ctx.outputs.excerpt(id, tokens - 100, `terminal_control read with output ${id} (from_line or search) shows the rest`);
+    return `[saved output ${id}: ${meta?.lines ?? "?"} lines${meta?.complete === false ? ", not complete" : ""}]\n${excerpt.text}`;
+  }
+  if (id) return `[saved output ${id} is no longer available; the preview the call returned:]\n${typeof result?.output === "string" ? result.output : ""}`;
+  return JSON.stringify(r.result);
 }
 
 function goalView(goal: Goal, ctx: HandlerContext, scale: number) {
@@ -413,7 +426,7 @@ function turnView(turn: Turn, ref: string | null, ctx: HandlerContext, scale: nu
       tool: e.tool,
       status: e.status ?? "interrupted",
       input: compactInput(e.input, detailed ? Math.min(150, Math.floor(perCall / 3)) : 40),
-      ...(detailed || i < 3 ? { output: component(e.result?.content ?? storedOutput(e), Math.max(40, perCall - 50)) } : {}),
+      ...(detailed || i < 3 ? { output: component(e.result?.content ?? storedOutput(e, ctx, Math.max(40, perCall - 50)), Math.max(40, perCall - 50)) } : {}),
     })),
     ...(evidence.length && !sameTask ? { tool_note: "Tool calls of another task are inspected from within that task." } : {}),
     final_response: component(response, Math.floor(2_500 * scale)),
@@ -444,7 +457,7 @@ function evidenceView(e: Evidence, ctx: HandlerContext, scale: number) {
       wall_time_ms: e.result?.wall_time_ms ?? null,
     },
     input: component(typeof e.input === "string" ? e.input : JSON.stringify(e.input, null, 1), Math.floor(2_000 * scale)),
-    output: component(storedOutput(e), Math.floor(6_500 * scale)),
+    output: component(storedOutput(e, ctx, Math.floor(6_500 * scale)), Math.floor(6_500 * scale)),
     bounded: true,
   };
 }

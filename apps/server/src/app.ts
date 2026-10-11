@@ -334,11 +334,17 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
     const evidence = task ? runtime.store.getEvidence(task.id, Number(query.handle.slice(1))) : null;
     if (!evidence) return reply.code(404).send(problem("not_found", "There is no such tool call."));
     const recorded = evidence.result;
-    const output = recorded?.result as { output_full?: unknown; content?: unknown; output_lost?: unknown } | null;
+    const output = recorded?.result as { output_full?: unknown; output_id?: unknown; output?: unknown; content?: unknown; output_lost?: unknown } | null;
+    // A terminal command's output saved by id is read from the saved file.
+    const archive = runtime.terminalManager.archive;
+    const savedId = typeof output?.output_id === "string" && typeof output?.output_full !== "string" ? output.output_id : null;
+    const saved = savedId && archive?.available(savedId) ? archive.text(savedId, EVIDENCE_MAX_CHARS + 1).text : null;
     // `content` is shortened for the model; the structured result keeps the
     // complete retained terminal/MCP recording and complete failure details.
     const content = !recorded ? null
       : recorded.status === "error" ? JSON.stringify({ error: recorded.error, failure_detail: recorded.failure_detail ?? null })
+      : saved !== null ? saved
+      : savedId && typeof output?.output === "string" ? `[The saved output ${savedId} has been removed; this is the preview the call returned.]\n${output.output}`
       : typeof output?.output_full === "string" ? output.output_full
       : typeof output?.content === "string" ? output.content
       : recorded.result == null ? recorded.content : JSON.stringify(recorded.result);
@@ -368,6 +374,10 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
     const { range } = z.object({ range: Range }).strict().parse(request.query);
     const log = calls();
     return log ? observe.deciderStats(log, runtime.store, range, new Date()) : unavailable(reply);
+  });
+  app.get("/api/observe/terminal", async (request) => {
+    const { range } = z.object({ range: Range }).strict().parse(request.query);
+    return observe.terminalOutputStats(runtime.store, range, new Date(), runtime.settings.terminal.previewTokens);
   });
   app.get("/api/observe/prices", async () => runtime.priceTable());
   app.get("/api/observe/series", async (request, reply) => {

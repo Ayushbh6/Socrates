@@ -5,7 +5,7 @@ import { fixedClock } from "@socrates/shared";
 import { LedgerStore } from "@socrates/store";
 import type { SemanticSearch } from "@socrates/retrieval";
 import { afterEach } from "vitest";
-import { type AccessPolicy, type ApprovalRequest, type CapabilityCatalog, RunState, type ToolBinding, type ToolCallResult, ToolRunner, WorkspaceRoot } from "../src";
+import { type AccessPolicy, type ApprovalRequest, type CapabilityCatalog, RunState, type SupervisorOptions, type ToolBinding, type ToolCallResult, ToolRunner, WorkspaceRoot } from "../src";
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -51,7 +51,7 @@ export interface Result {
   images?: ToolCallResult["images"];
 }
 
-export function harness(options: { files?: Record<string, string | Buffer>; approve?: boolean | ((r: ApprovalRequest) => boolean | Promise<boolean>); catalog?: CapabilityCatalog; gateArmed?: boolean; semantic?: SemanticSearch; access?: () => AccessPolicy | null } = {}): Harness {
+export function harness(options: { files?: Record<string, string | Buffer>; approve?: boolean | ((r: ApprovalRequest) => boolean | Promise<boolean>); catalog?: CapabilityCatalog; gateArmed?: boolean; semantic?: SemanticSearch; access?: () => AccessPolicy | null; terminals?: SupervisorOptions } = {}): Harness {
   const root = tempDir();
   writeFiles(root, options.files ?? {});
   const clock = fixedClock("2026-09-01T10:00:00Z");
@@ -64,6 +64,7 @@ export function harness(options: { files?: Record<string, string | Buffer>; appr
     ...(options.catalog ? { catalog: options.catalog } : {}),
     ...(options.semantic ? { semantic: options.semantic } : {}),
     ...(options.access ? { access: options.access } : {}),
+    ...(options.terminals ? { terminals: options.terminals } : {}),
     approve: async (r) => {
       approvals.push(r);
       return typeof decide === "function" ? decide(r) : decide;

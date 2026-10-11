@@ -8,7 +8,7 @@ import { type EffortLevels, type ListedModel, PROVIDER_DEFAULTS, type Price, typ
 import { Retrieval } from "@socrates/retrieval";
 import { abortable, type Clock, newId } from "@socrates/shared";
 import { CallLog, type Goal, LedgerStore, type Turn, type Workspace } from "@socrates/store";
-import { TerminalManager, isProtected, type AccessPolicy, canReadAutomatically } from "@socrates/tools";
+import { OutputArchive, TerminalManager, isProtected, type AccessPolicy, canReadAutomatically } from "@socrates/tools";
 import { type ServerConfig, prepareHome } from "./config";
 import { readKeys, writeKey } from "./keys";
 import { lockHome } from "./home-lock";
@@ -43,6 +43,8 @@ export interface ModelInUse {
 
 /** How long the call log keeps a call (architecture/observability.md, "Keeping and forgetting"). */
 export const CALL_RETENTION_DAYS = 30;
+/** Saved terminal output is cleaned up at startup and this often. */
+const OUTPUT_SWEEP_MS = 6 * 60 * 60 * 1000;
 
 /** Replaceable for tests; production uses the real providers. */
 export interface RuntimeDeps {
@@ -105,6 +107,8 @@ export class Runtime {
   /** Socrates' own data and Socrates 0.1's: no tool reads or changes them in any mode. */
   private readonly protectedFolders: string[];
   readonly terminalManager: TerminalManager;
+  /** Cleanup of saved terminal output, every OUTPUT_SWEEP_MS. */
+  private outputSweep: ReturnType<typeof setInterval> | null = null;
 
   private constructor(
     readonly config: ServerConfig,
@@ -119,7 +123,30 @@ export class Runtime {
     settings: Settings,
   ) {
     this.settings = settings;
-    this.terminalManager = new TerminalManager({ registry: path.join(config.home, "terminals.json") }, path.join(config.home, "terminal-tabs.json"), log);
+    // Saved terminal output (T1): limits are read when used, so a settings change applies without a restart.
+    let archive: OutputArchive | null = null;
+    try {
+      archive = new OutputArchive(path.join(config.home, "artifacts", "terminal"), () => {
+        const t = this.settings.terminal;
+        return { retentionDays: t.retentionDays, totalCapBytes: t.totalCapMB * 1024 * 1024, perOutputCapBytes: t.perOutputCapMB * 1024 * 1024 };
+      });
+      const interrupted = archive.recoverInterrupted();
+      if (interrupted) log(`marked ${interrupted} terminal output(s) as interrupted: Socrates stopped while they were saving`);
+    } catch (error) {
+      log(`terminal output will not be saved: ${message(error)}`);
+    }
+    this.terminalManager = new TerminalManager({ registry: path.join(config.home, "terminals.json"), archive, previewTokens: () => this.settings.terminal.previewTokens }, path.join(config.home, "terminal-tabs.json"), log);
+    if (archive) {
+      const sweep = () => {
+        try {
+          const { removed, freed } = archive.sweep(this.terminalManager.activeOutputs());
+          if (removed) log(`removed ${removed} saved terminal output(s), ${Math.round(freed / 1024 / 1024)} MB`);
+        } catch (error) { log(`terminal output cleanup failed: ${message(error)}`); }
+      };
+      sweep();
+      this.outputSweep = setInterval(sweep, OUTPUT_SWEEP_MS);
+      this.outputSweep.unref();
+    }
     this.protectedFolders = [realpathSync(config.home), path.join(realpathSync(homedir()), ".socrates")];
   }
 
@@ -305,6 +332,7 @@ export class Runtime {
     if (sent.access) sent.access = { ...this.settings.access, ...(sent.access as object) };
     if (sent.profile) sent.profile = { ...this.settings.profile, ...(sent.profile as object) };
     if (sent.memory) sent.memory = { ...this.settings.memory, ...(sent.memory as object) };
+    if (sent.terminal) sent.terminal = { ...this.settings.terminal, ...(sent.terminal as object) };
     let next = Settings.parse({ ...this.settings, ...sent });
     if ((parsed.access as { folders?: unknown } | undefined)?.folders) {
       next.access.folders = [...new Set(next.access.folders.map((folder) => workspaceFolder(folder, this.config.home)))];
@@ -322,7 +350,7 @@ export class Runtime {
     const sameChat = !!this.socrates && !!next.chat && !!inUse && next.chat.provider === inUse.provider && next.chat.model === inUse.model;
     // The model that names chats is used after an answer, never inside a turn, so it can change while Socrates works.
     const titlerOnly = !!this.socrates && !!this.models.router;
-    if (Object.keys(sent).every((key) => key === "access" || key === "profile" || key === "memory" || key === "prices" || (key === "chat" && sameChat) || (key === "titler" && titlerOnly))) {
+    if (Object.keys(sent).every((key) => key === "access" || key === "profile" || key === "memory" || key === "prices" || key === "terminal" || (key === "chat" && sameChat) || (key === "titler" && titlerOnly))) {
       const effort = next.chat?.effort;
       if (sameChat && effort && !inUse!.effort?.levels.includes(effort)) {
         const levels = inUse!.effort?.levels ?? [];
@@ -408,6 +436,7 @@ export class Runtime {
     this.closing = (async () => {
       await this.changePending?.catch(() => {});
       try {
+        if (this.outputSweep) clearInterval(this.outputSweep);
         try { await this.stop(); } finally { await this.terminalManager.close(); }
       } finally {
         await this.flushCalls();

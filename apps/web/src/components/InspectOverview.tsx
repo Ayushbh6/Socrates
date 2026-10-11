@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { asked, dayLabel } from "../lib/model";
 import {
-  average, type Breakdown, bytes, type DeciderStats, duration, inspectHref, type PriceRow, percent, type Range, ratio, roleLabel, shortModel, speed, stacked, type Summary, tokenRows, tokens, totalPerBucket, usd,
+  average, type Breakdown, bytes, type DeciderStats, duration, inspectHref, type PriceRow, percent, type Range, ratio, roleLabel, shortModel, speed, stacked, type Summary, type TerminalOutputStats, tokenRows, tokens, totalPerBucket, usd,
 } from "../lib/observe";
 import { ChartCard, HBars, Lines, type SeriesDef, StackedColumns } from "./charts";
 import { MoveChip, PromptBar, Tile, usePolled } from "./inspect-kit";
@@ -17,6 +17,7 @@ export function InspectOverview({ range, ms, onCall }: { range: Range; ms: numbe
   const recent = usePolled(() => api.observeRecent(14), [], ms);
   const costly = usePolled(() => api.observeCostly(range), [range], ms);
   const decider = usePolled(() => api.observeDecider(range), [range], ms);
+  const terminal = usePolled(() => api.observeTerminal(range), [range], ms);
   const error = summary.error ?? series.error;
   const s = summary.data;
   const sr = series.data;
@@ -105,6 +106,7 @@ export function InspectOverview({ range, ms, onCall }: { range: Range; ms: numbe
         </section>
 
       {decider.data && decider.data.answered + decider.data.failed > 0 && <DeciderPanel d={decider.data} />}
+      {terminal.data && terminal.data.longOutputs + terminal.data.reads > 0 && <TerminalOutputPanel t={terminal.data} />}
 
       <div className="grid-2">
         <section className="panel" aria-label="Cost by model">
@@ -209,6 +211,25 @@ function Prices({ summary }: { summary: Summary }) {
         ))}
       </ul>
       {problem && <p className="inspect-note" role="alert">{problem}</p>}
+    </section>
+  );
+}
+
+/** Long command output: how often the agent needed more than the preview, and what reading it cost. */
+function TerminalOutputPanel({ t }: { t: TerminalOutputStats }) {
+  const avg = (n: number, of: number) => (of ? tokens(Math.round(n / of)) : "–");
+  return (
+    <section className="panel" aria-label="Long terminal output">
+      <h3>Long terminal output</h3>
+      <div className="table-scroll">
+        <table>
+          <thead><tr><th>Outputs longer than the preview</th><th>Read again</th><th>Reads</th><th>Tokens per read</th><th>Tokens per preview</th></tr></thead>
+          <tbody>
+            <tr><td>{t.longOutputs}</td><td>{t.longOutputs ? `${t.readAgain} (${percent(t.readAgain / t.longOutputs)})` : "–"}</td><td>{t.reads}</td><td>{avg(t.readTokens, t.reads)}</td><td>{avg(t.previewTokensUsed, t.longOutputs)}</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p className="inspect-foot">Preview set to {tokens(t.previewTokens)} tokens. If most long outputs are read again and reads cost more than the preview saves, raise it (Settings file, terminal.previewTokens, 4,000–5,000).</p>
     </section>
   );
 }

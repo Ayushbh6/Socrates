@@ -288,6 +288,7 @@ export class ToolRunner {
       },
       visible: (abs) => !policy || !isProtected(policy, abs),
       terminals: scope.workspace ? this.terminals(scope.workspace) : null,
+      outputs: this.terminalManager.archive,
       vision: scope.vision ?? false,
       async requireApproval(request: ApprovalRequest) {
         // With an access policy, "ask" mode already asked about the whole call.

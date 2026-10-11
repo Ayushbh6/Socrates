@@ -81,7 +81,8 @@ describe.skipIf(process.platform === "win32")("terminal", () => {
     expect(pattern.json).toMatchObject({ event: "pattern" });
     expect(pattern.json.output).toContain("line1\nline2\nline3\nREADY\n");
     const again = await h.call("terminal_control", { action: "read", terminal: "w", cursor: "c0", limit_lines: 2 });
-    expect(again.json).toMatchObject({ output: "line1\nline2\n", cursor: "c12", truncated: true });
+    // A cursor names its run, so it cannot read another run of the same tab by mistake.
+    expect(again.json).toMatchObject({ output: "line1\nline2\n", cursor: `${again.json.session_id}:c12`, truncated: true });
     const rest = await h.call("terminal_control", { action: "read", terminal: "w", cursor: again.json.cursor });
     expect(rest.json.output).toBe("line3\nREADY\n");
     expect((await h.call("terminal_control", { action: "read", terminal: "w", cursor: "x9" })).json.error.code).toBe("invalid_cursor");

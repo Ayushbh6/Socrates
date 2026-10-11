@@ -104,10 +104,13 @@ export const TerminalControlInput = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("list") }),
   z.strictObject({
     action: z.literal("read"),
-    terminal: Selector,
+    terminal: Selector.optional(),
+    output: z.string().min(1).max(32).optional(),
     cursor: Cursor.optional(),
     limit_lines: z.number().int().min(1).optional(),
     filter: z.string().min(1).max(500).optional(),
+    from_line: z.number().int().min(1).optional(),
+    search: z.string().min(1).max(500).optional(),
   }),
   z.strictObject({
     action: z.literal("screen"),
