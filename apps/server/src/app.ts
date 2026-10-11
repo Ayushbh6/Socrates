@@ -53,7 +53,9 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
     reply.header("cache-control", "no-store");
     reply.header("referrer-policy", "no-referrer");
     reply.header("x-content-type-options", "nosniff");
-    reply.header("content-security-policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'none'");
+    // xterm generates per-instance styles for cell geometry, colours and the blinking cursor.
+    // Allow those styles without relaxing the same-origin restriction on scripts.
+    reply.header("content-security-policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'");
   });
   app.addHook("onRequest", guard(runtime.config.port, token));
   app.setNotFoundHandler((_request, reply) => reply.code(404).send(problem("not_found", "There is no such route.")));

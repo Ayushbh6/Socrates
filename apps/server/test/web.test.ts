@@ -21,7 +21,8 @@ describe("the web app", () => {
     expect(page.statusCode).toBe(200);
     expect(page.headers["content-type"]).toContain("text/html");
     expect(page.body).toContain('<div id=root>');
-    expect(page.headers["content-security-policy"]).toContain("default-src 'self'");
+    // Terminal cell sizing and cursor blinking use generated inline styles; scripts stay same-origin only.
+    expect(page.headers["content-security-policy"]).toBe("default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'");
     const asset = await request("GET", "/assets/app.js");
     expect(asset.statusCode).toBe(200);
     expect(asset.headers["content-type"]).toContain("javascript");
