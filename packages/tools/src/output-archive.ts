@@ -140,6 +140,8 @@ export interface LinePage {
   /** The first line not shown, or null at the end of what is saved. */
   next_line: number | null;
   lines_shown: number;
+  /** Opaque cursor, including the output id and position within a long line. */
+  next_cursor: string | null;
 }
 
 export interface SearchHit {
@@ -197,67 +199,97 @@ export class OutputArchive {
     return isOutputId(id) && existsSync(this.logPath(id));
   }
 
-  /** Lines from `fromLine` (1-based), until `maxLines` or `maxTokens`; a line longer than the page is cut, not skipped. */
-  readLines(id: string, fromLine: number, maxLines: number, maxTokens: number): LinePage {
+  /** Bounded, lossless pages; the cursor resumes within an oversized line. */
+  readLines(id: string, fromLine: number, maxLines: number, maxTokens: number, fromOffset = 0): LinePage {
     let text = "";
     let tokens = 0;
     let shown = 0;
     let line = 1;
+    let offset = 0;
     let next: number | null = null;
+    let nextOffset = 0;
     this.eachLine(id, (piece, ends) => {
-      if (line < fromLine) { if (ends) line++; return true; }
-      if (shown >= maxLines) { next = line; return false; }
-      // Huge text is never tokenized whole: past 8 characters a token it cannot fit anyway.
-      const cost = piece.length > maxTokens * 8 ? Infinity : countTokens(piece);
-      if (tokens + cost > maxTokens) {
-        if (shown === 0) {
-          text += cutToTokens(piece, Math.max(1, maxTokens - tokens));
-          shown = 1;
-          next = line + 1;
-        } else next = line;
+      const start = offset;
+      offset += piece.length;
+      if (line < fromLine || (line === fromLine && offset <= fromOffset)) {
+        if (ends) { line++; offset = 0; }
+        return true;
+      }
+      if (shown >= maxLines) { next = line; nextOffset = start; return false; }
+      const skip = line === fromLine ? Math.max(0, fromOffset - start) : 0;
+      const remaining = piece.slice(skip);
+      const room = Math.max(0, maxTokens - tokens);
+      const cost = remaining.length > room * 8 ? Infinity : countTokens(remaining);
+      if (cost > room) {
+        const prefix = plainPrefix(remaining, room);
+        text += prefix;
+        if (prefix) shown++;
+        next = line;
+        nextOffset = start + skip + prefix.length;
         return false;
       }
-      text += piece;
+      text += remaining;
       tokens += cost;
-      if (!ends) return true;
-      shown++;
-      line++;
+      if (ends) { shown++; line++; offset = 0; }
       return true;
     });
-    return { text, from_line: fromLine, next_line: next, lines_shown: shown };
+    return { text, from_line: fromLine, next_line: next, lines_shown: shown,
+      next_cursor: next === null ? null : `${id}:l${next}:c${nextOffset}` };
   }
 
-  /** Lines containing `query` (text, ignoring case) or matching it (a regular expression), each with its number and a line of context, until `maxHits` or `maxTokens`. */
-  search(id: string, query: string | RegExp, maxHits: number, maxTokens: number): { hits: SearchHit[]; more: boolean; scanned_lines: number } {
-    const needle = typeof query === "string" ? query.toLowerCase() : null;
-    const matches = (line: string) => (needle !== null ? line.toLowerCase().includes(needle) : (query as RegExp).test(line));
+  /** Literal searches scan every chunk. Regex requires a whole line, capped explicitly. */
+  search(id: string, query: string | RegExp, maxHits: number, maxTokens: number): { hits: SearchHit[]; more: boolean; scanned_lines: number; skipped_lines: number } {
+    const literal = typeof query === "string";
+    const pattern = literal ? new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "iu") : query;
     const hits: SearchHit[] = [];
-    const shorten = (piece: string) => (piece.length > 1_000 ? `${piece.slice(0, 1_000)}…` : piece.replace(/\n$/, ""));
+    const shorten = (s: string) => s.length > 1_000 ? `${s.slice(0, 1_000)}…` : s.replace(/\n$/, "");
     let tokens = 0;
     let line = 1;
+    let scanned = 0;
+    let skipped = 0;
     let more = false;
     let previous = "";
     let current = "";
+    let prefix = "";
+    let tooLong = false;
+    let excerpt: string | null = null;
     let open: SearchHit | null = null;
+    const match = (text: string) => {
+      pattern.lastIndex = 0;
+      const found = pattern.exec(text);
+      if (!found) return;
+      const from = Math.max(0, found.index - 200);
+      const to = Math.min(text.length, from + 1_000);
+      excerpt = `${from ? "…" : ""}${text.slice(from, to).replace(/\n$/, "")}${to < text.length ? "…" : ""}`;
+    };
     this.eachLine(id, (piece, ends) => {
-      current += current.length < 4_000 ? piece : "";
+      if (prefix.length < 1_001) prefix += piece.slice(0, 1_001 - prefix.length);
+      if (literal) {
+        if (excerpt === null) {
+          const window = current + piece;
+          match(window);
+          // Keep enough overlap for a literal crossing the next chunk boundary.
+          current = window.slice(-Math.max(200, (query as string).length * 2));
+        }
+      } else if (!tooLong) {
+        if (current.length + piece.length > LONG_LINE_CHARS) { tooLong = true; current = ""; }
+        else current += piece;
+      }
       if (!ends) return true;
-      const text = current;
-      const at = line++;
-      current = "";
-      if (open) { open.after = shorten(text); open = null; }
-      if (matches(text)) {
-        const hit: SearchHit = { line: at, text: shorten(text), ...(previous ? { before: shorten(previous) } : {}) };
+      if (!literal && !tooLong) match(current.replace(/\n$/, ""));
+      if (tooLong) skipped++; else scanned++;
+      if (open) { open.after = shorten(prefix); open = null; }
+      if (excerpt !== null) {
+        const hit: SearchHit = { line, text: excerpt, ...(previous ? { before: previous } : {}) };
         const cost = countTokens(JSON.stringify(hit)) + 40;
         if (hits.length >= maxHits || tokens + cost > maxTokens) { more = true; return false; }
-        hits.push(hit);
-        tokens += cost;
-        open = hit;
+        hits.push(hit); tokens += cost; open = hit;
       }
-      previous = text;
+      previous = shorten(prefix);
+      current = ""; prefix = ""; excerpt = null; tooLong = false; line++;
       return true;
     });
-    return { hits, more, scanned_lines: line - 1 };
+    return { hits, more, scanned_lines: scanned, skipped_lines: skipped };
   }
 
   /** The start and end of the saved text within `maxTokens`, reading only those ends of the file. */
@@ -396,8 +428,11 @@ export class OutputArchive {
         }
         carry = text.slice(start);
         if (carry.length > LONG_LINE_CHARS) {
-          if (!visit(carry, false)) return;
-          carry = "";
+          // Keep a final character so EOF still closes the logical line.
+          let cut = carry.length - 1;
+          if (carry.charCodeAt(cut) >= 0xdc00 && carry.charCodeAt(cut) <= 0xdfff) cut--;
+          if (!visit(carry.slice(0, cut), false)) return;
+          carry = carry.slice(cut);
         }
         if (n <= 0) break;
       }
@@ -417,11 +452,16 @@ export class OutputArchive {
   }
 }
 
-/** A single line too long for a page: its start, within the budget. */
-function cutToTokens(text: string, maxTokens: number): string {
+/** An exact prefix, with no added text and no split surrogate pairs. */
+function plainPrefix(text: string, maxTokens: number): string {
   let chars = Math.min(text.length, maxTokens * 4);
-  while (chars > 1 && countTokens(text.slice(0, chars)) > maxTokens) chars = Math.floor(chars * 0.8);
-  return `${text.slice(0, chars)}\n[… line cut: ${text.length - chars} more characters …]\n`;
+  while (chars > 0) {
+    if (chars < text.length && text.charCodeAt(chars) >= 0xdc00 && text.charCodeAt(chars) <= 0xdfff) chars--;
+    const prefix = text.slice(0, chars);
+    if (countTokens(prefix) <= maxTokens) return prefix;
+    chars = Math.floor(chars * 0.8);
+  }
+  return "";
 }
 
 function headTailText(text: string, maxTokens: number, hint: string): { text: string; truncated: boolean } {

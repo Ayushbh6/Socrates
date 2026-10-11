@@ -360,10 +360,11 @@ export class Runtime {
         const levels = inUse!.effort?.levels ?? [];
         throw new SettingsError(levels.length ? `${inUse!.model} cannot think at "${effort}"; choose ${levels.join(", ")}.` : `${inUse!.model} has no thinking levels to choose from.`);
       }
-      // Access, the profile, memory's switches and thinking levels need no rebuild, so they may change while Socrates works; access and thinking levels apply to the next tool call or model request, memory to the next turn.
+      // Access, the profile, memory's switches and thinking levels need no rebuild, so they may change while Socrates works; access and thinking levels apply to the next tool call or model request, memory use to the next turn; disabling saving cancels background writers immediately.
       if (this.changing || this.closing) throw new RuntimeBusyError("Socrates is restarting; change this in a moment.");
       saveSettings(this.config.settingsPath, next);
       this.settings = next;
+      if (!next.memory.save) this.socrates?.cancelWorkMemory();
       if (sameChat) this.models.chat = { ...inUse!, source: "settings", ...(inUse!.effort ? { effort: { ...inUse!.effort, current: this.effortInUse() } } : {}) };
       if (Object.hasOwn(sent, "titler")) this.startTitler(this.env(), this.models.router!);
       this.retrieval?.scheduleSync();

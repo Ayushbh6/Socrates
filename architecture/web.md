@@ -122,7 +122,7 @@ A shared terminal workspace at the bottom of the page: docked under Standard's c
 
 ## Tool output
 
-Every tool call opens to its live preview; **Open the full output** shows the complete recorded output (`GET /api/evidence`) in a dialog: a file change as its diff with additions and removals coloured, a structured result as tidy JSON, and anything else as recorded, with long lines wrapped or not. It says when the output was cut at 200,000 characters or when a command printed more than Socrates keeps.
+Every tool call opens to its live preview; **Open the full output** shows the complete recorded output (`GET /api/evidence`) in a dialog: a file change as its diff with additions and removals coloured, a structured result as tidy JSON, and anything else as recorded, with long lines wrapped or not. It says when the display was cut at 200,000 characters. Independently, it warns when saved capture stopped at its size cap, a write failed, or recording was interrupted—even if the retained output is short. Older in-memory output-loss flags remain readable.
 
 ## Settings
 

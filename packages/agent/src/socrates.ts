@@ -279,6 +279,7 @@ export class Socrates {
   private readonly inflight = new Set<Promise<unknown>>();
   /** Work-memory steps after their turns, one at a time per project. */
   private readonly workSteps = new WorkMemorySteps();
+  private readonly workControllers = new Set<AbortController>();
   private readonly workFiles: WorkMemoryFiles | null;
   /** Messages in progress per lane, including ones waiting for a task. */
   private readonly laneRuns = new Map<string, number>();
@@ -885,25 +886,31 @@ export class Socrates {
     if (!settings.save || !gate || !didRealWork(calls)) return;
     const refs: EventRefs = { goal_id: goal.id, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id };
     store.recordWorkMemoryStep(refs, { project_id: project.id, outcome: "pending", detail: null, writes: 0 });
-    const signal = this.lifetime.signal;
+    const controller = new AbortController();
+    this.workControllers.add(controller);
+    const signal = AbortSignal.any([this.lifetime.signal, controller.signal]);
     this.workSteps.schedule(project.id, async () => {
       let writes = 0;
       const end = (outcome: "written" | "nothing" | "not_worth" | "skipped" | "failed", detail: string | null) => {
         try { store.recordWorkMemoryStep(refs, { project_id: project.id, outcome, detail, writes }); } catch { /* The store closed under a step that outlived it. */ }
       };
       try {
-        if (signal.aborted) return end("skipped", "Socrates stopped before the step ran");
+        if (signal.aborted) return end("skipped", controller.signal.aborted ? "Saving memories was turned off" : "Socrates stopped before the step ran");
         if (!(this.options.memory?.() ?? MEMORY_ON).save) return end("skipped", "Saving memories was turned off");
         const work = await gate.readWork({
           state: workState({ request: input.request, calls, answer: input.answer }),
           trace: { role: "decision", userEventId: turn.userEventId, turnId: turn.id, goalId: goal.id, taskId: turn.taskId, chatId: turn.chatId },
         }, signal);
-        if (signal.aborted) return end("skipped", "Socrates stopped before the step ran");
+        if (signal.aborted) return end("skipped", controller.signal.aborted ? "Saving memories was turned off" : "Socrates stopped before the step ran");
+        if (!(this.options.memory?.() ?? MEMORY_ON).save) return end("skipped", "Saving memories was turned off");
         if (work === null) return end("skipped", "The decider could not be asked");
         if (work < WORK_AT) return end("not_worth", `The decider said ${work.toFixed(2)}`);
         const write = (target: "index" | "topic", name: string | null, text: string) => {
+          if (!(this.options.memory?.() ?? MEMORY_ON).save) controller.abort(new Error("Saving memories was turned off"));
+          signal.throwIfAborted();
           const entry = store.recordWorkMemoryWrite(refs, { project_id: project.id, root: project.root, target, name, text });
           writes++;
+          this.options.semantic?.scheduleSync();
           try { this.workFiles?.write(project, entry); } catch (error) { this.options.log?.(`work memory file for ${project.id} not written: ${error instanceof Error ? error.message : String(error)}`); }
         };
         const reply = await runFollowUp({
@@ -918,11 +925,19 @@ export class Socrates {
           trace: { userEventId: turn.userEventId, laneId: turn.laneId },
           onResponse: (response) => store.appendEvent("agent_message", { response, phase: "work" }, refs),
         });
+        if (signal.aborted) return end("skipped", controller.signal.aborted ? "Saving memories was turned off" : "Socrates stopped during the step");
         end(writes ? "written" : "nothing", writes ? null : reply?.trim().slice(0, 200) || "No reply within the step's limit");
       } catch (error) {
-        end(signal.aborted ? "skipped" : "failed", signal.aborted ? "Socrates stopped during the step" : error instanceof Error ? error.message : String(error));
+        end(signal.aborted ? "skipped" : "failed", signal.aborted ? (controller.signal.aborted ? "Saving memories was turned off" : "Socrates stopped during the step") : error instanceof Error ? error.message : String(error));
+      } finally {
+        this.workControllers.delete(controller);
       }
     });
+  }
+
+  /** Saving switched off: cancel queued and active writers without touching foreground work. */
+  cancelWorkMemory(): void {
+    for (const controller of this.workControllers) controller.abort(new Error("Saving memories was turned off"));
   }
 
   /** Resolves when every work-memory step queued so far has ended (for tests and shutdown). */

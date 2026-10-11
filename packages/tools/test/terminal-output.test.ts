@@ -203,13 +203,75 @@ describe("the output archive", () => {
     expect(archive.meta(c.id)).toMatchObject({ lines: 3, complete: true });
     const first = archive.readLines(c.id, 1, 10, 500);
     expect(first.lines_shown).toBe(1);
-    expect(first.next_line).toBe(2);
-    expect(first.text).toContain("line cut");
+    expect(first.next_line).toBe(1);
+    expect(first.next_cursor).toMatch(new RegExp(`^${c.id}:l1:c[1-9][0-9]*$`));
+    expect(countTokens(first.text)).toBeLessThanOrEqual(500);
     expect(archive.readLines(c.id, 2, 10, 500)).toMatchObject({ text: "naïve 😀 ünïcode\nEND", lines_shown: 2, next_line: null });
     expect(archive.search(c.id, "😀", 10, 1_000).hits).toEqual([{ line: 2, text: "naïve 😀 ünïcode", before: expect.stringMatching(/^x+…$/), after: "END" }]);
     expect(readFileSync(path.join(dir, c.id, "output.log"), "utf8").endsWith("ünïcode\nEND")).toBe(true);
     const excerpt = archive.excerpt(c.id, 300, "read the rest");
     expect(excerpt.truncated).toBe(true);
     expect(excerpt.text).toContain("END");
+  });
+});
+
+
+describe("saved-output review regressions", () => {
+  it("finds literal matches after and across chunk boundaries, with match-centred excerpts", () => {
+    const { archive, h } = withArchive();
+    const c = archive.begin({ workspace: h.root, cwd: h.root, session_id: "term-1", name: null, command: "fixture", pty: false, background: false, origin: ORIGIN })!;
+    // eachLine first emits 3 Mi characters minus its retained final character.
+    const boundary = 3 * 1024 * 1024 - 1;
+    c.write("x".repeat(boundary - 4) + "CROSS-BOUNDARY" + "x".repeat(1024 * 1024) + "HIDDEN-MARKER\nshort\n");
+    c.end({ exit_code: 0, signal: null, reason: "exited" });
+    for (const marker of ["CROSS-BOUNDARY", "HIDDEN-MARKER"]) {
+      const found = archive.search(c.id, marker, 10, 1000);
+      expect(found).toMatchObject({ more: false, scanned_lines: 2, skipped_lines: 0 });
+      expect(found.hits[0]).toMatchObject({ line: 1, text: expect.stringContaining(marker), after: "short" });
+      expect(found.hits[0]!.text.length).toBeLessThanOrEqual(1002);
+    }
+  });
+
+  it("reports regex coverage gaps explicitly, without false partial-line anchor matches", async () => {
+    const { archive, h } = withArchive();
+    const c = archive.begin({ workspace: h.root, cwd: h.root, session_id: "term-1", name: null, command: "fixture", pty: false, background: false, origin: ORIGIN })!;
+    c.write("x".repeat(4 * 1024 * 1024) + "MARKER\nMARKER\n");
+    c.end({ exit_code: 0, signal: null, reason: "exited" });
+    const r = await h.call("terminal_control", { action: "read", output: c.id, filter: "^MARKER$" });
+    expect(r.json).toMatchObject({ search_complete: false, skipped_lines: 1, scanned_lines: 1 });
+    expect(r.json.coverage).toContain("literal search");
+    expect(r.json.matches).toEqual([{ line: 2, text: "MARKER", before: expect.any(String) }]);
+  });
+
+  it("pages every character of long Unicode lines and binds cursors to their output", async () => {
+    const { archive, h } = withArchive();
+    const c = archive.begin({ workspace: h.root, cwd: h.root, session_id: "term-1", name: null, command: "fixture", pty: false, background: false, origin: ORIGIN })!;
+    const original = "a😀é".repeat(10000) + "MIDDLE-MARKER\nEND";
+    c.write(original); c.end({ exit_code: 0, signal: null, reason: "exited" });
+    let r = await h.call("terminal_control", { action: "read", output: c.id });
+    const firstCursor = r.json.next_cursor;
+    let recovered = r.json.output;
+    let pages = 1;
+    while (r.json.next_cursor) {
+      expect(pages++).toBeLessThan(30);
+      r = await h.call("terminal_control", { action: "read", output: c.id, cursor: r.json.next_cursor });
+      expect(r.json.output).not.toContain("�");
+      recovered += r.json.output;
+    }
+    expect(recovered).toBe(original);
+    const other = await h.call("terminal", { command: "echo other" });
+    const wrong = await h.call("terminal_control", { action: "read", output: other.json.output_id, cursor: firstCursor });
+    expect(wrong.json.error.code).toBe("cursor_other_run");
+    expect((await h.call("terminal_control", { action: "read", output: c.id, cursor: firstCursor, from_line: 1 })).json.error.code).toBe("invalid_parameters");
+  });
+
+  it("closes a split line without a final newline, and keeps regex output bounded", () => {
+    const { archive, h } = withArchive();
+    const c = archive.begin({ workspace: h.root, cwd: h.root, session_id: "term-1", name: null, command: "fixture", pty: false, background: false, origin: ORIGIN })!;
+    c.write("x".repeat(3 * 1024 * 1024)); c.end({ exit_code: 0, signal: null, reason: "exited" });
+    expect(archive.search(c.id, "xx", 5, 1000)).toMatchObject({ scanned_lines: 1, skipped_lines: 0 });
+    const d = archive.begin({ workspace: h.root, cwd: h.root, session_id: "term-2", name: null, command: "fixture", pty: false, background: false, origin: ORIGIN })!;
+    d.write("x".repeat(100000)); d.end({ exit_code: 0, signal: null, reason: "exited" });
+    expect(archive.search(d.id, /x+/, 5, 1000).hits[0]!.text.length).toBeLessThanOrEqual(1002);
   });
 });

@@ -44,10 +44,15 @@ export function EvidenceViewer({ task, handle, onClose }: { task: string; handle
             {view.kind === "diff" ? view.lines.map((l, i) => <span key={i} className="diff-line" data-type={l.type}>{l.text}{"\n"}</span>) : view.text}
           </pre>
         )}
-        {evidence && (evidence.truncated || evidence.outputLost) && (
+        {evidence && (evidence.truncated || evidence.outputLost || evidence.captureComplete === false) && (
           <p className="evidence-note">
             {evidence.truncated ? "Only the first 200,000 characters are shown. " : ""}
-            {evidence.outputLost ? "Some output was not kept, because the command printed more than Socrates retains." : ""}
+            {evidence.captureComplete === false
+              ? evidence.captureGap === "cap" ? "Recording stopped at the output size limit; some output was not saved."
+                : evidence.captureGap === "write_failed" ? "Recording stopped because the output could not be saved; some output is missing."
+                : evidence.captureGap === "interrupted" ? "Recording was interrupted; the end of the output may be missing."
+                : "This recording is incomplete; some output may be missing."
+              : evidence.outputLost ? "Some output was not kept, because the command printed more than Socrates retains." : ""}
           </p>
         )}
       </div>

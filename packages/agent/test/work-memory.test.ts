@@ -2,6 +2,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { type DeciderClient, type DecisionRequest, type DecisionResponse, type EventPayloads, userText } from "@socrates/contracts";
+import { HashEmbedder } from "@socrates/providers";
+import { Retrieval } from "@socrates/retrieval";
 import { LedgerStore } from "@socrates/store";
 import { describe, expect, it } from "vitest";
 import { continueTask } from "../../router/test/helpers";
@@ -261,6 +263,58 @@ describe("recording what a turn established", () => {
     expect(steps(w.store)).toEqual(["pending", "skipped"]);
   });
 
+  it("skips a decider result after saving is disabled and cancels pending decisions immediately", async () => {
+    for (const cancel of [false, true]) {
+      const w = await world();
+      let save = true;
+      let release!: (p: number) => void;
+      const { decider } = workDecider(() => new Promise<number>((resolve) => { release = resolve; }));
+      const { socrates, model } = w.socrates([continueTask()], [...work, ...memory], { gate: () => new MemoryGate({ decider, timeoutMs: 60_000 }), memory: () => ({ save, use: true }) });
+      await socrates.handle("Add a module");
+      save = false;
+      if (cancel) socrates.cancelWorkMemory(); else release(0.9);
+      await socrates.workMemoryIdle();
+      expect(model.requests).toHaveLength(2);
+      expect(w.store.listWorkTopics()).toEqual([]);
+      expect(steps(w.store)).toEqual(["pending", "skipped"]);
+    }
+  });
+
+  it("checks saving at the write boundary and preserves earlier writes when disabled mid-step", async () => {
+    const w = await world();
+    let save = true;
+    const { decider } = workDecider(() => 0.9);
+    const { socrates } = w.socrates([continueTask()], [...work, memory[0]!, () => {
+      save = false;
+      return { toolCalls: [call("work_memory", { action: "write_topic", topic: "new-module", text: "Should not replace the good note" })] };
+    }], { gate: () => new MemoryGate({ decider }), memory: () => ({ save, use: true }) });
+    await socrates.handle("Add a module");
+    await socrates.workMemoryIdle();
+    expect(w.store.listWorkTopics()).toHaveLength(1);
+    expect(w.store.listWorkTopics()[0]!.text).toContain("New module");
+    expect(steps(w.store)).toEqual(["pending", "skipped"]);
+    expect(w.store.listEvents({ type: "work_memory_written" })).toHaveLength(1);
+  });
+
+  it("indexes background writes after the foreground sync, including writes before a later failure", async () => {
+    const w = await world();
+    const retrieval = await Retrieval.open({ store: w.store, embedder: new HashEmbedder({ concepts: [["automobile", "car"], ["repair", "maintenance"]] }), uri: tempDir(), workspaceFiles: false });
+    try {
+      await retrieval.idle();
+      let release!: (p: number) => void;
+      const { decider } = workDecider(() => new Promise<number>((resolve) => { release = resolve; }));
+      const { socrates } = w.socrates([continueTask()], [...work,
+        { toolCalls: [call("work_memory", { action: "write_topic", topic: "transport", text: "automobile repair" })] },
+        () => { throw new Error("provider failed after the durable write"); },
+      ], { gate: () => new MemoryGate({ decider, timeoutMs: 60_000 }), memory: () => ({ save: true, use: true }), semantic: retrieval });
+      await socrates.handle("Add a module"); await retrieval.idle();
+      expect(await retrieval.search("car maintenance", { kinds: ["work_topic"], limit: 20 })).toEqual([]);
+      release(0.9); await socrates.workMemoryIdle(); await retrieval.idle();
+      expect(steps(w.store)).toEqual(["pending", "failed"]);
+      expect((await retrieval.search("car maintenance", { kinds: ["work_topic"], limit: 20 })).map((h) => h.sourceId)).toContain(`${resolveWorkProject(w.root)!.id}/transport`);
+    } finally { await retrieval.close(); }
+  });
+
   it("carries a guide that names the tool, the index's form and the turn", () => {
     const guide = workMemorySkill(41);
     expect(guide).toContain("this turn is turn 41");
@@ -314,4 +368,19 @@ describe("after a restart", () => {
     expect(files.rebuild(store)).toBe(0);
     store.close();
   });
+});
+
+
+it("scopes semantic topic retrieval before the top-20 limit, with competing projects", async () => {
+  const w = await world();
+  seed(w.store, w.root, [{ name: "transport", text: "automobile repair procedure" }]);
+  for (let i = 0; i < 30; i++) w.store.recordWorkMemoryWrite({}, { project_id: `other-${i}`, root: `/other-${i}`, target: "topic", name: "transport", text: "car maintenance" });
+  const retrieval = await Retrieval.open({ store: w.store, embedder: new HashEmbedder({ concepts: [["automobile", "car"], ["repair", "maintenance"]] }), uri: tempDir(), workspaceFiles: false });
+  try {
+    await retrieval.idle();
+    const { socrates } = w.socrates([continueTask()], [{ toolCalls: [call("context_retrieve", { action: "memory", query: "car maintenance" })] }, final()], { semantic: retrieval });
+    await socrates.handle("Find the procedure");
+    const result = JSON.parse(w.store.evidenceForTurn(w.store.turnsForTask(w.taskId).at(-1)!.id)[0]!.result!.content);
+    expect(result.project_topics).toEqual([expect.objectContaining({ ref: "topic:transport", title: "automobile repair procedure" })]);
+  } finally { await retrieval.close(); }
 });

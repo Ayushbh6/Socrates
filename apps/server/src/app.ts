@@ -338,6 +338,9 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
     // A terminal command's output saved by id is read from the saved file.
     const archive = runtime.terminalManager.archive;
     const savedId = typeof output?.output_id === "string" && typeof output?.output_full !== "string" ? output.output_id : null;
+    const capture = savedId ? archive?.meta(savedId) : null;
+    const captureGap = capture?.gap ?? null;
+    const captureComplete = captureGap ? false : capture?.complete ?? null;
     const saved = savedId && archive?.available(savedId) ? archive.text(savedId, EVIDENCE_MAX_CHARS + 1).text : null;
     // `content` is shortened for the model; the structured result keeps the
     // complete retained terminal/MCP recording and complete failure details.
@@ -358,6 +361,8 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
       content: content === null ? null : content.slice(0, EVIDENCE_MAX_CHARS),
       truncated: content !== null && content.length > EVIDENCE_MAX_CHARS,
       outputLost: output?.output_lost === true,
+      captureComplete,
+      captureGap,
     };
   });
 

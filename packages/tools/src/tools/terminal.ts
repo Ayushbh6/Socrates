@@ -464,8 +464,12 @@ function readSaved(input: ReadInput, ctx: HandlerContext, terminals: TerminalSup
   const archive = terminals.archive;
   const id = input.output!;
   if (!archive) throw new ToolError("output_unavailable", "Terminal output is not saved here.", "Read the session with terminal and cursor instead.", false);
-  if (input.cursor !== undefined) throw new ToolError("invalid_parameters", "cursor reads a live session.", "With output, use from_line to page, or search (text) or filter (regex) to find lines.");
-  if ([input.search, input.filter, input.from_line].filter((v) => v !== undefined).length > 1) throw new ToolError("invalid_parameters", "read takes one of from_line, search and filter.", "Search or filter first; then read from_line near a match.");
+  if ([input.search, input.filter, input.from_line, input.cursor].filter((v) => v !== undefined).length > 1) throw new ToolError("invalid_parameters", "read takes one of cursor, from_line, search and filter.", "Search or filter first; then read from_line near a match.");
+  const cursor = input.cursor?.match(/^(out_[0-9a-f]{12}):l([1-9][0-9]*):c([0-9]+)$/);
+  if (input.cursor && (!cursor || !Number.isSafeInteger(Number(cursor[2])) || !Number.isSafeInteger(Number(cursor[3])))) {
+    throw new ToolError("invalid_parameters", "Invalid saved-output cursor.", "Use next_cursor from a read of this output.");
+  }
+  if (cursor && cursor[1] !== id) throw new ToolError("cursor_other_run", "This cursor belongs to another saved output.", `Read output ${cursor[1]} with this cursor.`);
   // A regular expression without a global flag tests each line on its own.
   const pattern = input.filter !== undefined ? compilePattern(input.filter, "filter") : null;
   const meta = archive.meta(id);
@@ -495,14 +499,17 @@ function readSaved(input: ReadInput, ctx: HandlerContext, terminals: TerminalSup
       matches: found.hits,
       more_matches: found.more,
       scanned_lines: found.scanned_lines,
+      search_complete: !found.more && found.skipped_lines === 0,
+      ...(found.skipped_lines ? { skipped_lines: found.skipped_lines, coverage: "Regex skipped lines over 2 Mi characters; use literal search or page with next_cursor." } : {}),
       ...(found.more ? { note: "More lines match: narrow the search, or read from_line after the last match." } : {}),
       ...(meta.ended_at ? {} : { still_running: "lines printed after this search were not searched" }),
     };
     return { content: json(result), result };
   }
-  const from = input.from_line ?? 1;
-  const lines = archive.readLines(id, from, Math.min(input.limit_lines ?? READ_DEFAULT_LINES, READ_MAX_LINES), page);
-  const result = { ...header, from_line: from, lines_shown: lines.lines_shown, output: lines.text, next_line: lines.next_line };
+  const from = cursor ? Number(cursor[2]) : input.from_line ?? 1;
+  const lines = archive.readLines(id, from, Math.min(input.limit_lines ?? READ_DEFAULT_LINES, READ_MAX_LINES), page, cursor ? Number(cursor[3]) : 0);
+  const { text: output, ...position } = lines;
+  const result = { ...header, ...position, output };
   return { content: json(result), result };
 }
 
@@ -512,7 +519,7 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
     "Manage this workspace's agent and user terminals; terminal is a name or session id.",
     "list: live and recently exited sessions, with ports, age and quiet time.",
     "screen: a pty session's screen as drawn (cursor, selected lines); read menus and TUIs this way.",
-    `read: a session's output after cursor (default: after what you last saw), limit_lines (default ${READ_DEFAULT_LINES}), filter (regex); or a saved output by output id: from_line (default 1), or search (text) or filter for numbered lines.`,
+    `read: session output after cursor, limit_lines (default ${READ_DEFAULT_LINES}), filter (regex); saved output id: from_line (default 1), search (text), filter, or next_cursor as cursor to continue long lines.`,
     `wait: until event: ready, output, exit, pattern (regex in new output), input_required (a pty prompt is waiting), idle (quiet for idle_ms, default 2000), port_open or port_closed (port). terminals waits on several; the first wins. timeout_ms (default and max ${MAX_WAIT_MS / 60000} minutes) ends it with event timeout.`,
     "write: input (submit adds Enter, default true) and/or keys; over pipes only ENTER, CTRL_C, CTRL_D. A pty answers with its screen after settle_ms (default 400): choose the next key from it. Refused for a few seconds after the user types in that terminal.",
     "signal: to the process group (SIGKILL asks the user). terminate: gracefully, then forcibly. restart: the same launch again. resize: a pty's cols and rows.",

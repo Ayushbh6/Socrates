@@ -106,6 +106,7 @@ export const TerminalControlInput = z.discriminatedUnion("action", [
     action: z.literal("read"),
     terminal: Selector.optional(),
     output: z.string().min(1).max(32).optional(),
+    // With output, the returned next_cursor resumes within a saved line; otherwise a live-session cursor.
     cursor: Cursor.optional(),
     limit_lines: z.number().int().min(1).optional(),
     filter: z.string().min(1).max(500).optional(),

@@ -115,6 +115,8 @@ export interface Evidence {
   content: string | null;
   truncated: boolean;
   outputLost: boolean;
+  captureComplete?: boolean | null;
+  captureGap?: "cap" | "write_failed" | "interrupted" | null;
 }
 
 /** Standard mode's choice of where a message goes (architecture/server.md, "Live connection"): a goal (null: Chats) and its chat (null: a new one). */

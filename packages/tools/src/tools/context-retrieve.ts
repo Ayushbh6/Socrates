@@ -490,7 +490,8 @@ async function topicSearch(query: string | undefined, ctx: HandlerContext): Prom
   if (!query) return ctx.store.listWorkTopics(projectId).slice(0, TOPIC_SEARCH_LIMIT);
   const fts = toFtsQuery(query);
   const lexical = fts ? ctx.store.searchWorkTopics(fts, projectId, 20) : [];
-  const hits = (await ctx.semantic?.search(query, { kinds: ["work_topic"], limit: 20, min: "related" }, ctx.signal)) ?? [];
+  const sourceIds = ctx.store.listWorkTopics(projectId).map((t) => `${projectId}/${t.name}`);
+  const hits = (await ctx.semantic?.search(query, { kinds: ["work_topic"], sourceIds, limit: 20, min: "related" }, ctx.signal)) ?? [];
   const meaning = hits.filter((h) => h.sourceId.startsWith(`${projectId}/`)).map((h) => ctx.store.workTopic(projectId, h.sourceId.slice(projectId.length + 1))).filter((t): t is WorkMemoryEntry => !!t);
   return fuse([lexical, meaning], (t) => t.name!, (t) => recencyBoost(t.updatedAt, ctx.store.clock.now())).map(({ item }) => item).slice(0, TOPIC_SEARCH_LIMIT);
 }
