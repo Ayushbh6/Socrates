@@ -136,6 +136,8 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 
 53. **Visible terminal cursor (2026-10-11).** **Asked:** add a blinking terminal cursor. **Found:** the existing cursor was enabled, but the page security policy blocked xterm’s generated styles, collapsing its blank cursor cell to zero width and displaying proportional text. **Done:** permit generated inline styles while retaining same-origin script restrictions. The native teal block now blinks at the actual typing position, with an outline when unfocused; terminal controls and process behaviour are unchanged. **Checks:** browser verification on disposable data covers visible cursor, monospace cell geometry, typing, multiple tabs, reload and mode switching. Typecheck and web build pass; the full suite passes with 935 tests and one opt-in skip. **Open suggestions:** none.
 
+54. **Clear General goal card (2026-10-11).** **Asked:** show “General conversation” as the Current goal title instead of saying the chat is not tied to a goal. **Done:** the General goal card now shows its goal title and “General chats, grouped by day.” The expanded goal uses the same description; the empty-goal state stays distinct. **Checks:** typecheck and web build pass; 935 tests pass with one opt-in skip. Verified the card title and matching expanded description in the live browser. **Open suggestions:** none.
+
 ## Suggested
 
 From the observability phase:

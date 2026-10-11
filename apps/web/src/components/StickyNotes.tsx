@@ -11,6 +11,7 @@ type NoteId = "task" | "goal";
 type Offsets = Record<NoteId, { x: number; y: number }>;
 
 const STORAGE_KEY = "socrates.notes";
+const GENERAL_DESCRIPTION = "General chats, grouped by day.";
 const START: Offsets = { task: { x: 0, y: 0 }, goal: { x: 0, y: 0 } };
 
 function stored(): Offsets {
@@ -63,8 +64,13 @@ export function StickyNotes({ goal, taskNumber, keep, onKeep }: { goal: GoalView
             {goal.note && <span className="note-body muted">{goal.note}</span>}
             <span className="note-meta">{open} open · {done} done</span>
           </>
+        ) : goal ? (
+          <>
+            <strong className="note-title">{goal.title}</strong>
+            <span className="note-body muted">{GENERAL_DESCRIPTION}</span>
+          </>
         ) : (
-          <span className="note-body muted">{goal ? "A general conversation, not tied to a goal." : "No goal yet."}</span>
+          <span className="note-body muted">No goal yet.</span>
         )}
       </Note>
     </div>
@@ -205,7 +211,7 @@ function ExpandedNote({ kind, goal, taskNumber, keep, onKeep, onClose }: { kind:
           </div>}
           {kind === "task" && task && closedText(task.status, task.closed) && <p className="note-closed">{closedText(task.status, task.closed)}</p>}
           {kind === "task" ? task ? <TaskText task={task} /> : <p className="muted">Send a message to give Socrates a task. Its full notes will appear here.</p> : goal ? <>
-            <NoteText label="Objective" text={goal.objective} fallback={goal.general ? "A general conversation, not tied to a project goal." : "No objective recorded yet."} />
+            <NoteText label="Objective" text={goal.general ? GENERAL_DESCRIPTION : goal.objective} fallback="No objective recorded yet." />
             <NoteText label="Goal note" text={goal.note} fallback="No goal note recorded yet." />
             <section className="note-section"><h3>Tasks <span>{goal.tasks.filter((t) => t.status === "open").length} open · {goal.tasks.filter((t) => t.status === "completed").length} done</span></h3>
               <div className="expanded-note-tasks">{goal.tasks.map((t) => <details key={t.number} open={t.number === taskNumber}>
