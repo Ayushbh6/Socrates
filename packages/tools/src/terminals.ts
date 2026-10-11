@@ -19,6 +19,8 @@ import { Screen } from "./screen";
 
 export interface LaunchSpec {
   command: string;
+  /** A user-created interactive shell, launched directly. */
+  shell?: string;
   /** Absolute working directory. */
   cwd: string;
   /** Workspace-relative working directory, for display. */
@@ -246,6 +248,8 @@ export interface SupervisorOptions {
   recentExited?: number;
   /** A file in the data folder listing live process groups, so a crashed server's are stopped at the next start. */
   registry?: string;
+  onChange?: () => void;
+  retainTabs?: boolean;
 }
 
 /** Grace period before leftover processes of a finished command are force-killed. */
@@ -263,7 +267,7 @@ export class TerminalSupervisor {
   private readonly lingering = new Map<number, NodeJS.Timeout>();
   private readonly onProcessExit = () => this.killAllNow();
 
-  constructor(options: SupervisorOptions = {}) {
+  constructor(private readonly options: SupervisorOptions = {}) {
     this.maxSessions = options.maxSessions ?? 16;
     this.retainChars = options.retainChars ?? 4_000_000;
     this.foregroundRetainChars = options.foregroundRetainChars ?? 16_000_000;
@@ -286,7 +290,7 @@ export class TerminalSupervisor {
   launch(spec: LaunchSpec, hooks: SessionHooks): TerminalSession {
     this.assertCanLaunch(spec.name);
     const id = `term-${++sessionCounter}`;
-    const { file, args } = shellCommand(spec.command);
+    const { file, args } = spec.shell ? { file: spec.shell, args: process.platform === "win32" ? [] : ["-i"] } : shellCommand(spec.command);
     const output = new OutputBuffer(spec.background ? this.retainChars : this.foregroundRetainChars);
     let session: TerminalSession;
     const onData = (chunk: string) => {
@@ -311,6 +315,7 @@ export class TerminalSupervisor {
       if (this.registry && session.proc?.pid) forgetProcess(this.registry, session.proc.pid);
       session.bump();
       hooks.onExit(session);
+      this.options.onChange?.();
     };
     // A command's own process group is reaped when its leader exits (see reapGroup).
     const exited = (pid: number | undefined) => {
@@ -409,12 +414,32 @@ export class TerminalSupervisor {
         }, spec.timeoutMs),
       );
     }
+    this.options.onChange?.();
     return session;
+  }
+
+  /** Restore only tab metadata. Never execute commands during startup. */
+  restore(id: string, spec: LaunchSpec, startedAt: string): void {
+    sessionCounter = Math.max(sessionCounter, Number(id.replace("term-", "")) || 0);
+    const session = new TerminalSession(id, spec, null, new OutputBuffer(this.retainChars));
+    session.status = "exited";
+    session.exitReason = "terminated";
+    session.stdinOpen = false;
+    session.startedAt.setTime(new Date(startedAt).getTime());
+    session.exitedAt = new Date();
+    session.hooks = { onStart() {}, onExit() {} };
+    this.exited.push(session);
+  }
+
+  rename(session: TerminalSession, name: string): void {
+    if (this.list().some(s => s !== session && s.spec.name === name)) throw new ToolError("name_in_use", `A terminal is already named ${name}.`, "Choose another name.");
+    session.spec.name = name;
+    this.options.onChange?.();
   }
 
   find(selector: string): TerminalSession {
     const all = [...this.live.values(), ...this.exited];
-    const match = all.find((s) => s.spec.name === selector) ?? all.find((s) => s.id === selector);
+    const match = all.find((s) => s.id === selector) ?? all.find((s) => s.spec.name === selector);
     if (!match) {
       const known = [...this.live.values()].map((s) => s.selector);
       throw new ToolError(
@@ -431,10 +456,17 @@ export class TerminalSupervisor {
     return [...this.live.values(), ...this.exited];
   }
 
+  /** Once a long foreground command has been visible, keep its tab until closed. */
+  finishForeground(session: TerminalSession): void {
+    if (this.options.retainTabs && (session.exitedAt?.getTime() ?? Date.now()) - session.startedAt.getTime() >= 2000) return;
+    this.forget(session);
+  }
+
   /** Remove a finished foreground command from listings; its output was already returned. */
   forget(session: TerminalSession): void {
     const i = this.exited.indexOf(session);
     if (i >= 0) this.exited.splice(i, 1);
+    this.options.onChange?.();
   }
 
   /**

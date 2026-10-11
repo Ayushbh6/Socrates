@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { api } from "./api";
 import { store } from "./store";
 import type { TerminalView } from "./types";
 
@@ -9,6 +10,12 @@ import type { TerminalView } from "./types";
  */
 export interface Dock {
   open: boolean;
+  busy: boolean;
+  error: string | null;
+  folder: string;
+  context(goal?: number, task?: number): void;
+  create(cwd?: string): Promise<void>;
+  action(id: string, action: "stop" | "restart" | "close" | "rename", name?: string): Promise<void>;
   /** The session shown, or null when there is none. */
   active: string | null;
   height: number;
@@ -51,9 +58,41 @@ export function terminalState(t: TerminalView): "waiting" | "running" | "done" |
   return t.exitCode === 0 ? "done" : "failed";
 }
 
-export function useDock(terminals: TerminalView[] | null): Dock {
-  const [open, setOpen] = useState(false);
-  const [active, setActive] = useState<string | null>(null);
+export function useDock(terminals: TerminalView[] | null, folderSettings = ""): Dock {
+  const [open, setOpen] = useState(() => { try { return localStorage.getItem("socrates.terminal-open") === "true"; } catch { return false; } });
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const pendingCreate = useRef(false);
+  const [error, setError] = useState<string | null>(null);
+  const [folder, setFolder] = useState("");
+  const [target, setTarget] = useState<{goal?: number; task?: number}>({});
+  const context = useCallback((goal?: number, task?: number) => setTarget(old => old.goal === goal && old.task === task ? old : { ...(goal ? {goal} : {}), ...(task ? {task} : {}) }), []);
+  useEffect(() => {
+    let cancelled = false;
+    api.terminalFolder(target.goal).then(value => { if (!cancelled) setFolder(value.cwd); }, () => { if (!cancelled) setFolder(""); });
+    return () => { cancelled = true; };
+  }, [target, open, folderSettings]);
+  useEffect(() => { try { localStorage.setItem("socrates.terminal-open", String(open)); } catch {} }, [open]);
+  const [active, setActive] = useState<string | null>(() => { try { return localStorage.getItem("socrates.terminal-active"); } catch { return null; } });
+  useEffect(() => { try { if (active) localStorage.setItem("socrates.terminal-active", active); } catch {} }, [active]);
+  const create = useCallback(async (cwd?: string) => {
+    if (busyRef.current) return;
+    busyRef.current = true; setBusy(true); setError(null); setOpen(true);
+    try {
+      const next = await api.createTerminal({ ...target, ...(cwd ? {cwd} : {}) });
+      setActive(next.id);
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { busyRef.current = false; setBusy(false); }
+  }, [target]);
+  const action = useCallback(async (id: string, action: "stop" | "restart" | "close" | "rename", name?: string) => {
+    if (busyRef.current) return;
+    busyRef.current = true; setBusy(true); setError(null);
+    try {
+      const next = await api.terminalAction(id, action, name);
+      if (action === "restart") setActive(next.id);
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { busyRef.current = false; setBusy(false); }
+  }, []);
   const [height, setHeightState] = useState(() => {
     try {
       const saved = Number(localStorage.getItem(HEIGHT_KEY));
@@ -66,6 +105,7 @@ export function useDock(terminals: TerminalView[] | null): Dock {
 
   useEffect(() => {
     if (!terminals) return;
+    if (pendingCreate.current) { pendingCreate.current = false; if (!terminals.length) void create(); }
     const forward = cameForward(before.current, terminals);
     before.current = terminals;
     if (forward) {
@@ -74,13 +114,16 @@ export function useDock(terminals: TerminalView[] | null): Dock {
     } else {
       setActive((current) => (terminals.some((t) => t.id === current) ? current : fallback(terminals)));
     }
-    if (!terminals.length) setOpen(false);
-  }, [terminals]);
+
+  }, [terminals, create]);
 
   // A session restarted from the panel comes back under a new id.
   useEffect(() => store.onTerminalRestarted((from, to) => setActive((current) => (current === from ? to : current))), []);
 
-  const toggle = useCallback(() => setOpen((o) => !o && !!terminals?.length), [terminals]);
+  const toggle = useCallback(() => {
+    if (open) { pendingCreate.current = false; setOpen(false); }
+    else { setOpen(true); if (!terminals) pendingCreate.current = true; else if (!terminals.length) void create(); }
+  }, [open, terminals, create]);
   // Ctrl+` opens and closes it, as in an editor.
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
@@ -100,7 +143,7 @@ export function useDock(terminals: TerminalView[] | null): Dock {
   }, []);
 
   return {
-    open: open && !!terminals?.length,
+    open, busy, error, folder, context, create, action,
     active,
     height,
     toggle,

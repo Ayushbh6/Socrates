@@ -165,8 +165,8 @@ describe("the model-call log", () => {
     // Close the live hub before its ledger, as the executable does on restart.
     await first.app.close();
     await first.rt.close();
-    // Thirty-one days later (the test clock stands at 2026-10-04).
-    const later = await server(config, { ...observed().deps, clock: { now: () => new Date("2026-11-10T00:00:00Z") } });
+    // Call recordings use wall time; keep this beyond retention regardless of the day the test runs.
+    const later = await server(config, { ...observed().deps, clock: { now: () => new Date(Date.now() + 31 * 24 * 60 * 60 * 1000) } });
     // Only what the restart itself made (its embedding probe) remains.
     expect(later.rt.calls!.list().map((c) => c.role)).toEqual(["embedding"]);
   });

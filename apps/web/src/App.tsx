@@ -33,7 +33,7 @@ export function App() {
   const [mode, setMode] = useState<Mode>("flow");
   const [settings, setSettings] = useState(false);
   // The terminal panel stays as it is across a switch between flow and standard.
-  const dock = useDock(app.terminals);
+  const dock = useDock(app.terminals, JSON.stringify([app.status?.workingFolder, app.status?.access]));
   useEffect(() => {
     void store.start();
     const follow = () => { setRoute(routeOf(location.hash)); setHash(location.hash); };

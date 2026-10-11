@@ -133,7 +133,7 @@ describe.skipIf(process.platform === "win32")("terminal", () => {
     expect(r.json).toMatchObject({ action: "restart", terminal: "svc", previous_session_id: first, status: "running", ready: true });
     expect(r.json.session_id).not.toBe(first);
     const list = await h.call("terminal_control", { action: "list" });
-    expect(list.json.terminals.map((t: any) => [t.session_id, t.status])).toEqual([[r.json.session_id, "running"], [first, "exited"]]);
+    expect(list.json.terminals.map((t: any) => [t.session_id, t.status])).toEqual([[r.json.session_id, "running"]]);
   });
 
   it("stops a foreground command when the call is cancelled", async () => {

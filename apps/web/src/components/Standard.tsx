@@ -69,6 +69,8 @@ export function Standard({ app, mode, dock, onMode, onSettings }: { app: AppStat
   const freshGoal = fresh?.goal != null ? app.goals.find((g) => g.number === fresh.goal) : undefined;
   // Where the composer sends: the open chat, else a new one (in the chosen goal, or among the plain chats).
   const target: ChatChoice = route && !fresh ? { goal: route.goal.number, task: route.task.number } : { goal: fresh?.goal ?? null, task: null };
+  useEffect(() => dock.context(target.goal ?? undefined, target.task ?? undefined), [dock.context, target.goal, target.task]);
+
   const working = chatBusy(app.model.live, target);
   const narrow = () => window.innerWidth < 1100;
 

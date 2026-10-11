@@ -24,6 +24,7 @@ Everything lives in one folder, `~/.socrates-v2` unless `SOCRATES_HOME` names an
 | `skills/`, `mcp.json` | global Skills and MCP servers |
 | `logs/server.log` | diagnostics; one previous log of up to 5 MB is kept |
 | `standard.json` | the number of the goal standard mode shows as its plain "Chats", made with the first chat outside a goal |
+| `terminal-tabs.json` | atomically saved terminal metadata, restored as stopped tabs; no output or environment variables |
 | `terminals.json` | the process groups of running terminal sessions, each with its start time, so that ones a crashed server left running are stopped at the next start (`agent-harness.md`, "terminal") |
 | `.server-lock.db` | the exclusive runtime ownership lock, automatically released when its process stops |
 
@@ -64,7 +65,7 @@ A change sends only the fields that change; the others keep their values, inside
 
 **Keys** are not settings. They live in the data folder's `.env`, which holds only known key names (each provider's keys and `SOCRATES_EMBEDDINGS_API_KEY`) and is written atomically with mode `600`, preserving literal backslashes. Keys there take precedence over the process environment. The API never returns a key, only its effective presence, including inherited keys. Deleting a stored key restores any inherited value of the same name. Provider diagnostics and setup messages redact secrets. Embedding URLs must be HTTP or HTTPS base URLs without embedded credentials, query parameters or fragments.
 
-**Working folder.** A goal is bound to a workspace permanently when its work starts (`Goal-router.md`, "Workspace resolution"). The server binds a new goal to the workspace chosen as the working folder; without one, the goal works without files and the agent asks where the work belongs. A workspace is added from a folder's full path: an existing directory, by its real path, never the whole disk, the home folder itself, classic Socrates data, or a folder inside or containing this server's data. Selection and new-goal binding revalidate the stored path; a missing folder, file, or changed alias is unavailable. Adding the same folder again returns its workspace; a second folder with the same name gets a numbered name.
+**Working folder.** A goal is bound to a workspace permanently when its work starts (`Goal-router.md`, "Workspace resolution"). The server binds a new goal to the workspace chosen as the working folder; without one, a sole allowed folder is used in folder-access mode; otherwise tools start in home with the existing access checks. A workspace is added from a folder's full path: an existing directory, by its real path, never the whole disk, the home folder itself, classic Socrates data, or a folder inside or containing this server's data. Selection and new-goal binding revalidate the stored path; a missing folder, file, or changed alias is unavailable. Adding the same folder again returns its workspace; a second folder with the same name gets a numbered name.
 
 ## Access
 
@@ -184,7 +185,7 @@ Pending routing questions live in the event log. The `reply` command names its c
 
 ## Terminal panel
 
-The page's terminal panel (`web.md`, "Terminal panel") travels on the live connection. The server lists the agent's terminal sessions, in every workspace, as `terminals { terminals }`: after `hello`, and whenever the list changes (it is looked at twice a second, since a prompt waiting for input is noticed by time). A session is listed once it runs in the background or for two seconds, and after it ends; a quick foreground command never is. Each entry has its id, name, command, folder, task title, status and how it ended, whether it is a terminal (`pty`), readiness, `inputRequired`, the local ports it listens on (looked up every five seconds), and a terminal's size. Session ids (`term-<n>`) are numbered across workspaces for the server's lifetime.
+The page's terminal panel (`web.md`, "Terminal panel") travels on the live connection. The server lists user and agent terminal sessions, in every workspace, as `terminals { terminals }`: after `hello`, and whenever the list changes (it is looked at twice a second, since a prompt waiting for input is noticed by time). A session is listed once it runs in the background or for two seconds, and after it ends; a quick foreground command never is. Each entry has its id, name, command, folder, task title, status and how it ended, whether it is a terminal (`pty`), readiness, `inputRequired`, the local ports it listens on (looked up every five seconds), and a terminal's size. Session ids (`term-<n>`) are numbered across workspaces for the server's lifetime.
 
 | Command | Effect |
 |---|---|
@@ -196,7 +197,14 @@ The page's terminal panel (`web.md`, "Terminal panel") travels on the live conne
 | `terminal_restart { session }` | the same launch again, recorded as the first was; the stopped session leaves the list, and the page is answered with `terminal_restarted { session, next }` |
 | `terminal_dismiss { session }` | remove an ended session from the list; one still running is refused with `terminal_running` |
 
-A command for a session that no longer exists is refused with `not_found`. Sessions belong to the agent's tool runner, so a rebuild of Socrates (a settings change) stops them, as before.
+A command for a session that no longer exists is refused with `not_found`. The runtime owns `TerminalManager`, shared with each rebuilt tool runner. Settings/model changes keep sessions; host shutdown stops them and saves metadata to `terminal-tabs.json`. Startup reaps orphaned process groups, restores stopped tabs and advances the session id counter; no commands run until explicitly restarted. User shells are spawned directly using the user's shell in interactive mode. Background/exited tabs remain until closed; fast foreground tool commands are still forgotten. A tool restart also removes the replaced session.
+
+Authenticated HTTP controls complement the streaming connection:
+- `GET /api/terminals/folder?goal=N`: resolve a new terminal's default starting directory.
+- `POST /api/terminals { cwd?, goal?, task?, name? }`: create an interactive shell, returning `{ id }`.
+- `POST /api/terminals/:id { action: "rename", name }` or `{ action: "stop" | "restart" | "close" }`: change one tab, returning its current/replacement id. Names are nonempty, bounded to 64 characters and unique within a workspace. Close terminates only that session's process tree before removing it. Concurrent close/restart requests for one id are refused while it is changing.
+
+Folder precedence is explicit directory, attached project, selected working folder, sole allowed folder (folder scope only), then home. Existing sessions retain their starting directory and supervisor. Changing a tab's starting directory does not change its project supervisor, matching the `terminal` tool's `cwd` behavior. Different project workspace roots have separate supervisors. Thus an agent can see its user-created tab even when it starts outside the project, while writing/restarting still requires any outside-folder approval. Direct shell creation is a user action and does not widen the agent's allowed folders. Private Socrates data and disk-root starts are refused; paths must exist and be directories. Agent `terminal` and `terminal_control` keep their existing path/approval checks, workspace scope and eight-second user-typing protection. Stopping a session remains possible after folder access is revoked.
 
 State also carries `routingQuestions`, all pending/resuming questions regardless of the currently selected chat. A queued reply carries `replyTo` and is represented as resuming. Routed activities for linked requests carry the original query and original `messageSeq`, so clients can reconstruct the parent outside loaded pages; raw reply events never become standalone message activities.
 

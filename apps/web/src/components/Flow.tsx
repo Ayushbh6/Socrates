@@ -74,6 +74,8 @@ export function Flow({ app, mode, dock, onMode, onSettings }: { app: AppState; m
   const route = exchange?.route ?? currentRoute(list);
   const goal = useMemo(() => (route ? app.goals.find((g) => g.number === route.goal.number) ?? null : null), [route, app.goals]);
 
+  useEffect(() => dock.context(route?.goal.number, route?.task.number), [dock.context, route?.goal.number, route?.task.number]);
+
   // The newest work stays in view while it grows, unless the reader scrolls up or looks at an earlier question.
   const column = useRef<HTMLDivElement>(null);
   const pinned = useFollow(stage, column, !selected);

@@ -60,6 +60,7 @@ export interface RoutingContext {
 }
 
 export interface BuildContextOptions {
+  defaultFolder?: string;
   timeZone: string;
   /** Explicit question being answered; null means a fresh request. Undefined supports older harness clients. */
   clarificationTurnId?: string | null;
@@ -133,6 +134,7 @@ export function buildRoutingContext(store: LedgerStore, message: string, options
     section("RECENT_EXACT_HISTORY", exchanges.text || "None"),
     section("KNOWN_GOALS", renderKnownGoals(store, goals, current)),
   ];
+  if (options.defaultFolder) sections.push(section("DEFAULT_WORKING_FOLDER", options.defaultFolder + "\nGeneral and new unbound work start here. Existing projects keep their attached folder. Access permissions still apply. Do not ask for a folder merely because General has no workspace."));
   // Work running or recently finished in parallel lanes, other than the lane being routed.
   const lanes = laneSummaries(store, now, laneId, options.laneActivity);
   if (lanes.length) sections.push(section("LANES", renderLanesForRouter(store, lanes, now, options.timeZone)));

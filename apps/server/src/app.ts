@@ -1,3 +1,4 @@
+import { TerminalPanelError } from "./terminals";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,7 +8,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { type EventPayloads, type EventRefs, MEMORY_KINDS } from "@socrates/contracts";
 import { PROVIDER_DEFAULTS } from "@socrates/providers";
 import { callLine } from "@socrates/retrieval";
-import { IMAGE_MAX_BYTES } from "@socrates/tools";
+import { IMAGE_MAX_BYTES, ToolError } from "@socrates/tools";
 import { z } from "zod";
 import { AttachmentError, findAttachment, storeAttachment, viewOf } from "./attachments";
 import { describeCall } from "./calls";
@@ -59,6 +60,7 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof z.ZodError) return reply.code(400).send(problem("invalid_request", error.issues.map((i) => `${i.path.join(".") || "request"}: ${i.message}`).join("; ")));
+    if (error instanceof ToolError || error instanceof TerminalPanelError) return reply.code(400).send(problem(error.code, error.message));
     if (error instanceof RuntimeBusyError) return reply.code(409).send(problem("busy", error.message));
     if (error instanceof KeyError || error instanceof FolderError || error instanceof SettingsError || error instanceof AttachmentError || error instanceof DbError) return reply.code(400).send(problem("invalid_request", error.message));
     const status = (error as { statusCode?: number }).statusCode;
@@ -75,6 +77,24 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
   const socketOptions = { maxPayload: 1024 * 1024, closeTimeout: 1_000 };
   await app.register(websocket, { options: socketOptions });
   app.get("/api/live", { websocket: true }, (socket) => hub.attach(socket));
+
+  const terminalTarget = z.object({ cwd: z.string().min(1).optional(), goal: z.number().int().positive().optional(), task: z.number().int().positive().optional(), name: z.string().trim().min(1).max(64).optional() }).strict();
+  app.post("/api/terminals", async request => ({ id: hub.terminals.create(terminalTarget.parse(request.body)) }));
+  app.get("/api/terminals/folder", async request => {
+    const { goal } = z.object({ goal: z.coerce.number().int().positive().optional() }).parse(request.query);
+    return runtime.terminalFolder(undefined, goal);
+  });
+  app.post("/api/terminals/:id", async request => {
+    const { id } = z.object({ id: z.string().min(1) }).parse(request.params);
+    const action = z.discriminatedUnion("action", [
+      z.object({ action: z.literal("rename"), name: z.string().trim().min(1).max(64) }).strict(),
+      z.object({ action: z.enum(["stop", "restart", "close"]) }).strict(),
+    ]).parse(request.body);
+    if (action.action === "rename") hub.terminals.rename(id, action.name);
+    if (action.action === "stop") await hub.terminals.stop(id);
+    if (action.action === "close") await hub.terminals.remove(id);
+    return { id: action.action === "restart" ? await hub.terminals.restart(id) : id };
+  });
 
   app.get("/api/health", async () => ({ ok: true }));
 

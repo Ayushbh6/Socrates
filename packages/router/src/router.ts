@@ -26,6 +26,7 @@ import {
 } from "./validate";
 
 export interface GoalRouterOptions {
+  defaultFolder?: () => string;
   store: LedgerStore;
   /** The routing model: a small, fast tier by default, or the same model as the agent. */
   routerModel: ModelClient;
@@ -104,8 +105,10 @@ export class GoalRouter {
   private readonly maxSteps: number;
   private readonly semantic: SemanticSearch | undefined;
   private readonly effort: Effort | undefined;
+  private readonly defaultFolder: (() => string) | undefined;
 
   constructor(options: GoalRouterOptions) {
+    this.defaultFolder = options.defaultFolder;
     this.semantic = options.semantic;
     this.effort = options.effort;
     this.store = options.store;
@@ -126,6 +129,7 @@ export class GoalRouter {
     const attachments = ((userEvent.payload as EventPayloads["user_message"]).attachments ?? []).map((a) => a.name);
     const ctx = buildRoutingContext(this.store, message, {
       timeZone: this.timeZone,
+      ...(this.defaultFolder ? { defaultFolder: this.defaultFolder() } : {}),
       ...(attachments.length ? { attachments } : {}),
       semantic,
       laneId,

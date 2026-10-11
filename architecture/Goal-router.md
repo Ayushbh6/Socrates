@@ -170,6 +170,8 @@ This is for requests such as posting the completed work from one task and then s
 
 ### Workspace resolution
 
+The server additionally supplies `DEFAULT_WORKING_FOLDER`: the selected working folder, a sole allowed folder in folder-access mode, or home. It is a starting directory for General and new unbound work, not a goal pin or an access grant. Existing goal bindings still take precedence. The router should not ask for a folder merely because General has no workspace; genuinely ambiguous projects still require clarification.
+
 Workspace resolution piggybacks on goal resolution. Because a goal belongs to exactly one workspace (rule 11), selecting the goal selects the workspace. The router never resolves a workspace independently; it resolves goals, and the bindings carry the rest.
 
 The stakes differ between goal errors and workspace errors, and the safety policy follows the stakes:

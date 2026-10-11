@@ -8,7 +8,7 @@ import { type EffortLevels, type ListedModel, PROVIDER_DEFAULTS, type Price, typ
 import { Retrieval } from "@socrates/retrieval";
 import { abortable, type Clock, newId } from "@socrates/shared";
 import { CallLog, type Goal, LedgerStore, type Turn, type Workspace } from "@socrates/store";
-import { type AccessPolicy, canReadAutomatically } from "@socrates/tools";
+import { TerminalManager, isProtected, type AccessPolicy, canReadAutomatically } from "@socrates/tools";
 import { type ServerConfig, prepareHome } from "./config";
 import { readKeys, writeKey } from "./keys";
 import { lockHome } from "./home-lock";
@@ -104,6 +104,7 @@ export class Runtime {
   private readonly prices = new Map<string, { at: number; price: Promise<Price | null> }>();
   /** Socrates' own data and Socrates 0.1's: no tool reads or changes them in any mode. */
   private readonly protectedFolders: string[];
+  readonly terminalManager: TerminalManager;
 
   private constructor(
     readonly config: ServerConfig,
@@ -118,6 +119,7 @@ export class Runtime {
     settings: Settings,
   ) {
     this.settings = settings;
+    this.terminalManager = new TerminalManager({ registry: path.join(config.home, "terminals.json") }, path.join(config.home, "terminal-tabs.json"), log);
     this.protectedFolders = [realpathSync(config.home), path.join(realpathSync(homedir()), ".socrates")];
   }
 
@@ -210,6 +212,38 @@ export class Runtime {
     } catch {
       return null;
     }
+  }
+
+  /** An access grant alone is not a choice between several projects. */
+  defaultWorkingFolder(): string | null {
+    const selected = this.workingFolder()?.rootPath;
+    if (selected) return selected;
+    if (this.settings.access.scope === "folders" && this.settings.access.folders.length === 1) {
+      try { return workspaceFolder(this.settings.access.folders[0]!, this.config.home); } catch { return null; }
+    }
+    return null;
+  }
+
+  terminalDirectory(input: string): string {
+    if (!path.isAbsolute(input)) throw new SettingsError("Give the folder's full path.");
+    let real: string;
+    try { real = realpathSync(input); } catch { throw new SettingsError("That folder is no longer available. Choose another folder."); }
+    if (!statSync(real).isDirectory()) throw new SettingsError("Choose a folder for this terminal.");
+    if (real === path.parse(real).root || isProtected(this.accessPolicy(), real)) throw new SettingsError("Choose a folder outside Socrates' private data and the disk root.");
+    return real;
+  }
+
+  /** A user's new tab uses the viewed project; agent tools use their routed workspace. */
+  terminalFolder(explicit?: string, goalNumber?: number): { cwd: string; root: string } {
+    const goal = goalNumber === undefined ? null : this.store.getGoalByNumber(goalNumber);
+    if (goalNumber !== undefined && !goal) throw new SettingsError("That project is no longer available.");
+    const project = goal && !goal.general && goal.workspaceId ? this.store.getWorkspace(goal.workspaceId)?.rootPath : null;
+    const chosen = explicit ? this.terminalDirectory(explicit) : null;
+    let root: string;
+    try { root = this.terminalDirectory(project ?? this.defaultWorkingFolder() ?? homedir()); }
+    catch (error) { if (!chosen) throw error; root = this.terminalDirectory(homedir()); }
+    const cwd = chosen ?? root;
+    return { cwd, root };
   }
 
   async embeddingStatus(): Promise<{ documents: number } | null> {
@@ -373,7 +407,7 @@ export class Runtime {
     this.closing = (async () => {
       await this.changePending?.catch(() => {});
       try {
-        await this.stop();
+        try { await this.stop(); } finally { await this.terminalManager.close(); }
       } finally {
         await this.flushCalls();
         try { this.calls?.close(); } catch {}
@@ -513,14 +547,15 @@ export class Runtime {
       memory: () => this.settings.memory,
       gate: () => (this.settings.memory.decider ? this.gate : null),
       resolveWorkspace: () => {
-        const folder = this.workingFolder();
-        return folder ? { name: folder.name, rootPath: folder.rootPath! } : null;
+        const folder = this.defaultWorkingFolder();
+        return folder ? { name: this.store.listWorkspaces().find(w => w.rootPath === folder)?.name ?? path.basename(folder), rootPath: folder } : null;
       },
       ...(this.catalog ? { catalog: this.catalog } : {}),
       ...(this.retrieval ? { semantic: this.retrieval } : {}),
       attachments: this.config.attachmentsDir,
       // Terminal process groups are listed here, so ones a crash leaves running are stopped at the next start.
-      terminals: { registry: path.join(this.config.home, "terminals.json") },
+      terminalManager: this.terminalManager,
+      defaultFolder: () => this.terminalFolder().cwd,
       log: this.log,
     });
   }

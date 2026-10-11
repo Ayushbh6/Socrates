@@ -24,11 +24,11 @@ This file hands the project to whichever agent harness works on it next. Read it
   3. Open the printed link. Each login link works only once.
   4. Stop the server and delete the copy afterwards.
 
-## Where things stand (2026-10-10, through the Standard/Flow connection fixes)
+## Where things stand (2026-10-11, through the persistent terminal workspace)
 
 The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `server.md`, `web.md`, `observability.md`). The trial log numbers each change. Recently shipped, newest last:
 
-- **Terminals:** the agent's terminals show the screen as drawn, support timed waits and can watch several sessions. A terminal panel at the bottom of the page lets the user watch, type, stop and restart; the agent holds off for 8 s after the user types.
+- **Terminals:** always-visible button, user-created interactive shells and shared agent/user tabs with create, rename, stop, restart and close. Explicit/project/working-folder/single-allowed/home defaults; existing sessions never move. Tabs and processes survive modes, chats, reloads and model changes. Full app restart restores stopped tabs only. Both tools share workspace supervisors, screen/read/multi-wait and 8 s typing protection (trial log entry 52; `architecture/web.md`, "Terminal panel").
 - **Chat names:** a non-thinking model names chats. By default that is `qwen/qwen3-30b-a3b-instruct-2507` on OpenRouter; it can be chosen in Settings > Chat names and applies without a restart.
 - **Status:** the user sets goal and task status (open, completed or superseded). Flow mode has "Keep my next message in this task". The agent never closes standard-mode chats.
 - **Standard-mode chats work at once:** each runs as its own lane would, with at most 4, a queue per chat, Stop per chat, and approvals shown under the question that asked. Standard mode no longer has lane panels.

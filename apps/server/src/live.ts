@@ -172,7 +172,7 @@ export class LiveHub {
   private draftTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
   private closing: Promise<void> | null = null;
-  private readonly terminals: TerminalPanel;
+  readonly terminals: TerminalPanel;
 
   private readonly replayMax: number;
 

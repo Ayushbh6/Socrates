@@ -13,3 +13,6 @@ export { parsePatch } from "./patch";
 
 export type { ActiveCapabilities, ActiveSkill } from "./tools/capabilities";
 export * from "./images";
+
+export * from "./terminal-manager";
+export { commandEnvironment } from "./terminals";

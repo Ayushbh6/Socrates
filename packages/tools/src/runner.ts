@@ -11,7 +11,7 @@ import { type ApprovalRequest, type Approve, type HandlerContext, type RunState,
 import { toDefinition } from "./definitions";
 import { INTERNAL_ERROR, ToolError, renderError } from "./errors";
 import type { ToolHandler, ToolOutput } from "./handler";
-import { reapLeftovers } from "./process-registry";
+import { TerminalManager } from "./terminal-manager";
 import { type SupervisorOptions, type TerminalSession, TerminalSupervisor } from "./terminals";
 import { applyPatchTool } from "./tools/apply-patch";
 import { CapabilityRuntime, capabilityControlTool, capabilitySearchTool } from "./tools/capabilities";
@@ -33,6 +33,7 @@ export interface ToolRunnerOptions {
   /** Whether the user lets Socrates use memories (agent-harness.md, "Memory"), read at each call; on without it. */
   memoryInUse?: () => boolean;
   terminals?: SupervisorOptions;
+  terminalManager?: TerminalManager;
   /**
    * Where tools may work and when they ask (agent-harness.md, "Access"), read
    * at the start of every call so a change applies to the next one. Without
@@ -84,7 +85,7 @@ export class ToolRunner {
   /** The ten permanent tools, in their fixed order. */
   readonly definitions: ToolDefinition[];
   private readonly handlers: Map<string, ToolHandler>;
-  private readonly supervisors = new Map<string, TerminalSupervisor>();
+  private readonly terminalManager: TerminalManager;
   /** Goal-scoped capability state: active MCP schemas, Skill revalidation, and MCP dispatch. */
   readonly capabilities: CapabilityRuntime;
   private readonly catalog: CapabilityCatalog;
@@ -92,11 +93,7 @@ export class ToolRunner {
   private readonly serial = new Map<string | null, Promise<unknown>>();
 
   constructor(private readonly options: ToolRunnerOptions) {
-    // Process groups a crashed server left running are stopped before anything new starts.
-    if (options.terminals?.registry) {
-      const stopped = reapLeftovers(options.terminals.registry);
-      if (stopped) options.log?.(`stopped ${stopped} terminal process group(s) left running when Socrates last stopped`);
-    }
+    this.terminalManager = options.terminalManager ?? new TerminalManager(options.terminals, undefined, options.log);
     this.catalog = options.catalog ?? new StaticCatalog();
     this.capabilities = new CapabilityRuntime(options.store, this.catalog);
     const handlers: ToolHandler[] = [
@@ -142,17 +139,11 @@ export class ToolRunner {
 
   /** The terminal supervisor that owns processes started in one workspace. */
   terminals(workspace: WorkspaceRoot): TerminalSupervisor {
-    let supervisor = this.supervisors.get(workspace.root);
-    if (!supervisor) {
-      supervisor = new TerminalSupervisor(this.options.terminals);
-      this.supervisors.set(workspace.root, supervisor);
-    }
-    return supervisor;
+    return this.terminalManager.forWorkspace(workspace.root);
   }
 
-  /** Every terminal session of every workspace, with the supervisor that owns it, for the page's terminal panel. */
   terminalSessions(): { supervisor: TerminalSupervisor; session: TerminalSession }[] {
-    return [...this.supervisors.values()].flatMap((supervisor) => supervisor.list().map((session) => ({ supervisor, session })));
+    return this.terminalManager.sessions();
   }
 
   async run(call: ToolCall, scope: CallScope): Promise<ToolCallResult> {
@@ -171,8 +162,7 @@ export class ToolRunner {
   }
 
   async close(): Promise<void> {
-    await Promise.all([...this.supervisors.values()].map((s) => s.shutdown()));
-    this.supervisors.clear();
+    if (!this.options.terminalManager) await this.terminalManager.close();
   }
 
   private async execute(call: ToolCall, scope: CallScope, permanent: ToolHandler | undefined): Promise<ToolCallResult> {

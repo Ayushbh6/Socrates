@@ -117,7 +117,7 @@ async function finishLaunch(ctx: HandlerContext, terminals: TerminalSupervisor, 
       throw new ToolError("cancelled", "The command was cancelled and stopped.", "No action needed.", false);
     }
     if (session.status === "exited") {
-      terminals.forget(session);
+      terminals.finishForeground(session);
       return withFinalScreen(session, completed(session, started));
     }
   }
@@ -363,7 +363,7 @@ async function waitFor(input: WaitInput, ctx: HandlerContext, terminals: Termina
 export const terminalControlTool: ToolHandler<TerminalControlInput> = {
   name: "terminal_control",
   description: [
-    "Manage sessions started by terminal; terminal is a name or session id.",
+    "Manage this workspace's agent and user terminals; terminal is a name or session id.",
     "list: live and recently exited sessions, with ports, age and quiet time.",
     "screen: a pty session's screen as drawn (cursor, selected lines); read menus and TUIs this way.",
     `read: output after cursor (default: after what you last saw), limit_lines (default ${READ_DEFAULT_LINES}), filter (regex).`,
@@ -386,6 +386,7 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
         input_required: s.inputRequired(),
         ...(s.status === "running" && s.proc?.pid ? { listening_ports: await listeningPorts(s.proc.pid) } : {}),
         cwd: s.spec.cwdRel,
+        cwd_absolute: s.spec.cwd,
         command: s.spec.command.slice(0, 200),
         ...(s.spec.origin ? { started_in: s.spec.origin } : {}),
         started_at: s.startedAt.toISOString(),
@@ -527,6 +528,7 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
         await terminals.terminate(session);
         throwIfCancelled(ctx.signal);
         const replacement = launch(ctx, terminals, session.spec);
+        terminals.forget(session);
         if (replacement.spec.ready) await awaitReady(replacement, ctx.signal);
         else await settles(replacement, 1000, ctx.signal);
         if (ctx.signal.aborted) {

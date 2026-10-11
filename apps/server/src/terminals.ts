@@ -1,4 +1,5 @@
-import { type TerminalSession, type TerminalSupervisor, listeningPorts } from "@socrates/tools";
+import { existsSync } from "node:fs";
+import { type TerminalSession, type TerminalSupervisor, listeningPorts, commandEnvironment } from "@socrates/tools";
 import type { WebSocket } from "ws";
 import type { Runtime } from "./runtime";
 
@@ -44,6 +45,7 @@ export interface TerminalView {
  */
 export class TerminalPanel {
   private last = "";
+  private readonly changing = new Set<string>();
   private readonly ports = new Map<string, number[]>();
   private portsAt = 0;
   private readonly watching = new Map<WebSocket, Map<string, { stop: () => void; pending: string; timer: ReturnType<typeof setTimeout> | null }>>();
@@ -67,9 +69,9 @@ export class TerminalPanel {
   list(): TerminalView[] {
     const now = Date.now();
     const sessions = this.sessions().map(({ session }) => session);
-    const live = new Set(sessions.filter((s) => s.status === "running").map((s) => s.selector));
     return sessions
-      .filter((s) => (s.status === "running" ? s.spec.background || now - s.startedAt.getTime() >= SHOW_AFTER_MS : !live.has(s.selector)))
+      .filter((s) => (s.status === "running" ? s.spec.background || now - s.startedAt.getTime() >= SHOW_AFTER_MS : true))
+      .sort((a, b) => a.startedAt.getTime() - b.startedAt.getTime())
       .map((s) => this.view(s));
   }
 
@@ -141,10 +143,53 @@ export class TerminalPanel {
 
   /** Run it again; the page follows the new session. */
   async restart(id: string): Promise<string> {
-    const { supervisor, session } = this.owned(id);
-    const next = await supervisor.restart(session);
+    return this.exclusive(id, async () => {
+      const { supervisor, session } = this.owned(id);
+      this.runtime.terminalDirectory(session.spec.cwd);
+      const next = await supervisor.restart(session);
+      this.publish();
+      return next.id;
+    });
+  }
+
+  create(input: { cwd?: string; goal?: number; task?: number; name?: string }): string {
+    const folder = this.runtime.terminalFolder(input.cwd, input.goal);
+    const supervisor = this.runtime.terminalManager.forWorkspace(folder.root);
+    const names = new Set(supervisor.list().map(s => s.spec.name));
+    let n = 1;
+    while (names.has(`Shell ${n}`)) n++;
+    const shell = process.platform === "win32" ? "powershell.exe" : process.env.SHELL && existsSync(process.env.SHELL) ? process.env.SHELL : "/bin/sh";
+    const goal = input.goal ? this.runtime.store.getGoalByNumber(input.goal) : null;
+    if (input.task && (!goal || !this.runtime.store.getTaskByNumber(goal.id, input.task))) throw new TerminalPanelError("not_found", "That chat is no longer available.");
+    const origin = input.goal && input.task ? `g${input.goal}/t${input.task}` : null;
+    const session = supervisor.launch({ command: shell, shell, cwd: folder.cwd, cwdRel: folder.cwd,
+      env: commandEnvironment(), timeoutMs: null, background: true, name: input.name ?? `Shell ${n}`,
+      ready: null, pty: { cols: 120, rows: 30 }, origin,
+    }, { onStart() {}, onExit() {} });
     this.publish();
-    return next.id;
+    return session.id;
+  }
+
+  rename(id: string, name: string): void {
+    const { supervisor, session } = this.owned(id);
+    supervisor.rename(session, name);
+    this.publish();
+  }
+
+  async remove(id: string): Promise<void> {
+    await this.exclusive(id, async () => {
+      const { supervisor, session } = this.owned(id);
+      await supervisor.terminate(session);
+      supervisor.forget(session);
+      for (const socket of this.watching.keys()) this.shut(socket, id);
+      this.publish();
+    });
+  }
+
+  private async exclusive<T>(id: string, work: () => Promise<T>): Promise<T> {
+    if (this.changing.has(id)) throw new TerminalPanelError("terminal_busy", "This terminal is already changing. Try again in a moment.");
+    this.changing.add(id);
+    try { return await work(); } finally { this.changing.delete(id); }
   }
 
   /** Take an ended session off the list. */
@@ -156,7 +201,7 @@ export class TerminalPanel {
   }
 
   private sessions(): { supervisor: TerminalSupervisor; session: TerminalSession }[] {
-    return this.runtime.socrates?.runner.terminalSessions() ?? [];
+    return this.runtime.terminalManager.sessions();
   }
 
   private owned(id: string): { supervisor: TerminalSupervisor; session: TerminalSession } {
@@ -170,16 +215,16 @@ export class TerminalPanel {
       id: s.id,
       name: s.spec.name ?? firstWords(s.spec.command),
       command: s.spec.command,
-      cwd: s.spec.cwdRel,
+      cwd: s.spec.cwd,
       task: this.taskTitle(s.spec.origin ?? null),
       status: s.status,
       exitCode: s.exitCode,
       signal: s.signal,
       reason: s.exitReason,
-      pty: !!s.proc?.pty,
+      pty: !!s.spec.pty,
       background: s.spec.background,
       ready: s.ready,
-      inputRequired: s.inputRequired() === true,
+      inputRequired: !s.spec.shell && s.inputRequired() === true,
       ports: s.status === "running" ? this.ports.get(s.id) ?? [] : [],
       cols: s.screen?.cols ?? null,
       rows: s.screen?.rows ?? null,

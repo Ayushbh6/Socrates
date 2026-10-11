@@ -29,6 +29,9 @@ async function upload(image: Blob, name: string): Promise<AttachmentView> {
 }
 
 export const api = {
+  terminalFolder: (goal?: number) => call<{ cwd: string }>("GET", `/api/terminals/folder${goal ? `?goal=${goal}` : ""}`),
+  createTerminal: (input: { cwd?: string; goal?: number; task?: number; name?: string }) => call<{ id: string }>("POST", "/api/terminals", input),
+  terminalAction: (id: string, action: "stop" | "restart" | "close" | "rename", name?: string) => call<{ id: string }>("POST", `/api/terminals/${encodeURIComponent(id)}`, { action, ...(name ? { name } : {}) }),
   upload,
   request: (id: string) => call<{conversation: string; item: HistoryItem}>("GET", `/api/requests/${encodeURIComponent(id)}`),
   status: () => call<Status>("GET", "/api/status"),

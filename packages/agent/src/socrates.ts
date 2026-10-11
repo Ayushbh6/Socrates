@@ -60,6 +60,8 @@ export interface SocratesOptions {
   /** The model that writes history checkpoints and handover capsules; defaults to the working agent's. */
   compactorModel?: ModelClient;
   terminals?: SupervisorOptions;
+  terminalManager?: import("@socrates/tools").TerminalManager;
+  defaultFolder?: () => string;
   /**
    * Where file and command tools may work and when they ask, read before
    * every tool call (agent-harness.md, "Access"). Without it, the goal's
@@ -284,7 +286,7 @@ export class Socrates {
     this.store = options.store;
     this.limits = { ...DEFAULT_LIMITS, ...options.limits };
     this.budgets = { ...DEFAULT_BUDGETS, ...options.budgets };
-    this.router = new GoalRouter({ store: options.store, routerModel: options.routerModel ?? options.model, mainModel: options.model, timeZone: options.timeZone, ...(options.semantic ? { semantic: options.semantic } : {}), ...(options.routerEffort ? { effort: options.routerEffort } : {}) });
+    this.router = new GoalRouter({ ...(options.defaultFolder ? { defaultFolder: options.defaultFolder } : {}), store: options.store, routerModel: options.routerModel ?? options.model, mainModel: options.model, timeZone: options.timeZone, ...(options.semantic ? { semantic: options.semantic } : {}), ...(options.routerEffort ? { effort: options.routerEffort } : {}) });
     this.runner = new ToolRunner({
       store: options.store,
       timeZone: options.timeZone,
@@ -308,6 +310,7 @@ export class Socrates {
       ...(options.semantic ? { semantic: options.semantic } : {}),
       memoryInUse: () => (options.memory?.() ?? MEMORY_ON).use,
       ...(options.terminals ? { terminals: options.terminals } : {}),
+      ...(options.terminalManager ? { terminalManager: options.terminalManager } : {}),
       ...(options.access ? { access: options.access } : {}),
       ...(options.log ? { log: options.log } : {}),
     });
