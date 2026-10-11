@@ -192,6 +192,11 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 
 ## Suggested
 
+Deferred by agreement (2026-10-11, `docs/terminal-output-and-memory.md`, "Later"), only if real use asks for them:
+
+- **T2:** a searchable log viewer and export for saved terminal output (terminal panel and Inspect), pinning outputs past cleanup, separate stdout and stderr, and handling a slow or full disk.
+- **M4b:** restart-safe work-memory jobs, topic revision history and editing in Settings > Memory, merging duplicate or stale topics, and measuring whether later turns follow the notes better.
+
 From G1:
 
 - **The router still answers some questions in prose** instead of routing them (about 1 in 3 on the G1 follow-up with `openai/gpt-6-luna`, thinking off), costing one repair. The prompt line made it rarer, not gone. A harness-side guard, or a router model that keeps to JSON, would remove it.
