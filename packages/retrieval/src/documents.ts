@@ -15,8 +15,10 @@ import type { LedgerStore } from "@socrates/store";
  * - file_section: one section of a workspace file (see files.ts);
  * - memory: one active memory's words (agent-harness.md, "Memory"); its goal
  *   is the one goal it belongs to, or null for everywhere.
+ * - work_topic: one topic of a project's work memory (agent-harness.md, "Work
+ *   memory"); its source is `<project id>/<topic name>`.
  */
-export type DocumentKind = "goal" | "task" | "exchange" | "tool_call" | "capability" | "file_section" | "memory";
+export type DocumentKind = "goal" | "task" | "exchange" | "tool_call" | "capability" | "file_section" | "memory" | "work_topic";
 
 export interface SourceDocument {
   id: string;
@@ -86,6 +88,11 @@ export function turnDocuments(store: LedgerStore, turnId: string): SourceDocumen
     docs.push({ ...base, id: `tool_call:${exchange.taskId}:${ev.handle}`, kind: "tool_call", sourceId: turnId, at: exchange.at, text: callLine(ev.tool, ev.input) });
   }
   return docs;
+}
+
+/** Every work-memory topic of every project as a document, by its name and words. */
+export function workTopicDocuments(store: LedgerStore): SourceDocument[] {
+  return store.listWorkTopics().map((t) => ({ id: `work_topic:${t.projectId}/${t.name}`, kind: "work_topic", sourceId: `${t.projectId}/${t.name}`, goalId: null, taskId: null, turnId: t.turnId, projectTurn: null, at: t.updatedAt, text: `${t.name!.replace(/-/g, " ")}\n${t.text}` }));
 }
 
 /** Every active memory as a document; forgotten ones are left out, so a sync removes them. */

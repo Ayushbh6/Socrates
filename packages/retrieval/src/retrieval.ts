@@ -2,7 +2,7 @@ import path from "node:path";
 import type { EmbeddingClient } from "@socrates/contracts";
 import { abortable } from "@socrates/shared";
 import type { LedgerStore } from "@socrates/store";
-import { type DocumentKind, type SourceDocument, capabilityDocument, changedDocuments, contentHash, memoryDocuments } from "./documents";
+import { type DocumentKind, type SourceDocument, capabilityDocument, changedDocuments, contentHash, memoryDocuments, workTopicDocuments } from "./documents";
 import { fileDocuments, indexableFile, readIndexable, workspaceFiles } from "./files";
 import { type IndexFilter, VectorIndex } from "./vector-index";
 
@@ -172,6 +172,9 @@ export class Retrieval implements SemanticIndex {
     embedded += await this.write(memories, signal);
     const kept = new Set(memories.map((d) => d.id));
     await this.index.delete((await this.index.ids("memory")).filter((id) => !kept.has(id)));
+    // So are work-memory topics; a rewritten topic replaces its document.
+    const topics = workTopicDocuments(store);
+    embedded += await this.write(topics, signal);
     if (this.options.workspaceFiles !== false) embedded += await this.syncWorkspaces(signal);
     await this.index.compact();
     return { embedded };

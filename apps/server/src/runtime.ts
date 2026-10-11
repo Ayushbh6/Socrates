@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { repairHistoricalNotes, type LaneState, MemoryGate, Socrates, interruptUnfinishedTurns } from "@socrates/agent";
+import { repairHistoricalNotes, type LaneState, MemoryGate, Socrates, WorkMemoryFiles, interruptUnfinishedTurns } from "@socrates/agent";
 import { InstalledCatalog } from "@socrates/capabilities";
 import { type CallRecord, type DeciderClient, type Effort, type EmbeddingClient, type ModelClient, ModelError } from "@socrates/contracts";
 import { type EffortLevels, type ListedModel, PROVIDER_DEFAULTS, type Price, type Provider, costOf, detectEfforts, detectVision, listModels, listPrice, makeDecider, makeEmbedder, makeModel, reportedCost, splitModelId, withDecisionRecording, withRecording } from "@socrates/providers";
@@ -186,6 +186,10 @@ export class Runtime {
       }
       runtime = new Runtime(config, store, calls, recovered, deps, log, unlock, settings);
       store.recoverClarificationReplies();
+      // Work-memory steps the last run did not finish are skipped; the notes as files show what the ledger holds.
+      const skipped = store.skipUnfinishedWorkMemorySteps();
+      if (skipped) log(`skipped ${skipped} work-memory step(s) left unfinished when Socrates last stopped`);
+      try { new WorkMemoryFiles(path.join(config.home, "memory", "projects")).rebuild(store); } catch (error) { log(`work memory files not written: ${message(error)}`); }
       store.dateGeneralTasks(runtime.timeZone);
       repairHistoricalNotes(store);
       await runtime.start();
@@ -583,6 +587,7 @@ export class Runtime {
       ...(this.catalog ? { catalog: this.catalog } : {}),
       ...(this.retrieval ? { semantic: this.retrieval } : {}),
       attachments: this.config.attachmentsDir,
+      workMemoryDir: path.join(this.config.home, "memory", "projects"),
       // Terminal process groups are listed here, so ones a crash leaves running are stopped at the next start.
       terminalManager: this.terminalManager,
       defaultFolder: () => this.terminalFolder().cwd,

@@ -24,7 +24,9 @@ Everything lives in one folder, `~/.socrates-v2` unless `SOCRATES_HOME` names an
 | `skills/`, `mcp.json` | global Skills and MCP servers |
 | `logs/server.log` | diagnostics; one previous log of up to 5 MB is kept |
 | `standard.json` | the number of the goal standard mode shows as its plain "Chats", made with the first chat outside a goal |
-| `terminal-tabs.json` | atomically saved terminal metadata, restored as stopped tabs; no output or environment variables |
+| `terminal-tabs.json` | atomically saved terminal metadata, restored as stopped tabs, with the id of each tab's last saved output; no environment variables |
+| `artifacts/terminal/<output id>/` | every terminal run's output as it printed it, with whose run it was (`agent-harness.md`, "Saved output"); cleaned up by age and size |
+| `memory/projects/<project id>/` | each project's work memory as files, `MEMORY.md`, `topics/<name>.md` and `project.json`, written from the ledger (`agent-harness.md`, "Work memory") |
 | `terminals.json` | the process groups of running terminal sessions, each with its start time, so that ones a crashed server left running are stopped at the next start (`agent-harness.md`, "terminal") |
 | `.server-lock.db` | the exclusive runtime ownership lock, automatically released when its process stops |
 
@@ -76,7 +78,7 @@ The `access` setting is the harness's access policy (`agent-harness.md`, "Access
 |---|---|---|
 | `scope` | `folders` (default), `full` | `folders`: file and command tools work freely only in `folders`, and any other path asks first; `full`: anywhere on the Mac |
 | `folders` | real folder paths, at most `50` | validated like a working folder (an existing directory, never the disk, the home folder, or Socrates' data, Socrates 0.1's included), stored by real path without duplicates; a missing folder or changed alias matches nothing. The limit also applies after automatically adding a working folder |
-| `approvals` | `ask` (default), `auto` | `ask`: every edit, patch, command and changing MCP call waits for the user's approval; reading never asks. `auto`: none of them asks. The one exception is Socrates' own project notes (`.socrates/MEMORY.md` and `.socrates/memory/<name>.md` of the workspace), which are written without asking (`agent-harness.md`, "Work memory") |
+| `approvals` | `ask` (default), `auto` | `ask`: every edit, patch, command and changing MCP call waits for the user's approval; reading never asks. `auto`: none of them asks. Socrates' own project notes are not files in the project: they are written with `work_memory`, which never asks (`agent-harness.md`, "Work memory") |
 
 Direct file access, searches and command working directories exclude this server's data folder and `~/.socrates`, including their real targets when symlinked. The harness's existing read-only access to a valid activated Skill's contained resources remains available. Automatic project context and workspace embeddings respect the configured file scope without silently obtaining an outside-folder grant. With no live page connected, every approval is refused. Commands are not sandboxed: the scope decides where a command starts, not everything it can reach, so a command in `auto` mode can still read or change other files.
 

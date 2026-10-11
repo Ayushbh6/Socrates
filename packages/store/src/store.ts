@@ -201,6 +201,19 @@ export interface HistoryRecord {
 }
 
 /** One thing Socrates remembers about the user (agent-harness.md, "Memory"). */
+/** One project's index or one topic of its work memory, as it stands now (agent-harness.md, "Work memory"). */
+export interface WorkMemoryEntry {
+  projectId: string;
+  /** The project's folder when it was written. */
+  root: string;
+  /** Null for the index; the topic's name otherwise. */
+  name: string | null;
+  text: string;
+  /** The turn whose step wrote it last. */
+  turnId: string | null;
+  updatedAt: string;
+}
+
 export interface Memory {
   id: string;
   number: number;
@@ -230,6 +243,10 @@ export interface TaskWithGoal {
 type Row = Record<string, unknown>;
 
 const str = (v: unknown): string => String(v);
+const toWorkMemory = (r: Row): WorkMemoryEntry => {
+  const key = String(r.key);
+  return { projectId: String(r.project_id), root: String(r.root), name: key === "index" ? null : key.slice("topic:".length), text: String(r.text), turnId: r.turn_id === null || r.turn_id === undefined ? null : String(r.turn_id), updatedAt: String(r.updated_at) };
+};
 const strOrNull = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
 /** The turns of one conversation: the main one (null) or a lane, which takes one parameter. */
 const channel = (laneId: string | null): string => (laneId ? "lane_id = ?" : "lane_id IS NULL");
@@ -912,6 +929,8 @@ export class LedgerStore {
         break;
       }
       case "memory_saved": case "memory_edited": case "memory_forgotten": case "memory_surfaced": this.projectMemory(e); break;
+      case "work_memory_written": this.projectWorkMemory(e); break;
+      case "work_memory_step": break;
       case "turn_redone": case "file_changed": case "terminal_started": case "approval_decided": case "history_omitted": case "agent_warning": case "agent_message": case "anchor_question": case "anchor_decided":
       case "note_outcome": case "context_diagnostics": case "mcp_tools_listed": case "skill_shelf_frozen": case "clarification_cancelled": case "clarification_reply_failed": case "general_day_set": break;
       default: throw new StoreError(`Unsupported event type: ${e.type}`);
@@ -986,6 +1005,75 @@ export class LedgerStore {
         for (const id of (e.payload as EventPayloads["memory_surfaced"]).memory_ids) this.run("UPDATE memories SET use_count = use_count + 1, last_used_at = ? WHERE id = ?", e.at, id);
         break;
     }
+  }
+
+  // ── Work memory ──────────────────────────────────────────────────────────
+
+  /** Write a project's index or one topic, whole (agent-harness.md, "Work memory"). */
+  recordWorkMemoryWrite(refs: EventRefs, payload: EventPayloads["work_memory_written"]): WorkMemoryEntry {
+    return this.transaction(() => {
+      this.projectWorkMemory(this.appendEvent("work_memory_written", payload, refs));
+      return payload.target === "index" ? this.workMemoryIndex(payload.project_id)! : this.workTopic(payload.project_id, payload.name!)!;
+    });
+  }
+
+  /** How a turn's work-memory step stands: queued, then how it ended. */
+  recordWorkMemoryStep(refs: EventRefs, payload: EventPayloads["work_memory_step"]): void {
+    this.appendEvent("work_memory_step", payload, refs);
+  }
+
+  private projectWorkMemory(e: StoredEvent): void {
+    const p = e.payload as EventPayloads["work_memory_written"];
+    const key = p.target === "index" ? "index" : `topic:${p.name}`;
+    this.run("INSERT INTO work_memory (project_id, key, root, text, turn_id, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (project_id, key) DO UPDATE SET root = excluded.root, text = excluded.text, turn_id = excluded.turn_id, updated_at = excluded.updated_at", p.project_id, key, p.root, p.text, e.turn_id, e.at);
+    if (p.target === "topic") {
+      this.run("DELETE FROM work_topic_fts WHERE project_id = ? AND name = ?", p.project_id, p.name);
+      this.run("INSERT INTO work_topic_fts (project_id, name, text) VALUES (?, ?, ?)", p.project_id, p.name, `${p.name!.replace(/-/g, " ")}\n${p.text}`);
+    }
+  }
+
+  workMemoryIndex(projectId: string): WorkMemoryEntry | null {
+    const r = this.get("SELECT * FROM work_memory WHERE project_id = ? AND key = 'index'", projectId);
+    return r ? toWorkMemory(r) : null;
+  }
+
+  workTopic(projectId: string, name: string): WorkMemoryEntry | null {
+    const r = this.get("SELECT * FROM work_memory WHERE project_id = ? AND key = ?", projectId, `topic:${name}`);
+    return r ? toWorkMemory(r) : null;
+  }
+
+  /** A project's topics, newest first; every project's when it is undefined. */
+  listWorkTopics(projectId?: string): WorkMemoryEntry[] {
+    const where = projectId === undefined ? "" : " AND project_id = ?";
+    return this.all(`SELECT * FROM work_memory WHERE key LIKE 'topic:%'${where} ORDER BY updated_at DESC, key`, ...(projectId === undefined ? [] : [projectId])).map(toWorkMemory);
+  }
+
+  /** Every project with work memory, and its folder when last written. */
+  listWorkMemoryProjects(): { projectId: string; root: string }[] {
+    return this.all("SELECT project_id, root, MAX(updated_at) AS at FROM work_memory GROUP BY project_id").map((r) => ({ projectId: str(r.project_id), root: str(r.root) }));
+  }
+
+  /** A project's topics whose words match an FTS expression, best first by BM25. */
+  searchWorkTopics(fts: string, projectId: string, limit: number): WorkMemoryEntry[] {
+    return this.all("SELECT w.* FROM work_topic_fts f JOIN work_memory w ON w.project_id = f.project_id AND w.key = 'topic:' || f.name WHERE work_topic_fts MATCH ? AND f.project_id = ? ORDER BY bm25(work_topic_fts) LIMIT ?", fts, projectId, limit).map(toWorkMemory);
+  }
+
+  /**
+   * Work-memory steps that were queued and never ended: the app stopped
+   * while they waited or ran. Each is recorded as skipped; called once at
+   * startup, before any step can be queued.
+   */
+  skipUnfinishedWorkMemorySteps(): number {
+    const latest = new Map<string, StoredEvent>();
+    for (const e of this.listEvents({ type: "work_memory_step" })) if (e.turn_id) latest.set(e.turn_id, e);
+    let skipped = 0;
+    for (const e of latest.values()) {
+      const p = e.payload as EventPayloads["work_memory_step"];
+      if (p.outcome !== "pending") continue;
+      this.recordWorkMemoryStep({ goal_id: e.goal_id, task_id: e.task_id, chat_id: e.chat_id, turn_id: e.turn_id }, { project_id: p.project_id, outcome: "skipped", detail: "Socrates stopped before the step ended", writes: 0 });
+      skipped++;
+    }
+    return skipped;
   }
 
   /** Keep one active entry's words in the keyword index; a forgotten one leaves it. */

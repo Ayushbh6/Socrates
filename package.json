@@ -24,6 +24,7 @@
     "eval:memory": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/retrieval/eval/run-memory-eval.ts",
     "eval:decider": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/agent/eval/run-decider-eval.ts",
     "eval:terminal-output": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/agent/eval/run-terminal-output-eval.ts",
+    "eval:work-memory": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/agent/eval/run-work-memory-eval.ts",
     "eval:lanes": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/agent/eval/run-lanes-e2e.ts",
     "eval:server": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx apps/server/eval/run-server-e2e.ts",
     "eval:server-core": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx apps/server/eval/run-server-core-e2e.ts",

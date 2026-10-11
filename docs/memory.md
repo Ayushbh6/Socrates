@@ -74,7 +74,7 @@ Without a key or when the call fails (timeout 2 s, then skipped for 30 s like th
 
 ### Work memory (M3b, agreed 2026-10-10)
 
-> **Revised 2026-10-11 (planned, not built):** M4a keeps this structure but moves it from the repository to `~/.socrates-v2/memory/projects/<project-id>/`, with a memory-only writer. `.socrates/MEMORY.md` is also the path live v0.1.20 uses for its own project memory. See `docs/terminal-output-and-memory.md`.
+> **Revised 2026-10-11, built (M4a):** the same index and topics, kept by Socrates in the ledger and in `~/.socrates-v2/memory/projects/<project-id>/`, never in the repository; written after the answer is saved, in a step of its own with a memory-only tool; read with `context_retrieve inspect topic:<name>`. The section below describes M3b as first built. See `architecture/agent-harness.md`, "Work memory", and `docs/terminal-output-and-memory.md`.
 
 User memory is facts about the user. Work memory is **how things are done in one project**, distilled, so Socrates stays consistent ("last time the schema changed: bump the version, add an upgrade step, rebuild the index in replay, update the restore test") without digging through raw transcripts.
 

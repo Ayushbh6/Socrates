@@ -1,168 +1,317 @@
-import { existsSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { type DeciderClient, type DecisionRequest, type DecisionResponse, userText } from "@socrates/contracts";
-import { WorkspaceRoot } from "@socrates/tools";
+import { type DeciderClient, type DecisionRequest, type DecisionResponse, type EventPayloads, userText } from "@socrates/contracts";
+import { LedgerStore } from "@socrates/store";
 import { describe, expect, it } from "vitest";
 import { continueTask } from "../../router/test/helpers";
-import { MemoryGate, WORK_MEMORY_INDEX_MAX_TOKENS, WORK_QUESTION, didRealWork, workMemoryBlock, workMemorySkill, workState } from "../src";
-import { call, contextParts, contextText, final, tempDir, world, writeFiles } from "./helpers";
+import { MemoryGate, WORK_MEMORY_INDEX_MAX_TOKENS, WORK_QUESTION, WorkMemoryFiles, didRealWork, resolveWorkProject, workMemoryBlock, workMemoryProject, workMemorySkill, workState } from "../src";
+import { call, contextParts, final, tempDir, world, writeFiles } from "./helpers";
+
+/**
+ * Work memory, kept by Socrates (agent-harness.md, "Work memory"; plan M4a in
+ * docs/terminal-output-and-memory.md): the same index and topics as before,
+ * in the ledger and Socrates' data folder, never in the user's repository.
+ */
 
 /** A decider that answers the work question from a script and remembers what it was asked. */
-function workDecider(work: () => number) {
+function workDecider(work: () => number | Promise<number>) {
   const asked: DecisionRequest[] = [];
   const decider: DeciderClient = {
     id: "fake:decider",
     async decide(request: DecisionRequest): Promise<DecisionResponse> {
       asked.push(request);
-      return { model: "fake", probabilities: Object.fromEntries(Object.keys(request.questions).map((q) => [q, q === "work" ? work() : 0])), usage: { inputTokens: 1, outputTokens: 1, costUsd: null }, id: null };
+      const probability = "work" in request.questions ? await work() : 0;
+      return { model: "fake", probabilities: Object.fromEntries(Object.keys(request.questions).map((q) => [q, q === "work" ? probability : 0])), usage: { inputTokens: 1, outputTokens: 1, costUsd: null }, id: null };
     },
   };
   return { decider, asked };
 }
 
-const INDEX = "- Change the store schema → memory/store-schema.md · turns 4, 9\n- Fix a flaky test → memory/flaky-tests.md · turn 12\n";
+const LEGACY = "---\nsocrates_doc: project_memory\nschema_version: 1\n---\n\n# Project Memory\n";
+const INDEX = "- Change the store schema → topic store-schema · turns 4, 9\n- Fix a flaky test → topic flaky-tests · turn 12";
+
+function steps(store: LedgerStore, turnId?: string) {
+  return store.listEvents({ type: "work_memory_step" }).filter((e) => !turnId || e.turn_id === turnId).map((e) => (e.payload as EventPayloads["work_memory_step"]).outcome);
+}
+
+/** Write a project's notes straight into the ledger, as a step would. */
+function seed(store: LedgerStore, root: string, entries: { name: string | null; text: string }[]) {
+  const project = resolveWorkProject(root)!;
+  for (const e of entries) store.recordWorkMemoryWrite({}, { project_id: project.id, root: project.root, target: e.name === null ? "index" : "topic", name: e.name, text: e.text });
+  return project;
+}
 
 describe("the project's index", () => {
-  it("is shown as <WORK_MEMORY> in the stable first part, read from the project, and absent without one", async () => {
-    const w = await world({ files: { ".socrates/MEMORY.md": INDEX } });
+  it("is shown as <WORK_MEMORY> from Socrates' own record, never from a file in the repository", async () => {
+    // The live v0.1.20 keeps its own project memory at this path; v2 must neither show nor change it.
+    const w = await world({ files: { ".socrates/MEMORY.md": LEGACY } });
+    seed(w.store, w.root, [{ name: "store-schema", text: "Store schema\nSteps\n1. Bump the version." }, { name: "flaky-tests", text: "Flaky tests\nSteps\n1. Rerun alone." }, { name: null, text: INDEX }]);
     const { socrates, model } = w.socrates([continueTask(), continueTask()], [final(), final()]);
     await socrates.handle("Change the schema.");
     const first = contextParts(model.requests[0]!)[0]!.text;
-    expect(first).toContain(`<WORK_MEMORY>\n${INDEX.trim()}\n</WORK_MEMORY>`);
-    // Part of the stable first part, ahead of the goal's own blocks.
+    expect(first).toContain(`<WORK_MEMORY>\n${INDEX}\n</WORK_MEMORY>`);
+    expect(first).not.toContain("socrates_doc");
     expect(first.indexOf("<WORK_MEMORY>")).toBeLessThan(first.indexOf("<GOAL>"));
-    expect(contextText(model.requests[0]!).indexOf("<WORK_MEMORY>")).toBeLessThan(contextText(model.requests[0]!).indexOf("<GOAL_STATE>"));
+    expect(readFileSync(path.join(w.root, ".socrates/MEMORY.md"), "utf8")).toBe(LEGACY);
 
-    // Edited on disk between turns: the next turn shows the new index.
-    writeFileSync(path.join(w.root, ".socrates/MEMORY.md"), "- Release → memory/release.md · turn 20\n");
+    // A new index is shown from the next turn.
+    seed(w.store, w.root, [{ name: "release", text: "Release\n1. Tag." }, { name: null, text: "- Release → topic release · turn 20" }]);
     await socrates.handle("Release it.");
-    expect(contextParts(model.requests.at(-1)!)[0]!.text).toContain("<WORK_MEMORY>\n- Release → memory/release.md · turn 20\n</WORK_MEMORY>");
+    expect(contextParts(model.requests.at(-1)!)[0]!.text).toContain("<WORK_MEMORY>\n- Release → topic release · turn 20\n</WORK_MEMORY>");
   });
 
-  it("is left out when it is empty, missing, a link, or memories are not used, and is held to its budget", () => {
+  it("is left out without a project, when empty or when memories are not used, and is held to its budget", () => {
+    const store = LedgerStore.open({ path: ":memory:" });
     const dir = tempDir();
-    const workspace = WorkspaceRoot.open("project", dir);
-    expect(workMemoryBlock(workspace, null, null)).toBeNull();
-    writeFiles(dir, { ".socrates/MEMORY.md": "  \n" });
-    expect(workMemoryBlock(workspace, null, null)).toBeNull();
-    writeFiles(dir, { ".socrates/MEMORY.md": INDEX });
-    expect(workMemoryBlock(workspace, null, { save: true, use: false })).toBeNull();
-    expect(workMemoryBlock(workspace, null, { save: true, use: true })).toContain("Fix a flaky test");
-    expect(workMemoryBlock(null, null, null)).toBeNull();
+    const project = resolveWorkProject(dir)!;
+    expect(workMemoryBlock(store, null, null)).toBeNull();
+    expect(workMemoryBlock(store, project, null)).toBeNull();
+    seed(store, dir, [{ name: "store-schema", text: "x" }, { name: "flaky-tests", text: "y" }, { name: null, text: INDEX }]);
+    expect(workMemoryBlock(store, project, { save: true, use: false })).toBeNull();
+    expect(workMemoryBlock(store, project, { save: true, use: true })).toContain("Fix a flaky test");
 
-    // A link to a file outside the project is not read.
-    const other = tempDir();
-    const outside = tempDir();
-    writeFiles(outside, { "real.md": INDEX });
-    writeFiles(other, { ".socrates/keep": "" });
-    symlinkSync(path.join(outside, "real.md"), path.join(other, ".socrates/MEMORY.md"));
-    expect(workMemoryBlock(WorkspaceRoot.open("linked", other), null, null)).toBeNull();
-
-    // Newest lines first: past the budget the oldest are cut and the agent is told to tidy.
-    const many = tempDir();
-    const lines = Array.from({ length: 200 }, (_, i) => `- Topic number ${i} with some words to cost tokens → memory/topic-${i}.md · turns ${i}`);
-    writeFiles(many, { ".socrates/MEMORY.md": lines.join("\n") });
-    const block = workMemoryBlock(WorkspaceRoot.open("big", many), null, null)!;
+    const lines = Array.from({ length: 200 }, (_, i) => `- Topic number ${i} with some words to cost tokens → topic t${i} · turns ${i}`);
+    store.recordWorkMemoryWrite({}, { project_id: project.id, root: dir, target: "index", name: null, text: lines.join("\n") });
+    const block = workMemoryBlock(store, project, null)!;
     expect(block).toContain("Topic number 0 ");
     expect(block).not.toContain("Topic number 199 ");
     expect(block).toMatch(/\(\d+ older lines not shown: the index is over its budget of 1500 tokens; merge related lines or drop the stalest/);
-    expect(block.split("\n").length).toBeLessThan(120);
     expect(WORK_MEMORY_INDEX_MAX_TOKENS).toBe(1_500);
+    store.close();
+  });
+});
+
+describe("which project a turn's notes belong to", () => {
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, stdio: "pipe", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
+
+  it("is the repository for every worktree of it, a folder on its own otherwise, and never General's", async () => {
+    const repo = tempDir();
+    writeFiles(repo, { "a.txt": "a\n", "sub/b.txt": "b\n" });
+    git(repo, "init", "-q");
+    git(repo, "add", ".");
+    git(repo, "commit", "-qm", "init");
+    const tree = path.join(tempDir(), "tree");
+    git(repo, "worktree", "add", "-q", tree);
+    const main = resolveWorkProject(repo)!;
+    expect(main.kind).toBe("git");
+    expect(resolveWorkProject(tree)!.id).toBe(main.id);
+    // A folder inside a repository is a project of its own; a plain folder too.
+    expect(resolveWorkProject(path.join(repo, "sub"))).toMatchObject({ kind: "folder" });
+    expect(resolveWorkProject(path.join(repo, "sub"))!.id).not.toBe(main.id);
+    expect(resolveWorkProject(tempDir())!.kind).toBe("folder");
+    expect(main.id).toMatch(/^[a-z0-9-]+-[0-9a-f]{10}$/);
+
+    const w = await world();
+    const goal = w.store.requireGoal(w.goalId);
+    expect(workMemoryProject(goal, null)).toBeNull();
+    expect(workMemoryProject({ ...goal, general: true }, { root: w.root } as never)).toBeNull();
+    expect(workMemoryProject({ ...goal, workspaceId: null }, { root: w.root } as never)).toBeNull();
   });
 });
 
 describe("which turns are asked about", () => {
-  const ev = (tool: string, input: unknown, status: "ok" | "error" = "ok") => ({ taskId: "t", number: 1, handle: "e1", callId: "c", tool, turnId: "x", input, status, result: null, createdAt: "" });
+  const ev = (tool: string, input: unknown, status: "ok" | "error" = "ok", result: unknown = null) => ({ taskId: "t", number: 1, handle: "e1", callId: "c", tool, turnId: "x", input, status, result: result === null ? null : { result } as never, createdAt: "" });
 
-  it("are those with several calls, one of them a change or a command; the decider reads them as lines", () => {
-    expect(didRealWork([ev("read", { path: "a" }), ev("grep", { pattern: "x" }), ev("glob", { pattern: "*" })])).toBe(false);
-    expect(didRealWork([ev("edit", { path: "a" }), ev("read", { path: "b" })])).toBe(false);
-    const calls = [ev("read", { path: "src/schema.ts" }), ev("edit", { path: "src/schema.ts" }), ev("terminal", { command: "pnpm test" }, "error"), ev("terminal", { command: "pnpm test" })];
-    expect(didRealWork(calls)).toBe(true);
-    expect(workState({ request: "Add a column to the store.", calls, answer: "Done: v8 with an upgrade step." })).toBe(
-      "The user asked:\nAdd a column to the store.\n\nWhat the assistant did (tool calls, in order):\n- read src/schema.ts\n- edit src/schema.ts\n- terminal: pnpm test ✗\n- terminal: pnpm test\n\nThe assistant's answer:\nDone: v8 with an upgrade step.",
+  it("are those with one change or command that succeeded; the decider reads them as lines", () => {
+    expect(didRealWork([ev("read", { path: "a" }), ev("grep", { pattern: "x" })])).toBe(false);
+    // One applied edit is enough: a short verified fix counts.
+    expect(didRealWork([ev("edit", { path: "a" })])).toBe(true);
+    expect(didRealWork([ev("edit", { path: "a" }, "error")])).toBe(false);
+    expect(didRealWork([ev("terminal", { command: "pnpm test" }, "ok", { status: "completed", exit_code: 1 })])).toBe(false);
+    expect(didRealWork([ev("terminal", { command: "pnpm dev" }, "ok", { status: "running" })])).toBe(false);
+    expect(didRealWork([ev("terminal", { command: "pnpm test" }, "ok", { status: "completed", exit_code: 0 })])).toBe(true);
+    const calls = [ev("read", { path: "src/schema.ts" }), ev("edit", { path: "src/schema.ts" }), ev("terminal", { command: "pnpm test" }, "error")];
+    expect(workState({ request: "Add a column to the store.", calls, answer: "Done." })).toBe(
+      "The user asked:\nAdd a column to the store.\n\nWhat the assistant did (tool calls, in order):\n- read src/schema.ts\n- edit src/schema.ts\n- terminal: pnpm test ✗\n\nThe assistant's answer:\nDone.",
     );
-    const long = workState({ request: "x", calls: Array.from({ length: 60 }, (_, i) => ev("read", { path: `f${i}` })), answer: "y" });
-    expect(long).toContain("- read f0");
-    expect(long).toContain("- … 36 more calls");
-    expect(long).toContain("- read f59");
-    expect(long).not.toContain("- read f30");
     expect(WORK_QUESTION.instructions).toContain("repeatable procedure");
   });
 });
 
 describe("recording what a turn established", () => {
   const work = [
-    { toolCalls: [call("edit", { path: "src/a.ts", old_text: "", new_text: "export const a = 1;\n" }), call("edit", { path: "src/b.ts", old_text: "", new_text: "export const b = 2;\n" }), call("glob", { pattern: "src/*.ts" })] },
-    final({ full_answer: "Added a and b; the checks pass." }),
+    { toolCalls: [call("edit", { path: "src/a.ts", old_text: "", new_text: "export const a = 1;\n" })] },
+    final({ full_answer: "Added a; the checks pass." }),
   ];
   const memory = [
-    { toolCalls: [
-      call("edit", { path: ".socrates/memory/new-module.md", old_text: "", new_text: "New module\nSteps\n1. Add the file.\nEvidence: turns 2\n" }),
-      call("edit", { path: ".socrates/MEMORY.md", old_text: "", new_text: "- Add a module → memory/new-module.md · turn 2\n" }),
-    ] },
-    { text: "Wrote .socrates/memory/new-module.md and the index." },
+    { toolCalls: [call("work_memory", { action: "write_topic", topic: "new-module", text: "New module\nSteps\n1. Add the file.\nEvidence: turns 2" })] },
+    { toolCalls: [call("work_memory", { action: "write_index", text: "- Add a module → topic new-module · turn 2" })] },
+    { text: "Wrote new-module." },
   ];
   const policy = (root: string) => ({ folders: [root], approvals: "ask" as const, protected: [] });
 
-  it("writes the notes in one extra step when the decider says the work is worth it, without asking, and keeps the answer", async () => {
+  it("writes the notes after the answer is saved, outside the repository, without asking", async () => {
     const w = await world();
+    const dir = path.join(tempDir(), "memory", "projects");
     const { decider, asked } = workDecider(() => 0.9);
-    const { socrates, model } = w.socrates([continueTask()], [...work, ...memory], { gate: () => new MemoryGate({ decider }), memory: () => ({ save: true, use: true }), access: () => policy(w.root) });
-    const result = await socrates.handle("Add the modules a and b.");
-
-    // The decider read the request, the calls and the answer; the guide came after the answer, with this turn's number.
-    expect(asked).toHaveLength(2);
-    expect(Object.keys(asked.at(-1)!.questions)).toEqual(["work"]);
-    expect(asked.at(-1)!.state).toContain("- edit src/a.ts\n- edit src/b.ts\n- glob \"src/*.ts\"");
-    expect(asked.at(-1)!.state).toContain("Added a and b; the checks pass.");
+    const { socrates, model } = w.socrates([continueTask()], [...work, ...memory], { gate: () => new MemoryGate({ decider }), memory: () => ({ save: true, use: true }), access: () => policy(w.root), workMemoryDir: dir });
+    const result = await socrates.handle("Add the module a.");
+    expect(result.kind === "answered" && result.text).toBe("Added a; the checks pass.");
     const turn = w.store.turnsForTask(w.taskId).at(-1)!;
-    expect(model.requests).toHaveLength(4);
-    const prompt = model.requests[2]!.messages.at(-1)!;
-    expect(prompt.role === "user" ? userText(prompt.content) : "").toContain(`this turn is turn ${turn.projectTurn}`);
+    expect(turn.status).toBe("completed");
+    await socrates.workMemoryIdle();
 
-    expect(readFileSync(path.join(w.root, ".socrates/MEMORY.md"), "utf8")).toBe("- Add a module → memory/new-module.md · turn 2\n");
-    expect(existsSync(path.join(w.root, ".socrates/memory/new-module.md"))).toBe(true);
-    // The project's own edits asked (ask-first mode); the notes did not.
-    expect(w.approvals.map((a) => a.detail)).toEqual(["Create src/a.ts", "Create src/b.ts"]);
-    // The user sees the answer the work ended with, not the extra step's sentence.
-    expect(result.kind === "answered" && result.text).toBe("Added a and b; the checks pass.");
-    expect(w.store.turnsForTask(w.taskId).at(-1)).toMatchObject({ status: "completed" });
+    // The decider read the request, the calls and the answer.
+    expect(Object.keys(asked.at(-1)!.questions)).toEqual(["work"]);
+    expect(asked.at(-1)!.state).toContain("- edit src/a.ts");
+    // The step continues the turn's conversation with the guide, and has only its two tools.
+    const step = model.requests[2]!;
+    const guide = step.messages.at(-1)!;
+    expect(guide.role === "user" ? userText(guide.content) : "").toContain(`this turn is turn ${turn.projectTurn}`);
+    expect(step.tools?.map((t) => t.name)).toEqual(["work_memory", "context_retrieve"]);
+    expect(step.messages.at(-2)!.role).toBe("assistant");
+
+    const project = resolveWorkProject(w.root)!;
+    expect(w.store.workMemoryIndex(project.id)!.text).toBe("- Add a module → topic new-module · turn 2");
+    expect(w.store.workTopic(project.id, "new-module")!.text).toContain("1. Add the file.");
+    expect(readFileSync(path.join(dir, project.id, "MEMORY.md"), "utf8")).toBe("- Add a module → topic new-module · turn 2\n");
+    expect(readFileSync(path.join(dir, project.id, "topics", "new-module.md"), "utf8")).toContain("Evidence: turns 2");
+    expect(JSON.parse(readFileSync(path.join(dir, project.id, "project.json"), "utf8"))).toMatchObject({ id: project.id, root: project.root, kind: "folder" });
+    // Nothing in the repository; only the project's own edit asked.
+    expect(existsSync(path.join(w.root, ".socrates"))).toBe(false);
+    expect(w.approvals.map((a) => a.detail)).toEqual(["Create src/a.ts"]);
+    expect(steps(w.store, turn.id)).toEqual(["pending", "written"]);
   });
 
-  it("does nothing more when the decider says it is not worth it, when the work was small, or with the switches off", async () => {
-    for (const setup of [
-      { work: 0.1, steps: work, memory: { save: true, use: true }, expected: 2 },
-      { work: 0.9, steps: [{ toolCalls: [call("edit", { path: "src/a.ts", old_text: "", new_text: "x\n" })] }, final()], memory: { save: true, use: true }, expected: 0 },
-      { work: 0.9, steps: work, memory: { save: false, use: true }, expected: 0 },
-    ]) {
-      const w = await world();
-      const { decider, asked } = workDecider(() => setup.work);
-      const { socrates, model } = w.socrates([continueTask()], [...setup.steps, ...memory], { gate: () => new MemoryGate({ decider }), memory: () => setup.memory, access: () => policy(w.root) });
-      await socrates.handle("Add the modules a and b.");
-      expect(model.requests).toHaveLength(setup.steps.length);
-      expect(asked.filter((r) => "work" in r.questions)).toHaveLength(setup.expected ? 1 : 0);
-      expect(existsSync(path.join(w.root, ".socrates/MEMORY.md"))).toBe(false);
-    }
+  it("is queued on a goal's first turn too, when its folder is bound during that turn", async () => {
+    const w = await world({ workspace: false });
+    const { decider } = workDecider(() => 0.9);
+    const { socrates } = w.socrates([continueTask()], [...work, ...memory], { gate: () => new MemoryGate({ decider }), memory: () => ({ save: true, use: true }), resolveWorkspace: () => ({ name: "project", rootPath: w.root }) });
+    await socrates.handle("Add the module a.");
+    await socrates.workMemoryIdle();
+    expect(w.store.requireGoal(w.goalId).workspaceId).not.toBeNull();
+    expect(steps(w.store)).toEqual(["pending", "written"]);
   });
 
-  it("asks before writing anything but the notes, even in the extra step", async () => {
+  it("does not hold the chat: the next message runs while the step is still waiting", async () => {
+    const w = await world();
+    let release!: (p: number) => void;
+    const { decider } = workDecider(() => new Promise<number>((done) => { release = done; }));
+    const { socrates } = w.socrates([continueTask(), continueTask()], [...work, final({ full_answer: "Second answer." }), { text: "Nothing to record." }], { gate: () => new MemoryGate({ decider, timeoutMs: 60_000 }), memory: () => ({ save: true, use: true }) });
+    await socrates.handle("Add the module a.");
+    const second = await socrates.handle("And now?");
+    expect(second.kind === "answered" && second.text).toBe("Second answer.");
+    const first = w.store.turnsForTask(w.taskId).at(-2)!;
+    expect(steps(w.store, first.id)).toEqual(["pending"]);
+    release(0.9);
+    await socrates.workMemoryIdle();
+    expect(steps(w.store, first.id)).toEqual(["pending", "nothing"]);
+  });
+
+  it("refuses anything but its notes in the step, and work_memory anywhere else", async () => {
     const w = await world();
     const { decider } = workDecider(() => 0.9);
-    const sneaky = [{ toolCalls: [call("edit", { path: "src/evil.ts", old_text: "", new_text: "x\n" })] }, { text: "Done." }];
-    const { socrates } = w.socrates([continueTask()], [...work, ...sneaky], { gate: () => new MemoryGate({ decider }), memory: () => ({ save: true, use: true }), access: () => policy(w.root), approve: false });
-    await socrates.handle("Add the modules a and b.");
-    expect(w.approvals.map((a) => a.tool)).toContain("edit");
-    expect(w.approvals.at(-1)!.detail).toContain("src/evil.ts");
+    const sneaky = [{ toolCalls: [call("edit", { path: "src/evil.ts", old_text: "", new_text: "x\n" }), call("terminal", { command: "touch evil" })] }, { text: "Done." }];
+    const { socrates } = w.socrates([continueTask()], [...work, ...sneaky], { gate: () => new MemoryGate({ decider }), memory: () => ({ save: true, use: true }) });
+    await socrates.handle("Add the module a.");
+    await socrates.workMemoryIdle();
     expect(existsSync(path.join(w.root, "src/evil.ts"))).toBe(false);
+    expect(existsSync(path.join(w.root, "evil"))).toBe(false);
+    const refused = w.store.listEvents({ type: "tool_completed" }).slice(-2).map((e) => (e.payload as EventPayloads["tool_completed"]).error?.code);
+    expect(refused).toEqual(["unknown_tool", "unknown_tool"]);
+
+    // In an ordinary turn the tool does not exist.
+    const { socrates: plain } = w.socrates([continueTask()], [{ toolCalls: [call("work_memory", { action: "read" })] }, final()]);
+    await plain.handle("Read your notes.");
+    expect((w.store.listEvents({ type: "tool_completed" }).at(-1)!.payload as EventPayloads["tool_completed"]).error?.code).toBe("unknown_tool");
   });
 
-  it("carries a guide that names the budget, the files and the turn", () => {
+  it("checks names, sizes and the index's topics", async () => {
+    const w = await world();
+    const { decider } = workDecider(() => 0.9);
+    const bad = [
+      { toolCalls: [
+        call("work_memory", { action: "write_topic", topic: "Bad Name", text: "x" }),
+        call("work_memory", { action: "write_topic", topic: "long", text: "x".repeat(3_001) }),
+        call("work_memory", { action: "write_index", text: "- Missing → topic nowhere · turn 1" }),
+        call("work_memory", { action: "write_index", text: Array.from({ length: 61 }, (_, i) => `- line ${i}`).join("\n") }),
+        call("work_memory", { action: "read", topic: "nowhere" }),
+      ] },
+      { text: "Nothing to record." },
+    ];
+    const { socrates } = w.socrates([continueTask()], [...work, ...bad], { gate: () => new MemoryGate({ decider }), memory: () => ({ save: true, use: true }) });
+    await socrates.handle("Add the module a.");
+    await socrates.workMemoryIdle();
+    const codes = w.store.listEvents({ type: "tool_completed" }).slice(-5).map((e) => (e.payload as EventPayloads["tool_completed"]).error?.code);
+    expect(codes).toEqual(["invalid_topic", "topic_too_long", "topic_not_found", "index_too_long", "topic_not_found"]);
+    expect(steps(w.store)).toEqual(["pending", "nothing"]);
+  });
+
+  it("is not asked when the decider says no, nothing was verified, saving is off, or in General; it is skipped when Socrates stops", async () => {
+    for (const setup of [
+      { work: 0.1, steps: work, memory: { save: true, use: true }, expected: ["pending", "not_worth"] },
+      { work: 0.9, steps: [{ toolCalls: [call("read", { path: "nothing" })] }, final()], memory: { save: true, use: true }, expected: [] },
+      { work: 0.9, steps: work, memory: { save: false, use: true }, expected: [] },
+    ]) {
+      const w = await world();
+      const { decider } = workDecider(() => setup.work);
+      const { socrates, model } = w.socrates([continueTask()], [...setup.steps, ...memory], { gate: () => new MemoryGate({ decider }), memory: () => setup.memory });
+      await socrates.handle("Add the module a.");
+      await socrates.workMemoryIdle();
+      expect(model.requests).toHaveLength(setup.steps.length);
+      expect(steps(w.store)).toEqual(setup.expected);
+    }
+
+    const w = await world();
+    const { decider } = workDecider(() => new Promise<number>(() => {}));
+    const { socrates } = w.socrates([continueTask()], work, { gate: () => new MemoryGate({ decider, timeoutMs: 60_000 }), memory: () => ({ save: true, use: true }) });
+    await socrates.handle("Add the module a.");
+    await socrates.close();
+    expect(steps(w.store)).toEqual(["pending", "skipped"]);
+  });
+
+  it("carries a guide that names the tool, the index's form and the turn", () => {
     const guide = workMemorySkill(41);
     expect(guide).toContain("this turn is turn 41");
-    expect(guide).toContain(".socrates/memory/<topic>.md");
-    expect(guide).toContain(".socrates/MEMORY.md");
+    expect(guide).toContain("work_memory");
+    expect(guide).toContain("→ topic <name> · turns N, M");
     expect(guide).toContain("about 40 lines");
     expect(guide).toContain("Nothing to record.");
+    expect(guide).not.toContain(".socrates");
+  });
+});
+
+describe("reading topics in a turn", () => {
+  it("opens a topic by ref and finds topics no longer in the index", async () => {
+    const w = await world();
+    seed(w.store, w.root, [
+      { name: "store-schema", text: "Store schema\nSteps\n1. Bump SCHEMA_VERSION.\n2. Add a migration." },
+      { name: "release", text: "Release\nSteps\n1. Tag and push." },
+      { name: null, text: "- Release → topic release · turn 3" },
+    ]);
+    const { socrates } = w.socrates([continueTask()], [
+      { toolCalls: [
+        call("context_retrieve", { action: "inspect", ref: "topic:store-schema" }),
+        call("context_retrieve", { action: "memory", query: "migration schema version" }),
+        call("context_retrieve", { action: "inspect", ref: "topic:nowhere" }),
+      ] },
+      final(),
+    ]);
+    await socrates.handle("Change the schema.");
+    // In call order: the calls run in parallel, so they may finish in any order.
+    const results = w.store.evidenceForTurn(w.store.turnsForTask(w.taskId).at(-1)!.id).map((e) => e.result!);
+    expect(JSON.parse(results[0]!.content).topic).toMatchObject({ ref: "topic:store-schema", text: expect.stringContaining("Bump SCHEMA_VERSION") });
+    expect(JSON.parse(results[1]!.content).project_topics).toEqual([expect.objectContaining({ ref: "topic:store-schema", title: "Store schema" })]);
+    expect(results[2]!.error?.code).toBe("topic_not_found");
+  });
+});
+
+describe("after a restart", () => {
+  it("skips steps left unfinished and writes the files from the ledger", () => {
+    const store = LedgerStore.open({ path: ":memory:" });
+    const root = tempDir();
+    const goal = store.createGoal({ title: "g", objective: "g" });
+    const task = store.createTask(goal.id, { title: "t", objective: "t" });
+    const project = seed(store, root, [{ name: "a", text: "A" }, { name: null, text: "- A → topic a · turn 1" }]);
+    store.recordWorkMemoryStep({ goal_id: goal.id, task_id: task.id, turn_id: null }, { project_id: project.id, outcome: "pending", detail: null, writes: 0 });
+    expect(store.skipUnfinishedWorkMemorySteps()).toBe(0); // a step needs its turn
+    const dir = path.join(tempDir(), "projects");
+    mkdirSync(dir, { recursive: true });
+    const files = new WorkMemoryFiles(dir);
+    expect(files.rebuild(store)).toBe(2);
+    expect(readdirSync(path.join(dir, project.id)).sort()).toEqual(["MEMORY.md", "project.json", "topics"]);
+    expect(files.rebuild(store)).toBe(0);
+    store.close();
   });
 });

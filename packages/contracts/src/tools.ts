@@ -165,7 +165,7 @@ export const ContextRetrieveInput = z.discriminatedUnion("action", [
   }),
   z.strictObject({
     action: z.literal("inspect"),
-    ref: z.string().min(1).max(32).optional(),
+    ref: z.string().min(1).max(64).optional(),
     turn_number: z.number().int().min(1).optional(),
   }),
   z.strictObject({
@@ -173,6 +173,18 @@ export const ContextRetrieveInput = z.discriminatedUnion("action", [
     query: z.string().min(1).max(500).optional(),
   }),
 ]);
+
+/**
+ * The memory-only tool of the work-memory step (agent-harness.md, "Work
+ * memory"): it reads and writes the project's notes in Socrates' data
+ * folder, and nothing else. It is offered only in that step.
+ */
+export const WorkMemoryInput = z.discriminatedUnion("action", [
+  z.strictObject({ action: z.literal("read"), topic: z.string().min(1).max(64).optional().describe("A topic's name; omitted: the index and every topic's name.") }),
+  z.strictObject({ action: z.literal("write_topic"), topic: z.string().min(1).max(64), text: z.string().min(1).max(20_000) }),
+  z.strictObject({ action: z.literal("write_index"), text: z.string().min(1).max(20_000) }),
+]);
+export type WorkMemoryInput = z.infer<typeof WorkMemoryInput>;
 
 export const CapabilitySearchInput = z.strictObject({
   query: z.string().min(1).max(500),

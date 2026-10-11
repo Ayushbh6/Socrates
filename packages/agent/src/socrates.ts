@@ -15,13 +15,13 @@ import { type LaneView, laneNotice, lanesBlock } from "./lanes";
 import { RELATED_MAX_SECTIONS } from "./project-context";
 import { fallbackAnswer, mechanicalNote } from "./final";
 import type { Draft } from "./draft";
-import { type AgentLimits, DEFAULT_LIMITS, type RunOutcome, runAgent } from "./loop";
+import { type AgentLimits, DEFAULT_LIMITS, type RunOutcome, runAgent, runFollowUp } from "./loop";
 import { AGENT_SYSTEM_PROMPT } from "./prompt";
 import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
 import { createCompactor } from "./compaction";
 import { applyAnchors, type AnchorDecision, type AnchorChange } from "./anchors";
 import { type GateReading, type MemoryGate, RECALL_AT } from "./gates";
-import { WORK_AT, WORK_FOLLOW_UP_MAX_STEPS, didRealWork, workMemoryBlock, workMemorySkill, workState } from "./work-memory";
+import { WORK_AT, WORK_FOLLOW_UP_MAX_STEPS, type WorkProject, WorkMemoryFiles, WorkMemorySteps, didRealWork, workMemoryBlock, workMemoryProject, workMemorySkill, workState } from "./work-memory";
 import { MEMORY_ON, type MemoryChange, type MemorySettings, applyMemory, memoryCandidates, memoryForRouting, memoryHint } from "./memory";
 export { MAX_GOAL_ANCHORS } from "./anchors";
 
@@ -88,6 +88,12 @@ export interface SocratesOptions {
   log?: (message: string) => void;
   /** The folder of the user's attached images, which `read` may always open. */
   attachments?: string;
+  /**
+   * Where the projects' work memory is written as files (agent-harness.md,
+   * "Work memory"), `<data>/memory/projects`. Without it, work memory is kept
+   * in the ledger alone.
+   */
+  workMemoryDir?: string;
 }
 
 export interface HandleOptions {
@@ -271,6 +277,9 @@ export class Socrates {
   private closed = false;
   private readonly lifetime = new AbortController();
   private readonly inflight = new Set<Promise<unknown>>();
+  /** Work-memory steps after their turns, one at a time per project. */
+  private readonly workSteps = new WorkMemorySteps();
+  private readonly workFiles: WorkMemoryFiles | null;
   /** Messages in progress per lane, including ones waiting for a task. */
   private readonly laneRuns = new Map<string, number>();
   /** The newest run queued on each task; its `done` settles after every earlier run on the task. */
@@ -288,6 +297,7 @@ export class Socrates {
     this.store = options.store;
     this.limits = { ...DEFAULT_LIMITS, ...options.limits };
     this.budgets = { ...DEFAULT_BUDGETS, ...options.budgets };
+    this.workFiles = options.workMemoryDir ? new WorkMemoryFiles(options.workMemoryDir) : null;
     this.router = new GoalRouter({ ...(options.defaultFolder ? { defaultFolder: options.defaultFolder } : {}), store: options.store, routerModel: options.routerModel ?? options.model, mainModel: options.model, timeZone: options.timeZone, ...(options.semantic ? { semantic: options.semantic } : {}), ...(options.routerEffort ? { effort: options.routerEffort } : {}) });
     this.runner = new ToolRunner({
       store: options.store,
@@ -406,6 +416,8 @@ export class Socrates {
     this.closed = true;
     this.lifetime.abort();
     await Promise.allSettled([...this.inflight]);
+    // A step still running sees the stop and is recorded as skipped.
+    await this.workSteps.idle();
     await this.runner.close();
     await this.runner.capabilities.catalog.close?.();
     await this.options.semantic?.close();
@@ -767,7 +779,9 @@ export class Socrates {
     const remembered = memoryCandidates(store, { goal, message: request, semantic: semantic.memories, settings: memorySettings, now: store.clock.now(), timeZone: this.options.timeZone, reading: gated });
     const hint = memoryHint(memorySettings, gated);
     // The project's notes on how things are done, read once per turn so the first part stays the same.
-    const workMemory = workMemoryBlock(workspace, this.options.access?.() ?? null, memorySettings);
+    // Read again: a goal's first turn binds its folder after the goal was read.
+    const project = workMemoryProject(store.requireGoal(goal.id), workspace);
+    const workMemory = workMemoryBlock(store, project, memorySettings);
     store.recordMemoriesSurfaced(remembered.ids, "candidates", { goal_id: goal.id, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id });
     const turnNow = store.clock.now();
     const activitySnapshot = goal.general ? renderActivity(store, turnNow, this.options.timeZone, turn.userEventId) : undefined;
@@ -832,25 +846,12 @@ export class Socrates {
       startedAt,
       context,
       ...(images.length ? { images } : {}),
-      scope: { binding: { goalId: goal.id, taskId: turn.taskId!, chatId: turn.chatId, turnId: turn.id }, workspace, run, signal, vision },
+      scope: { binding: { goalId: goal.id, taskId: turn.taskId!, chatId: turn.chatId, turnId: turn.id }, workspace, run, signal, vision, ...(project && memorySettings.use ? { workMemory: { projectId: project.id } } : {}) },
       limits: this.limits,
       budgets: this.budgets,
       compact,
       ...(options.onDraft ? { onDraft: (draft: Draft) => options.onDraft!(turn.id, draft) } : {}),
       onResponse: (response, phase) => store.appendEvent("agent_message", { response, phase }, { goal_id: goal.id, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id }),
-      // After verified work the decider may say it is worth recording; the agent then writes the project's notes in one short extra step.
-      ...(workspace && memorySettings.save && this.options.gate?.() && canReadAutomatically(this.options.access?.() ?? null, workspace.root) ? {
-        followUpMaxSteps: WORK_FOLLOW_UP_MAX_STEPS,
-        afterAnswer: async ({ answer }: { answer: FinalAnswer }, followSignal: AbortSignal) => {
-          const calls = store.evidenceForTurn(turn.id);
-          if (!didRealWork(calls)) return null;
-          const work = await this.options.gate?.()?.readWork({
-            state: workState({ request, calls, answer: answer.full_answer }),
-            trace: { role: "decision", userEventId: turn.userEventId, turnId: turn.id, goalId: goal.id, taskId: turn.taskId, chatId: turn.chatId },
-          }, followSignal);
-          return work !== null && work !== undefined && work >= WORK_AT ? workMemorySkill(turn.projectTurn) : null;
-        },
-      } : {}),
       ...(this.options.maxOutputTokens ? { maxOutputTokens: this.options.maxOutputTokens } : {}),
       trace: { userEventId: turn.userEventId, laneId: turn.laneId },
       ...(this.options.retryDelaysMs ? { retryDelaysMs: this.options.retryDelaysMs } : {}),
@@ -858,7 +859,75 @@ export class Socrates {
     });
     // A stop that lands after the answer was written keeps what was written.
     const written = outcome.kind === "interrupted" ? outcome.partial : outcome.kind === "answer" ? outcome.answer.full_answer : null;
-    return this.persist(part, goal, workspace, signal.aborted && !(outcome.kind === "answer" && outcome.notes.some(n => n.reason === "cancelled")) ? { kind: "interrupted", reason: "cancelled", detail: null, toolCalls: outcome.toolCalls, steps: outcome.steps, partial: written } : outcome, options.anchorDecisions ?? []);
+    const stopped = signal.aborted && !(outcome.kind === "answer" && outcome.notes.some(n => n.reason === "cancelled"));
+    const result = this.persist(part, goal, workspace, stopped ? { kind: "interrupted", reason: "cancelled", detail: null, toolCalls: outcome.toolCalls, steps: outcome.steps, partial: written } : outcome, options.anchorDecisions ?? []);
+    // After verified work the decider may say it is worth recording: the notes are written in a step of their own, once the answer is saved.
+    if (!stopped && outcome.kind === "answer" && outcome.stop === "final" && project) this.queueWorkMemory({ turn, goal, project, workspace, request, transcript: outcome.transcript, answer: outcome.answer.full_answer });
+    return result;
+  }
+
+  /**
+   * The work-memory step (agent-harness.md, "Work memory"): after a turn whose
+   * answer is saved, when it verified a change or command and saving memories
+   * is on, the decider is asked whether the work established something worth
+   * recording; on yes, the agent continues the turn's conversation with the
+   * writing guide and only the memory-only tool and context_retrieve. It runs
+   * in the background, one at a time per project, so the chat moves on. Its
+   * course is recorded as `work_memory_step`: pending, then written, nothing
+   * (the agent found nothing to record), not_worth, skipped or failed.
+   */
+  private queueWorkMemory(input: { turn: Turn; goal: Goal; project: WorkProject; workspace: WorkspaceRoot | null; request: string; transcript: import("@socrates/contracts").ModelMessage[]; answer: string }): void {
+    const { store } = this;
+    const { turn, goal, project } = input;
+    const settings = this.options.memory?.() ?? MEMORY_ON;
+    const gate = this.options.gate?.();
+    const calls = store.evidenceForTurn(turn.id);
+    if (!settings.save || !gate || !didRealWork(calls)) return;
+    const refs: EventRefs = { goal_id: goal.id, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id };
+    store.recordWorkMemoryStep(refs, { project_id: project.id, outcome: "pending", detail: null, writes: 0 });
+    const signal = this.lifetime.signal;
+    this.workSteps.schedule(project.id, async () => {
+      let writes = 0;
+      const end = (outcome: "written" | "nothing" | "not_worth" | "skipped" | "failed", detail: string | null) => {
+        try { store.recordWorkMemoryStep(refs, { project_id: project.id, outcome, detail, writes }); } catch { /* The store closed under a step that outlived it. */ }
+      };
+      try {
+        if (signal.aborted) return end("skipped", "Socrates stopped before the step ran");
+        if (!(this.options.memory?.() ?? MEMORY_ON).save) return end("skipped", "Saving memories was turned off");
+        const work = await gate.readWork({
+          state: workState({ request: input.request, calls, answer: input.answer }),
+          trace: { role: "decision", userEventId: turn.userEventId, turnId: turn.id, goalId: goal.id, taskId: turn.taskId, chatId: turn.chatId },
+        }, signal);
+        if (signal.aborted) return end("skipped", "Socrates stopped before the step ran");
+        if (work === null) return end("skipped", "The decider could not be asked");
+        if (work < WORK_AT) return end("not_worth", `The decider said ${work.toFixed(2)}`);
+        const write = (target: "index" | "topic", name: string | null, text: string) => {
+          const entry = store.recordWorkMemoryWrite(refs, { project_id: project.id, root: project.root, target, name, text });
+          writes++;
+          try { this.workFiles?.write(project, entry); } catch (error) { this.options.log?.(`work memory file for ${project.id} not written: ${error instanceof Error ? error.message : String(error)}`); }
+        };
+        const reply = await runFollowUp({
+          model: this.options.model,
+          runner: this.runner,
+          system: AGENT_SYSTEM_PROMPT,
+          messages: [...input.transcript, { role: "user", content: workMemorySkill(turn.projectTurn) }],
+          tools: this.runner.workMemoryDefinitions(),
+          scope: { binding: { goalId: goal.id, taskId: turn.taskId!, chatId: turn.chatId, turnId: turn.id }, workspace: input.workspace, run: new RunState(), signal, workMemory: { projectId: project.id, write } },
+          maxSteps: WORK_FOLLOW_UP_MAX_STEPS,
+          ...(this.options.maxOutputTokens ? { maxOutputTokens: this.options.maxOutputTokens } : {}),
+          trace: { userEventId: turn.userEventId, laneId: turn.laneId },
+          onResponse: (response) => store.appendEvent("agent_message", { response, phase: "work" }, refs),
+        });
+        end(writes ? "written" : "nothing", writes ? null : reply?.trim().slice(0, 200) || "No reply within the step's limit");
+      } catch (error) {
+        end(signal.aborted ? "skipped" : "failed", signal.aborted ? "Socrates stopped during the step" : error instanceof Error ? error.message : String(error));
+      }
+    });
+  }
+
+  /** Resolves when every work-memory step queued so far has ended (for tests and shutdown). */
+  workMemoryIdle(): Promise<void> {
+    return this.workSteps.idle();
   }
 
   /**

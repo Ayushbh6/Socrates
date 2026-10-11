@@ -170,6 +170,15 @@ export interface EventPayloads {
   memory_forgotten: { memory_id: string; by: MemoryAuthor };
   /** Entries offered to the agent this turn beyond `<MEMORY>`: as `<MEMORY_CANDIDATES>`, or found by `context_retrieve`. */
   memory_surfaced: { memory_ids: string[]; how: "candidates" | "search" };
+  /**
+   * Work memory (agent-harness.md, "Work memory"): the project's index or one
+   * topic, written whole. The ledger is the source; the files in Socrates'
+   * data folder are written from it. `project_id` names the project; `root`
+   * is its folder when written, for display.
+   */
+  work_memory_written: { project_id: string; root: string; target: "index" | "topic"; name: string | null; text: string };
+  /** The step after a turn that may record what it established: queued, then how it ended. */
+  work_memory_step: { project_id: string; outcome: "pending" | "written" | "nothing" | "not_worth" | "skipped" | "failed"; detail: string | null; writes: number };
   /** The goal's Skill shelf, resolved once and frozen so ordinary turns stay cache-stable. */
   skill_shelf_frozen: { skills: { name: string; description: string }[] };
 }

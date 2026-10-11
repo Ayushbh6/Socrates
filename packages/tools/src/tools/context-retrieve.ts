@@ -1,7 +1,7 @@
 import { eventTime } from "@socrates/shared";
 import { ContextRetrieveInput, type EventPayloads } from "@socrates/contracts";
 import { countTokens, nextDay, truncateToTokens, zonedDayStart, zonedParts } from "@socrates/shared";
-import { type Evidence, type Goal, type Memory, type Task, type Turn, excerpt, foldText, goalSelector, parseGoalSelector, parseTaskSelector, taskSelector, toFtsQuery } from "@socrates/store";
+import { type Evidence, type Goal, type Memory, type Task, type Turn, type WorkMemoryEntry, excerpt, foldText, goalSelector, parseGoalSelector, parseTaskSelector, taskSelector, toFtsQuery } from "@socrates/store";
 import { fuse, rankMemories, recencyBoost } from "@socrates/retrieval";
 import { RESULT_CEILING_TOKENS, headTail } from "../bounds";
 import type { HandlerContext } from "../context";
@@ -470,14 +470,40 @@ function memoryItem(ctx: HandlerContext, m: Memory) {
   return { ref: m.handle, kind: m.kind, text: m.text, applies: m.goalId ? "this goal" : "everywhere", date: dateOf(ctx, m.updatedAt), said_in_turn: turn?.projectTurn ?? null };
 }
 
+/** Topics of the project's work memory one memory search returns at most. */
+const TOPIC_SEARCH_LIMIT = 5;
+
+/** One work-memory topic in a list: its ref, its first line and when it changed. */
+function topicItem(ctx: HandlerContext, t: WorkMemoryEntry) {
+  const first = t.text.split("\n").find((l) => l.trim())?.replace(/^#+\s*/, "").trim() ?? "";
+  return { ref: `topic:${t.name}`, title: first.length > 160 ? `${first.slice(0, 159)}…` : first, updated: dateOf(ctx, t.updatedAt) };
+}
+
+/**
+ * This project's work-memory topics that bear on a query (agent-harness.md,
+ * "Work memory"): keyword and meaning matches fused; without a query, the
+ * newest. Topics no longer in the index are found here too.
+ */
+async function topicSearch(query: string | undefined, ctx: HandlerContext): Promise<WorkMemoryEntry[]> {
+  const projectId = ctx.workMemory?.projectId;
+  if (!projectId) return [];
+  if (!query) return ctx.store.listWorkTopics(projectId).slice(0, TOPIC_SEARCH_LIMIT);
+  const fts = toFtsQuery(query);
+  const lexical = fts ? ctx.store.searchWorkTopics(fts, projectId, 20) : [];
+  const hits = (await ctx.semantic?.search(query, { kinds: ["work_topic"], limit: 20, min: "related" }, ctx.signal)) ?? [];
+  const meaning = hits.filter((h) => h.sourceId.startsWith(`${projectId}/`)).map((h) => ctx.store.workTopic(projectId, h.sourceId.slice(projectId.length + 1))).filter((t): t is WorkMemoryEntry => !!t);
+  return fuse([lexical, meaning], (t) => t.name!, (t) => recencyBoost(t.updatedAt, ctx.store.clock.now())).map(({ item }) => item).slice(0, TOPIC_SEARCH_LIMIT);
+}
+
 /**
  * What Socrates remembers about the user that applies here (everywhere, or
  * this goal): with a query, the best keyword and meaning matches; without
  * one, the newest. Entries found are recorded as offered (agent-harness.md,
- * "Memory").
+ * "Memory"). In a project, its work-memory topics come with them.
  */
 async function memorySearch(input: MemorySearch, ctx: HandlerContext) {
   if (ctx.memoryInUse === false) return { action: "memory", memories: [], note: "The user turned off using memories." };
+  const topics = (await topicSearch(input.query, ctx)).map((t) => topicItem(ctx, t));
   const goalId = ctx.binding.goalId;
   // What <MEMORY> already shows is not repeated.
   const shown = new Set(ctx.store.profileMemories(goalId).map((m) => m.id));
@@ -493,7 +519,8 @@ async function memorySearch(input: MemorySearch, ctx: HandlerContext) {
     action: "memory",
     ...(input.query ? { query: input.query } : {}),
     memories: found.map((m) => memoryItem(ctx, m)),
-    ...(found.length ? {} : { note: input.query ? "Nothing remembered matches. Try other words, or search past exchanges with search target all_goals." : "Nothing is remembered yet beyond <MEMORY>." }),
+    ...(topics.length ? { project_topics: topics, topics_hint: "inspect ref topic:<name> opens a topic" } : {}),
+    ...(found.length || topics.length ? {} : { note: input.query ? "Nothing remembered matches. Try other words, or search past exchanges with search target all_goals." : "Nothing is remembered yet beyond <MEMORY>." }),
   };
 }
 
@@ -509,6 +536,13 @@ function inspect(input: Inspect, ctx: HandlerContext) {
       throw new ToolError("turn_not_found", `Project turn ${input.turn_number} does not exist.`, latest ? `Use context_retrieve search, or inspect an existing project turn between 1 and ${latest}.` : "There are no earlier turns yet.");
     }
     build = (scale) => turnView(turn, null, ctx, scale);
+  } else if (/^topic:/i.test(input.ref!.trim())) {
+    const name = input.ref!.trim().slice("topic:".length).toLowerCase();
+    const projectId = ctx.workMemory?.projectId;
+    const topic = projectId && ctx.memoryInUse !== false ? ctx.store.workTopic(projectId, name) : null;
+    if (!topic) throw new ToolError("topic_not_found", `topic:${name} is not a topic of this project's work memory.`, "The index in <WORK_MEMORY> names the topics; context_retrieve memory with a query finds others.");
+    const turn = topic.turnId ? ctx.store.getTurn(topic.turnId) : null;
+    build = () => ({ action: "inspect", topic: { ref: `topic:${topic.name}`, text: topic.text, updated: dateOf(ctx, topic.updatedAt), written_after_turn: turn?.projectTurn ?? null } });
   } else if (/^m\d+$/i.test(input.ref!.trim())) {
     const ref = input.ref!.trim().toLowerCase();
     const memory = ctx.store.getMemoryByNumber(Number(ref.slice(1)));
@@ -644,12 +678,12 @@ export function enforceBounds<T>(view: T): T {
 export const contextRetrieveTool: ToolHandler<ContextRetrieveInput> = {
   name: "context_retrieve",
   description: [
-    "Recall earlier work from Socrates' memory.",
+    "Recall earlier work and memory.",
     "ledger_search: goals and tasks by their metadata; returns selectors such as g7 and g7/t4.",
     "search: exact past questions and answers by query and/or dates, in target: current_task (default), current_goal, all_goals, gN, tN (a task of the current goal) or gN/tN; top_n default 5; returns refs such as r1.",
-    "inspect: one record by ref (gN, tN, gN/tN, rN, eN: a tool call of this task, gN/tN/eN, hc-N, mN: a memory) or turn_number (any [TURN k]).",
-    "memory: what is remembered about the user beyond <MEMORY>, best matches for query, else the newest.",
-    "Dates are YYYY-MM-DD. Output is bounded; omissions name refs to inspect.",
+    "inspect: one record by ref (gN, tN, gN/tN, rN, eN: a tool call of this task, gN/tN/eN, hc-N, mN: a memory, topic:<name>) or turn_number (any [TURN k]).",
+    "memory: what is remembered beyond <MEMORY>, and project topics; best matches for query, else newest.",
+    "Dates are YYYY-MM-DD. Output is bounded; omissions name refs.",
   ].join(" "),
   schema: ContextRetrieveInput,
   concurrency: "parallel",

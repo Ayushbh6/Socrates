@@ -2,7 +2,7 @@ import type { EventPayloads, ImageData, ToolCall, ToolDefinition, ToolErrorBody 
 import { abortable, countTokens } from "@socrates/shared";
 import type { SemanticSearch } from "@socrates/retrieval";
 import type { LedgerStore, TaskRefs } from "@socrates/store";
-import { type AccessPolicy, isProtected, isWorkMemoryPath, protectedPath, within } from "./access";
+import { type AccessPolicy, isProtected, protectedPath, within } from "./access";
 import { realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { RESULT_CEILING_TOKENS, headTail } from "./bounds";
@@ -20,6 +20,7 @@ import { editTool } from "./tools/edit";
 import { readTool } from "./tools/read";
 import { globTool, grepTool } from "./tools/search";
 import { terminalControlTool, terminalTool } from "./tools/terminal";
+import { workMemoryTool } from "./tools/work-memory";
 import type { ResolvedPath, WorkspaceRoot } from "./workspace";
 
 export interface ToolRunnerOptions {
@@ -60,6 +61,8 @@ export interface CallScope {
   vision?: boolean;
   /** Receives a running call's output as it prints, by evidence handle, for the user to watch. */
   onOutput?: (handle: string, output: string) => void;
+  /** The project's work memory; with `write`, this is the work-memory step, and `work_memory` may be called. */
+  workMemory?: import("./context").WorkMemoryScope;
 }
 
 export interface ToolCallResult {
@@ -110,6 +113,13 @@ export class ToolRunner {
     ] as ToolHandler[];
     this.handlers = new Map(handlers.map((h) => [h.name, h]));
     this.definitions = handlers.map(toDefinition);
+    // Offered only in the work-memory step; never one of the permanent tools.
+    this.handlers.set(workMemoryTool.name, workMemoryTool as ToolHandler);
+  }
+
+  /** The tools of the work-memory step: its notes, and context_retrieve for evidence. */
+  workMemoryDefinitions(): ToolDefinition[] {
+    return [toDefinition(workMemoryTool as ToolHandler), toDefinition(contextRetrieveTool as ToolHandler)];
   }
 
   /** An absolute path of a file in the attachments folder, by its real path, or null. */
@@ -182,8 +192,13 @@ export class ToolRunner {
         const mcp = await this.capabilities.resolve(scope.binding.goalId, call.name, scope.signal);
         if (mcp) handler = this.capabilities.mcpHandler(call.name, mcp.name, mcp.tool, scope.binding.goalId) as ToolHandler;
       }
+      // work_memory exists only in the work-memory step, and that step has nothing else but context_retrieve.
+      if (handler === this.handlers.get(workMemoryTool.name) && !scope.workMemory?.write) handler = undefined;
+      if (scope.workMemory?.write && call.name !== workMemoryTool.name && call.name !== contextRetrieveTool.name) {
+        throw new ToolError("unknown_tool", `${call.name} is not available while recording work memory.`, "Use work_memory to write the project's notes, or context_retrieve for evidence.");
+      }
       if (!handler) {
-        throw new ToolError("unknown_tool", `There is no tool named ${call.name}.`, `Use one of: ${[...this.handlers.keys()].join(", ")}, or an MCP tool activated with capability_control.`);
+        throw new ToolError("unknown_tool", `There is no tool named ${call.name}.`, `Use one of: ${this.definitions.map((d) => d.name).join(", ")}, or an MCP tool activated with capability_control.`);
       }
       const parsed = handler.schema.safeParse(normalizeInput(call.input));
       if (!parsed.success) {
@@ -193,8 +208,7 @@ export class ToolRunner {
       throwIfCancelled(scope.signal);
       const policy = this.options.access?.() ?? null;
       const ctx = this.context(scope, refs, call.name, policy, evidence.handle);
-      // Writing the work-memory files is not asked about: they are Socrates' own notes, named in full, and visible in the project.
-      const mutating = (typeof handler.mutating === "function" ? handler.mutating(parsed.data) : handler.mutating) && !writesOnlyWorkMemory(call.name, parsed.data, scope.workspace);
+      const mutating = typeof handler.mutating === "function" ? handler.mutating(parsed.data) : handler.mutating;
       if (mutating && policy?.approvals === "ask") {
         const input = (parsed.data ?? {}) as Record<string, unknown>;
         await ctx.requireApproval({ kind: "action", tool: call.name, detail: actionDetail(call.name, input), ...preview(call.name, input) });
@@ -289,6 +303,7 @@ export class ToolRunner {
       visible: (abs) => !policy || !isProtected(policy, abs),
       terminals: scope.workspace ? this.terminals(scope.workspace) : null,
       outputs: this.terminalManager.archive,
+      ...(scope.workMemory ? { workMemory: scope.workMemory } : {}),
       vision: scope.vision ?? false,
       async requireApproval(request: ApprovalRequest) {
         // With an access policy, "ask" mode already asked about the whole call.
@@ -323,18 +338,6 @@ function normalizeInput(input: unknown): unknown {
 const APPROVAL_PREVIEW_CHARS = 20_000;
 
 /** One line naming what a changing call is about to do, for the user to approve. */
-/** Whether an edit or patch changes only the work-memory index and its topic files of the workspace. */
-function writesOnlyWorkMemory(tool: string, input: unknown, workspace: WorkspaceRoot | null | undefined): boolean {
-  if (!workspace || (tool !== "edit" && tool !== "apply_patch")) return false;
-  const i = (input ?? {}) as Record<string, unknown>;
-  const paths = tool === "edit"
-    ? [i.path]
-    : [...String(i.patch ?? "").matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map((m) => m[1]);
-  if (!paths.length || /^\*\*\* Move to:/m.test(String(i.patch ?? ""))) return false;
-  try {
-    return paths.every((p) => typeof p === "string" && isWorkMemoryPath(workspace.resolve(p).rel));
-  } catch { return false; }
-}
 
 function actionDetail(tool: string, input: Record<string, unknown>): string {
   const text = (value: unknown) => String(value ?? "").slice(0, 300);

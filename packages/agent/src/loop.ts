@@ -83,22 +83,11 @@ export interface RunInput {
    * and never saved; when given, the turn's requests are streamed.
    */
   onDraft?: (draft: Draft) => void;
-  /**
-   * Called when the turn has a valid final answer (not one forced by a limit),
-   * before it is returned. A string is one more instruction for the agent: it
-   * is given as a harness message after the answer and the agent may take up
-   * to `followUpMaxSteps` more steps (calling tools) before the turn ends, with
-   * the answer unchanged and nothing of the extra step streamed. Used for
-   * writing the project's work memory (agent-harness.md, "Work memory").
-   * Failures and null mean nothing more happens.
-   */
-  afterAnswer?: (info: { answer: FinalAnswer; toolCalls: number }, signal: AbortSignal) => Promise<string | null>;
-  /** The most requests the extra step may make; 8 by default. */
-  followUpMaxSteps?: number;
 }
 
 export type RunOutcome =
-  | { kind: "answer"; answer: FinalAnswer; notes: NoteOutcome[]; stop: TurnStop; toolCalls: number; steps: number }
+  /** `transcript`: the turn's conversation as the model last saw it, ending with its answer, for a step that follows the turn (work memory). */
+  | { kind: "answer"; answer: FinalAnswer; notes: NoteOutcome[]; stop: TurnStop; toolCalls: number; steps: number; transcript: ModelMessage[] }
   | { kind: "limited"; text: string; note: string; stop: TurnStop; toolCalls: number; steps: number }
   | { kind: "invalid"; text: string; errors: string[]; stop: TurnStop; toolCalls: number; steps: number }
   /** `partial`: on a stop, the answer as far as it had streamed, or null. */
@@ -264,22 +253,6 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
     if (result.kind === "context") return contextFallback(stop === "final" ? "context" : stop);
     return interrupted("failed", result.kind === "failed" ? result.detail : "The final-answer deadline expired.");
   };
-  /** The extra step after a valid final answer: the answer stays as it was, its steps are not streamed, and any failure ends it. */
-  const followUp = async (response: ModelResponse, answer: FinalAnswer, stop: TurnStop) => {
-    if (!input.afterAnswer || stop !== "final" || scope.signal.aborted) return;
-    let instruction: string | null = null;
-    try { instruction = await input.afterAnswer({ answer, toolCalls }, workSignal); } catch { return; }
-    if (!instruction || scope.signal.aborted || workSignal.aborted) return;
-    push({ role: "assistant", content: response.text, ...(response.raw ? { raw: response.raw } : {}) });
-    push({ role: "user", content: instruction });
-    for (let i = 0; i < (input.followUpMaxSteps ?? 8); i++) {
-      if (timeExpired() || steps >= limits.maxSteps || spent >= limits.maxTokens) return;
-      const result = await call("work", workSignal, true);
-      if (result.kind !== "response") return;
-      if (!result.response.toolCalls.length) { push({ role: "assistant", content: result.response.text, ...(result.response.raw ? { raw: result.response.raw } : {}) }); return; }
-      await appendResponse(result.response, workSignal);
-    }
-  };
   const acceptAnswer = async (response: ModelResponse, valid: Extract<FinalValidation, { ok: true }>, stop: TurnStop): Promise<RunOutcome> => {
     const answer = { ...valid.value };
     let pending = valid.noteIssues;
@@ -312,8 +285,9 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
       for (const issue of pending) Object.assign(notes.find(n => n.field === issue.field)!, { outcome: "failed", length: issue.length, reason: scope.signal.aborted ? "cancelled" : finalSignal?.aborted ? "Note repair deadline expired" : issue.reason });
     }
     // A failed/cancelled metadata repair cannot erase the accepted visible answer.
-    await followUp(response, answer, stop);
-    return { kind: "answer", answer, notes, stop, toolCalls, steps };
+    // The transcript ends with the answer as the model gave it.
+    const transcript = messages.at(-1)?.role === "assistant" ? [...messages] : [...messages, { role: "assistant" as const, content: response.text, ...(response.raw ? { raw: response.raw } : {}) }];
+    return { kind: "answer", answer, notes, stop, toolCalls, steps, transcript };
   };
   const finish = async (response: ModelResponse, stop: TurnStop): Promise<RunOutcome> => {
     if (scope.signal.aborted) {
@@ -397,6 +371,42 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
     clearTimeout(workTimer);
     clearTimeout(finalTimer);
   }
+}
+
+/**
+ * A short step that continues a finished turn's conversation with one more
+ * instruction and its own tools (agent-harness.md, "Work memory"): the work
+ * memory step, after the answer is saved. Nothing is streamed; it ends with
+ * the model's reply without tool calls (returned), after `maxSteps` requests
+ * (null), or on the first failure (thrown).
+ */
+export async function runFollowUp(input: {
+  model: ModelClient;
+  runner: ToolRunner;
+  system: string;
+  messages: ModelMessage[];
+  tools: ToolDefinition[];
+  scope: CallScope;
+  maxSteps: number;
+  maxOutputTokens?: number;
+  trace?: Pick<CallTrace, "userEventId" | "laneId">;
+  onResponse?: (response: ModelResponse) => void;
+}): Promise<string | null> {
+  const { scope } = input;
+  const messages = [...input.messages];
+  for (let step = 1; step <= input.maxSteps; step++) {
+    scope.signal.throwIfAborted();
+    const response = await abortable(input.model.complete({
+      system: input.system, messages: withRollingBreakpoint(messages), tools: input.tools, toolChoice: "auto",
+      maxOutputTokens: input.maxOutputTokens ?? 16_000, signal: scope.signal,
+      trace: { ...input.trace, role: "work", goalId: scope.binding.goalId, taskId: scope.binding.taskId, chatId: scope.binding.chatId, turnId: scope.binding.turnId, step },
+    }), scope.signal);
+    input.onResponse?.(response);
+    messages.push({ role: "assistant", content: response.text, toolCalls: response.toolCalls, ...(response.raw ? { raw: response.raw } : {}) });
+    if (!response.toolCalls.length) return response.text;
+    for (const r of await execute(input.runner, response.toolCalls, scope)) messages.push({ role: "tool", toolCallId: r.callId, toolName: r.name, content: r.content, ...(r.isError ? { isError: true } : {}) });
+  }
+  return null;
 }
 
 const LIMIT_TEXT: Record<Exclude<TurnStop, "final">, (l: AgentLimits) => string> = {

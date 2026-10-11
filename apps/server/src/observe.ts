@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { RECALL_AT, SAVE_AT, WORK_AT } from "@socrates/agent";
-import { isWorkMemoryPath } from "@socrates/tools";
 import type { EventPayloads, ModelMessage, TextPart } from "@socrates/contracts";
 import { countTokens } from "@socrates/shared";
 import type { CallBreakdown, CallBucket, CallDetail, CallLog, CallRow, CallTotals, LedgerStore, Turn } from "@socrates/store";
@@ -70,18 +69,12 @@ export interface DeciderStats {
 
 const STATS_LIMIT = 500;
 
-/** Whether a recorded call changed the work-memory index or one of its topic files, named relative to the project or in full. */
-export function writesWorkMemory(tool: string, input: unknown): boolean {
-  const i = (input ?? {}) as { path?: unknown; patch?: unknown };
-  const notes = (p: string) => isWorkMemoryPath(p.trim().replace(/^\.\//, "")) || /\/\.socrates\/(?:MEMORY\.md|memory\/[A-Za-z0-9][A-Za-z0-9._-]*\.md)$/.test(p.trim());
-  if (tool === "edit") return typeof i.path === "string" && notes(i.path);
-  if (tool === "apply_patch") return [...String(i.patch ?? "").matchAll(/^\*\*\* (?:Add|Update) File: (.+)$/gm)].some((m) => notes(m[1]!));
-  return false;
-}
 
 export function deciderStats(log: CallLog, store: LedgerStore, range: Range, now: Date): DeciderStats {
   const rows = log.list({ role: "decision", limit: STATS_LIMIT, ...(sinceOf(range, now) ? { since: sinceOf(range, now)! } : {}) });
   const offered = new Set(store.listEvents({ type: "memory_surfaced" }).filter((e) => (e.payload as EventPayloads["memory_surfaced"]).how === "candidates").map((e) => e.turn_id));
+  // Turns whose work-memory step wrote the project's notes.
+  const wrote = new Set(store.listEvents({ type: "work_memory_written" }).map((e) => e.turn_id));
   const saved = new Set(store.listEvents({ type: "memory_saved" }).filter((e) => (e.payload as EventPayloads["memory_saved"]).by === "agent").map((e) => e.turn_id));
   const stats: DeciderStats = { range, answered: 0, failed: 0, medianMs: null, costUsd: 0, recall: { likely: 0, likelyOffered: 0, unlikely: 0, unlikelyOffered: 0 }, save: { likely: 0, likelySaved: 0, unlikely: 0, unlikelySaved: 0 }, work: { likely: 0, likelyWrote: 0, unlikely: 0 } };
   const times: number[] = [];
@@ -96,7 +89,7 @@ export function deciderStats(log: CallLog, store: LedgerStore, range: Range, now
       if (p.work < WORK_AT) stats.work.unlikely++;
       else {
         stats.work.likely++;
-        if (row.turnId && store.evidenceForTurn(row.turnId).some((e) => writesWorkMemory(e.tool, e.input))) stats.work.likelyWrote++;
+        if (row.turnId && wrote.has(row.turnId)) stats.work.likelyWrote++;
       }
       continue;
     }
@@ -432,6 +425,8 @@ export interface TraceCall {
   context: ContextBlock[] | null;
   diagnostics?: { activityAsOf: string; timeZone: string; history: { budget: number; used: number; included: number[]; omitted: number; dates: string[] } | null; memory: { recall: number | null; threshold: number; matched: number; explanation: string } } | null;
   notes?: { field: string; outcome: string; reason: string | null; length: number | null; attempts: number }[];
+  /** The turn's work-memory step as it went: pending, then how it ended (agent-harness.md, "Work memory"). */
+  workMemory?: { outcome: string; detail: string | null; writes: number }[];
 }
 
 export type TraceItem =
@@ -492,6 +487,7 @@ export function trace(log: CallLog, store: LedgerStore, userEventId: string): { 
         entered: messages.map((m) => ({ role: m.role, label: enteredLabel(m), tokens: countTokens(messageText(m)), text: messageText(m) })),
         diagnostics: row.turnId ? store.listEvents({ turnId: row.turnId, type: "context_diagnostics" }).map(e => e.payload as EventPayloads["context_diagnostics"]).findLast(d => { const initial = requestMessages[0]; return initial?.role === "user" && typeof initial.content !== "string" && createHash("sha256").update(JSON.stringify(initial.content.slice(0, d.contextParts).map(p => p.text))).digest("hex") === d.contextHash; }) ?? null : null,
         notes: row.turnId ? store.listEvents({ turnId: row.turnId, type: "note_outcome" }).map(e => e.payload as EventPayloads["note_outcome"]) : [],
+        workMemory: row.turnId ? store.listEvents({ turnId: row.turnId, type: "work_memory_step" }).map(e => { const p = e.payload as EventPayloads["work_memory_step"]; return { outcome: p.outcome, detail: p.detail, writes: p.writes }; }) : [],
         rebuilt: rebuilt && before !== undefined,
         context: fresh ? (first?.role === "user" ? blocksOf(typeof first.content === "string" ? [{ text: first.content }] : first.content) : []) : null,
       };

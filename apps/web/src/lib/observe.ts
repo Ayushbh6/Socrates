@@ -411,6 +411,7 @@ export interface TraceCall {
   context: ContextBlock[] | null;
   diagnostics?: { activityAsOf: string; timeZone: string; history: { budget: number; used: number; included: number[]; omitted: number; dates: string[] } | null; memory: { recall: number | null; threshold: number; matched: number; explanation: string } } | null;
   notes?: { field: string; outcome: string; reason: string | null; length: number | null; attempts: number }[];
+  workMemory?: { outcome: string; detail: string | null; writes: number }[];
 }
 
 export type TraceItem =

@@ -8,6 +8,9 @@ import {
 import { MoveChip, PromptBar, Fold, prettyJson, usePolled } from "./inspect-kit";
 import { Prose } from "./Prose";
 
+/** How a turn's work-memory step went, in words. */
+const WORK_STEP: Record<string, string> = { pending: "queued", written: "notes written", nothing: "nothing to record", not_worth: "not worth recording", skipped: "skipped", failed: "failed" };
+
 /** The traces: every message with calls, and for the one open, everything that happened for it in order. */
 export function InspectTraces({ question, range, ms, onCall }: { question: string | null; range: Range; ms: number; onCall: (id: string) => void }) {
   const list = usePolled(() => api.observeQuestions(range), [range], ms);
@@ -195,6 +198,7 @@ function CallCard({ item, open, widest, growth, onCall }: { item: TraceCall; ope
           {item.diagnostics.history && <p>General history: {item.diagnostics.history.used.toLocaleString()} / {item.diagnostics.history.budget.toLocaleString()} tokens. Included turns: {item.diagnostics.history.included.join(", ") || "none"}. Older exchanges omitted: {item.diagnostics.history.omitted}. Dates: {diagnosticDate(item.diagnostics.history.dates[0], item.diagnostics.timeZone)} to {diagnosticDate(item.diagnostics.history.dates.at(-1), item.diagnostics.timeZone)}.</p>}
         </> : <p>Unknown for this recorded call; diagnostics are not reconstructed from today’s state.</p>}
         {item.notes?.map((n, i) => <p key={i}>{n.field === "continuation_note" ? "Continuation note" : "Goal note"} {n.field === "goal_note" && n.outcome === "saved" && n.length === 0 ? "unchanged" : n.outcome}. {n.length ?? "Unknown"} characters; {n.attempts} repair attempts. {n.reason}</p>)}
+        {item.workMemory?.length ? <p>Work-memory step: {item.workMemory.map((s) => WORK_STEP[s.outcome] ?? s.outcome).join(" → ")}{item.workMemory.at(-1)!.writes ? ` (${item.workMemory.at(-1)!.writes} ${item.workMemory.at(-1)!.writes === 1 ? "write" : "writes"})` : ""}{item.workMemory.at(-1)!.detail ? `. ${item.workMemory.at(-1)!.detail}` : ""}</p> : null}
       </Fold>
       {item.context && (
         <Fold title={item.rebuilt ? "Context updated" : "Context it was given"} meta={`${item.context.length} blocks · ~${tokens(contextTokens)} text tokens`} open={open}>
