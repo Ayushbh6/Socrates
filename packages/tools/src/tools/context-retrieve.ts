@@ -1,3 +1,4 @@
+import { eventTime } from "@socrates/shared";
 import { ContextRetrieveInput, type EventPayloads } from "@socrates/contracts";
 import { countTokens, nextDay, truncateToTokens, zonedDayStart, zonedParts } from "@socrates/shared";
 import { type Evidence, type Goal, type Memory, type Task, type Turn, excerpt, foldText, goalSelector, parseGoalSelector, parseTaskSelector, taskSelector, toFtsQuery } from "@socrates/store";
@@ -367,6 +368,7 @@ function taskView(goal: Goal, task: Task, ctx: HandlerContext, scale: number) {
       completion_criteria: task.completionCriteria,
       status: task.status,
       note: task.continuationNote,
+      note_freshness: ctx.store.noteState(task.id),
       started_at: task.startedAt,
       updated_at: task.updatedAt,
       completed_at: task.completedAt,
@@ -397,6 +399,8 @@ function turnView(turn: Turn, ref: string | null, ctx: HandlerContext, scale: nu
       ref,
       project_turn: turn.projectTurn,
       date: dateOf(ctx, turn.createdAt),
+      requested_at: eventTime(store.requestRoot(turn.userEventId).at, ctx.timeZone),
+      completed_at: turn.completedAt ? eventTime(turn.completedAt, ctx.timeZone) : null,
       goal: goal?.title ?? null,
       task: goal && task ? `${taskSelector(goal, task)} — ${task.title}` : null,
       status: turn.status,
@@ -419,6 +423,11 @@ function turnView(turn: Turn, ref: string | null, ctx: HandlerContext, scale: nu
       const p = e.payload as EventPayloads["agent_message"];
       return `${p.phase}: ${p.response.text}`;
     }).join("\n\n"), Math.floor(1_500 * scale)),
+    note_outcomes: store.listEvents({ turnId: turn.id, type: "note_outcome" }).map(e => e.payload),
+    proposed_notes: store.listEvents({ turnId: turn.id, type: "agent_message" }).flatMap(e => {
+      const p = e.payload as EventPayloads["agent_message"];
+      try { const v = JSON.parse(p.response.text); return [{ phase: p.phase, continuation_note: v.continuation_note ?? null, goal_note: v.goal_note ?? null }]; } catch { return []; }
+    }),
     bounded: true,
   };
 }

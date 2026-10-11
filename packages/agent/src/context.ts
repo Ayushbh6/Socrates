@@ -2,11 +2,11 @@ import type { EventPayloads, ModelMessage, TextPart } from "@socrates/contracts"
 import type { SemanticHit } from "@socrates/retrieval";
 import { type AccessPolicy, type ActiveCapabilities, type WorkspaceRoot, describeAccess } from "@socrates/tools";
 import { renderActivity } from "@socrates/router";
-import { truncateToTokens } from "@socrates/shared";
+import { truncateToTokens, zonedParts } from "@socrates/shared";
 import type { Goal, LedgerStore, Task, Turn } from "@socrates/store";
 import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
 import { attachmentLines, requestAttachments, requestText } from "./attachments";
-import { clarificationLine, historyParts, taskHistory } from "./history";
+import { generalHistoryParts, clarificationLine, historyParts, taskHistory } from "./history";
 import { type MemorySettings, memoryBlock } from "./memory";
 import { projectContext } from "./project-context";
 import { retrievedHistory } from "./retrieval";
@@ -53,6 +53,9 @@ export interface ContextInput {
   budgets?: Pick<ContextBudgets, "previousTurn" | "retrievedMax"> & Partial<Pick<ContextBudgets, "projectContextMax">>;
   /** Whether the working model sees the message's attached images. */
   vision?: boolean;
+  generalHistoryBudget?: number;
+  /** Activity captured at worker start, reused by context rebuilds. */
+  activitySnapshot?: string;
 }
 
 /**
@@ -69,19 +72,23 @@ export function assembleContext(input: ContextInput): TextPart[] {
   const parts: TextPart[] = [{ text: `${[userBlock(input.user), input.memory ? memoryBlock(store, goal, input.memory) : null, input.workMemory ?? null, goalBlock(store, goal), input.shelf ?? null, activeCapabilities(input.capabilities)].filter(Boolean).join("\n\n")}\n\n` }];
   const budgets = input.budgets ?? DEFAULT_BUDGETS;
   const history = taskHistory(store, turn.id);
-  parts.push(...historyParts(store, history, budgets.previousTurn));
+  const general = task.general && !turn.laneId;
+  parts.push(...(general ? generalHistoryParts(store, turn, input.timeZone, budgets.previousTurn, input.generalHistoryBudget, input.now).parts : historyParts(store, history, budgets.previousTurn)));
   const message = currentMessage(store, turn, input.vision ?? false);
   const boundary = Math.max(history.summary?.to ?? 0, history.omitted?.to ?? 0);
 
+  const time = zonedParts(input.now, input.timeZone);
   const volatile = [
+    block("CURRENT_TIME", `${input.now.toISOString()} (${time.date} ${time.time}, ${time.weekday}, ${input.timeZone}); frozen for this turn`),
     goal.general ? null : goalState(store, goal, task),
-    task.general && !turn.laneId ? null : currentTask(task, input.part, store.requestForTurn(turn.id).request, laneOf(store, turn), taskStatus(store, task, turn)),
-    task.general ? block("RECENT_ACTIVITY", renderActivity(store, input.now, input.timeZone)) : null,
+    task.general && !turn.laneId ? block("CURRENT_TASK_REF", `g${goal.number}/t${task.number}; turn_number ${turn.projectTurn}; ${task.title}. Daily General chat; open does not mean unfinished work.`) : currentTask(task, input.part, store.requestForTurn(turn.id).request, laneOf(store, turn), taskStatus(store, task, turn)),
+    task.general ? block("RECENT_ACTIVITY", input.activitySnapshot ?? renderActivity(store, input.now, input.timeZone, turn.userEventId)) : null,
+    store.noteState(task.id).freshness === "outdated" ? block("NOTE_FRESHNESS", `The retained continuation note is outdated: ${store.noteState(task.id).reason}. Inspect the latest exact turn evidence before relying on it.`) : null,
     redoneFrom(store, turn),
     input.lanes ?? null,
     input.access ? block("ACCESS", describeAccess(input.access, input.workspace?.root ?? null)) : null,
     ...input.dependsOn.map((d) => evidenceFromPart(store, d.order, d.turn)),
-    retrievedHistory(store, {
+    general ? null : retrievedHistory(store, {
       taskId: task.id,
       message,
       boundary,
@@ -189,7 +196,8 @@ function activeCapabilities(c: ContextInput["capabilities"]): string | null {
 function goalState(store: LedgerStore, goal: Goal, current: Task): string {
   const others = store.listTasks(goal.id, { status: "open" }).filter((t) => !t.general && t.id !== current.id);
   const shown = others.slice(0, GOAL_STATE_MAX_TASKS - 1);
-  const lines = [`note: ${goal.note ?? "none yet"}`, "open_tasks:", `- t${current.number} ${current.title} — current`];
+  const freshness = store.goalNoteState(goal.id);
+  const lines = [`note: ${goal.note ?? "none yet"}${freshness.freshness === "outdated" ? ` (outdated: ${freshness.reason}; inspect exact evidence)` : ""}`, "open_tasks:", `- t${current.number} ${current.title} — current`];
   for (const t of shown) lines.push(`- t${t.number} ${t.title} — open`);
   if (others.length > shown.length) lines.push(`- … and ${others.length - shown.length} more open tasks`);
   return block("GOAL_STATE", lines.join("\n"));
@@ -270,7 +278,7 @@ function currentMessage(store: LedgerStore, turn: Turn, vision: boolean): string
   const { clarification } = store.requestForTurn(turn.id);
   const attachments = requestAttachments(store, turn);
   const source = (store.getEvent(bound.request_event_id)!.payload as EventPayloads["user_message"]).context_from_task;
-  const previous = source ? store.turnsForTask(source).findLast(t => t.responseEventId) : null;
+  const previous = source && !(store.requireTask(turn.taskId!).general && !turn.laneId) ? store.turnsForTask(source).findLast(t => t.responseEventId) : null;
   const earlier = previous ? truncateToTokens(`Earlier General request: ${store.requestForTurn(previous.id).request}\nAnswer: ${(store.getEvent(previous.responseEventId!)!.payload as EventPayloads["assistant_response"]).text}`, 1000).text : "";
   return [requestText(original, attachments), earlier ? `<CONTINUED_GENERAL_CONTEXT>\n${earlier}\n</CONTINUED_GENERAL_CONTEXT>` : "", clarification ? clarificationLine(clarification) : "", attachmentLines(attachments, vision)].filter(Boolean).join("\n");
 }

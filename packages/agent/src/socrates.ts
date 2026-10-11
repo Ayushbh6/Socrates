@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
+import { generalHistoryParts } from "./history";
 import type { Attachment, Effort, EventRefs, FinalAnswer, ModelClient, TurnStop } from "@socrates/contracts";
 import { homedir } from "node:os";
 import { abortable } from "@socrates/shared";
 import { TokenCalibration } from "@socrates/providers";
-import { GoalRouter, type RoutedPart, laneSummaries } from "@socrates/router";
+import { GoalRouter, type RoutedPart, laneSummaries, renderActivity } from "@socrates/router";
 import type { Goal, Lane, LedgerStore, Task, Turn } from "@socrates/store";
 import type { SemanticHit, SemanticIndex } from "@socrates/retrieval";
 import { type AccessGrant, type AccessPolicy, type Approve, type CapabilityCatalog, RunState, type ShelfOptions, type SupervisorOptions, ToolRunner, WorkspaceRoot, canReadAutomatically, capabilityCandidates, skillShelf } from "@socrates/tools";
@@ -767,8 +769,12 @@ export class Socrates {
     // The project's notes on how things are done, read once per turn so the first part stays the same.
     const workMemory = workMemoryBlock(workspace, this.options.access?.() ?? null, memorySettings);
     store.recordMemoriesSurfaced(remembered.ids, "candidates", { goal_id: goal.id, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id });
-    const assemble = (previousTurn?: number) =>
-      assembleContext({
+    const turnNow = store.clock.now();
+    const activitySnapshot = goal.general ? renderActivity(store, turnNow, this.options.timeZone, turn.userEventId) : undefined;
+    let generalHistoryBudget = 30_000;
+    const assemble = (previousTurn?: number) => {
+      if (previousTurn !== undefined) generalHistoryBudget = Math.min(generalHistoryBudget, previousTurn);
+      const assembled = assembleContext({
         store,
         turn,
         capabilities: capabilities.current(goal.id),
@@ -786,10 +792,21 @@ export class Socrates {
         memoryHint: hint,
         workMemory,
         vision,
-        now: store.clock.now(),
+        now: turnNow,
         timeZone: this.options.timeZone,
+        generalHistoryBudget,
+        activitySnapshot,
         budgets: { retrievedMax: this.budgets.retrievedMax, projectContextMax: this.budgets.projectContextMax, previousTurn: previousTurn ?? this.budgets.previousTurn },
       });
+      const generalHistory = goal.general && !turn.laneId ? generalHistoryParts(store, turn, this.options.timeZone, previousTurn ?? this.budgets.previousTurn, generalHistoryBudget, turnNow) : null;
+      store.appendEvent("context_diagnostics", {
+        contextHash: createHash("sha256").update(JSON.stringify(assembled.map(p => p.text))).digest("hex"), contextParts: assembled.length,
+        activityAsOf: turnNow.toISOString(), timeZone: this.options.timeZone,
+        history: generalHistory ? { budget: generalHistory.budget, used: generalHistory.used, included: generalHistory.included, omitted: generalHistory.omitted, dates: generalHistory.dates } : null,
+        memory: { recall: gated?.recall ?? null, threshold: RECALL_AT, matched: remembered.ids.length, explanation: !memorySettings.use ? "Memory disabled" : gated?.recall == null ? "Recall gate unavailable" : gated.recall < RECALL_AT ? "Recall below threshold" : remembered.ids.length ? "Matching saved memories supplied" : "No matching saved memories" },
+      }, { goal_id: goal.id, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id });
+      return assembled;
+    };
     const context = assemble();
     // The user's attached images go with the message to a model that can see them.
     const images = vision ? await attachmentImages(requestAttachments(store, turn), this.options.log) : [];
@@ -841,7 +858,7 @@ export class Socrates {
     });
     // A stop that lands after the answer was written keeps what was written.
     const written = outcome.kind === "interrupted" ? outcome.partial : outcome.kind === "answer" ? outcome.answer.full_answer : null;
-    return this.persist(part, goal, workspace, signal.aborted ? { kind: "interrupted", reason: "cancelled", detail: null, toolCalls: outcome.toolCalls, steps: outcome.steps, partial: written } : outcome, options.anchorDecisions ?? []);
+    return this.persist(part, goal, workspace, signal.aborted && !(outcome.kind === "answer" && outcome.notes.some(n => n.reason === "cancelled")) ? { kind: "interrupted", reason: "cancelled", detail: null, toolCalls: outcome.toolCalls, steps: outcome.steps, partial: written } : outcome, options.anchorDecisions ?? []);
   }
 
   /**
@@ -899,13 +916,17 @@ export class Socrates {
     const response = store.recordResponse(visible, refs);
     store.completeTurn(turn.id, {
       responseEventId: response.id,
-      continuationNote: answer.continuation_note,
+      continuationNote: outcome.notes.some(n => n.field === "continuation_note" && n.outcome === "failed") ? null : answer.continuation_note,
       // The general conversation has no durable goal state and no completion.
-      goalNote: goal.general ? null : answer.goal_note,
+      goalNote: goal.general || outcome.notes.some(n => n.field === "goal_note" && n.outcome === "failed") ? null : answer.goal_note,
       // A standard-mode chat is never marked complete (architecture/agent-harness.md, "Task status").
       ...(!task.general && answer.task_complete && !CHAT_ROUTES.has(store.turnRoute(turn.id) ?? "") ? { taskComplete: true, taskCompleteReason: answer.task_complete.reason } : {}),
       stop: outcome.stop,
     });
+    for (const note of outcome.notes) {
+      store.appendEvent("note_outcome", { ...note, source_turn: turn.id }, refs);
+      if (note.outcome === "failed") store.recordWarning(refs, { kind: "note_failed", detail: `${note.field}: ${note.reason}. Previous note is outdated for this turn; exact answer and evidence are preserved.` });
+    }
     // Saved with the answer, so the agent may say it will remember.
     const memory = applyMemory({ store, goal, refs, proposal: answer.memory, settings: this.options.memory?.() ?? MEMORY_ON });
     return { ...result("completed", outcome.stop, visible), anchorChanges: anchors.changes, memoryChanges: memory };

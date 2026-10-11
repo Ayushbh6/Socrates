@@ -109,7 +109,7 @@ export interface ModelRequest {
 }
 
 /** Which part of Socrates makes a model call. */
-export const CALL_ROLES = ["router", "work", "wrap_up", "repair", "compaction", "embedding", "decision", "other"] as const;
+export const CALL_ROLES = ["router", "work", "wrap_up", "repair", "note_repair", "compaction", "embedding", "decision", "other"] as const;
 export type CallRole = (typeof CALL_ROLES)[number];
 
 /**

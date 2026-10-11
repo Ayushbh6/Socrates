@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { RECALL_AT, SAVE_AT, WORK_AT } from "@socrates/agent";
 import { isWorkMemoryPath } from "@socrates/tools";
 import type { EventPayloads, ModelMessage, TextPart } from "@socrates/contracts";
@@ -38,7 +39,7 @@ export function summary(log: CallLog, range: Range, now: Date, retentionDays: nu
   return {
     range,
     totals: log.modelTotals(since),
-    work: log.modelTotals(since, ["work", "wrap_up", "repair"]),
+    work: log.modelTotals(since, ["work", "wrap_up", "repair", "note_repair"]),
     byModel,
     unpriced: [...new Set(byModel.filter((r) => r.role !== "embedding" && r.priced < r.calls - r.failed - r.stopped).map((r) => r.model))],
     unpricedCalls: byModel.filter((r) => r.role !== "embedding").reduce((n, r) => n + Math.max(0, r.calls - r.failed - r.stopped - r.priced), 0),
@@ -381,6 +382,8 @@ export interface TraceCall {
   rebuilt: boolean;
   /** The first call of a group: the context message cut into its blocks. */
   context: ContextBlock[] | null;
+  diagnostics?: { activityAsOf: string; timeZone: string; history: { budget: number; used: number; included: number[]; omitted: number; dates: string[] } | null; memory: { recall: number | null; threshold: number; matched: number; explanation: string } } | null;
+  notes?: { field: string; outcome: string; reason: string | null; length: number | null; attempts: number }[];
 }
 
 export type TraceItem =
@@ -439,6 +442,8 @@ export function trace(log: CallLog, store: LedgerStore, userEventId: string): { 
         kind: "call", at: row.startedAt, call: row, group, turnId: row.turnId, reasoning: response?.reasoning ?? null, reasoningTextTokens: countTokens(response?.reasoning ?? ""), text: response?.text ?? "",
         toolCalls: (response?.toolCalls ?? []).map((t) => ({ id: t.id, name: t.name, input: t.input, result: null })),
         entered: messages.map((m) => ({ role: m.role, label: enteredLabel(m), tokens: countTokens(messageText(m)), text: messageText(m) })),
+        diagnostics: row.turnId ? store.listEvents({ turnId: row.turnId, type: "context_diagnostics" }).map(e => e.payload as EventPayloads["context_diagnostics"]).findLast(d => { const initial = requestMessages[0]; return initial?.role === "user" && typeof initial.content !== "string" && createHash("sha256").update(JSON.stringify(initial.content.slice(0, d.contextParts).map(p => p.text))).digest("hex") === d.contextHash; }) ?? null : null,
+        notes: row.turnId ? store.listEvents({ turnId: row.turnId, type: "note_outcome" }).map(e => e.payload as EventPayloads["note_outcome"]) : [],
         rebuilt: rebuilt && before !== undefined,
         context: fresh ? (first?.role === "user" ? blocksOf(typeof first.content === "string" ? [{ text: first.content }] : first.content) : []) : null,
       };

@@ -50,6 +50,8 @@ The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `serv
 
 - **Routing questions:** a premium freeform dialog and global **Reply needed** indicator resume the explicitly selected original request. Question, reply and final answer stay one visible turn across modes, history and Inspect. Pending state survives other activity and restart; duplicates are refused and failures can be retried. General freezes the original request day, fresh Standard General sends use today with earlier context, and legacy default General names are dated from their start (`architecture/web.md`, "Routing questions"; trial log entry 51).
 
+- **Reliable notes and General continuity:** notes target 1,200/2,000 characters with 25% tolerance; tool-free note repairs preserve valid answers and full evidence, with stale-note warnings on failure. General workers share a 30k chronological cross-day history (20k newest-turn evidence), shared timestamped activity and frozen turn time. Inspect explains history, memory gating and note freshness. Historical corrections append revisions only. Trial log entry 56 records deterministic checks, three isolated DeepSeek replays and remaining model-quality limits.
+
 ## Next, in the order agreed with the user
 
 Ask before starting each one.

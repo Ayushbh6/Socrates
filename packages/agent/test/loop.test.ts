@@ -66,7 +66,7 @@ describe("the agent loop", () => {
     expect(repair.messages.at(-1)!.content).toEqual([expect.objectContaining({ text: expect.stringContaining("not a valid final answer") })]);
   });
 
-  it("keeps the visible text, writes a mechanical note, and records a warning when repair fails", async () => {
+  it("keeps the visible answer and prior note, marking it stale when note repair fails", async () => {
     const w = await world();
     w.store.reviseGoalNote(w.goalId, "Original goal note.");
     const long = "word ".repeat(400);
@@ -76,17 +76,18 @@ describe("the agent loop", () => {
     ]);
     const result = await socrates.handle("Answer me.");
     expect(result).toMatchObject({ kind: "answered", text: "Here is the answer." });
-    expect(w.store.requireTask(w.taskId).continuationNote).toBe("Ended without a valid final answer after 0 tool calls.");
+    expect(w.store.requireTask(w.taskId).continuationNote).toBe("Started the server work.");
     expect(w.store.requireGoal(w.goalId).note).toBe("Original goal note.");
     const warning = w.store.listEvents({ type: "agent_warning" })[0]!.payload as EventPayloads["agent_warning"];
-    expect(warning.kind).toBe("final_answer_invalid");
+    expect(warning.kind).toBe("note_failed");
+    expect(w.store.noteState(w.taskId).freshness).toBe("outdated");
   });
 
-  it("rejects hidden notes over their token bounds in the repair request", async () => {
+  it("repairs notes above their accepted character bounds", async () => {
     const w = await world();
-    const { socrates, model } = w.socrates([continueTask()], [final({ goal_note: "durable ".repeat(300) }), final()]);
+    const { socrates, model } = w.socrates([continueTask()], [final({ goal_note: "durable ".repeat(400) }), final()]);
     await socrates.handle("Go.");
-    expect(JSON.stringify(model.requests[1]!.messages.at(-1))).toContain("goal_note is");
+    expect(JSON.stringify(model.requests[1]!.messages.at(-1))).toContain("goal_note: exceeds accepted character limit");
   });
 
   it("ends a turn at the step limit with one tool-less wrap-up request", async () => {

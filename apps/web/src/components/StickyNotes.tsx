@@ -49,8 +49,8 @@ export function StickyNotes({ goal, taskNumber, keep, onKeep }: { goal: GoalView
         {task ? (
           <>
             <strong className="note-title">{task.title}</strong>
-            <span className="note-body">{task.note ?? "No progress noted yet."}</span>
-            <span className="note-meta"><Status value={task.status} />{keep && goal && keep.goal === goal.number && keep.task === task.number && <span className="note-kept"><Pin aria-hidden />Next message stays here</span>}</span>
+            <span className="note-body">{task.note ?? (task.noteState?.freshness === "outdated" ? "Continuation note unavailable." : "No progress noted yet.")}</span>
+            <span className="note-meta">{task.noteState?.freshness === "outdated" && <span title={task.noteState.reason ?? "See the full note for details"}>Note outdated · view details</span>}<Status value={task.status} />{keep && goal && keep.goal === goal.number && keep.task === task.number && <span className="note-kept"><Pin aria-hidden />Next message stays here</span>}</span>
           </>
         ) : (
           <span className="note-body muted">Ask Socrates something and the task it works on appears here.</span>
@@ -62,6 +62,7 @@ export function StickyNotes({ goal, taskNumber, keep, onKeep }: { goal: GoalView
             <strong className="note-title">{goal.title}</strong>
             {goal.objective && <span className="note-body">{goal.objective}</span>}
             {goal.note && <span className="note-body muted">{goal.note}</span>}
+            {goal.noteState?.freshness === "outdated" && <span className="note-meta" title={goal.noteState.reason ?? undefined}>Goal note outdated · view details</span>}
             <span className="note-meta">{open} open · {done} done</span>
           </>
         ) : goal ? (
@@ -164,7 +165,8 @@ function TaskText({ task }: { task: Task }) {
   return <>
     <NoteText label="Objective" text={task.objective} />
     <NoteText label="Done when" text={task.completionCriteria} />
-    <NoteText label="Progress & continuation" text={task.note} fallback="No progress noted yet. This fills in as Socrates works." />
+    {task.noteState?.freshness === "outdated" && <p role="status" className="note-warning">{task.noteState.reason ?? "The latest note could not be accepted."} The previous note is outdated. The original answer and tool evidence are preserved. <a href="#/inspect/traces">Inspect details</a>.</p>}
+    <NoteText label="Progress & continuation" text={task.note} fallback={task.noteState?.freshness === "outdated" ? "Continuation note unavailable." : "No progress noted yet. This fills in as Socrates works."} />
   </>;
 }
 
@@ -212,7 +214,8 @@ function ExpandedNote({ kind, goal, taskNumber, keep, onKeep, onClose }: { kind:
           {kind === "task" && task && closedText(task.status, task.closed) && <p className="note-closed">{closedText(task.status, task.closed)}</p>}
           {kind === "task" ? task ? <TaskText task={task} /> : <p className="muted">Send a message to give Socrates a task. Its full notes will appear here.</p> : goal ? <>
             <NoteText label="Objective" text={goal.general ? GENERAL_DESCRIPTION : goal.objective} fallback="No objective recorded yet." />
-            <NoteText label="Goal note" text={goal.note} fallback="No goal note recorded yet." />
+            {goal.noteState?.freshness === "outdated" && <p role="status" className="note-warning">Goal note outdated: {goal.noteState.reason} <a href="#/inspect/traces">Inspect details</a>.</p>}
+            <NoteText label="Goal note" text={goal.note} fallback={goal.noteState?.freshness === "outdated" ? "Goal note unavailable." : "No goal note recorded yet."} />
             <section className="note-section"><h3>Tasks <span>{goal.tasks.filter((t) => t.status === "open").length} open · {goal.tasks.filter((t) => t.status === "completed").length} done</span></h3>
               <div className="expanded-note-tasks">{goal.tasks.map((t) => <details key={t.number} open={t.number === taskNumber}>
                 <summary><ChevronRight aria-hidden /><span>{t.number === taskNumber && <small>Current</small>}{t.title}</span>{goal.general ? <Status value={t.status} /> : <StatusMenu what="task" align="right" value={t.status} onChange={(status) => void store.setStatus({ goal: goal.number, task: t.number }, status)} />}</summary>

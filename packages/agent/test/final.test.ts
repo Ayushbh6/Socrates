@@ -15,7 +15,7 @@ describe("final answer validation", () => {
   it("explains missing fields and unknown keys", () => {
     const result = validateFinalAnswer(JSON.stringify({ full_answer: "x", extra: 1 }));
     expect(result.ok).toBe(false);
-    expect(!result.ok && result.errors.join(" ")).toMatch(/continuation_note/);
+    expect(!result.ok && result.errors.join(" ")).toMatch(/task_complete/);
   });
 
   it("falls back to a readable full_answer from a malformed object", () => {

@@ -127,12 +127,13 @@ export function goalsView(store: LedgerStore, chatsGoal: number | null = null) {
       title: goal.title,
       objective: goal.objective,
       note: goal.note,
+      noteState: store.goalNoteState(goal.id),
       status: goal.status,
       general: goal.general,
       chats: goal.number === chatsGoal,
       workspace: goal.workspaceId ? (store.getWorkspace(goal.workspaceId)?.name ?? null) : null,
       updatedAt: goal.updatedAt,
-      tasks: store.listTasks(goal.id).map((task) => ({ number: task.number, title: task.title, status: task.status, closed: closedBy(store, task), objective: task.objective, completionCriteria: task.completionCriteria, note: task.continuationNote, chats: Math.max(1, store.listChats(task.id).length), updatedAt: task.updatedAt, startedAt: task.startedAt })),
+      tasks: store.listTasks(goal.id).map((task) => ({ number: task.number, title: task.title, status: task.status, closed: closedBy(store, task), objective: task.objective, completionCriteria: task.completionCriteria, note: task.continuationNote, noteState: store.noteState(task.id), chats: Math.max(1, store.listChats(task.id).length), updatedAt: task.updatedAt, startedAt: task.startedAt })),
     }));
 }
 

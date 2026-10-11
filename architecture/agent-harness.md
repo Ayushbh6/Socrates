@@ -1109,6 +1109,10 @@ SOCRATES:
 Two tests fail because compact_history() drops source_ref...
 
 [TURN-VOLATILE — rebuilt for every user turn]
+<CURRENT_TIME>
+Actual instant and local date, weekday and timezone; frozen for this turn, repairs and rebuilds.
+</CURRENT_TIME>
+
 <GOAL_STATE>
 note: Ongoing review and hardening of the memory and compaction system.
 open_tasks:
@@ -1193,9 +1197,9 @@ Rules:
 - `<RECENT_ACTIVITY>` appears only when the turn is bound to the `general` task. It lets Socrates answer an opening "Hi, how's it going?" with a short recap of recent work and an offer to continue it.
 - Completed turns are sent as harness-formatted text, so the frozen N−1 rendering stays byte-stable for caching and no provider-specific reasoning content has to be replayed across turns. Only the in-flight turn uses native tool-call and tool-result messages. The block order above is binding either way.
 - Everything up to `<CURRENT_USER_MESSAGE>` is one user message made of parts: the goal-stable blocks, one part per completed turn, and the turn-volatile blocks. Part boundaries are where cache breakpoints may fall (see "Prompt caching").
-- The general task receives `<RECENT_ACTIVITY>` instead of `<GOAL_STATE>` and `<CURRENT_TASK>`; it has no durable goal state and is never completed, so its `goal_note` and `task_complete` are ignored.
+- The general task receives `<RECENT_ACTIVITY>` and `<CURRENT_TASK_REF>` instead of `<GOAL_STATE>` and `<CURRENT_TASK>`; it has no durable goal state and is never completed, so its `goal_note` and `task_complete` are ignored.
 - A redo (see "Redo in another task") receives `<REDONE_FROM>` after it: facts about the first attempt, never its answer.
-- `<CURRENT_USER_MESSAGE>` holds the user's original message exactly. When the router asked a clarification first, the handoff records its exact question and the user's explicitly linked answer. The recall/save gate sees that combined request too. Unrelated fresh requests never consume a pending clarification. A fresh Standard message redirected from an older General day receives up to 1,000 tokens of the previous day's most recent answered exchange as `<CONTINUED_GENERAL_CONTEXT>`; its work still belongs to today's task. In a compound part it still holds the whole message, and `<CURRENT_TASK>` names the part this run handles (`this_turn: part 2 of 2 …`).
+- `<CURRENT_USER_MESSAGE>` holds the user's original message exactly. When the router asked a clarification first, the handoff records its exact question and the user's explicitly linked answer. The recall/save gate sees that combined request too. Unrelated fresh requests never consume a pending clarification. Fresh Standard General messages use the same cross-day history as Flow, without a duplicate `<CONTINUED_GENERAL_CONTEXT>` block; their work still belongs to today's task. In a compound part it still holds the whole message, and `<CURRENT_TASK>` names the part this run handles (`this_turn: part 2 of 2 …`).
 - `<PROJECT_CONTEXT>` (at most `3,000` tokens) shows every active and provisional anchor of the goal: one under `1,500` tokens whole, a larger one as an outline of its headings with their line numbers, followed by at most `3` of its sections. Sections are chosen by fusing a keyword ranking with a meaning ranking; both read the message together with the current task's title and continuation note, because a request such as "let's start today's lesson" names no day while the note "Day 9 completed" does. At most `2` sections of other workspace files follow, on a `strong` meaning match against the current request alone (without the task title or continuation note), labelled `related file`. Text is always read from disk when the context is assembled; the index only picks sections, and a vector of content that has changed since it was indexed selects nothing. A missing anchor is reported in one line, and an anchor that may hold credentials (the same patterns the index skips) is named but never shown. Without a workspace, or with nothing to show, the block is omitted.
 
 ## Memory
@@ -1635,6 +1639,14 @@ Compaction never rewrites or deletes the underlying event log. It changes only w
 
 Obligations receive special protection: unanswered user requests survive compaction verbatim inside `outstanding_requests`, are visible in every subsequent request, and are carried forward across checkpoint generations until resolved. Compaction can compress what happened; it can never silently drop what is still owed.
 
+### General history across daily chats
+
+Main-conversation General workers receive at most **30,000 tokens total** of chronological General history across daily tasks, in both Flow and Standard. The newest eligible exchange includes request, final answer and fitted tool evidence within a **20,000-token sub-limit**; older exchanges supply Q&A. Selection works newest-first, then renders oldest-first. Each exchange carries actual request/completion timestamps, local timezone, stable goal/task and turn references. Linked routing question, reply and final answer remain one exchange. Current requests, unfinished work, lane history and set-aside Redo attempts are excluded. Interrupted and invalid-response attempts carry their actual outcome instead of implying success.
+
+Oversized records become marked excerpts with retrieval references; the window explicitly reports omissions. Task checkpoint and explicit omission boundaries are respected. General does not create overlapping history checkpoints; its bounded raw window supplies history through context rebuilds, while in-turn linearization and chat rollover still work. A rollover capsule records that the chronological history is supplied separately and does not claim to cover that raw window. Emergency fitting only shrinks the current turn's history allowance. General skips automatic retrieved-history injection that would duplicate this window; older evidence remains available through `context_retrieve`. Project-task history and background lane isolation retain their existing behavior. The router retains its separate 20,000-token Q&A allowance.
+
+Router and worker use the same activity renderer: explicit snapshot boundary, stable references, actual request/completion timestamps, separately labelled task-update times, chat status, execution status, failed command/tool evidence, validation outcome and note freshness. The current unanswered request is excluded. Worker activity is captured when work begins (possibly later than routing) and reused during rebuilds. Current time is placed after stable instructions/history and frozen through repairs and rebuilds. Identical stable prefixes remain cacheable; provider cache hits remain best effort. Notes and chat titles are never authoritative execution dates.
+
 ## Final result
 
 The Main Coding Agent ends every run with one final message that has no tool calls. That message must always be a single JSON object matching one schema:
@@ -1642,8 +1654,8 @@ The Main Coding Agent ends every run with one final message that has no tool cal
 ```ts
 const FinalAnswer = z.object({
   full_answer: z.string(),                    // the response shown to the user
-  continuation_note: z.string(),              // ~100 tokens, task-local
-  goal_note: z.string().nullable(),           // ~150 tokens; null when the goal's durable state did not change
+  continuation_note: z.string(),              // target 1,200 characters, accepted up to 1,500; task-local
+  goal_note: z.string().nullable(),           // target 2,000 characters, accepted up to 2,500; null when unchanged
   task_complete: z.object({ reason: z.string() }).nullable(), // null while the task continues
   anchors: z.array(z.object({ path: z.string(), role: z.string(), reason: z.string() })),
   memory: z.object({                          // optional; most turns leave it out ("Memory")
@@ -1657,13 +1669,16 @@ const FinalAnswer = z.object({
 
 The object is the whole text of the final message. Providers cannot combine forced structured output with tool use uniformly, so the harness parses it itself: the message as JSON, or one code fence wrapping the entire message, or its first `{` to its last `}`. Code fences inside `full_answer` belong to the answer and never delimit the object.
 
-The harness validates the object with Zod and its token bounds. The bounds are hard and equal the ledger's: `continuation_note` at most `100` tokens and `goal_note` at most `150`, so nothing is silently truncated when stored. At most three anchor proposals are accepted. An invalid or missing object gets one repair request that states the validation errors and forbids tool calls; if that also fails, the harness keeps the model's visible text as the answer (the `full_answer` string when a malformed object still contains one), writes a mechanical continuation note, records an operational warning, and persists nothing else from that output. No other final-response shape is accepted.
+The harness validates the answer and other structured fields separately from note errors. Continuation notes target **1,200 characters** and goal notes **2,000**, with exactly **25% tolerance**: accepted ceilings are **1,500 / 2,500 Unicode code points after trimming**. Spaces and line breaks count. Instructions, validation and storage share these constants; storage rejects oversized writes instead of silently truncating them. At most three anchor proposals are accepted. Invalid answer/other-field objects retain the existing single final-answer repair and mechanical failure fallback.
 
-A returned-but-invalid repair and a failed provider request are distinct: a provider failure interrupts the turn and never presents a partial candidate as the answer. Any native calls unexpectedly returned during wrap-up or repair are recorded as refused; their accompanying JSON cannot update state. Cancellation is checked again after responses and before final persistence. Accepted answers, anchor changes and turn completion are persisted in one transaction.
+Missing, malformed, empty or over-ceiling notes alone never invalidate a good answer, discard valid unrelated fields, or rerun tools. The same configured agent receives up to two **note-only repair** requests with the existing context, offending fields, measured lengths and exact limits. Calls share a maximum 60-second finalization allowance, honor cancellation, have tools disabled, and request only replacement note fields. Unexpected tool calls are refused. Valid notes cost no extra call. If repair fails, the previous accepted note remains and is explicitly outdated for this turn; without one the UI says “Continuation note unavailable.” The original answer remains complete even if cancellation occurs during note repair.
 
-The continuation note is not a second visible answer and is not produced by another agent. It is task-local and bounded (about 100 tokens): the task's verified progress, unresolved work, and important constraints.
+Every original proposal and repair response remains in `agent_message` and the model-call log. `note_outcome` records source turn, field, saved/repaired/failed outcome, measured length, attempts and reason separately from note content. Warnings are visible in chat/Inspect. Ledger revisions append accepted notes; they never overwrite event history. `context_retrieve inspect` exposes note freshness, outcomes and original proposals under its normal output bounds; raw Inspect requests/responses retain complete text. Prompt history uses explicit excerpts and retrieval references when evidence exceeds its budget.
 
-The goal note is the only goal-level state the agent writes. It records the goal's durable state across tasks: overall progress, durable user constraints and preferences, and what the goal is heading toward. The agent supplies it only when that durable state changed during this turn. It is bounded (about 150 tokens), validated by the harness, and stored as a new append-only revision of the goal record; it appears in `<GOAL_STATE>` and in the router's `KNOWN_GOALS`. The Goal Router never writes it.
+Continuation notes summarize verified progress, explicit remaining work and essential continuation details. An open daily chat is not unfinished work. Notes can be wrong: exact answers and tool evidence take precedence. Goal notes summarize durable state across tasks and appear in `<GOAL_STATE>` and router `KNOWN_GOALS`; the router does not write them. Failed goal-note updates retain the prior note and mark it outdated in worker context. Accepted answers, valid state updates and turn completion persist transactionally.
+
+Startup can append a correction only for proven historical length-only continuation-note rejection: the original structured answer must match the recorded visible answer, validate under today's note limits, and still be the task's latest turn with its mechanical failure note. Later notes are not replaced. The reported unsupported Sunday summary is flagged for review, without invented replacement facts. Messages, events and original model calls remain unchanged.
+
 
 The task-completion proposal (`task_complete`, with one short reason) is recorded by the harness and can always be overridden or reopened by the user — the user has the final say. Anchor proposals (`anchors`, for example `{ "path": "learning/30-day-plan.md", "role": "goal_plan", "reason": "Defines the lesson sequence for this goal." }`) follow the anchor lifecycle in `Goal-router.md`.
 

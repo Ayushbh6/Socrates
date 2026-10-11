@@ -107,12 +107,12 @@ describe("drafts from the agent loop", () => {
       final({ full_answer: "First candidate.", continuation_note: "word ".repeat(400) }),
       { ...final({ full_answer: "Corrected answer." }), reasoning: "Shortening the hidden note." },
     ]);
-    expect(await result).toMatchObject({ kind: "answered", text: "Corrected answer." });
+    expect(await result).toMatchObject({ kind: "answered", text: "First candidate." });
     expect(seen.filter(d => d.kind === "answer").at(-1)).toMatchObject({ call: 1, text: "First candidate." });
     expect(seen.filter(d => d.call === 2).every(d => d.kind === "thinking")).toBe(true);
-    expect(seen.filter(d => d.call === 2).at(-1)).toMatchObject({ kind: "thinking", text: "Shortening the hidden note." });
-    expect(w.store.listEvents({ type: "agent_message" }).map(e => (e.payload as { phase: string }).phase)).toEqual(["work", "repair"]);
-    expect(w.store.listEvents({ type: "assistant_response" }).map(e => (e.payload as { text: string }).text)).toEqual(["Started.", "Corrected answer."]);
+    expect(seen.filter(d => d.call === 2)).toEqual([]);
+    expect(w.store.listEvents({ type: "agent_message" }).map(e => (e.payload as { phase: string }).phase)).toEqual(["work", "note_repair"]);
+    expect(w.store.listEvents({ type: "assistant_response" }).map(e => (e.payload as { text: string }).text)).toEqual(["Started.", "First candidate."]);
   });
 
   it("preserves the visible candidate when stopped during a repair, ignoring late repair text", async () => {
@@ -135,8 +135,9 @@ describe("drafts from the agent loop", () => {
     expect(seen).toHaveLength(count);
     expect(seen.filter(d => d.kind === "answer").at(-1)!.text).toBe("Visible candidate.");
     const turnId = result.kind === "answered" ? result.parts[0]!.turn.id : "";
-    expect(w.store.interruption(turnId)).toMatchObject({ partial_answer: "Visible candidate." });
-    expect(w.store.listEvents({ type: "assistant_response" })).toHaveLength(1);
+    expect(w.store.interruption(turnId)).toBeNull();
+    expect(w.store.listEvents({ type: "assistant_response" }).at(-1)!.payload).toMatchObject({ text: "Visible candidate." });
+    expect(w.store.noteState(w.taskId).freshness).toBe("outdated");
   });
 
   it("keeps the turn going when something watching the drafts fails", async () => {

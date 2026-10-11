@@ -67,3 +67,10 @@ export function nextDay(day: string): string {
   const [y, m, d] = day.split("-").map(Number) as [number, number, number];
   return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
 }
+
+/** Label both local civil time and the exact UTC instant, avoiding inferred weekday conversions. */
+export function eventTime(instant: string, timeZone: string): string {
+  const date = new Date(instant);
+  const p = zonedParts(date, timeZone);
+  return `${p.weekday} ${p.date} ${p.time}:${String(date.getUTCSeconds()).padStart(2, "0")} ${timeZone} (UTC ${date.toISOString()})`;
+}

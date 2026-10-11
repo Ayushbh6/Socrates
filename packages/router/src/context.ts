@@ -10,7 +10,7 @@ import {
   toFtsQuery,
 } from "@socrates/store";
 import { type SemanticHit, fuse, recencyBoost } from "@socrates/retrieval";
-import { countTokens, truncateToTokens, zonedParts } from "@socrates/shared";
+import { countTokens, truncateToTokens, eventTime, zonedParts } from "@socrates/shared";
 import { laneSummaries, renderLanesForRouter } from "./lanes";
 
 /**
@@ -243,34 +243,24 @@ export function selectOlderCandidates(store: LedgerStore, message: string, now: 
 // ── RECENT_ACTIVITY ───────────────────────────────────────────────────────
 
 /** A derived view of the ledger, rendered fresh on every request; never stored prose. */
-export function renderActivity(store: LedgerStore, now: Date, timeZone: string): string {
-  const detailSince = new Date(now.getTime() - ACTIVITY_DETAIL_HOURS * 3_600_000).toISOString();
-  const weekSince = new Date(now.getTime() - ACTIVITY_DAYS * 86_400_000).toISOString();
-  const items = store.tasksUpdatedSince(weekSince);
-  if (items.length === 0) return "None";
-
-  const detail = items.filter((i) => i.task.updatedAt >= detailSince);
-  const older = items.filter((i) => i.task.updatedAt < detailSince);
-  const lines: string[] = [];
-  const ws = (w: Workspace | null) => (w?.name ?? "—").padEnd(12);
-
-  if (detail.length) {
-    lines.push("Last 48 hours (detail):");
-    for (const { task, goal, workspace } of detail) {
-      if (lines.length >= ACTIVITY_MAX_LINES) break;
-      const p = zonedParts(new Date(task.updatedAt), timeZone);
-      const note = task.continuationNote ? ` — ${excerpt(task.continuationNote, 100)}` : "";
-      lines.push(`${p.date} ${p.time}  ${ws(workspace)} ${goal.title} · ${task.title} (${task.status})${note}`);
-    }
-  }
-  if (older.length && lines.length < ACTIVITY_MAX_LINES) {
-    if (lines.length) lines.push("");
-    lines.push("Last 7 days (one line each):");
-    for (const { task, goal, workspace } of older) {
-      if (lines.length >= ACTIVITY_MAX_LINES + 2) break;
-      const p = zonedParts(new Date(task.updatedAt), timeZone);
-      lines.push(`${p.date}        ${ws(workspace)} ${goal.title} · ${task.title} (${task.status})`);
-    }
+export function renderActivity(store: LedgerStore, now: Date, timeZone: string, excludeUserEventId?: string): string {
+  const boundary = now.toISOString();
+  const since = new Date(now.getTime() - ACTIVITY_DAYS * 86_400_000).toISOString();
+  const redone = store.redoneTurnIds();
+  const rows = store.listGoals().flatMap(goal => store.listTasks(goal.id).flatMap(task =>
+    store.turnsForTask(task.id).filter(t => t.status !== "in_progress" && t.userEventId !== excludeUserEventId && !redone.has(t.id) && (t.completedAt ?? t.createdAt) >= since && (t.completedAt ?? t.createdAt) <= boundary).map(turn => ({ goal, task, turn }))
+  )).sort((a, b) => (b.turn.completedAt ?? b.turn.createdAt).localeCompare(a.turn.completedAt ?? a.turn.createdAt)).slice(0, ACTIVITY_MAX_LINES);
+  const lines = [`As of ${boundary} (${timeZone}). Chat status is not outstanding work; completed turns do not imply every command succeeded. Exact answers and tool results override summaries.`];
+  for (const { goal, task, turn } of rows) {
+    const requestAt = store.requestRoot(turn.userEventId).at;
+    const warnings = store.listEvents({ turnId: turn.id, type: "agent_warning" }).map(e => e.payload as import("@socrates/contracts").EventPayloads["agent_warning"]);
+    const calls = store.evidenceForTurn(turn.id);
+    const failed = calls.filter(e => e.status === "error" || ((e.result?.result as { exit_code?: number } | undefined)?.exit_code ?? 0) !== 0).length;
+    const note = store.noteState(task.id);
+    const invalid = warnings.some(w => w.kind === "final_answer_invalid");
+    lines.push(`g${goal.number}/t${task.number} turn_number ${turn.projectTurn} | ${goal.title} · ${task.title} | requested ${eventTime(requestAt, timeZone)}; completed ${turn.completedAt ? eventTime(turn.completedAt, timeZone) : "unknown"}; task updated ${task.updatedAt} | chat/task ${task.status}; execution ${turn.status}; tool calls ${calls.length}, failed commands/calls ${failed}; answer validation ${invalid ? "invalid metadata" : "no recorded validation failure"}; note ${note.freshness} (source ${note.sourceTurn ?? "unknown"}).`);
+    // Summaries are explicitly task-current, not falsely attributed to every historical turn.
+    if (task.continuationNote) lines.push(`Task summary (may cover later turns; ${note.freshness}): ${excerpt(task.continuationNote, 360)}${task.continuationNote.length > 360 ? " [excerpt; context_retrieve inspect task for full note]" : ""}`);
   }
   return lines.join("\n");
 }

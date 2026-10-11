@@ -188,6 +188,14 @@ function CallCard({ item, open, widest, growth, onCall }: { item: TraceCall; ope
       <PromptBar call={c} widest={widest} />
       {c.error && <p className="inspect-note" role="alert">{c.error.kind === "aborted" ? "Stopped before it finished." : `Failed: ${c.error.kind}${c.error.status ? ` ${c.error.status}` : ""}: ${c.error.message}`}</p>}
 
+      <Fold title="Context and note diagnostics" meta={item.diagnostics ? item.diagnostics.memory.explanation : "Context diagnostics unavailable"}>
+        {item.diagnostics ? <>
+          <p>Activity snapshot: {diagnosticDate(item.diagnostics.activityAsOf, item.diagnostics.timeZone)} · {item.diagnostics.timeZone}</p>
+          <p>{item.diagnostics.memory.explanation}. Recall: {item.diagnostics.memory.recall?.toFixed(2) ?? "unknown"}; threshold: {item.diagnostics.memory.threshold}; matched memories: {item.diagnostics.memory.matched}.</p>
+          {item.diagnostics.history && <p>General history: {item.diagnostics.history.used.toLocaleString()} / {item.diagnostics.history.budget.toLocaleString()} tokens. Included turns: {item.diagnostics.history.included.join(", ") || "none"}. Older exchanges omitted: {item.diagnostics.history.omitted}. Dates: {diagnosticDate(item.diagnostics.history.dates[0], item.diagnostics.timeZone)} to {diagnosticDate(item.diagnostics.history.dates.at(-1), item.diagnostics.timeZone)}.</p>}
+        </> : <p>Unknown for this recorded call; diagnostics are not reconstructed from today’s state.</p>}
+        {item.notes?.map((n, i) => <p key={i}>{n.field === "continuation_note" ? "Continuation note" : "Goal note"} {n.field === "goal_note" && n.outcome === "saved" && n.length === 0 ? "unchanged" : n.outcome}. {n.length ?? "Unknown"} characters; {n.attempts} repair attempts. {n.reason}</p>)}
+      </Fold>
       {item.context && (
         <Fold title={item.rebuilt ? "Context updated" : "Context it was given"} meta={`${item.context.length} blocks · ~${tokens(contextTokens)} text tokens`} open={open}>
           <div className="blocks">
@@ -229,4 +237,9 @@ function summarize(input: unknown): string {
   if (input === null || typeof input !== "object") return String(input);
   const text = Object.entries(input as Record<string, unknown>).map(([k, v]) => `${k}: ${typeof v === "string" ? v.replace(/\s+/g, " ") : JSON.stringify(v)}`).join(", ");
   return text.length > 110 ? `${text.slice(0, 109)}…` : text;
+}
+
+function diagnosticDate(value: string | undefined, timeZone: string): string {
+  if (!value) return "none";
+  return new Date(value).toLocaleString("en-GB", { timeZone, weekday: "short", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }

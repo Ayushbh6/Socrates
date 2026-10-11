@@ -627,7 +627,7 @@ it("keeps live lanes visible within budget despite oversized notes and many fini
   for (let i = 0; i < 44; i++) {
     const lane = w.store.openLane();
     const turn = w.store.bindTurn({ userEventId: w.store.recordUserMessage("Work", lane.id).id, taskId: w.taskId, route: "test" });
-    if (i < 40) w.store.completeTurn(turn.id, { responseEventId: w.store.recordResponse("Done").id, continuationNote: "very large note ".repeat(3000) });
+    if (i < 40) w.store.completeTurn(turn.id, { responseEventId: w.store.recordResponse("Done").id, continuationNote: "very large note ".repeat(93) });
   }
   const block = lanesBlock(w.store, laneSummaries(w.store, w.clock.now()).map((s) => ({ ...s, waitingForApproval: false })), w.clock.now(), "UTC")!;
   expect(countTokens(block)).toBeLessThanOrEqual(LANES_MAX_TOKENS);

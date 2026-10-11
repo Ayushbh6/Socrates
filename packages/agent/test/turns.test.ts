@@ -50,7 +50,7 @@ describe("turn lifecycle", () => {
     // Within the turn, the assembled context never changes; only the rolling breakpoint moves.
     expect(contextParts(step2!).map((p) => p.text)).toEqual(contextParts(step1!).map((p) => p.text));
     const marks = (r: typeof step1) => r!.messages.flatMap((m) => (m.role === "user" && typeof m.content !== "string" ? m.content.filter((p) => p.cache).map((p) => p.text.slice(0, 14)) : m.role === "tool" && m.cache ? ["tool"] : []));
-    expect(marks(step1)).toEqual(["[TURN 1]\nUSER:", "[TURN 2 — full", "<GOAL_STATE>\nn"]);
+    expect(marks(step1)).toEqual(["[TURN 1]\nUSER:", "[TURN 2 — full", "<CURRENT_TIME>"]);
     expect(marks(step2)).toEqual(["[TURN 1]\nUSER:", "[TURN 2 — full", "tool"]);
     // Across turns, the goal-stable block is identical.
     expect(contextParts(step1!)[0]!.text).toBe(contextParts(first.model.requests[0]!)[0]!.text);

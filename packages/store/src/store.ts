@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { type Attachment, type EventPayloads, type EventRefs, type EventType, MEMORY_PROFILE_MAX_TOKENS, MEMORY_TEXT_MAX_CHARS, type MemoryAuthor, type MemoryKind, type StoredEvent, type TurnStop } from "@socrates/contracts";
+import { CONTINUATION_NOTE_MAX_CHARS, GOAL_NOTE_MAX_CHARS, noteLength, type Attachment, type EventPayloads, type EventRefs, type EventType, MEMORY_PROFILE_MAX_TOKENS, MEMORY_TEXT_MAX_CHARS, type MemoryAuthor, type MemoryKind, type StoredEvent, type TurnStop } from "@socrates/contracts";
 import { type Clock, countTokens, newId, systemClock, truncateToTokens } from "@socrates/shared";
 import { MIGRATIONS, SCHEMA_SQL, SCHEMA_VERSION } from "./schema";
 
@@ -913,7 +913,7 @@ export class LedgerStore {
       }
       case "memory_saved": case "memory_edited": case "memory_forgotten": case "memory_surfaced": this.projectMemory(e); break;
       case "turn_redone": case "file_changed": case "terminal_started": case "approval_decided": case "history_omitted": case "agent_warning": case "agent_message": case "anchor_question": case "anchor_decided":
-      case "mcp_tools_listed": case "skill_shelf_frozen": case "clarification_cancelled": case "clarification_reply_failed": case "general_day_set": break;
+      case "note_outcome": case "context_diagnostics": case "mcp_tools_listed": case "skill_shelf_frozen": case "clarification_cancelled": case "clarification_reply_failed": case "general_day_set": break;
       default: throw new StoreError(`Unsupported event type: ${e.type}`);
     }
   }
@@ -1303,7 +1303,8 @@ export class LedgerStore {
 
   /** Append a goal-note revision and advance the goal projection. */
   reviseGoalNote(goalId: string, note: string): Goal {
-    note = truncateToTokens(note, 150).text;
+    note = note.trim();
+    if (noteLength(note) > GOAL_NOTE_MAX_CHARS) throw new Error("Goal note exceeds accepted character limit");
     return this.transaction(() => {
       const goal = this.requireGoal(goalId);
       const revision = goal.noteRevision + 1;
@@ -1422,7 +1423,7 @@ export class LedgerStore {
               ? null
               : truncateToTokens(changes.completionCriteria, 35).text,
         status: changes.status ?? task.status,
-        continuationNote: changes.continuationNote === undefined ? task.continuationNote : changes.continuationNote === null ? null : truncateToTokens(changes.continuationNote, 100).text,
+        continuationNote: changes.continuationNote === undefined ? task.continuationNote : changes.continuationNote === null ? null : checkedContinuationNote(changes.continuationNote),
       };
       const event = this.appendEvent(
         "task_revised",
@@ -1811,6 +1812,28 @@ export class LedgerStore {
       this.run("UPDATE turns SET status = 'interrupted', completed_at = ? WHERE id = ?", event.at, turnId);
       return this.requireTurn(turnId);
     });
+  }
+
+  /** Audit metadata is separate from the accepted note text. Older notes remain unknown. */
+  noteState(taskId: string): { freshness: "current" | "outdated" | "unknown"; sourceTurn: string | null; reason: string | null; outcome: string | null } {
+    const redone = this.redoneTurnIds();
+    const event = this.listEvents({ taskId, type: "note_outcome" }).filter(e => !redone.has(e.turn_id ?? "") && (e.payload as EventPayloads["note_outcome"]).field === "continuation_note").at(-1);
+    const review = this.listEvents({ taskId, type: "agent_warning" }).filter(e => (e.payload as EventPayloads["agent_warning"]).kind === "note_review").at(-1);
+    if (review && !redone.has(review.turn_id ?? "") && (!event || (review.seq > event.seq && (this.getTurn(review.turn_id!)?.projectTurn ?? 0) >= (this.getTurn(event.turn_id!)?.projectTurn ?? 0)))) return { freshness: "outdated", sourceTurn: review.turn_id, reason: (review.payload as EventPayloads["agent_warning"]).detail, outcome: "review" };
+    if (!event) return { freshness: "unknown", sourceTurn: null, reason: null, outcome: null };
+    const note = event.payload as EventPayloads["note_outcome"];
+    return { freshness: note.outcome === "failed" ? "outdated" : "current", sourceTurn: note.source_turn, reason: note.reason, outcome: note.outcome };
+  }
+
+  goalNoteState(goalId: string): ReturnType<LedgerStore["noteState"]> {
+    const redone = this.redoneTurnIds();
+    const event = this.listEvents({ goalId, type: "note_outcome" }).filter(e => {
+      const n = e.payload as EventPayloads["note_outcome"];
+      return !redone.has(e.turn_id ?? "") && n.field === "goal_note" && (n.outcome === "failed" || (n.length ?? 0) > 0);
+    }).at(-1);
+    if (!event) return { freshness: "unknown", sourceTurn: null, reason: null, outcome: null };
+    const n = event.payload as EventPayloads["note_outcome"];
+    return { freshness: n.outcome === "failed" ? "outdated" : "current", sourceTurn: n.source_turn, reason: n.reason, outcome: n.outcome };
   }
 
   /** Record an operational warning about a turn. It never changes the ledger. */
@@ -2489,4 +2512,10 @@ export function foldText(text: string): string {
 
 function searchableRequest({ request, attachments }: { request: string; attachments: Attachment[] }): string {
   return attachments.length ? `${request}\n[Attached images: ${attachments.map((a) => `${a.name} (${a.path})`).join(", ")}]` : request;
+}
+
+function checkedContinuationNote(note: string): string {
+  const value = note.trim();
+  if (!value || noteLength(value) > CONTINUATION_NOTE_MAX_CHARS) throw new Error("Continuation note must contain 1–1500 Unicode code points");
+  return value;
 }

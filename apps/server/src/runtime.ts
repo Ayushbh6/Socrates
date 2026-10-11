@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { type LaneState, MemoryGate, Socrates, interruptUnfinishedTurns } from "@socrates/agent";
+import { repairHistoricalNotes, type LaneState, MemoryGate, Socrates, interruptUnfinishedTurns } from "@socrates/agent";
 import { InstalledCatalog } from "@socrates/capabilities";
 import { type CallRecord, type DeciderClient, type Effort, type EmbeddingClient, type ModelClient, ModelError } from "@socrates/contracts";
 import { type EffortLevels, type ListedModel, PROVIDER_DEFAULTS, type Price, type Provider, costOf, detectEfforts, detectVision, listModels, listPrice, makeDecider, makeEmbedder, makeModel, reportedCost, splitModelId, withDecisionRecording, withRecording } from "@socrates/providers";
@@ -160,6 +160,7 @@ export class Runtime {
       runtime = new Runtime(config, store, calls, recovered, deps, log, unlock, settings);
       store.recoverClarificationReplies();
       store.dateGeneralTasks(runtime.timeZone);
+      repairHistoricalNotes(store);
       await runtime.start();
       return runtime;
     } catch (error) {

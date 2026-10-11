@@ -24,7 +24,7 @@ export function InspectOverview({ range, ms, onCall }: { range: Range; ms: numbe
   if (!s || !sr) return <p className="inspect-empty">Loading…</p>;
 
   const t = s.totals, w = s.work;
-  const agentRoles = ["work", "wrap_up", "repair"] as const;
+  const agentRoles = ["work", "wrap_up", "repair", "note_repair"] as const;
   const calls = stacked(sr, (b) => b.calls);
   const callSeries: SeriesDef[] = calls.groups.map((g) => ({ name: g, color: GROUP_COLORS[g]! }));
   const tokenSeries: SeriesDef[] = [{ name: "Prompt from the cache", color: "var(--s3)" }, { name: "Prompt sent fresh", color: "var(--s1)" }, { name: "Output", color: "var(--s5)" }];

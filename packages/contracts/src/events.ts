@@ -81,7 +81,7 @@ export interface EventPayloads {
   assistant_response: { text: string };
   /** Exact received agent output, including intermediate and invalid candidates.
    * Separate from assistant_response, which is the accepted visible answer. */
-  agent_message: { phase: "work" | "wrap_up" | "repair"; response: ModelResponse };
+  agent_message: { phase: "work" | "wrap_up" | "repair" | "note_repair"; response: ModelResponse };
   /**
    * `stop` says why the working agent ended: its own final answer, or the
    * wrap-up after a per-turn limit. `task_complete_reason` is the agent's
@@ -116,7 +116,9 @@ export interface EventPayloads {
    */
   turn_interrupted: { project_turn: number; reason: "cancelled" | "failed" | "restarted"; tool_calls: number; continuation_note: string; partial_answer?: string };
   /** An operational warning about one turn, such as a rejected final answer or anchor proposal. */
-  agent_warning: { kind: "final_answer_invalid" | "anchor_rejected" | "memory_rejected" | "model_error" | "agent_error" | "context_limit" | "compactor_failed" | "compaction_failsafe"; detail: string };
+  context_diagnostics: { contextHash: string; contextParts: number; activityAsOf: string; timeZone: string; history: { budget: number; used: number; included: number[]; omitted: number; dates: string[] } | null; memory: { recall: number | null; threshold: number; matched: number; explanation: string } };
+  note_outcome: import("./agent").NoteOutcome & { source_turn: string; correction?: boolean };
+  agent_warning: { kind: "note_failed" | "note_review" | "final_answer_invalid" | "anchor_rejected" | "memory_rejected" | "model_error" | "agent_error" | "context_limit" | "compactor_failed" | "compaction_failsafe"; detail: string };
   /**
    * One working-agent tool call, exactly as the model emitted it. `handle` is
    * the call's permanent evidence handle within its task ("e12").

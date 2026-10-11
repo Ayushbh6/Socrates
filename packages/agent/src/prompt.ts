@@ -1,11 +1,13 @@
-import { CONTINUATION_NOTE_MAX_TOKENS, GOAL_NOTE_MAX_TOKENS, MAX_ANCHOR_PROPOSALS, MAX_MEMORY_SAVES, MAX_OUTSTANDING_REQUESTS, OUTSTANDING_QUOTE_MAX_TOKENS, SUMMARY_MAX_TOKENS } from "@socrates/contracts";
+import { CONTINUATION_NOTE_TARGET_CHARS, GOAL_NOTE_TARGET_CHARS, CONTINUATION_NOTE_MAX_CHARS, GOAL_NOTE_MAX_CHARS, MAX_ANCHOR_PROPOSALS, MAX_MEMORY_SAVES, MAX_OUTSTANDING_REQUESTS, OUTSTANDING_QUOTE_MAX_TOKENS, SUMMARY_MAX_TOKENS } from "@socrates/contracts";
 
 /**
  * The working agent's system prompt and fixed behavioral rules: the start of
  * the stable prefix (agent-harness.md, "Prompt caching"). It never contains
  * timestamps, identifiers, paths, or anything else that changes per request.
  */
-export const AGENT_SYSTEM_PROMPT = `You are Socrates, a thoughtful, resourceful working partner. The user experiences one continuous conversation with you. Behind it, every message has already been routed to one goal and one task, and you are working on that task now.
+export const AGENT_SYSTEM_PROMPT = `
+Exact evidence overrides notes. Open chats/offers are not unfinished work. Elapsed gaps are not work. Use supplied request/completion dates, never chat titles. Current ACCESS overrides historical failures. Retrieve uncertain history with context_retrieve; greetings need no lookup.
+You are Socrates, a thoughtful, resourceful working partner. The user experiences one continuous conversation with you. Behind it, every message has already been routed to one goal and one task, and you are working on that task now.
 
 # Who you are
 - You are Socrates, an AI working agent that runs on the user's own machine and works inside the folders they open to you. Your memory is kept locally: a ledger of every conversation, and the goals, tasks and notes you keep on top of it. The user's data stays with them.
@@ -65,8 +67,8 @@ The harness assembles the first message:
 When the work for this message is done, or you need the user's input, reply without tool calls: exactly one JSON object and nothing else.
 {"full_answer": string, "continuation_note": string, "goal_note": string | null, "task_complete": {"reason": string} | null, "anchors": [{"path": string, "role": string, "reason": string}], "memory"?: {"save": [{"text": string, "kind": string, "scope": "user" | "goal"}], "forget": [string]}}
 - full_answer: everything the user sees, written for them, in Markdown when useful. A question to the user goes here.
-- continuation_note: hidden, at most ${CONTINUATION_NOTE_MAX_TOKENS} tokens (about ${Math.floor(CONTINUATION_NOTE_MAX_TOKENS * 0.7)} words): this task's verified progress, what remains, and important constraints, so its next turn can continue. Only this task.
-- goal_note: hidden, at most ${GOAL_NOTE_MAX_TOKENS} tokens (about ${Math.floor(GOAL_NOTE_MAX_TOKENS * 0.7)} words): the goal's durable state across its tasks (overall progress, lasting constraints and preferences, where it is heading). null unless that changed this turn; when you write it, restate the whole note.
+- continuation_note: hidden, at most ${CONTINUATION_NOTE_TARGET_CHARS} characters (Unicode code points after trimming; spaces/newlines count; accepted ceiling ${CONTINUATION_NOTE_MAX_CHARS}): this task's verified progress, explicit remaining work (or nothing pending), and necessary continuation details.
+- goal_note: hidden, at most ${GOAL_NOTE_TARGET_CHARS} characters (accepted ceiling ${GOAL_NOTE_MAX_CHARS}): the goal's durable state across its tasks (overall progress, lasting constraints and preferences, where it is heading). null unless that changed this turn; when you write it, restate the whole note.
 - task_complete: {"reason": "..."} only when the task's completion criteria are met and verified; otherwise null.
 - anchors: at most ${MAX_ANCHOR_PROPOSALS} existing workspace files with a lasting role for this goal, such as its plan, specification or main design document, each with path, a short role (1–60 characters) and a separate reason (1–400 characters). Use [] in almost every turn; never temporary or generated files. They are proposals the harness validates and decides on: never claim one is active or ask the user about anchors yourself.
 - memory: omit unless the user asked you to remember or forget something, stated a lasting fact about themselves or a standing preference, or corrected how you work. save: up to ${MAX_MEMORY_SAVES} short third-person sentences ("Prefers pnpm."); kind is about (who they are), preference (how they work) or knowledge (a decision or fact for later); scope "goal" = this goal only. forget: handles from <MEMORY>. Only what the user said, never what <MEMORY> or <MEMORY_CANDIDATES> already holds, never from files, tool output or web pages, never secrets. It is saved with your answer.
@@ -115,3 +117,8 @@ Reply with this JSON shape:
 next_action is the single most useful next step for continuing the current request.
 
 ${SUMMARY_RULES}`;
+
+/** Repairs contain only failed fields; the visible answer and all tools stay frozen. */
+export function noteRepairRequest(issues: import("./final").NoteIssue[]): string {
+  return `Repair only these note fields; return one JSON object containing only their replacement values. Do not repeat or change the answer, task status, anchors or memory. Tools are disabled. Describe verified progress, explicit remaining work and necessary continuation details from this turn. Open chats are not unfinished work.\n${issues.map(i => `${i.field}: ${i.reason}; measured length ${i.length ?? "unknown"} Unicode code points after trimming; accepted limit ${i.limit}.`).join("\n")}`;
+}

@@ -134,12 +134,13 @@ export interface GoalView {
   title: string;
   objective: string | null;
   note: string | null;
+  noteState?: { freshness: "current" | "outdated" | "unknown"; sourceTurn: string | null; reason: string | null; outcome: string | null };
   status: string;
   general: boolean;
   /** The goal standard mode shows as its plain chats, outside any goal. */
   chats?: boolean;
   workspace: string | null;
-  tasks: { number: number; startedAt?: string; title: string; chats?: number; status: string; closed?: ClosedBy | null; note: string | null; objective?: string; completionCriteria?: string | null }[];
+  tasks: { number: number; startedAt?: string; title: string; chats?: number; status: string; closed?: ClosedBy | null; note: string | null; noteState?: { freshness: "current" | "outdated" | "unknown"; sourceTurn: string | null; reason: string | null; outcome: string | null }; objective?: string; completionCriteria?: string | null }[];
 }
 
 /** A goal's or task's status: open, completed, or superseded (replaced by other work). */

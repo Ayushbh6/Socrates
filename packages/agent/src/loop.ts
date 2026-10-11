@@ -1,4 +1,4 @@
-import { type CallTrace, type FinalAnswer, type ImageData, type ModelClient, ModelError, type ModelMessage, type ModelResponse, type TextPart, type ToolCall, type ToolDefinition, type TurnStop } from "@socrates/contracts";
+import { noteLength, type NoteOutcome, type CallTrace, type FinalAnswer, type ImageData, type ModelClient, ModelError, type ModelMessage, type ModelResponse, type TextPart, type ToolCall, type ToolDefinition, type TurnStop } from "@socrates/contracts";
 import type { TokenCalibration } from "@socrates/providers";
 import { abortable } from "@socrates/shared";
 import type { ActiveCapabilities, CallScope, ToolRunner } from "@socrates/tools";
@@ -6,9 +6,9 @@ import { refreshCapabilityContext } from "./context";
 import { type Draft, streamDrafts } from "./draft";
 import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
 import type { Compact, Measure } from "./compaction";
-import { mechanicalNote, validateFinalAnswer } from "./final";
+import { mechanicalNote, parseJsonObject, validateNotes, type FinalValidation, validateFinalAnswer } from "./final";
 import { messageTokens, requestTokens } from "./model-budget";
-import { repairRequest, wrapUpRequest } from "./prompt";
+import { noteRepairRequest, repairRequest, wrapUpRequest } from "./prompt";
 export { messageTokens, requestTokens } from "./model-budget";
 
 /** Per-turn safeguards (agent-harness.md, "Safety and long-running work"). All configurable. */
@@ -77,7 +77,7 @@ export interface RunInput {
   retryDelaysMs?: number[];
   now?: () => number;
   /** Persist every received response before executing or interpreting it. */
-  onResponse?: (response: ModelResponse, phase: "work" | "wrap_up" | "repair") => void;
+  onResponse?: (response: ModelResponse, phase: "work" | "wrap_up" | "repair" | "note_repair") => void;
   /**
    * The readable part of each reply while it arrives. Drafts are temporary
    * and never saved; when given, the turn's requests are streamed.
@@ -98,7 +98,7 @@ export interface RunInput {
 }
 
 export type RunOutcome =
-  | { kind: "answer"; answer: FinalAnswer; stop: TurnStop; toolCalls: number; steps: number }
+  | { kind: "answer"; answer: FinalAnswer; notes: NoteOutcome[]; stop: TurnStop; toolCalls: number; steps: number }
   | { kind: "limited"; text: string; note: string; stop: TurnStop; toolCalls: number; steps: number }
   | { kind: "invalid"; text: string; errors: string[]; stop: TurnStop; toolCalls: number; steps: number }
   /** `partial`: on a stop, the answer as far as it had streamed, or null. */
@@ -106,7 +106,7 @@ export type RunOutcome =
 
 const TRANSIENT = new Set<ModelError["kind"]>(["rate_limit", "server", "network"]);
 
-type Phase = "work" | "wrap_up" | "repair";
+type Phase = "work" | "wrap_up" | "repair" | "note_repair";
 type CallResult = { kind: "response"; response: ModelResponse } | { kind: "failed"; detail: string } | { kind: "cancelled" | "deadline" | "context" };
 
 /** Run the model and tools until a final answer, interruption or bounded wrap-up. */
@@ -137,7 +137,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
   const finalization = () => {
     if (!finalSignal) {
       const controller = new AbortController();
-      finalTimer = setTimeout(() => controller.abort(), limits.finalizationMs ?? 60_000);
+      finalTimer = setTimeout(() => controller.abort(), Math.min(limits.finalizationMs ?? 60_000, 60_000));
       finalSignal = AbortSignal.any([scope.signal, controller.signal]);
     }
     return finalSignal;
@@ -198,7 +198,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
       const onText = onDraft ? streamDrafts((draft) => {
         // Repair corrects a candidate already shown. Keep provider streaming
         // and recording, but publish the validated result once at completion.
-        if (phase === "repair") return;
+        if ((phase === "repair" || phase === "note_repair")) return;
         if (draft.kind === "answer") partial = draft.text;
         onDraft(draft);
       }, request) : undefined;
@@ -207,7 +207,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
       const live = () => streaming && request === requests && !signal.aborted && !scope.signal.aborted;
       try {
         const response = await abortable(model.complete({
-          system: input.system, messages: withRollingBreakpoint(messages), tools,
+          system: input.system, messages: withRollingBreakpoint(messages), tools: phase === "note_repair" ? [] : tools,
           toolChoice: phase === "work" ? "auto" : "none", maxOutputTokens: input.maxOutputTokens ?? 16_000, signal,
           trace: { ...input.trace, role: phase, goalId: scope.binding.goalId, taskId: scope.binding.taskId, chatId: scope.binding.chatId, turnId: scope.binding.turnId, step: request },
           // Work and retries each have a draft; repair never replays the answer.
@@ -230,7 +230,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
         if (scope.signal.aborted) return { kind: "cancelled" };
         if (signal.aborted) return { kind: "deadline" };
         if (error instanceof ModelError && error.kind === "aborted") return { kind: "cancelled" };
-        const delays = input.retryDelaysMs ?? [1_000, 4_000];
+        const delays = phase === "note_repair" ? [] : input.retryDelaysMs ?? [1_000, 4_000];
         const delay = delays[attempt];
         if (!(error instanceof ModelError) || !TRANSIENT.has(error.kind) || delay === undefined) {
           return { kind: "failed", detail: error instanceof Error ? error.message : String(error) };
@@ -280,6 +280,41 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
       await appendResponse(result.response, workSignal);
     }
   };
+  const acceptAnswer = async (response: ModelResponse, valid: Extract<FinalValidation, { ok: true }>, stop: TurnStop): Promise<RunOutcome> => {
+    const answer = { ...valid.value };
+    let pending = valid.noteIssues;
+    const notes: NoteOutcome[] = (["continuation_note", "goal_note"] as const).map(field => ({ field, outcome: "saved", length: answer[field] === null ? 0 : noteLength(answer[field]!), reason: null, attempts: 0 }));
+    if (pending.length) {
+      push({ role: "assistant", content: response.text });
+      const signal = finalization();
+      for (let attempt = 1; pending.length && attempt <= 2 && !signal.aborted; attempt++) {
+        push({ role: "user", content: noteRepairRequest(pending) });
+        const repair = await call("note_repair", signal, true);
+        for (const issue of pending) notes.find(n => n.field === issue.field)!.attempts = attempt;
+        if (repair.kind !== "response" || signal.aborted) {
+          pending = pending.map(i => ({ ...i, reason: signal.aborted ? (scope.signal.aborted ? "cancelled" : "deadline") : repair.kind === "failed" ? repair.detail : repair.kind }));
+          break;
+        }
+        push({ role: "assistant", content: repair.response.text });
+        let raw: Record<string, unknown> = {};
+        try {
+          const parsed = parseJsonObject(repair.response.text);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && !repair.response.toolCalls.length) raw = parsed as Record<string, unknown>;
+        } catch { /* Entire raw response was already recorded. */ }
+        const issues = validateNotes(raw, pending.map(i => i.field));
+        for (const issue of pending) if (!issues.some(i => i.field === issue.field)) {
+          const value = raw[issue.field];
+          answer[issue.field] = (value === null ? null : (value as string).trim()) as never;
+          Object.assign(notes.find(n => n.field === issue.field)!, { outcome: "repaired", length: value === null ? 0 : noteLength(value as string) });
+        }
+        pending = issues;
+      }
+      for (const issue of pending) Object.assign(notes.find(n => n.field === issue.field)!, { outcome: "failed", length: issue.length, reason: scope.signal.aborted ? "cancelled" : finalSignal?.aborted ? "Note repair deadline expired" : issue.reason });
+    }
+    // A failed/cancelled metadata repair cannot erase the accepted visible answer.
+    await followUp(response, answer, stop);
+    return { kind: "answer", answer, notes, stop, toolCalls, steps };
+  };
   const finish = async (response: ModelResponse, stop: TurnStop): Promise<RunOutcome> => {
     if (scope.signal.aborted) {
       if (response.toolCalls.length) await appendResponse(response, refused);
@@ -287,8 +322,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
     }
     const first = validate(response);
     if (first.ok) {
-      await followUp(response, first.value, stop);
-      return { kind: "answer", answer: first.value, stop, toolCalls, steps };
+      return acceptAnswer(response, first, stop);
     }
     await appendResponse(response, refused);
     push({ role: "user", content: repairRequest(first.errors) });
@@ -299,8 +333,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
     if (finalSignal!.aborted) return interrupted("failed", "The final-answer deadline expired.");
     const second = validate(repaired.response);
     if (second.ok) {
-      await followUp(repaired.response, second.value, stop);
-      return { kind: "answer", answer: second.value, stop, toolCalls, steps };
+      return acceptAnswer(repaired.response, second, stop);
     }
     return invalid(repaired.response.text.trim() ? repaired.response.text : response.text, second.errors, stop);
   };

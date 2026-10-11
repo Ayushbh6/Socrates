@@ -1,5 +1,5 @@
 import type { EventPayloads, TextPart } from "@socrates/contracts";
-import { countTokens } from "@socrates/shared";
+import { countTokens, truncateToTokens, eventTime } from "@socrates/shared";
 import type { Evidence, HistoryRecord, LedgerStore, Turn } from "@socrates/store";
 import { head, headTail } from "@socrates/tools";
 import { attachmentLines, requestAttachments, requestText } from "./attachments";
@@ -275,4 +275,42 @@ function responseSection(store: LedgerStore, turn: Turn): string {
   return interruption.reason === "cancelled" ? `(The user stopped this turn after ${calls}; no answer was given.)`
     : interruption.reason === "restarted" ? `(Socrates stopped while this turn ran, after ${calls}; no answer was given.)`
     : `(This turn failed after ${calls}; no answer was given.)`;
+}
+
+/** General has one chronological evidence window across daily tasks, never lane history. */
+export function generalHistoryParts(store: LedgerStore, current: Turn, timeZone: string, previousBudget = 20_000, totalBudget = 30_000, asOf = store.clock.now()): { parts: TextPart[]; included: number[]; omitted: number; used: number; budget: number; dates: string[] } {
+  const redone = store.redoneTurnIds();
+  const candidates = store.listTasks(current.goalId!).flatMap(task => {
+    const boundary = Math.max(store.latestHistoryRecord(task.id)?.to ?? 0, store.pendingOmission(task.id)?.to ?? 0);
+    return store.turnsForTask(task.id).filter(t => t.projectTurn < current.projectTurn && t.userEventId !== current.userEventId && !t.laneId && t.status !== "in_progress" && t.projectTurn > boundary && (t.completedAt ?? t.createdAt) <= asOf.toISOString() && !redone.has(t.id));
+  }).sort((a, b) => store.requestRoot(a.userEventId).at.localeCompare(store.requestRoot(b.userEventId).at) || a.projectTurn - b.projectTurn);
+  const parts: TextPart[] = [];
+  const included: number[] = [], dates: string[] = [];
+  // Reserve a fixed allowance for the explicit window/omission marker.
+  let used = 0;
+  const room = Math.max(0, totalBudget - 180);
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    const t = candidates[i]!;
+    const requested = store.requestRoot(t.userEventId).at;
+    const invalid = store.listEvents({ turnId: t.id, type: "agent_warning" }).some(e => (e.payload as EventPayloads["agent_warning"]).kind === "final_answer_invalid");
+    const label = `[General exchange g${store.requireGoal(t.goalId!).number}/t${store.requireTask(t.taskId!).number}; turn_number ${t.projectTurn}; id ${t.id}; REQUESTED ${eventTime(requested, timeZone)}; FINISHED ${t.completedAt ? eventTime(t.completedAt, timeZone) : "unknown"}; execution ${t.status}; answer validation ${invalid ? "invalid metadata; visible answer preserved" : "see recorded evidence"}]`;
+    const newest = i === candidates.length - 1;
+    const cap = Math.min(room - used, newest ? previousBudget : room);
+    if (cap < 180) break;
+    const content = `${label}\n${newest ? renderFullTurn(store, t, Math.max(1, cap - countTokens(label) - 5)) : renderExchangeTurn(store, t)}`.replace(/context_retrieve inspect (e\d+)/g, `context_retrieve inspect g${store.requireGoal(t.goalId!).number}/t${store.requireTask(t.taskId!).number}/$1`);
+    let text = content;
+    if (countTokens(text) > cap - 3) {
+      const marker = `\n[EXCERPT: omitted content remains in context_retrieve inspect turn_number ${t.projectTurn}.]`;
+      text = truncateToTokens(content, Math.max(0, cap - countTokens(marker) - 5)).text + marker;
+    }
+    const cost = countTokens(text + "\n\n");
+    if (used + cost > room) break;
+    parts.unshift({ text: text + "\n\n", cache: true });
+    included.unshift(t.projectTurn); dates.unshift(requested); used += cost;
+    if (text !== content && !newest) break; // Keep a contiguous newest window, with one marked oldest excerpt.
+  }
+  const omitted = candidates.length - included.length;
+  const notice = `<GENERAL_HISTORY_WINDOW>Chronological General exchanges; ${totalBudget} token total allowance, previous-turn allowance ${previousBudget}. Included ${included.length} exchanges; turn references and request dates accompany each exchange. ${omitted} eligible older exchanges omitted; checkpoint-covered and explicitly omitted spans are not replayed. context_retrieve can recover older exact evidence. Notes are summaries; exact answers and tool evidence take precedence.</GENERAL_HISTORY_WINDOW>\n\n`;
+  parts.unshift({ text: notice });
+  return { parts, included, omitted, used: used + countTokens(notice), budget: totalBudget, dates };
 }

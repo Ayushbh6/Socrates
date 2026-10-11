@@ -1,14 +1,26 @@
 /**
  * The working agent's final result (agent-harness.md, "Final result"). The
  * last model message of every run is one JSON object of this shape; the
- * harness validates it, including the token bounds of the hidden fields,
+ * harness validates it, independently of note metadata,
  * before anything is persisted.
  */
 import { z } from "zod";
 
-/** Hard bounds of the hidden fields, equal to the ledger's own bounds. */
-export const CONTINUATION_NOTE_MAX_TOKENS = 100;
-export const GOAL_NOTE_MAX_TOKENS = 150;
+/** Prompt targets and accepted limits (25% tolerance), measured after trimming. */
+export const CONTINUATION_NOTE_TARGET_CHARS = 1_200;
+export const GOAL_NOTE_TARGET_CHARS = 2_000;
+export const CONTINUATION_NOTE_MAX_CHARS = 1_500;
+export const GOAL_NOTE_MAX_CHARS = 2_500;
+export const noteLength = (text: string): number => Array.from(text.trim()).length;
+export type NoteField = "continuation_note" | "goal_note";
+export interface NoteOutcome {
+  field: NoteField;
+  outcome: "saved" | "repaired" | "failed";
+  length: number | null;
+  reason: string | null;
+  attempts: number;
+}
+
 export const MAX_ANCHOR_PROPOSALS = 3;
 
 export const AnchorProposal = z.strictObject({

@@ -183,3 +183,7 @@ The page builds each conversation from history pages and the live connection, wi
 - A lost connection reconnects and catches up from the newest event the page applied; one too far behind reloads from history.
 - History includes a snapshot cursor, turn IDs and ordered narration, tool previews and decisions. On a replay reset, delivery pauses while that snapshot loads, then a fresh connection requests activity and the current drafts. Events already represented by each snapshot are ignored. An unfinished turn older than the replay window uses the snapshot directly.
 - Changes to settings, keys or access from another tab reach every page.
+
+## Note freshness and context explanations (2026-10-11)
+
+Task notes carry optional freshness metadata. Failed note-only repair keeps the previous text and shows “Note outdated · view details”; without an earlier note it says “Continuation note unavailable.” Expanded notes explain the failure and link to Inspect. The successful answer remains visible. Inspect's context explanation shows the recorded General window, timestamps, omissions, memory-gate explanation and note outcomes. Older traces explicitly show unknown diagnostics. The existing Socrates typography, folds and note surfaces are reused.

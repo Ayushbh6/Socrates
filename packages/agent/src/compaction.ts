@@ -79,7 +79,16 @@ export function createCompactor(options: CompactorOptions): Compact {
     let checkpoint: string | null = null;
     const rollover = chat.compactionCount >= budgets.maxCompactionsPerChat;
     let rolledOver = false;
-    if (rollover) {
+    if (store.requireTask(taskId).general && !turn.laneId) {
+      // General has a bounded cross-day raw window; no overlapping checkpoint.
+      // Preserve chat rollover with a capsule that does not claim to cover that raw window.
+      if (rollover) {
+        const prior = store.latestHistoryRecord(taskId);
+        const content: TaskHandover = { task_objective: store.requireTask(taskId).objective, completion_criteria: "", verified_progress: "General history is supplied separately as a bounded chronological window.", outstanding_requests: [], decisions: [], constraints: [], files_and_tests: [], blockers: [], next_action: "Continue the current request with the separately supplied General history.", key_evidence: [] };
+        const capsule = store.recordHistoryRecord(refs, { kind: "handover", from: prior?.from ?? 0, to: prior?.to ?? 0, content, mechanical: true });
+        store.rolloverChat(chat.id, capsule); rolledOver = true;
+      }
+    } else if (rollover) {
       options.onStatus?.("Refreshing this long task's context…");
       const capsule = await writeHandover(writer, refs, signal);
       if (capsule === "cancelled") return null;

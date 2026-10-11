@@ -1,30 +1,30 @@
-import { CONTINUATION_NOTE_MAX_TOKENS, FinalAnswer, GOAL_NOTE_MAX_TOKENS } from "@socrates/contracts";
-import { countTokens, truncateToTokens } from "@socrates/shared";
+import { CONTINUATION_NOTE_MAX_CHARS, FinalAnswer, GOAL_NOTE_MAX_CHARS, noteLength, type NoteField } from "@socrates/contracts";
 
-export type FinalValidation = { ok: true; value: FinalAnswer } | { ok: false; errors: string[] };
+export interface NoteIssue { field: NoteField; length: number | null; limit: number; reason: string }
+export type FinalValidation = { ok: true; value: FinalAnswer; noteIssues: NoteIssue[] } | { ok: false; errors: string[] };
 
-/**
- * Validate the model's final message (agent-harness.md, "Final result"): one
- * JSON object matching the FinalAnswer schema, with the hidden notes inside
- * their token bounds. Errors are phrased for the single repair request.
- */
+/** Validate answer fields independently: bad notes never discard a valid answer. */
 export function validateFinalAnswer(text: string): FinalValidation {
   let raw: unknown;
-  try {
-    raw = parseJsonObject(text);
-  } catch {
-    return { ok: false, errors: ["The message must be one JSON object with full_answer, continuation_note, goal_note, task_complete, and anchors; it could not be parsed as one JSON object."] };
-  }
-  const parsed = FinalAnswer.safeParse(raw);
-  if (!parsed.success) {
-    return { ok: false, errors: parsed.error.issues.slice(0, 8).map((i) => `${i.path.join(".") || "(object)"}: ${i.message}`) };
-  }
-  const errors: string[] = [];
-  const note = countTokens(parsed.data.continuation_note);
-  if (note > CONTINUATION_NOTE_MAX_TOKENS) errors.push(`continuation_note is ${note} tokens; shorten it to at most ${CONTINUATION_NOTE_MAX_TOKENS}.`);
-  const goal = parsed.data.goal_note === null ? 0 : countTokens(parsed.data.goal_note);
-  if (goal > GOAL_NOTE_MAX_TOKENS) errors.push(`goal_note is ${goal} tokens; shorten it to at most ${GOAL_NOTE_MAX_TOKENS}.`);
-  return errors.length ? { ok: false, errors } : { ok: true, value: parsed.data };
+  try { raw = parseJsonObject(text); }
+  catch { return { ok: false, errors: ["The message must be one JSON object with full_answer, continuation_note, goal_note, task_complete, and anchors."] }; }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, errors: ["Expected a final answer object."] };
+  const object = raw as Record<string, unknown>;
+  const noteIssues = validateNotes(object);
+  const parsed = FinalAnswer.safeParse({ ...object, continuation_note: typeof object.continuation_note === "string" && object.continuation_note.trim() ? object.continuation_note.trim() : "Continuation note unavailable.", goal_note: typeof object.goal_note === "string" && object.goal_note.trim() ? object.goal_note.trim() : null });
+  if (!parsed.success) return { ok: false, errors: parsed.error.issues.slice(0, 8).map(i => `${i.path.join(".") || "(object)"}: ${i.message}`) };
+  return { ok: true, value: parsed.data, noteIssues };
+}
+
+export function validateNotes(raw: Record<string, unknown>, fields: NoteField[] = ["continuation_note", "goal_note"]): NoteIssue[] {
+  return fields.flatMap(field => {
+    const limit = field === "continuation_note" ? CONTINUATION_NOTE_MAX_CHARS : GOAL_NOTE_MAX_CHARS;
+    const value = raw[field];
+    if (field === "goal_note" && value === null) return [];
+    const length = typeof value === "string" ? noteLength(value) : null;
+    const reason = length === null ? "missing or not a string" : length === 0 ? "empty" : length > limit ? "exceeds accepted character limit" : null;
+    return reason ? [{ field, length, limit, reason }] : [];
+  });
 }
 
 /**
@@ -65,5 +65,5 @@ export function fallbackAnswer(text: string): string {
 
 /** The mechanical continuation note written when the agent produced none. */
 export function mechanicalNote(what: string, toolCalls: number): string {
-  return truncateToTokens(`${what} after ${toolCalls} tool call${toolCalls === 1 ? "" : "s"}.`, CONTINUATION_NOTE_MAX_TOKENS).text;
+  return `${what} after ${toolCalls} tool call${toolCalls === 1 ? "" : "s"}.`;
 }

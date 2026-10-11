@@ -99,3 +99,9 @@ Why the later steps are the measure: they send everything the step before sent p
 
 The first measurements are in `docs/reviews/cache-eval-2026-10-06.md`.
 
+
+## Context and continuation-note diagnostics (2026-10-11)
+
+Optional `context_diagnostics` events record included General turn references and date range, budget/usage, omission count, frozen activity boundary/timezone and memory gate outcome. Each snapshot stores a hash of the assembled text parts; Inspect joins it to the actual request prefix, including rebuilt contexts, rather than reconstructing context from current ledger state. Older calls show diagnostics unknown. The UI explains “Recall below threshold”, “No matching saved memories” and saved/repaired/failed notes. Missing diagnostics never imply no history or no recall.
+
+The `note_repair` call role is included in worker usage totals and displayed as “Continuation note repair”. It uses the same configured agent with tools disabled. Original call responses remain intact. `note_outcome` separately records source turn, field, measured length, repair attempts, outcome and failure reason; historical corrections are explicitly marked. Turn inspection and context retrieval expose these records. Failed updates show an outdated/unavailable note warning with access to details.

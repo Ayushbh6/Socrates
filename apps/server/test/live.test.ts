@@ -293,7 +293,7 @@ describe("drafts of a reply that is arriving", () => {
         await finishCandidate.opened;
         return { text };
       }
-      expect(request.trace?.role).toBe("repair");
+      expect(request.trace?.role).toBe("note_repair");
       expect(request.toolChoice).toBe("none");
       request.onReasoning?.("Shortening the hidden note.");
       request.onText?.('{"full_answer":"Checkout');
@@ -310,7 +310,7 @@ describe("drafts of a reply that is arriving", () => {
     expect(await p.next(m => m.type === "draft" && m.kind === "answer" && m.call === 1)).toMatchObject({ text: candidate });
     finishCandidate.open();
     await repairing.opened;
-    await p.next(m => m.type === "draft" && m.kind === "thinking" && m.call === 2);
+    // Note-only repair stays private; the first answer remains visible.
     const late = await page();
     late.send({ type: "hello" });
     await late.next(m => m.type === "state");
@@ -323,11 +323,11 @@ describe("drafts of a reply that is arriving", () => {
       expect(drafts(viewer).filter(m => m.kind === "answer")).toEqual([]);
       expect(viewer.received.filter(m => m.type === "activity" && m.kind === "answer")).toHaveLength(1);
     }
-    expect(rt.store.listEvents({ type: "assistant_response" }).map(e => (e.payload as { text: string }).text)).toEqual([corrected]);
+    expect(rt.store.listEvents({ type: "assistant_response" }).map(e => (e.payload as { text: string }).text)).toEqual([candidate]);
     await rt.flushCalls();
     const recorded = rt.calls!.list({ limit: 100 }).filter(c => c.role !== "embedding");
-    expect(recorded.map(c => c.role).sort()).toEqual(["repair", "router", "work"]);
-    expect(recorded.find(c => c.role === "repair")).toMatchObject({ streamed: true, ok: true, firstTokenMs: expect.any(Number) });
+    expect(recorded.map(c => c.role).sort()).toEqual(["note_repair", "router", "work"]);
+    expect(recorded.find(c => c.role === "note_repair")).toMatchObject({ streamed: false, ok: true, firstTokenMs: null });
   });
 
   it("sends the readable part of a reply as it arrives, to a page that joins late too, and never after the saved answer", async () => {

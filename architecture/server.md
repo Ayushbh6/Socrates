@@ -245,3 +245,7 @@ Cancelling main also cancels its compound message while a part waits in a lane. 
 ## Stopping
 
 Ctrl-C (or `SIGTERM`) closes the live hub before draining the listener, cancels every running message and waits until each is recorded as interrupted, refuses pending approvals, disconnects every page, then closes terminals, MCP servers, the index and ledger. Repeated close calls share the same drain. A page that never answers its WebSocket close frame is disconnected after one second.
+
+## Auditable continuation metadata (2026-10-11)
+
+Runtime startup applies narrowly proven length-only historical note corrections as appended ledger revisions and flags the reported unsupported Sunday summary for review. It never rewrites messages/events/model calls or reruns historical work. Task views expose optional note freshness. Inspect joins recorded context snapshots to exact request text hashes; absent snapshots stay unknown. See `agent-harness.md` for character limits, note-only repair and General history selection.

@@ -353,7 +353,7 @@ describe("router context", () => {
     clock.set("2026-09-01T14:02:00Z");
     await exchange(store, "Checkout", createTask("Checkout flow fix"), "ok", "Tests pass, staging deploy.");
     const ctx = buildRoutingContext(store, "hi", { timeZone: TZ });
-    expect(ctx.input).toContain("Last 48 hours (detail):\n2026-09-01 14:02  —            Website X · Checkout flow fix (open) — Tests pass, staging deploy.");
-    expect(ctx.input).toContain("Last 7 days (one line each):\n2026-08-28        —            Website X · Payment provider integration (open)");
+    expect(ctx.input).toContain("chat/task open; execution completed");
+    expect(ctx.input).toContain("requested Friday 2026-08-28 09:00:00 UTC");
   });
 });

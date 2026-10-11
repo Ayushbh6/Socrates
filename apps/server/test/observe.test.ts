@@ -202,6 +202,9 @@ describe("the trace of a message", () => {
     // The first agent step: its context in blocks, its thinking, and the read it called with the file as the tool answered.
     expect(first).toMatchObject({ group: "turn", reasoning: "I should read the notes first.", entered: [], rebuilt: false });
     expect(first.context.map((b: { name: string }) => b.name)).toEqual(expect.arrayContaining(["GOAL", "CURRENT_TASK", "CURRENT_USER_MESSAGE"]));
+    expect(first.diagnostics).toMatchObject({ history: null, memory: { threshold: 0.5 } });
+    expect(second.diagnostics).toEqual(first.diagnostics);
+    expect(first.notes).toEqual(expect.arrayContaining([expect.objectContaining({ field: "continuation_note", outcome: "saved" })]));
     expect(first.toolCalls).toHaveLength(1);
     expect(first.toolCalls[0]).toMatchObject({ name: "read", result: { isError: false } });
     expect(first.toolCalls[0].result.content).toContain("ORBIT-6382");
@@ -242,7 +245,7 @@ describe("the trace of a message", () => {
     rt.calls!.record(updated);
     trace = (await request("GET", `/api/observe/questions/${original.userEventId}/trace`)).json();
     expect(trace.items.find((i: { call?: { id: string } }) => i.call?.id === "call_after").toolCalls[0].result).toMatchObject({ content: "the exact result", tokens: countTokens("the exact result") });
-    expect(trace.items.find((i: { call?: { id: string } }) => i.call?.id === updated.id)).toMatchObject({ rebuilt: true, entered: [{ text: "Updated reading." }, { text: "the exact result" }] });
+    expect(trace.items.find((i: { call?: { id: string } }) => i.call?.id === updated.id)).toMatchObject({ diagnostics: null, rebuilt: true, entered: [{ text: "Updated reading." }, { text: "the exact result" }] });
   });
 });
 

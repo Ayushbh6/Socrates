@@ -5,7 +5,7 @@ import { LedgerStore } from "@socrates/store";
 import { ToolRunner } from "@socrates/tools";
 import { describe, expect, it } from "vitest";
 import { AGENT_SYSTEM_PROMPT, type ContextBudgets, renderRecord, validateSummary } from "../src";
-import { continueTask, exchange } from "../../router/test/helpers";
+import { continueTask, exchange, general } from "../../router/test/helpers";
 import { call, contextText, final, type World, world } from "./helpers";
 
 /** System prompt plus the ten tool schemas: the part of every request compaction never touches. */
@@ -180,7 +180,8 @@ describe("layer 2: in-turn linearization", () => {
       const owner = rest.slice(0, i).reverse().find((x) => x.role === "assistant");
       expect(owner?.role === "assistant" && owner.toolCalls!.some((c) => c.id === m.toolCallId)).toBe(true);
     }
-    expect(compactions(w)).toMatchObject([{ count: 1, layers: ["linearize"], checkpoint: null }]);
+    expect(compactions(w)[0]).toMatchObject({ count: 1, layers: ["linearize"], checkpoint: null });
+    for (const c of compactions(w)) expect(c.after_tokens).toBeLessThan(c.before_tokens);
     expect(compactions(w)[0]!.after_tokens).toBeLessThanOrEqual(BASE + 1_400);
   });
 
@@ -320,3 +321,20 @@ describe("summary validation", () => {
   });
 });
 
+
+
+it("rolls over General without a checkpoint that duplicates or hides its cross-day history", async () => {
+  const w = await world();
+  for (let i = 0; i < 8; i++) await exchange(w.store, `General exchange ${i}`, general(), LONG, "Answered.");
+  const { socrates, compactor } = w.socrates([general()], [final()], { budgets: budgets({ maxCompactionsPerChat: 0 }) });
+  const result = await socrates.handle("Continue General");
+  expect(result.kind).toBe("answered");
+  if (result.kind !== "answered") return;
+  const task = result.parts[0]!.task;
+  expect(compactor.requests).toHaveLength(0);
+  expect(w.store.latestHistoryRecord(task.id)).toMatchObject({ kind: "handover", from: 0, to: 0 });
+  const next = w.socrates([general()], [final()]);
+  await next.socrates.handle("Next greeting");
+  expect(contextText(next.model.requests[0]!)).toContain("General exchange 0");
+  expect(contextText(next.model.requests[0]!)).not.toContain("<TASK_HANDOVER");
+});

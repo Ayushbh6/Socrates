@@ -26,7 +26,7 @@ export interface Totals {
   firstTokenSamples?: number;
 }
 
-export type Role = "router" | "work" | "wrap_up" | "repair" | "compaction" | "embedding" | "decision" | "other";
+export type Role = "router" | "work" | "wrap_up" | "repair" | "note_repair" | "compaction" | "embedding" | "decision" | "other";
 
 export interface Breakdown extends Totals {
   role: Role;
@@ -223,6 +223,7 @@ export function roleLabel(call: Pick<CallRow, "role" | "step">): string {
     case "router": return `Router${call.step && call.step > 1 ? ` ${call.step}` : ""}`;
     case "work": return `Agent step ${call.step ?? 1}`;
     case "wrap_up": return "Wrap-up";
+    case "note_repair": return "Continuation note repair";
     case "repair": return "Answer repair";
     case "compaction": return `Compaction${call.step && call.step > 1 ? ` retry` : ""}`;
     case "embedding": return "Embedding";
@@ -285,7 +286,7 @@ export function groupOf(role: Role): Group | null {
     case "work": return "Agent";
     case "router": return "Router";
     case "compaction": return "Compaction";
-    case "wrap_up": case "repair": return "Wrap-up and repair";
+    case "wrap_up": case "repair": case "note_repair": return "Wrap-up and repair";
     case "decision": return "Decider";
     case "other": return "Other";
     default: return null;
@@ -397,6 +398,8 @@ export interface TraceCall {
   entered: { role: string; label: string; tokens: number; text: string }[];
   rebuilt: boolean;
   context: ContextBlock[] | null;
+  diagnostics?: { activityAsOf: string; timeZone: string; history: { budget: number; used: number; included: number[]; omitted: number; dates: string[] } | null; memory: { recall: number | null; threshold: number; matched: number; explanation: string } } | null;
+  notes?: { field: string; outcome: string; reason: string | null; length: number | null; attempts: number }[];
 }
 
 export type TraceItem =
