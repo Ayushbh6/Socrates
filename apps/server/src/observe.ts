@@ -159,6 +159,43 @@ export function terminalOutputStats(store: LedgerStore, range: Range, now: Date,
   return stats;
 }
 
+/**
+ * How often routing needed more than one answer (docs/terminal-output-and-memory.md,
+ * G1): a rejected answer sent back for repair, an escalation to the main model,
+ * or a harness fallback. Normalized answers were accepted after a field that
+ * selects nothing different was set aside, at no extra call.
+ */
+export interface RouterStats {
+  range: Range;
+  routings: number;
+  repaired: number;
+  escalated: number;
+  fallbacks: number;
+  normalized: number;
+  /** The most common reasons for a repair, newest wording, with counts. */
+  reasons: { reason: string; count: number }[];
+}
+
+export function routerStats(store: LedgerStore, range: Range, now: Date): RouterStats {
+  const since = sinceOf(range, now);
+  const stats: RouterStats = { range, routings: 0, repaired: 0, escalated: 0, fallbacks: 0, normalized: 0, reasons: [] };
+  const reasons = new Map<string, number>();
+  for (const e of store.listEvents({ type: "routing_completed" })) {
+    if (since && e.at < since) continue;
+    const p = e.payload as EventPayloads["routing_completed"];
+    stats.routings++;
+    const errors = p.validation_errors ?? [];
+    if (errors.length || p.escalated || p.fallback) stats.repaired++;
+    if (p.escalated) stats.escalated++;
+    if (p.fallback) stats.fallbacks++;
+    if (p.normalized?.length) stats.normalized++;
+    // "model: part 2: message" → the message, so the same mistake counts once per kind.
+    for (const error of new Set(errors.map((x) => x.replace(/^[\w.:/-]+: /, "").replace(/^part \d+: /, "").slice(0, 120)))) reasons.set(error, (reasons.get(error) ?? 0) + 1);
+  }
+  stats.reasons = [...reasons].map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count).slice(0, 5);
+  return stats;
+}
+
 /** What a message did to where the work stood. */
 export type Move = "first" | "continued" | "switched_task" | "new_task" | "switched_goal" | "new_goal" | "general";
 

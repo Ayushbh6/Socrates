@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { asked, dayLabel } from "../lib/model";
 import {
-  average, type Breakdown, bytes, type DeciderStats, duration, inspectHref, type PriceRow, percent, type Range, ratio, roleLabel, shortModel, speed, stacked, type Summary, type TerminalOutputStats, tokenRows, tokens, totalPerBucket, usd,
+  average, type Breakdown, bytes, type DeciderStats, duration, inspectHref, type PriceRow, percent, type Range, ratio, roleLabel, type RouterStats, shortModel, speed, stacked, type Summary, type TerminalOutputStats, tokenRows, tokens, totalPerBucket, usd,
 } from "../lib/observe";
 import { ChartCard, HBars, Lines, type SeriesDef, StackedColumns } from "./charts";
 import { MoveChip, PromptBar, Tile, usePolled } from "./inspect-kit";
@@ -18,6 +18,7 @@ export function InspectOverview({ range, ms, onCall }: { range: Range; ms: numbe
   const costly = usePolled(() => api.observeCostly(range), [range], ms);
   const decider = usePolled(() => api.observeDecider(range), [range], ms);
   const terminal = usePolled(() => api.observeTerminal(range), [range], ms);
+  const router = usePolled(() => api.observeRouter(range), [range], ms);
   const error = summary.error ?? series.error;
   const s = summary.data;
   const sr = series.data;
@@ -107,6 +108,7 @@ export function InspectOverview({ range, ms, onCall }: { range: Range; ms: numbe
 
       {decider.data && decider.data.answered + decider.data.failed > 0 && <DeciderPanel d={decider.data} />}
       {terminal.data && terminal.data.longOutputs + terminal.data.reads > 0 && <TerminalOutputPanel t={terminal.data} />}
+      {router.data && router.data.routings > 0 && <RouterPanel r={router.data} />}
 
       <div className="grid-2">
         <section className="panel" aria-label="Cost by model">
@@ -230,6 +232,25 @@ function TerminalOutputPanel({ t }: { t: TerminalOutputStats }) {
         </table>
       </div>
       <p className="inspect-foot">Preview set to {tokens(t.previewTokens)} tokens. If most long outputs are read again and reads cost more than the preview saves, raise it (Settings file, terminal.previewTokens, 4,000–5,000).</p>
+    </section>
+  );
+}
+
+/** How often routing needed a second answer: each one is an extra router call before work starts. */
+function RouterPanel({ r }: { r: RouterStats }) {
+  return (
+    <section className="panel" aria-label="Router retries">
+      <h3>Router retries</h3>
+      <div className="table-scroll">
+        <table>
+          <thead><tr><th>Messages routed</th><th>Needed a second answer</th><th>Escalated</th><th>Fallback</th><th>Accepted after setting a field aside</th></tr></thead>
+          <tbody>
+            <tr><td>{r.routings}</td><td>{r.repaired} ({percent(r.repaired / r.routings)})</td><td>{r.escalated}</td><td>{r.fallbacks}</td><td>{r.normalized}</td></tr>
+          </tbody>
+        </table>
+      </div>
+      {r.reasons.length > 0 && <ul className="inspect-foot">{r.reasons.map((x) => <li key={x.reason}>{x.count}× {x.reason}</li>)}</ul>}
+      <p className="inspect-foot">A second answer means the first was rejected and sent back, at the cost of one more router call. Each trace shows the rejected answers.</p>
     </section>
   );
 }

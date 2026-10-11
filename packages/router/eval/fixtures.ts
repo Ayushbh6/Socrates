@@ -4,7 +4,7 @@ import type { RoutingResult } from "../src";
 
 /**
  * The routing validation fixtures from Goal-router.md (Q1–Q12, T1–T10),
- * expressed as data. Each step carries:
+ * and later cases found in use (G1), expressed as data. Each step carries:
  * - `expect`: what correct routing does, graded by effect (which goal/task
  *   the message lands in), not by label spelling;
  * - `oracle`: a correct router answer, used by the deterministic test to
@@ -311,7 +311,47 @@ export const T9_SCENARIO: Scenario = {
   steps: [{ id: "T9", message: "Hi, how are you?", response: "Doing well!", expect: { kind: "general" }, oracle: general() }],
 };
 
-export const SCENARIOS: Scenario[] = [Q_SCENARIO, Q11_SCENARIO, T_SCENARIO, T9_SCENARIO];
+// ── G1: a follow-up about earlier General work stays in General ─────────
+// From the 11 Oct replays (docs/terminal-output-and-memory.md, G1): a terminal
+// test asked for in General on Friday and passed there on Saturday. On Sunday,
+// after a greeting, the user asks about that test; one replay routed it to the
+// project whose first request mentioned "the terminal". Content is synthetic.
+
+export const G1_SCENARIO: Scenario = {
+  name: "G1 follow-up about earlier General work",
+  start: "2026-10-11T10:10:00Z",
+  seed: (store, clock) => {
+    const ws = store.createWorkspace("Work", "/home/user/Work");
+    const explore = store.createGoal({ title: "Workspace exploration and inspection", workspaceId: ws.id });
+    const describe = store.createTask(explore.id, { title: "Describe workspace folder contents", objective: "Describe what is in the Work folder." });
+    clock.set("2026-10-06T21:47:00Z");
+    seedExchange(store, describe.id, "briefly describe what you see in these folders. STAY READ ONLY BUT FEEL FREE TO USE THE TERMINAL", "Mostly your projects: Socrates, a contract-review platform and a few experiments. I listed them with ls and find in the terminal.", "Described the Work folder read-only.");
+    store.reviseTask(describe.id, { status: "completed" });
+    const career = store.createGoal({ title: "Career profile and resume development", workspaceId: ws.id });
+    const resume = store.createTask(career.id, { title: "Review and critique resume", objective: "Give an honest review of the resume." });
+    clock.set("2026-10-06T22:20:00Z");
+    seedExchange(store, resume.id, "what do you think of my resume? inspect it and give me an honest opinion", "The material is strong; the two-page CVs are the weakest-written documents.", "Resume reviewed.");
+    store.reviseTask(resume.id, { status: "completed" });
+    clock.set("2026-10-09T08:49:00Z");
+    const friday = store.ensureGeneral("UTC").task;
+    seedExchange(store, friday.id, "quick test of the terminal: ask me a question there and reply based on my answer, all in the terminal", "This conversation has no folder behind it, so there is no terminal to ask you in yet.", "Terminal test not run: no workspace.");
+    clock.set("2026-10-10T13:03:00Z");
+    const saturday = store.ensureGeneral("UTC").task;
+    seedExchange(store, saturday.id, "ok pls try again now, use the Work folder", "Test passed, end to end: the terminal asked for a city you would live in for a year, you typed Lisbon, and it answered in the same terminal. Exit code 0.", "Interactive terminal test passed (exit 0). Nothing pending.");
+  },
+  steps: [
+    { id: "G1a", message: "hey buddy i am back again, whats up", response: "Quiet here. The terminal test passed yesterday; nothing is waiting on you.", expect: { kind: "general" }, oracle: general() },
+    {
+      id: "G1b",
+      message: "When did I first request the interactive terminal test, when did it actually succeed, and is anything from that test still unfinished?",
+      response: "You asked on Friday 9 Oct at 08:49; it passed on Saturday 10 Oct at 13:03. Nothing is unfinished.",
+      expect: { kind: "general" },
+      oracle: general(),
+    },
+  ],
+};
+
+export const SCENARIOS: Scenario[] = [Q_SCENARIO, Q11_SCENARIO, T_SCENARIO, T9_SCENARIO, G1_SCENARIO];
 
 // ── Grading ──────────────────────────────────────────────────────────────
 

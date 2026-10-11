@@ -67,6 +67,17 @@ export interface TerminalOutputStats {
   previewTokensUsed: number;
 }
 
+/** How often routing needed a second answer (docs/terminal-output-and-memory.md, G1). */
+export interface RouterStats {
+  range: Range;
+  routings: number;
+  repaired: number;
+  escalated: number;
+  fallbacks: number;
+  normalized: number;
+  reasons: { reason: string; count: number }[];
+}
+
 export interface Place {
   goal: { number: number; title: string };
   task: { number: number; title: string };

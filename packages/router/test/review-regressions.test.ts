@@ -229,6 +229,85 @@ describe("equivalent labels that select the same target", () => {
     expect(result.parts[0]!.turn.gateArmed).toBe(false);
   });
 
+  // G1 (docs/terminal-output-and-memory.md): answers that select the same place are accepted without a repair call.
+  const lastRouting = (store: ReturnType<typeof setup>["store"]) => store.listEvents({ type: "routing_completed" }).at(-1)!.payload as { normalized?: string[]; validation_errors?: string[] };
+
+  it("accepts continue_task \"current\" while the general conversation is current, setting the task fields aside", async () => {
+    const { store } = setup();
+    await exchange(store, "hi", general());
+    const { router, routerModel } = routerWith(store, [continueTask()]);
+    const result = await router.route("hey, what's up?");
+    if (result.kind !== "routed") throw new Error("Expected route");
+    expect(routerModel.requests).toHaveLength(1);
+    expect(result.parts[0]!.goal.general).toBe(true);
+    expect(lastRouting(store).validation_errors).toEqual([]);
+    expect(lastRouting(store).normalized).toEqual([
+      'general route: set aside task_decision "continue_task"; the harness picks the day\'s task.',
+      'general route: set aside task_label "current"; the harness picks the day\'s task.',
+    ]);
+  });
+
+  it("accepts a general clarification candidate that names a task, dropping the task label", async () => {
+    const { store } = setup();
+    await exchange(store, "hi", general());
+    await exchange(store, "German lessons", createGoal("German", "Day 1"));
+    const candidates = [{ label: "Chat", detail: "Keep talking here", suggested: true, goal_label: "general", task_label: "current" }, { label: "German", detail: "Day 1 lesson", goal_label: "current", task_label: "current" }];
+    const { router, routerModel } = routerWith(store, [{ toolCalls: [{ name: "ask_user", input: { question: "Which one?", candidates, allow_new: false } }] }]);
+    const result = await router.route("try again now");
+    expect(result.kind).toBe("clarify");
+    expect(routerModel.requests).toHaveLength(1);
+    if (result.kind !== "clarify") return;
+    expect(result.question.candidates[0]!.task_label).toBeNull();
+    const asked = store.listEvents({ type: "clarification_asked" }).at(-1)!.payload as { candidate_bindings: ({ goal_id: string } | null)[] };
+    expect(asked.candidate_bindings[0]!.goal_id).toBe(store.getGeneralGoal()!.id);
+    expect(lastRouting(store).normalized).toEqual(['general candidate: set aside task_label "current"; the harness picks the day\'s task.']);
+  });
+
+  it("accepts reopen_task true on a task that is already open, leaving it as it is", async () => {
+    const { store } = setup();
+    const first = await exchange(store, "Review memory", createGoal("Socrates development", "Review memory"));
+    if (first.kind !== "routed") throw new Error("Expected route");
+    const revisions = () => store.listEvents({ type: "task_revised" }).filter((e) => e.task_id === first.parts[0]!.task.id).length;
+    const before = revisions();
+    const { router, routerModel } = routerWith(store, [continueTask(true)]);
+    const result = await router.route("It regressed, fix it again");
+    if (result.kind !== "routed") throw new Error("Expected route");
+    expect(routerModel.requests).toHaveLength(1);
+    expect(result.parts[0]!.task.id).toBe(first.parts[0]!.task.id);
+    expect(revisions()).toBe(before);
+    expect(lastRouting(store).normalized).toEqual(["set aside reopen_task true: the task is already open."]);
+  });
+
+  it("takes resume_task \"current\" in the current goal as continuing the current task", async () => {
+    const { store } = setup();
+    const first = await exchange(store, "Review memory", createGoal("Socrates development", "Review memory"));
+    if (first.kind !== "routed") throw new Error("Expected route");
+    const { router, routerModel } = routerWith(store, [{ text: decision({ decision: "resume_existing", goal_label: "current", task_decision: "resume_task", task_label: "current" }) }]);
+    const result = await router.route("Keep going with that review");
+    if (result.kind !== "routed") throw new Error("Expected route");
+    expect(routerModel.requests).toHaveLength(1);
+    expect(result.parts[0]!.task.id).toBe(first.parts[0]!.task.id);
+    expect(lastRouting(store).normalized).toEqual(['resume_task "current" in the current goal taken as continue_task.']);
+  });
+
+  it("fills in a missing reason instead of asking again", async () => {
+    const { store } = setup();
+    const { reason: _, ...unexplained } = JSON.parse(general().text) as Record<string, unknown>;
+    const { router, routerModel } = routerWith(store, [{ text: JSON.stringify(unexplained) }]);
+    const result = await router.route("Hi there");
+    if (result.kind !== "routed") throw new Error("Expected route");
+    expect(routerModel.requests).toHaveLength(1);
+    expect(result.parts[0]!.goal.general).toBe(true);
+    expect(lastRouting(store).normalized).toEqual(["filled in a missing reason."]);
+  });
+
+  it("still rejects reopen_task true on a route that creates a task", () => {
+    const { store } = setup();
+    const ctx = buildRoutingContext(store, "Build a website", { timeZone: "UTC" });
+    const bad = decision({ decision: "create_new", new_goal_title: "Site", new_goal_objective: "A site.", task_decision: "create_task", new_task_title: "Build", ...defineTask("Build"), reopen_task: true });
+    expect(validateDecisionText(bad, ctx, store, emptySeen()).ok).toBe(false);
+  });
+
   it("still rejects a general route that tries to create a task", async () => {
     const { store } = setup();
     const bad = { text: decision({ decision: "resume_existing", goal_label: "general", task_decision: "create_task", new_task_title: "Chat", ...defineTask("Chat") }) };

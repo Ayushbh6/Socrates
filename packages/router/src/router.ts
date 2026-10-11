@@ -85,6 +85,8 @@ interface Budget {
   ledgerQueries: number;
   messages: ModelMessage[];
   errors: string[];
+  /** Fields the harness set aside instead of asking for a repair (validate.ts, the general route). */
+  normalized: string[];
   /** Who the routing requests are for, and how many have been sent. */
   trace: { userEventId: string; laneId: string | null };
   requests: number;
@@ -142,7 +144,7 @@ export class GoalRouter {
     // Lanes are shown with their selectors, so routing to a lane's task needs no ledger query.
     for (const n of ctx.laneSelectors.goals) seen.goals.add(n);
     for (const t of ctx.laneSelectors.tasks) seen.tasks.add(t);
-    const budget: Budget = { ledgerQueries: 0, errors: [], messages: [{ role: "user", content: ctx.input }], trace: { userEventId: userEvent.id, laneId }, requests: 0 };
+    const budget: Budget = { ledgerQueries: 0, errors: [], normalized: [], messages: [{ role: "user", content: ctx.input }], trace: { userEventId: userEvent.id, laneId }, requests: 0 };
 
     let attempts = 1;
     let escalated = false;
@@ -166,7 +168,8 @@ export class GoalRouter {
       final = outcome;
     }
 
-    const meta = { model: modelId, attempts, escalated, fallback, ledgerQueries: budget.ledgerQueries, errors: budget.errors };
+    if (final.kind === "decision") budget.normalized.push(...(final.route.normalized ?? []), ...final.route.parts.flatMap((p) => p.normalized ?? []));
+    const meta = { model: modelId, attempts, escalated, fallback, ledgerQueries: budget.ledgerQueries, errors: budget.errors, normalized: budget.normalized };
     signal?.throwIfAborted();
     if (final.kind === "clarify") return this.applyClarify(userEvent.id, final.ask, ctx, meta);
     const requestAt = new Date(this.store.requestRoot(ctx.pending?.turn.userEventId ?? userEvent.id).at);
@@ -254,7 +257,7 @@ export class GoalRouter {
     budget: Budget,
   ): { content: string; isError: boolean; ask?: AskUserInput } {
     if (call.name === "ask_user") {
-      const v = validateAskUser(call.input, ctx, this.store, seen);
+      const v = validateAskUser(call.input, ctx, this.store, seen, budget.normalized);
       if (v.ok) return { content: "", isError: false, ask: v.value };
       return {
         content: renderToolError({
@@ -394,7 +397,7 @@ export class GoalRouter {
     userEventId: string,
     ask: AskUserInput,
     ctx: RoutingContext,
-    meta: { model: string; attempts: number; escalated: boolean; fallback: string | null; ledgerQueries: number; errors: string[] },
+    meta: { model: string; attempts: number; escalated: boolean; fallback: string | null; ledgerQueries: number; errors: string[]; normalized: string[] },
   ): RoutingResult {
     const text = renderClarification(ask);
     const turn = this.store.transaction(() => {
@@ -416,6 +419,7 @@ export class GoalRouter {
           ledger_queries: meta.ledgerQueries,
           reason: ask.question,
           validation_errors: meta.errors,
+          ...(meta.normalized.length ? { normalized: meta.normalized } : {}),
         },
         { turn_id: turn.id },
       );
@@ -429,7 +433,7 @@ export class GoalRouter {
     userEventId: string,
     route: ResolvedRoute,
     ctx: RoutingContext,
-    meta: { model: string; attempts: number; escalated: boolean; fallback: string | null; ledgerQueries: number; errors: string[] },
+    meta: { model: string; attempts: number; escalated: boolean; fallback: string | null; ledgerQueries: number; errors: string[]; normalized: string[] },
   ): RoutingResult {
     const parts = this.store.transaction(() => {
       const bound: RoutedPart[] = [];
@@ -477,6 +481,7 @@ export class GoalRouter {
           ledger_queries: meta.ledgerQueries,
           reason: route.reason,
           validation_errors: meta.errors,
+          ...(meta.normalized.length ? { normalized: meta.normalized } : {}),
         },
         { goal_id: bound[0]!.goal.id, task_id: bound[0]!.task.id, turn_id: bound[0]!.turn.id },
       );

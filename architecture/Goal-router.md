@@ -482,7 +482,15 @@ Example compound result, for Q10 of the validation sequence below. The current g
 }
 ```
 
-The backend validates this result. One repair attempt is allowed for invalid structure. If that also fails:
+The backend validates this result. An answer that selects the same place in other words is accepted as it is, with no repair call, and the fields set aside are recorded on `routing_completed` as `normalized` (shown in the trace and counted in Inspect's **Router retries** panel):
+
+- a general route that also names a task (`continue_task "current"` while General is current, a daily chat's label, `reopen_task`): the harness always picks the day's task. A general route that would *create* a goal or task is still sent back;
+- a general `ask_user` candidate with a `task_label`: the label is dropped;
+- `reopen_task true` on a task that is already open: nothing to reopen;
+- `resume_task "current"` in the current goal: taken as continuing the current task;
+- a missing `reason`: filled in as "(no reason given)"; it is only shown in Inspect.
+
+One repair attempt is allowed for any other invalid answer. If that also fails:
 
 - with no existing goals, create the first goal;
 - with one clearly current goal, continue it;
@@ -1187,6 +1195,6 @@ All T-fixtures assume the current goal is `Andy Website development`:
 
 ## General continuity and note audit (2026-10-11)
 
-General routing keeps the existing schema: select the General goal, with task decision, task label, reopen-task and new-definition fields null; the harness selects the original request day. The router retains its 20,000-token Q&A window. Workers independently receive the 30,000-token General chronological window described in `agent-harness.md`; project-task and lane history stay isolated. Both use the shared `RECENT_ACTIVITY` renderer with an explicit as-of boundary, actual exchange dates, stable references and separate execution, answer-validation and note-freshness information. An open chat does not assert unfinished work. Worker activity may be newer because it is captured when work starts.
+General routing keeps the existing schema: select the General goal, with task decision, task label, reopen-task and new-definition fields null; the harness selects the original request day. Since G1 (2026-10-11), task-selecting fields on a general route are set aside rather than repaired (see "Router output" above); only fields that would create something are sent back. The prompt also says the router never answers the message itself, even when the history or a `ledger_query` result shows the answer: a question about earlier General work was answered in prose instead of routed, which cost a repair every time. The router retains its 20,000-token Q&A window. Workers independently receive the 30,000-token General chronological window described in `agent-harness.md`; project-task and lane history stay isolated. Both use the shared `RECENT_ACTIVITY` renderer with an explicit as-of boundary, actual exchange dates, stable references and separate execution, answer-validation and note-freshness information. An open chat does not assert unfinished work. Worker activity may be newer because it is captured when work starts.
 
 Notes use shared character limits, independent note-only repair and append-only provenance as described in the harness. Exact evidence overrides a conflicting summary. A greeting need not call the ledger, but uncertain historical claims should be checked using `context_retrieve`.

@@ -379,6 +379,10 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
     const { range } = z.object({ range: Range }).strict().parse(request.query);
     return observe.terminalOutputStats(runtime.store, range, new Date(), runtime.settings.terminal.previewTokens);
   });
+  app.get("/api/observe/router", async (request) => {
+    const { range } = z.object({ range: Range }).strict().parse(request.query);
+    return observe.routerStats(runtime.store, range, new Date());
+  });
   app.get("/api/observe/prices", async () => runtime.priceTable());
   app.get("/api/observe/series", async (request, reply) => {
     const { range } = z.object({ range: Range }).strict().parse(request.query);

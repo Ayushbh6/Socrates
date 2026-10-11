@@ -10,9 +10,9 @@ One phase at a time. Ask the user before starting each one.
 
 | Phase | What | When |
 |---|---|---|
-| **T1** | Terminal output saved outside the ledger, with clear scoping, a preview and a reference | Now |
-| **M4a** | Work memory moves out of the user's repositories into Socrates' own folder, with the same structure | After T1 |
-| **G1** | Answer grounding and routing fixes from the 11 Oct replays | After M4a (small and independent, so it can move earlier if the user asks) |
+| **T1** | Terminal output saved outside the ledger, with clear scoping, a preview and a reference | Done (trial log 58) |
+| **M4a** | Work memory moves out of the user's repositories into Socrates' own folder, with the same structure | Done (trial log 59) |
+| **G1** | Answer grounding and routing fixes from the 11 Oct replays | Done (trial log 60) |
 | T2 | Log viewer, export, pinning, stream provenance, disk-pressure handling | Later, if T1 use asks for it |
 | M4b | Restart-safe memory jobs, revision history in Settings, merging and tidying | Later, after real use |
 
@@ -141,6 +141,8 @@ Issues left by the three replays of 11 Oct (trial log entry 56):
 1. **Unsupported personal inferences.** One greeting said the user was in Amsterdam, because in the terminal test they had named it as a city they would *like* to live in. Rule: state what the user said, not a stronger claim built on it (wanting to live somewhere is not living there). Facts about the user's current life come only from what they said or confirmed, never from files or tool output.
 2. **Invented time wording and causes.** One reply called 00:49 "Friday night" and explained the gap before a retry with a reason no record supported. Rule: state times as recorded (weekday, local time), don't relabel them, and don't explain why something happened unless the record says so.
 3. **Routing.** One follow-up about General history was routed to a project. The router also still makes avoidable repair calls (invalid General task fields). Add these cases to the routing fixtures, tighten the router prompt only where the fixtures show it is needed, and track the retry rate in `eval:router-compare` and Inspect.
+
+As built (trial log 60): the validator accepts answers that select the same place in other words and records them as `normalized`, the router prompt says never to answer the message itself, the worker prompt's first line carries the two grounding rules within the same budget, router-compare counts repairs, and Inspect has a **Router retries** panel.
 
 Checks: fixtures in the answer and routing tests; `pnpm eval:router-compare` before and after; the same three-copy replay used for entry 56 (disposable, deleted after), with the follow-up question, judged on these three points as well as chronology. Prompt changes stay inside the fixed-overhead budget.
 

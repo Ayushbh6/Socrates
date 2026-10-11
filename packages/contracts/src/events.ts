@@ -36,6 +36,8 @@ export interface EventPayloads {
     ledger_queries: number;
     reason: string;
     validation_errors?: string[];
+    /** Fields the harness set aside instead of asking for a repair, such as a task label on a general route. */
+    normalized?: string[];
   };
   clarification_asked: { question: string; candidates: unknown[]; allow_new: boolean; zero_history: boolean; candidate_bindings?: ({ goal_id: string; task_id: string | null } | null)[]; request_day?: string };
   general_day_set: {day: string};

@@ -34,9 +34,13 @@ export interface ResolvedPart {
   reopenTask: boolean;
   dependsOn: number[];
   reason: string;
+  /** Fields the harness set aside because they select nothing different, such as a task label on a general route. */
+  normalized?: string[];
 }
 
 export interface ResolvedRoute {
+  /** Fields the harness filled or set aside for the whole answer, such as a missing reason. */
+  normalized?: string[];
   decision: RouterDecision;
   compound: boolean;
   parts: ResolvedPart[];
@@ -72,6 +76,19 @@ export function validateDecisionText(text: string, ctx: RoutingContext, store: L
   } catch {
     return { ok: false, errors: ["Return exactly one JSON object matching the routing schema, with no other text."] };
   }
+  // The reason is only shown in Inspect: a missing one is filled in rather than asked for again.
+  const normalized: string[] = [];
+  const unexplained = (o: unknown) => !!o && typeof o === "object" && !Array.isArray(o) && (typeof (o as { reason?: unknown }).reason !== "string" || !(o as { reason: string }).reason.trim());
+  if (unexplained(raw)) {
+    (raw as { reason: string }).reason = "(no reason given)";
+    normalized.push("filled in a missing reason.");
+  }
+  const parts = (raw as { parts?: unknown } | null)?.parts;
+  if (Array.isArray(parts)) parts.forEach((p, i) => {
+    if (!unexplained(p)) return;
+    (p as { reason: string }).reason = "(no reason given)";
+    normalized.push(`part ${i + 1}: filled in a missing reason.`);
+  });
   const parsed = RouterDecision.safeParse(raw);
   if (!parsed.success) {
     return {
@@ -79,7 +96,8 @@ export function validateDecisionText(text: string, ctx: RoutingContext, store: L
       errors: parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`),
     };
   }
-  return resolveDecision(parsed.data, ctx, store, seen);
+  const resolved = resolveDecision(parsed.data, ctx, store, seen);
+  return resolved.ok && normalized.length ? { ok: true, value: { ...resolved.value, normalized } } : resolved;
 }
 
 export function resolveDecision(
@@ -217,12 +235,14 @@ function resolveTask(goal: Goal, label: string, ctx: RoutingContext, store: Ledg
 
 function resolvePart(part: RoutePart, ctx: RoutingContext, store: LedgerStore, seen: SeenSelectors, prefix: string): Validation<ResolvedPart> {
   const fail = (...errors: string[]): Validation<ResolvedPart> => ({ ok: false, errors: errors.map((e) => prefix + e) });
-  const done = (target: RouteTarget): Validation<ResolvedPart> => {
+  const done = (target: RouteTarget, normalized: string[] = []): Validation<ResolvedPart> => {
     // A task that is completed or superseded is closed; renewed work reopens it.
     if (target.kind === "existing_task" && target.task.status !== "open" && part.reopen_task == null) {
       return fail(`The selected task is ${target.task.status}: set reopen_task true for renewed work, or false for a question about past work.`);
     }
-    if (part.reopen_task && (target.kind !== "existing_task" || target.task.status === "open")) return fail("reopen_task true requires an existing completed or superseded task.");
+    // Reopening a task that is already open changes nothing, so it is set aside rather than repaired.
+    if (part.reopen_task && target.kind === "existing_task" && target.task.status === "open") normalized = [...normalized, "set aside reopen_task true: the task is already open."];
+    else if (part.reopen_task && target.kind !== "existing_task" && target.kind !== "general") return fail("reopen_task true requires an existing completed or superseded task.");
     return ({
     ok: true,
     value: {
@@ -233,9 +253,10 @@ function resolvePart(part: RoutePart, ctx: RoutingContext, store: LedgerStore, s
       target,
       // General conversation has no workspace, so a confidence the model supplied there cannot arm the mutation gate.
       workspaceConfidence: target.kind === "general" ? "high" : part.workspace_confidence ?? "high",
-      reopenTask: part.reopen_task === true,
+      reopenTask: part.reopen_task === true && target.kind === "existing_task" && target.task.status !== "open",
       dependsOn: part.depends_on ?? [],
       reason: part.reason,
+      ...(normalized.length ? { normalized: normalized.map((n) => prefix + n) } : {}),
     },
   });
   };
@@ -245,22 +266,25 @@ function resolvePart(part: RoutePart, ctx: RoutingContext, store: LedgerStore, s
 
   // The general route: greetings, small talk, and unrelated asides. continue_current and resume_existing
   // reach the same single general task, and general conversation has no workspace, so neither the goal
-  // decision nor workspace_confidence is checked here; any field that would select or create a task is.
+  // decision nor workspace_confidence is checked here. A field that would create something disagrees with
+  // the route and is sent back for repair. One that only selects a task (continue_task "current", a daily
+  // chat's label, reopen_task) is set aside without a repair: the harness always picks the day's task.
   if (goalLabel === "general" || (goalLabel === "current" && ctx.current?.goal.general)) {
     if (part.decision === "create_new") return fail("create_new cannot target the general goal; use goal_label general with continue_current or resume_existing.");
     if (
-      part.task_decision !== null ||
-      part.task_label !== null ||
+      part.task_decision === "create_task" ||
       part.new_task_title !== null ||
       part.new_goal_title != null ||
       part.new_goal_objective != null ||
       part.new_task_objective != null ||
-      part.new_task_completion_criteria != null ||
-      part.reopen_task != null
+      part.new_task_completion_criteria != null
     ) {
-      return fail("general requires all task fields and new-goal and new-task definitions null.");
+      return fail("general creates nothing: new-goal and new-task fields and definitions must be null, and task_decision must not be create_task.");
     }
-    return done({ kind: "general" });
+    const normalized = (["task_decision", "task_label", "reopen_task"] as const)
+      .filter((key) => (key === "reopen_task" ? part[key] === true : part[key] != null))
+      .map((key) => `general route: set aside ${key} ${JSON.stringify(part[key])}; the harness picks the day's task.`);
+    return done({ kind: "general" }, normalized);
   }
 
   if (part.workspace_confidence === null) return fail("A work route requires workspace_confidence high or low.");
@@ -331,8 +355,9 @@ function resolvePart(part: RoutePart, ctx: RoutingContext, store: LedgerStore, s
       }
       if (part.task_decision === "resume_task") {
         if (!taskLabel) return fail("resume_task requires task_label.");
-        if (isCurrentGoal && taskLabel === "current") {
-          return fail('task_label "current" is the current task; continuing it is continue_current with continue_task.');
+        // Resuming the current task is continuing it: the same place, so it is accepted as such.
+        if (isCurrentGoal && taskLabel === "current" && ctx.current) {
+          return done({ kind: "existing_task", goal: ctx.current.goal, task: ctx.current.task }, ['resume_task "current" in the current goal taken as continue_task.']);
         }
         const t = resolveTask(g.goal, taskLabel, ctx, store, seen);
         if ("error" in t) return fail(t.error);
@@ -344,7 +369,7 @@ function resolvePart(part: RoutePart, ctx: RoutingContext, store: LedgerStore, s
 }
 
 /** Validate an ask_user call. Clarify is always constructive (Goal-router.md, rule 13). */
-export function validateAskUser(input: unknown, ctx: RoutingContext, store?: LedgerStore, seen: SeenSelectors = emptySeen()): Validation<AskUserInput> {
+export function validateAskUser(input: unknown, ctx: RoutingContext, store?: LedgerStore, seen: SeenSelectors = emptySeen(), normalized: string[] = []): Validation<AskUserInput> {
   if (ctx.answeringClarification) {
     return { ok: false, errors: ["ask_user is unavailable: the user is answering your previous clarification. Return a decision."] };
   }
@@ -364,7 +389,11 @@ export function validateAskUser(input: unknown, ctx: RoutingContext, store?: Led
     if (candidate.task_label && !candidate.goal_label) return {ok: false, errors: ["Candidate task_label requires goal_label."]};
     if (!candidate.goal_label) continue;
     if (candidate.goal_label === "general") {
-      if (candidate.task_label) return {ok: false, errors: ["The general candidate has task_label null."]};
+      // The general goal's task is the day's: a task label there selects nothing else.
+      if (candidate.task_label) {
+        normalized.push(`general candidate: set aside task_label ${JSON.stringify(candidate.task_label)}; the harness picks the day's task.`);
+        candidate.task_label = null;
+      }
       continue;
     }
     if (!store) return {ok: false, errors: ["Candidate binding requires ledger validation."]};
