@@ -24,7 +24,25 @@ This file hands the project to whichever agent harness works on it next. Read it
   3. Open the printed link. Each login link works only once.
   4. Stop the server and delete the copy afterwards.
 
-## Where things stand (2026-10-11, through answer grounding and routing, G1)
+## Live evals and replays (need `SOCRATES_ENV_FILE=.env`; they cost a little money)
+
+- `pnpm eval:router-compare <model…>`: routing fixtures (Q, T, G1). Use `ROUTER_EFFORT=off` to match the live router (`openai/gpt-6-luna`), `ROUTER_RUNS=3` (single runs swing by ±6 of 72) and `ROUTER_ONLY=G1` for one scenario. It prints correct, repaired and normalized counts with repair reasons. Compare before and after on the same number of runs.
+- `pnpm eval:terminal-output`, `pnpm eval:work-memory`, `pnpm eval:decider` and `pnpm eval:memory` cover T1, M4a, the decider and recall.
+- **Replaying real conversations without touching them** (used for trial log entries 56 and 60):
+  1. Back up `~/.socrates-v2/ledger.db` read-only (`sqlite3 "file:…?mode=ro" ".backup …"`) into the scratch folder.
+  2. Take its events before the message to replay and load them into a fresh store with `LedgerStore.restoreEvents`, in a temp home holding copies of `settings.json` and `.env`.
+  3. Open `Runtime.open(resolveConfig({SOCRATES_HOME}), { clock: fixedClock(<original time>) })` and call `runtime.socrates.handle(message)`.
+  4. Run it on 3 copies, on old code (`git stash`) and on new, and judge the answers.
+  5. Delete the copies afterwards, because they contain the keys. Keep the script temporary; it is not in the repo.
+
+## Things that bite
+
+- **The fixed prompt is at its limit:** the system prompt is exactly 2,400 of 2,400 tokens, and the tools are about 3,500 of 3,500 (`fixed-overhead.test.ts`). Make room by trimming wording; raise a budget only with the user's yes and a reason in the test's comment.
+- **Router validation:** an answer that selects the same place in other words should be normalized (recorded as `normalized` on `routing_completed`), not sent back for a repair. Each repair is a whole extra router call before work starts. Real disagreements, such as creating something under General, still repair.
+- **Model outputs are noisy:** judge prompt changes on repeated runs, and report numbers honestly (trial log entries 58–60 show the format).
+- **Live data:** `~/.socrates-v2` is the user's real v2 data. Read it only through a read-only backup, and never touch `~/.socrates` (v0.1.20).
+
+## Where things stand (2026-10-12, through answer grounding and routing, G1)
 
 The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `server.md`, `web.md`, `observability.md`). The trial log numbers each change. Recently shipped, newest last:
 
@@ -64,6 +82,8 @@ Plan agreed 2026-10-11: `docs/terminal-output-and-memory.md` (trial log entry 57
 1. ~~**T1, long terminal output**~~: done (trial log entry 58).
 2. ~~**M4a, work memory out of repositories**~~: done (trial log entry 59). Was: same index-plus-topics structure, moved to `~/.socrates-v2/memory/projects/<project-id>/`; memory-only writer that runs after the answer is saved; repository files (including live v0.1.20's `.socrates/MEMORY.md`, which shares the old path) are never read or written as Socrates' memory.
 3. ~~**G1, answer grounding and routing**~~: done (trial log entry 60). Left open: the router still answers about 1 in 3 General history questions in prose (one repair), and `openai/gpt-6-luna` misses the Q5–Q10 project-flow fixtures (see the trial log's suggestions).
+
+All three agreed phases (T1, M4a, G1) are done. Nothing new has been agreed: ask the user what is next. Candidates are in the trial log's "Suggested" list: the router still answers some history questions in prose, `gpt-6-luna` misses the Q5–Q10 fixtures (worth a router-model comparison), and the items below.
 
 Later, only if use asks for it: T2 (log viewer, export, pinning) and M4b (restart-safe memory jobs, revision history, measuring whether notes help, the old "Memory follow-ups" item).
 The Standard/Flow verification and its three agreed implementation points are complete (trial log entry 50). The linked routing-question implementation is complete in entry 51. Ordinary routing after switching modes remains the agreed behaviour; no automatic pin or routing hint was added.
