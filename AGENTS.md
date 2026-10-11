@@ -56,7 +56,13 @@ The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `serv
 
 Ask before starting each one.
 
-1. **Memory follow-ups** (`docs/memory.md`): measure on real use whether later conversations follow the project notes better than without; a Memory-page view of the notes; the Inspect panel's rates are where thresholds get set.
+Plan agreed 2026-10-11: `docs/terminal-output-and-memory.md` (trial log entry 57).
+
+1. **T1, long terminal output:** each run's output saved under `~/.socrates-v2/artifacts/terminal/<output-id>/`, no longer inside events; every output scoped to its origin (chat, turn, call, or the user) and labelled when read; a 4,500-token preview plus the output id; cleanup at 15 days and 1 GB, both settings.
+2. **M4a, work memory out of repositories:** same index-plus-topics structure, moved to `~/.socrates-v2/memory/projects/<project-id>/`; memory-only writer that runs after the answer is saved; repository files (including live v0.1.20's `.socrates/MEMORY.md`, which shares the old path) are never read or written as Socrates' memory.
+3. **G1, answer grounding and routing:** no stronger claims than the user made (the Amsterdam case), times as recorded with no invented causes, the General follow-up misroute and avoidable router retries.
+
+Later, only if use asks for it: T2 (log viewer, export, pinning) and M4b (restart-safe memory jobs, revision history, measuring whether notes help, the old "Memory follow-ups" item).
 The Standard/Flow verification and its three agreed implementation points are complete (trial log entry 50). The linked routing-question implementation is complete in entry 51. Ordinary routing after switching modes remains the agreed behaviour; no automatic pin or routing hint was added.
 
 **Known small issues:**
