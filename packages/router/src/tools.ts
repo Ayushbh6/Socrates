@@ -1,4 +1,4 @@
-import { AskUserInput, LedgerQueryInput, type ToolDefinition } from "@socrates/contracts";
+import { AskUserInput, LedgerQueryInput, RouterDecision, type ToolDefinition } from "@socrates/contracts";
 import { type LedgerStore, LedgerQueryError, renderLedgerRow, runLedgerQuery } from "@socrates/store";
 import { z } from "zod";
 import type { SeenSelectors } from "./validate";
@@ -12,7 +12,7 @@ export const LEDGER_QUERY_TOOL: ToolDefinition = {
   name: "ledger_query",
   description:
     "Read-only structured search over the work ledger: one row per task with date, workspace, goal and task selectors, " +
-    "title, status, and a note excerpt. Use for references outside RECENT_ACTIVITY or KNOWN_GOALS, such as " +
+    "title, status, and a note excerpt. Use for references outside RECENT_CONVERSATION or GOAL_DIRECTORY, such as " +
     '"what we did last month". Filters: from/to (YYYY-MM-DD, by last update), match (words), workspace (name), ' +
     "goal (gN or title words), task (gN/tN or title words), status, limit (default 10, max 20). At most 3 calls per routing decision.",
   inputSchema: jsonSchema(LedgerQueryInput),
@@ -75,3 +75,10 @@ export function executeLedgerQuery(
     throw error;
   }
 }
+
+/** A routing decision is data, never an executable worker tool. */
+export const ROUTING_RESULT_TOOL: ToolDefinition = {
+  name: "routing_result",
+  description: "Finish routing by selecting the owner of CURRENT_REQUEST. Submit the existing routing decision fields. This does not execute the work. Use this instead of a prose answer.",
+  inputSchema: jsonSchema(RouterDecision),
+};

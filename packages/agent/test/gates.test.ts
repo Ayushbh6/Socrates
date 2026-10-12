@@ -28,13 +28,12 @@ const input = (over: Partial<Parameters<MemoryGate["read"]>[0]> = {}) => ({
 });
 
 describe("what the gate sends", () => {
-  it("is the message alone, or the answer it follows and the message, cut short, with the image names", () => {
-    expect(gateState({ message: "  Thanks, that worked!  ", previousAnswer: null, attachments: [] })).toBe("Thanks, that worked!");
-    expect(gateState({ message: "Use tabs.", previousAnswer: "Done: spaces everywhere.", attachments: [] })).toBe("The assistant's previous reply (cut short):\nDone: spaces everywhere.\n\nThe user's latest message:\nUse tabs.");
-    expect(gateState({ message: "What is this?", previousAnswer: null, attachments: ["a.png", "b.png"] })).toBe("What is this?\n[Attached: a.png, b.png]");
-    const long = gateState({ message: "m".repeat(GATE_MESSAGE_CHARS + 500), previousAnswer: "a".repeat(GATE_ANSWER_CHARS + 500), attachments: [] });
-    expect(long.length).toBeLessThan(GATE_MESSAGE_CHARS + GATE_ANSWER_CHARS + 120);
-    expect(long).toContain("…");
+  it("quotes the full current request and preserves attached names without the old character clipping", () => {
+    expect(gateState({message: "  Thanks, that worked!  ", previousAnswer: null, attachments: []})).toContain("  Thanks, that worked!  ");
+    const text = gateState({message: "m".repeat(5000), previousAnswer: "Earlier answer", attachments: ["a.png", "b.png"]});
+    expect(text).toContain("m".repeat(5000)); expect(text).toContain("Earlier answer");
+    expect(text).toContain('name: "a.png"'); expect(text).toContain('name: "b.png"');
+    expect(text.indexOf("# RECENT_CONVERSATION")).toBeLessThan(text.indexOf("# CURRENT_REQUEST"));
   });
 });
 
@@ -159,13 +158,14 @@ describe("a turn with the gate", () => {
     const turn = w.store.turnsForTask(w.taskId).at(-1)!;
     expect(asked[0]!.trace).toEqual({ role: "decision", userEventId: turn.userEventId });
     // The fixture's chat already has an answer, which this message follows.
-    expect(asked[0]!.state).toBe("The assistant's previous reply (cut short):\nStarted.\n\nThe user's latest message:\nWhich airline am I flying with?");
+    expect(asked[0]!.state).toContain("### FINAL_ANSWER\n```text\nStarted.");
+    expect(asked[0]!.state).toContain("Which airline am I flying with?");
     expect(w.store.getMemory(trip.id)!.uses).toBe(1);
 
     // The next message in the chat is judged with the answer it follows.
     answer = { recall: 0.1, save: 0.05 };
     await socrates.handle("Thanks!");
-    expect(asked[1]!.state).toContain("The assistant's previous reply (cut short):\nAustrian Airlines.");
+    expect(asked[1]!.state).toContain("### FINAL_ANSWER\n```text\nAustrian Airlines.");
     const second = contextText(model.requests.at(-1)!);
     expect(second).not.toContain("<MEMORY_CANDIDATES>");
     expect(second).not.toContain("<MEMORY_HINT>");
@@ -202,13 +202,13 @@ describe("a turn with the gate", () => {
     await socrates.handle("Why did we drop PayPal?");
     expect(order).toEqual(["decider", "router"]);
     const routed = routerModel.requests[0]!.messages[0]!.content as string;
-    expect(routed).toContain('<REMEMBERED>\n- [knowledge');
-    expect(routed).toContain('limited to goal "Shop"] Stripe is the payment provider');
+    expect(routed).toContain('# RECALLED_MEMORIES\n## MEMORY\nmemory_ref:');
+    expect(routed).toContain('Stripe is the payment provider');
     expect(routed).not.toContain("Berlin");
-    expect(routed.indexOf("<REMEMBERED>")).toBeLessThan(routed.indexOf("<CURRENT_USER_MESSAGE>"));
+    expect(routed.indexOf("# RECALLED_MEMORIES")).toBeLessThan(routed.indexOf("# CURRENT_REQUEST"));
 
     answer = { recall: 0.2 };
     await socrates.handle("Why did we drop PayPal?");
-    expect(routerModel.requests[1]!.messages[0]!.content as string).not.toContain("<REMEMBERED>");
+    expect(routerModel.requests[1]!.messages[0]!.content as string).not.toContain("# RECALLED_MEMORIES");
   });
 });

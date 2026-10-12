@@ -48,6 +48,6 @@ describe("the profile", () => {
     expect(contextText(chatModel.requests[0]!)).not.toContain("<USER>");
     await request("PUT", "/api/settings", { profile: { name: "Ada", onboarded: true } });
     await rt.socrates!.handle("What is my name?");
-    expect(contextText(chatModel.requests[1]!)).toContain("<USER>\nThe user's name is Ada.\n</USER>");
+    expect(contextText(chatModel.requests[1]!)).toContain("# USER_CONTEXT\n```text\nThe user's name is Ada.\n```");
   });
 });

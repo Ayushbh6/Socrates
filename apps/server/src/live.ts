@@ -497,8 +497,8 @@ export class LiveHub {
       approve: (request, origin) => this.ask(run, request, origin),
       ...(to === "main" ? {} : { lane: to === "new_lane" ? "new" : to }),
       ...(anchorDecisions?.length ? { anchorDecisions } : {}),
-      // Standard mode: no routing, a chat that never rolls over, and one that runs beside the others. A message kept in its task is not routed, and rolls over as usual.
-      ...(target ? (keep ? { target, pinned: true } : { target, rollover: false, alongside: true }) : {}),
+      // Standard bypasses routing and runs beside other chats; both modes roll over inside the same task.
+      ...(target ? (keep ? { target, pinned: true } : { target, alongside: true }) : {}),
       ...(redoOf ? { redoOf } : {}),
       beforeBind: (taskIds, signal) => this.beforeBind(run, taskIds, signal),
       onRecorded: (userEventId) => { if (target || replyTo) run.seq = this.runtime.store.requestRoot(userEventId).seq; },

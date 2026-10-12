@@ -40,31 +40,32 @@ describe("turn N−1 fitting", () => {
   it("keeps a turn that fits unchanged", () => {
     const { store, turn } = turnWith([readOf("a.ts", 500), edit("a.ts")]);
     const text = renderFullTurn(store, turn);
-    expect(text).toContain("TOOL CALL [e1] read");
-    expect(text).toContain("TOOL CALL [e2] edit");
+    expect(text).toContain("call_ref: g1/t1/e1\ntool_name: read");
+    expect(text).toContain("call_ref: g1/t1/e2\ntool_name: edit");
     expect(text).toContain("const value1 = computeSomething");
-    expect(text.startsWith(`[TURN ${turn.projectTurn} — full]\nUSER:\nWhy are the memory tests failing?`)).toBe(true);
-    expect(text.endsWith("SOCRATES:\nTwo tests fail because compact_history() drops source_ref.")).toBe(true);
+    expect(text.startsWith("## PREVIOUS_EXCHANGE")).toBe(true);
+    expect(text).toContain("### USER_REQUEST\n```text\nWhy are the memory tests failing?");
+    expect(text).toContain("### FINAL_ANSWER\n```text\nTwo tests fail because compact_history() drops source_ref.");
   });
 
   it("collapses reproducible calls, then trims the largest reads evenly (the 35k example)", () => {
     const { store, turn } = turnWith([readOf("a.ts", 9000), readOf("b.ts", 9000), readOf("c.ts", 9000), edit("x.ts"), edit("y.ts"), grep("source_ref"), grep("compact"), passingTest]);
     const text = renderFullTurn(store, turn);
     expect(countTokens(text)).toBeLessThanOrEqual(PREVIOUS_TURN_BUDGET_TOKENS);
-    expect(text).toContain("TOOL CALL [e4] edit x.ts (+2 −1)");
-    expect(text).toContain('TOOL CALL [e6] grep "source_ref" → 50 matches');
-    expect(text).toContain('TOOL CALL [e8] terminal: pytest tests/memory → exit 0 · last line: "24 passed"');
+    expect(text).toContain("COLLAPSED: edit: x.ts; ok");
+    expect(text).toContain('grep: source_ref; ok; 50 matches');
+    expect(text).toContain('Command exited 0; last line: 24 passed');
     // All three reads stay visible, each trimmed with its handle.
-    for (const handle of ["e1", "e2", "e3"]) expect(text).toContain(`context_retrieve inspect ${handle} returns the complete result`);
+    for (const handle of ["e1", "e2", "e3"]) expect(text).toContain(`retrieve_ref: g1/t1/${handle}`);
     for (const file of ["a.ts", "b.ts", "c.ts"]) expect(text).toContain(`computeSomething(1, "${file}")`);
-    expect(text).toContain("SOCRATES:\nTwo tests fail");
+    expect(text).toContain("### FINAL_ANSWER\n```text\nTwo tests fail");
   });
 
   it("collapses a read of a file the same turn changed later", () => {
     const { store, turn } = turnWith([readOf("a.ts", 12000), edit("a.ts"), readOf("b.ts", 12000)]);
     const text = renderFullTurn(store, turn);
-    expect(text).toContain("TOOL CALL [e1] read a.ts (lines 1–");
-    expect(text).toContain("— changed later in this turn");
+    expect(text).toContain("call_ref: g1/t1/e1\ntool_name: read");
+    expect(text).toContain("Read changed later in this turn");
     expect(text).toContain('computeSomething(1, "b.ts")');
   });
 
@@ -78,13 +79,18 @@ describe("turn N−1 fitting", () => {
     const many = turnWith(Array.from({ length: 6 }, (_, i) => readOf(`f${i}.ts`, 3000)));
     const text = renderFullTurn(many.store, many.turn, 6000);
     expect(countTokens(text)).toBeLessThanOrEqual(6000 + 200);
-    expect(text).toContain("TOOL CALL [e1] read f0.ts (lines 1–");
+    expect(text).toContain("call_ref: g1/t1/e1\ntool_name: read");
     expect(text).toContain('computeSomething(1, "f5.ts")');
     expect(TRIM_FLOOR_TOKENS).toBe(1500);
   });
 
   it("renders older turns as the request and answer only", () => {
     const { store, turn } = turnWith([readOf("a.ts", 100)]);
-    expect(renderExchangeTurn(store, turn)).toBe(`[TURN ${turn.projectTurn}]\nUSER:\nWhy are the memory tests failing?\n\nSOCRATES:\nTwo tests fail because compact_history() drops source_ref.`);
+    const text = renderExchangeTurn(store, turn);
+    expect(text).toContain("### USER_REQUEST");
+    expect(text).toContain("Why are the memory tests failing?");
+    expect(text).toContain("Two tests fail because compact_history() drops source_ref.");
+    expect(text).not.toContain("### TOOL_CALL");
+    expect(text).toContain("complete: true");
   });
 });

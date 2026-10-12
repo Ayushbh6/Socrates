@@ -34,7 +34,7 @@ export function lanesBlock(store: LedgerStore, lanes: LaneView[], now: Date, tim
       : s.status === "waiting_for_answer" ? "waiting for the user's answer to its question"
       : s.status === "starting" || s.status === "idle" ? s.status
       : `${s.status} at ${laneTime(s.at, now, timeZone)}`;
-    const lines = [`lane ${s.lane.number} · ${status}${s.goal && s.task ? ` · ${laneSelector(store, s)} "${excerpt(line(s.task.title), 80)}" in goal "${excerpt(line(s.goal.title), 80)}" · workspace ${excerpt(line(s.workspace ?? "none"), 80)}` : ""}`];
+    const lines = [`## ITEM\ngoal_ref: ${s.goal ? `g${s.goal.number}` : "none"}\ntask_ref: ${laneSelector(store, s) ?? "none"}\nlane_ref: ${s.lane.id}\nstatus: ${s.status}\nsource_refs: ${s.task ? laneSelector(store, s) : s.lane.id}\nsummary: lane ${s.lane.number} · ${status}${s.goal && s.task ? ` · ${laneSelector(store, s)} "${excerpt(line(s.task.title), 80)}" in goal "${excerpt(line(s.goal.title), 80)}" · workspace ${excerpt(line(s.workspace ?? "none"), 80)}` : ""}`];
     if (s.latestStep) lines.push(`  latest step: ${clip(s.latestStep, 35)}`);
     // While a lane works, its task's note still describes the turn before this one.
     if (s.task?.continuationNote) lines.push(`  ${s.status === "working" || s.status === "starting" ? "note from before this run" : "note"}: ${clip(s.task.continuationNote, 60)}`);

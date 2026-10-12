@@ -133,7 +133,7 @@ export function goalsView(store: LedgerStore, chatsGoal: number | null = null) {
       chats: goal.number === chatsGoal,
       workspace: goal.workspaceId ? (store.getWorkspace(goal.workspaceId)?.name ?? null) : null,
       updatedAt: goal.updatedAt,
-      tasks: store.listTasks(goal.id).map((task) => ({ number: task.number, title: task.title, status: task.status, closed: closedBy(store, task), objective: task.objective, completionCriteria: task.completionCriteria, note: task.continuationNote, noteState: store.noteState(task.id), chats: Math.max(1, store.listChats(task.id).length), updatedAt: task.updatedAt, startedAt: task.startedAt })),
+      tasks: store.listTasks(goal.id).map((task) => ({ number: task.number, title: task.title, status: task.status, closed: closedBy(store, task), objective: task.objective, completionCriteria: task.completionCriteria, note: task.continuationNote, noteState: store.noteState(task.id), chats: Math.max(1, store.listChats(task.id).length), sessions: store.listChats(task.id).map(chat => ({ id: chat.id, sequence: chat.ordinal, continuationOf: chat.continuationOf, handoverRef: chat.handoverRef, compactions: chat.compactionCount, openedAt: chat.openedAt, closedAt: chat.closedAt, handover: chat.handoverRef ? store.historyRecord(task.id, Number(chat.handoverRef.replace("hc-", "")))?.content ?? null : null })), updatedAt: task.updatedAt, startedAt: task.startedAt })),
     }));
 }
 

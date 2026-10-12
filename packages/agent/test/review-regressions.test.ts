@@ -91,7 +91,7 @@ describe("Agent-stage review regressions", () => {
     const h = w.socrates([continueTask()], [final()]);
     const text = "\n    return 42\n\n";
     await h.socrates.handle(text);
-    expect(contextText(h.model.requests[0]!)).toContain(`<CURRENT_USER_MESSAGE>\n${text}\n</CURRENT_USER_MESSAGE>`);
+    expect(contextText(h.model.requests[0]!)).toContain(`## TEXT\n\`\`\`text\n${text}\n\`\`\``);
   });
 
   it("persists intermediate and invalid assistant output, replays it and exposes text through inspect", async () => {
@@ -146,11 +146,15 @@ describe("Agent-stage review regressions", () => {
   it("cancels a pending approval at the turn deadline, consumes late approval without mutating", async () => {
     const w = await world({ files: { "a.txt": "alpha" } });
     const route = { text: continueTask().text.replace('"workspace_confidence":"high"', '"workspace_confidence":"low"') };
-    const h = w.socrates([route], [{ toolCalls: [call("edit", { path: "a.txt", old_text: "alpha", new_text: "beta" })] }, final()], { limits: { maxWallMs: 40 } });
+    // Leave enough real time for context assembly to reach approval on a busy CI worker.
+    // The assertion still requires a pending approval to be cancelled by the deadline.
+    const h = w.socrates([route], [{ toolCalls: [call("edit", { path: "a.txt", old_text: "alpha", new_text: "beta" })] }, final()], { limits: { maxWallMs: 1000 } });
     let release!: (approved: boolean) => void;
     const r = await h.socrates.handle("Edit", { approve: () => new Promise(resolve => { release = resolve; }) });
+    expect(release).toBeTypeOf("function");
     expect(r.kind === "answered" && r.parts[0]!.stop).toBe("time");
-    release(true); await delay(10);
+    release(true);
+    await delay(10);
     expect(readFileSync(path.join(w.root, "a.txt"), "utf8")).toBe("alpha");
     expect(w.store.listEvents({ type: "approval_decided" })).toHaveLength(0);
   });

@@ -129,7 +129,7 @@ describe("mechanical rollover recovery", () => {
     end(w, "Recent", "OK");
     const turn = begin(w); const chat = exhaustChat(w);
     if (withPrior) w.store.recordHistoryRecord({ goal_id: w.goalId, task_id: w.taskId, chat_id: chat.id }, { kind: "checkpoint", from: 1, to: 1, content: checkpoint(1, 1, { outstanding_requests: [{ turn: 1, quote: "Start the project work." }] }) });
-    const c = compact(w, turn, new ScriptedModel("broken", [{ text: "bad" }, { text: "bad" }]), { maxCompactionsPerChat: 1, verbatimWindow: 100 });
+    const c = compact(w, turn, new ScriptedModel("broken", [{ text: "bad" }, { text: "bad" }]), { maxCompactionsPerChat: 1, verbatimWindow: 400 });
     const messages = await c.run(c.messages, c.measure, new AbortController().signal);
     const record = w.store.latestHistoryRecord(w.taskId)!;
     expect(record.to).toBe(withPrior ? 1 : 0);
@@ -148,7 +148,7 @@ describe("mechanical rollover recovery", () => {
       const model = new ScriptedModel("recovered", [writing({ outstanding_requests: [{ turn: owed.projectTurn, quote: "Explain UNIQUE_OWED_DEPLOYMENT later." }] })]);
       const next = compact(resumed, begin(resumed), model, { verbatimWindow: 100 });
       const after = await next.run(next.messages, next.measure, new AbortController().signal);
-      expect(userText(model.requests[0]!.messages[0]!.content)).toContain("[TURN 2]\nUSER:\nExplain UNIQUE_OWED_DEPLOYMENT later.");
+      expect(userText(model.requests[0]!.messages[0]!.content)).toContain("### USER_REQUEST\n```text\nExplain UNIQUE_OWED_DEPLOYMENT later.");
       expect(restored.pendingOmission(w.taskId)).toBeNull();
       expect(JSON.stringify(after)).toContain("Explain UNIQUE_OWED_DEPLOYMENT later.");
       expect(JSON.stringify(after)).not.toContain("OMITTED");
@@ -191,12 +191,12 @@ describe("handover obligations and retrieved history", () => {
     const chat = w.store.currentChat(w.taskId);
     w.store.recordHistoryRecord({ goal_id: w.goalId, task_id: w.taskId, chat_id: chat.id }, { kind: "handover", from: 1, to: 2, content: capsule({ outstanding_requests }) });
     const turn = begin(w);
-    for (const verbatimWindow of [1000, 100]) {
+    for (const verbatimWindow of [1600, 100]) {
       const model = new ScriptedModel("summary", [writing({ outstanding_requests })]);
       const c = compact(w, turn, model, { verbatimWindow });
       await c.run(c.messages, c.measure, new AbortController().signal);
       expect(model.requests).toHaveLength(1);
-      expect(w.store.latestHistoryRecord(w.taskId)).toMatchObject({ kind: "checkpoint", to: verbatimWindow === 1000 ? 4 : 6, content: { outstanding_requests } });
+      expect(w.store.latestHistoryRecord(w.taskId)).toMatchObject({ kind: "checkpoint", to: verbatimWindow === 1600 ? 4 : 6, content: { outstanding_requests } });
       expect(w.store.pendingOmission(w.taskId)).toBeNull();
     }
   });
@@ -226,5 +226,37 @@ describe("handover obligations and retrieved history", () => {
     expect(text).not.toContain("FOREIGN");
     expect(text).not.toContain("quasar quasar quasar");
     expect(countTokens(text!)).toBeLessThanOrEqual(8000);
+  });
+});
+
+describe('same-task sixth-trigger session contract', () => {
+  it.each(['standard', 'continue_current'])('keeps five compactions, rolls on the next trigger, and restores the chain (%s)', async route => {
+    const w=await world();
+    const first=w.store.currentChat(w.taskId);
+    for(let i=0;i<4;i++) w.store.recordCompaction({goal_id:w.goalId,task_id:w.taskId,chat_id:first.id},{layers:['linearize'],checkpoint:null,before_tokens:200,after_tokens:100});
+    const turn=w.store.bindTurn({userEventId:w.store.recordUserMessage('Continue this task').id,taskId:w.taskId,route});
+    const model=new ScriptedModel('summary',[{text:JSON.stringify(capsule())}]);
+    const c=compact(w,turn,model);
+    const fifth=await c.run(c.messages,c.measure,new AbortController().signal);
+    expect(w.store.currentChat(w.taskId)).toMatchObject({id:first.id,compactionCount:5});
+    expect(model.requests).toHaveLength(0);
+    await c.run(fifth!,c.measure,new AbortController().signal);
+    const second=w.store.currentChat(w.taskId);
+    expect(second).toMatchObject({ordinal:2,continuationOf:first.id,compactionCount:0,handoverRef:'hc-1'});
+    expect(w.store.listChats(w.taskId)).toHaveLength(2);
+    expect(w.store.requireTask(w.taskId).status).toBe('open');
+    expect(w.store.requireTurn(turn.id)).toMatchObject({taskId:w.taskId,goalId:w.goalId,chatId:first.id,status:'in_progress'});
+    const replay=LedgerStore.open({path:':memory:'});
+    try {replay.restoreEvents(w.store.listEvents());expect(replay.currentChat(w.taskId)).toEqual(second);} finally {replay.close();}
+  });
+  it('records neither capsule nor continuation if the atomic rollover fails',async()=>{
+    const w=await world(); const chat=exhaustChat(w); const before=w.store.listEvents().length;
+    const c=compact(w,begin(w),new ScriptedModel('summary',[{text:JSON.stringify(capsule())}]),{maxCompactionsPerChat:1});
+    const original=w.store.rolloverChat.bind(w.store);
+    w.store.rolloverChat=()=>{throw Error('injected persistence failure');};
+    try {await expect(c.run(c.messages,c.measure,new AbortController().signal)).rejects.toThrow('injected persistence failure');}
+    finally {w.store.rolloverChat=original;}
+    expect(w.store.latestHistoryRecord(w.taskId)).toBeNull();expect(w.store.currentChat(w.taskId).id).toBe(chat.id);
+    expect(w.store.listEvents().slice(before).some(e=>e.type==='history_record_created')).toBe(false);
   });
 });

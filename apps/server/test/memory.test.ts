@@ -74,7 +74,7 @@ describe("memory", () => {
     await p.next(isResult("m1"));
     await live.rt.flushCalls();
     expect(asked).toHaveLength(1);
-    expect(asked[0]!.state).toBe("I always want short answers.");
+    expect(asked[0]!.state).toContain("## TEXT\n```text\nI always want short answers.\n```");
     expect(Object.keys(asked[0]!.questions)).toEqual(["recall", "save"]);
     const [decision] = live.rt.calls!.list({ role: "decision" });
     expect(decision).toMatchObject({ role: "decision", model: "openrouter:perplexity/pplx-decider-v1.1-27b", ok: true, promptTokens: 40, costUsd: 0.0000008, userEventId: expect.any(String) });

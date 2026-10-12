@@ -48,8 +48,8 @@ describe("<PROJECT_CONTEXT>", () => {
     const text = contextText(model.requests[0]!);
     const block = text.slice(text.indexOf("<PROJECT_CONTEXT>"), text.indexOf("</PROJECT_CONTEXT>"));
     // After the retrieved history and before the current message.
-    expect(text.indexOf("<PROJECT_CONTEXT>")).toBeGreaterThan(text.indexOf("<CURRENT_TASK>"));
-    expect(text.indexOf("</PROJECT_CONTEXT>")).toBeLessThan(text.indexOf("<CURRENT_USER_MESSAGE>"));
+    expect(text.indexOf("<PROJECT_CONTEXT>")).toBeGreaterThan(text.indexOf("# TASK"));
+    expect(text.indexOf("</PROJECT_CONTEXT>")).toBeLessThan(text.indexOf("# CURRENT_REQUEST"));
     expect(block).toContain("anchor learning/rules.md — style (whole file)\nAlways answer in German first.");
     expect(block).toContain("anchor learning/30-day-plan.md — goal_plan (");
     expect(block).toContain("- Day 10 (line ");

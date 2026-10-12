@@ -70,7 +70,7 @@ export class OpenAICompatibleModel implements ModelClient {
               type: "function" as const,
               function: { name: t.name, description: t.description, parameters: t.inputSchema },
             })),
-            ...(request.toolChoice === "none" ? { tool_choice: "none" as const } : {}),
+            ...(request.toolChoice && request.toolChoice !== "auto" ? { tool_choice: request.toolChoice } : {}),
           }
         : {}),
       ...((this.options.maxTokensParam ?? "max_completion_tokens") === "max_tokens"

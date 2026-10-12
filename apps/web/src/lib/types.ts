@@ -142,7 +142,7 @@ export interface GoalView {
   /** The goal standard mode shows as its plain chats, outside any goal. */
   chats?: boolean;
   workspace: string | null;
-  tasks: { number: number; startedAt?: string; title: string; chats?: number; status: string; closed?: ClosedBy | null; note: string | null; noteState?: { freshness: "current" | "outdated" | "unknown"; sourceTurn: string | null; reason: string | null; outcome: string | null }; objective?: string; completionCriteria?: string | null }[];
+  tasks: { number: number; startedAt?: string; title: string; chats?: number; sessions?: {id: string; sequence: number; continuationOf: string | null; handoverRef: string | null; compactions: number; openedAt: string; closedAt: string | null; handover: unknown}[]; status: string; closed?: ClosedBy | null; note: string | null; noteState?: { freshness: "current" | "outdated" | "unknown"; sourceTurn: string | null; reason: string | null; outcome: string | null }; objective?: string; completionCriteria?: string | null }[];
 }
 
 /** A goal's or task's status: open, completed, or superseded (replaced by other work). */

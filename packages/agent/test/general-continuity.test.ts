@@ -32,7 +32,7 @@ describe("daily General continuity", () => {
     const second = contextText(model.requests[1]!);
     expect(second).toContain("Test passed, exit code 0.");
     expect(second).not.toContain("CONTINUED_GENERAL_CONTEXT");
-    expect(second.match(/USER:\nPlease test the terminal/g)).toHaveLength(1);
+    expect(second.match(/### USER_REQUEST\n```text\nPlease test the terminal/g)).toHaveLength(1);
     expect(first).toContain(`turn_number ${friday.projectTurn}`);
   });
 
@@ -45,7 +45,7 @@ describe("daily General continuity", () => {
     const history = generalHistoryParts(w.store, current, "Europe/Vienna");
     const text = history.parts.map(p => p.text).join("");
     expect(countTokens(text)).toBeLessThanOrEqual(30000);
-    expect(text).toContain("EXCERPT"); expect(text).toContain("context_retrieve inspect turn_number");
+    expect(text).toContain("EXCERPT"); expect(text).toContain("retrieve_ref: turn_number");
     expect(text).not.toContain("unfinished secret"); expect(text).not.toContain("current secret");
     expect(history.included).not.toContain(unfinished.projectTurn);
     w.store.recordOmission({ goal_id: task.goalId, task_id: task.id, chat_id: current.chatId!, turn_id: current.id }, { from: saturday.projectTurn, to: current.projectTurn - 1 });
@@ -60,8 +60,8 @@ describe("daily General continuity", () => {
     const first = assembleContext({ ...base, now: new Date("2026-10-11T10:10:13Z") });
     const next = assembleContext({ ...base, now: new Date("2026-10-11T10:11:13Z") });
     expect(first.slice(0, -1)).toEqual(next.slice(0, -1));
-    expect(first.at(-1)?.text).toContain("2026-10-11T10:10:13.000Z");
-    expect(next.at(-1)?.text).toContain("2026-10-11T10:11:13.000Z");
+    expect(first.at(-1)?.text).toContain("2026-10-11T12:10:13+02:00");
+    expect(next.at(-1)?.text).toContain("2026-10-11T12:11:13+02:00");
     const activity = renderActivity(w.store, w.clock.now(), "Europe/Vienna", turn.userEventId);
     expect(activity).not.toContain(`turn_number ${turn.projectTurn} |`);
     expect(activity).toContain("chat/task open; execution completed");

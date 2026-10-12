@@ -58,6 +58,7 @@ async function run(modelName: string): Promise<Result> {
       try {
         const result = await router.route(step.message);
         r.ms.push(Date.now() - started);
+        if (process.env.ROUTER_PROGRESS) process.stderr.write(`${run+1} ${step.id} ${describeResult(result)}\n`);
         const routed = store.listEvents({ type: "routing_completed" }).at(-1)?.payload as EventPayloads["routing_completed"] | undefined;
         if (routed && (routed.validation_errors?.length || routed.escalated || routed.fallback)) {
           r.repaired++;

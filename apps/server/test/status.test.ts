@@ -41,7 +41,7 @@ describe("goal and task status, set by the user", () => {
     p.send({ type: "send", id: "m2", text: "Something else entirely.", to: "main" });
     await p.next(isResult("m2"));
     const told = shown(router.requests.at(-1)!);
-    expect(told).toContain("Fix checkout — superseded by the user");
+    expect(told).toContain("status: superseded (set by the user)");
     expect(told).toContain("status: completed (set by the user)");
   });
 

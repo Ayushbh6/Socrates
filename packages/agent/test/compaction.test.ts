@@ -12,7 +12,7 @@ import { call, contextText, final, type World, world } from "./helpers";
 const BASE = (() => {
   const store = LedgerStore.open({ path: ":memory:" });
   const runner = new ToolRunner({ store, timeZone: "UTC", approve: async () => true });
-  const tokens = countTokens(AGENT_SYSTEM_PROMPT) + countTokens(JSON.stringify(runner.definitions)) + 32;
+  const tokens = countTokens(AGENT_SYSTEM_PROMPT) + countTokens(JSON.stringify(runner.definitions)) + 832;
   void runner.close();
   store.close();
   return tokens;
@@ -95,12 +95,12 @@ describe("layer 1: history checkpoint", () => {
     const input = userText(compactor.requests[0]!.messages[0]!.content);
     const range = spanRange(compactor.requests[0]!);
     expect(range.from).toBe(1);
-    expect(input).toContain("[TURN 1]\nUSER:\nStart the project work.");
+    expect(input).toContain("### USER_REQUEST\n```text\nStart the project work.");
     const text = contextText(model.requests[0]!);
     expect(text).toContain(`<HISTORY_CHECKPOINT ref="hc-1" turns="1–${range.to}">`);
     expect(text).toContain('- turn 2: "(2) how do I test the lexer?"');
     expect(text).not.toContain("[TURN 2]\nUSER:");
-    expect(text).toContain("[TURN 9 — full]");
+    expect(text).toContain("(turn_number 9)");
     expect(w.store.latestHistoryRecord(w.taskId)).toMatchObject({ handle: "hc-1", kind: "checkpoint", from: 1, to: range.to });
     expect(compactions(w)).toMatchObject([{ count: 1, layers: ["checkpoint"], checkpoint: "hc-1" }]);
     expect(compactions(w)[0]!.after_tokens).toBeLessThanOrEqual(BASE + 1_800);
@@ -257,10 +257,10 @@ describe("rollover", () => {
     expect(second.kind === "answered" && second.parts[0]!.turn.chatId).toBe(next.id);
     const text = contextText(following.model.requests[0]!);
     expect(text).toContain('<HANDOVER_CAPSULE ref="hc-1"');
-    expect(text).toContain(`[TURN ${turn!.projectTurn} — full]\nUSER:\nFix the memory logging system.`);
+    expect(text).toContain("### USER_REQUEST\n```text\nFix the memory logging system.");
   });
 
-  it("never happens in a standard-mode chat: the user's chosen chat keeps compacting, unrouted", async () => {
+  it("continues a standard-mode task in a linked session without routing", async () => {
     const w = await world({ files: { "big.txt": bigFile } });
     const chat = w.store.currentChat(w.taskId);
     w.store.recordCompaction({ goal_id: w.goalId, task_id: w.taskId, chat_id: chat.id }, { layers: ["linearize"], checkpoint: null, before_tokens: 0, after_tokens: 0 });
@@ -271,10 +271,10 @@ describe("rollover", () => {
     });
     const result = await run.socrates.handle("Fix the memory logging system.", { target: { taskId: w.taskId }, rollover: false, onStatus: (s) => statuses.push(s) });
     expect(result).toMatchObject({ kind: "answered", text: "Finished reading." });
-    expect(statuses).toEqual([]);
-    expect(w.store.currentChat(w.taskId).id).toBe(chat.id);
-    expect(w.store.listChats(w.taskId)).toHaveLength(1);
-    expect(compactions(w).length).toBeGreaterThan(1);
+    expect(statuses).toContain("Refreshing this long task's context…");
+    expect(w.store.currentChat(w.taskId).continuationOf).toBe(chat.id);
+    expect(w.store.listChats(w.taskId)).toHaveLength(2);
+    expect(run.routerModel.requests).toHaveLength(0);
     expect(w.store.listEvents({ type: "turn_bound" }).at(-1)!.payload).toMatchObject({ route: "standard" });
   });
 
@@ -326,15 +326,19 @@ describe("summary validation", () => {
 it("rolls over General without a checkpoint that duplicates or hides its cross-day history", async () => {
   const w = await world();
   for (let i = 0; i < 8; i++) await exchange(w.store, `General exchange ${i}`, general(), LONG, "Answered.");
-  const { socrates, compactor } = w.socrates([general()], [final()], { budgets: budgets({ maxCompactionsPerChat: 0 }) });
+  const { socrates, compactor } = w.socrates([general()], [final()], { budgets: budgets({ maxCompactionsPerChat: 0 }), compactor: [capsule({key_evidence: []})] });
   const result = await socrates.handle("Continue General");
   expect(result.kind).toBe("answered");
   if (result.kind !== "answered") return;
   const task = result.parts[0]!.task;
-  expect(compactor.requests).toHaveLength(0);
-  expect(w.store.latestHistoryRecord(task.id)).toMatchObject({ kind: "handover", from: 0, to: 0 });
+  expect(compactor.requests).toHaveLength(1);
+  const handover = w.store.latestHistoryRecord(task.id)!;
+  expect(handover).toMatchObject({ kind: "handover", mechanical: false });
   const next = w.socrates([general()], [final()]);
   await next.socrates.handle("Next greeting");
-  expect(contextText(next.model.requests[0]!)).toContain("General exchange 0");
+  const context = contextText(next.model.requests[0]!);
+  expect(context).toContain("## HANDOVER");
+  expect(context).toContain("General exchange 7");
+  if (handover.to >= 2) expect(context).not.toContain("### USER_REQUEST\n```text\nGeneral exchange 0");
   expect(contextText(next.model.requests[0]!)).not.toContain("<TASK_HANDOVER");
 });

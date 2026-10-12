@@ -15,7 +15,7 @@ import { type Chat, type Goal, type LedgerStore, type Task, type Turn, parseGoal
 import type { SemanticSearch } from "@socrates/retrieval";
 import { type RoutingContext, buildRoutingContext, candidateQuery } from "./context";
 import { ROUTER_SYSTEM_PROMPT } from "./prompt";
-import { ASK_USER_TOOL, LEDGER_QUERY_TOOL, executeLedgerQuery, renderToolError } from "./tools";
+import { ASK_USER_TOOL, LEDGER_QUERY_TOOL, ROUTING_RESULT_TOOL, executeLedgerQuery, renderToolError } from "./tools";
 import {
   type ResolvedPart,
   type ResolvedRoute,
@@ -81,7 +81,9 @@ type AttemptOutcome =
   | { kind: "clarify"; ask: AskUserInput }
   | { kind: "invalid"; errors: string[] };
 
+interface Counters { invalidFinal: number; invalidTools: number; semanticErrors: number; resultTransport: string }
 interface Budget {
+  counters: Counters;
   ledgerQueries: number;
   messages: ModelMessage[];
   errors: string[];
@@ -131,6 +133,7 @@ export class GoalRouter {
     const attachments = ((userEvent.payload as EventPayloads["user_message"]).attachments ?? []).map((a) => a.name);
     const ctx = buildRoutingContext(this.store, message, {
       timeZone: this.timeZone,
+      requestId: userEvent.id,
       ...(this.defaultFolder ? { defaultFolder: this.defaultFolder() } : {}),
       ...(attachments.length ? { attachments } : {}),
       semantic,
@@ -144,7 +147,7 @@ export class GoalRouter {
     // Lanes are shown with their selectors, so routing to a lane's task needs no ledger query.
     for (const n of ctx.laneSelectors.goals) seen.goals.add(n);
     for (const t of ctx.laneSelectors.tasks) seen.tasks.add(t);
-    const budget: Budget = { ledgerQueries: 0, errors: [], normalized: [], messages: [{ role: "user", content: ctx.input }], trace: { userEventId: userEvent.id, laneId }, requests: 0 };
+    const budget: Budget = { counters: {invalidFinal: 0, invalidTools: 0, semanticErrors: 0, resultTransport: "none"}, ledgerQueries: 0, errors: [], normalized: [], messages: [{ role: "user", content: ctx.input }], trace: { userEventId: userEvent.id, laneId }, requests: 0 };
 
     let attempts = 1;
     let escalated = false;
@@ -169,7 +172,7 @@ export class GoalRouter {
     }
 
     if (final.kind === "decision") budget.normalized.push(...(final.route.normalized ?? []), ...final.route.parts.flatMap((p) => p.normalized ?? []));
-    const meta = { model: modelId, attempts, escalated, fallback, ledgerQueries: budget.ledgerQueries, errors: budget.errors, normalized: budget.normalized };
+    const meta = { counters: budget.counters, model: modelId, attempts, escalated, fallback, ledgerQueries: budget.ledgerQueries, errors: budget.errors, normalized: budget.normalized };
     signal?.throwIfAborted();
     if (final.kind === "clarify") return this.applyClarify(userEvent.id, final.ask, ctx, meta);
     const requestAt = new Date(this.store.requestRoot(ctx.pending?.turn.userEventId ?? userEvent.id).at);
@@ -186,7 +189,7 @@ export class GoalRouter {
     budget: Budget,
     signal: AbortSignal | undefined,
   ): Promise<AttemptOutcome> {
-    const tools = ctx.answeringClarification ? [LEDGER_QUERY_TOOL] : [LEDGER_QUERY_TOOL, ASK_USER_TOOL];
+    const tools = ctx.answeringClarification ? [LEDGER_QUERY_TOOL, ROUTING_RESULT_TOOL] : [LEDGER_QUERY_TOOL, ASK_USER_TOOL, ROUTING_RESULT_TOOL];
     const messages = budget.messages;
     let repaired = false;
     let lastErrors: string[] = ["The router did not return a decision."];
@@ -196,7 +199,8 @@ export class GoalRouter {
       try {
         signal?.throwIfAborted();
         const completion = model.complete({
-          system: ROUTER_SYSTEM_PROMPT,
+          system: ROUTER_SYSTEM_PROMPT + "\nSubmit the final decision through routing_result. Use native ledger_query for evidence or ask_user for genuine destination ambiguity. Never imitate a tool call as text.",
+          ...(/^(openrouter|openai):/.test(model.id) ? {toolChoice: "required" as const} : {}),
           messages,
           tools,
           maxOutputTokens: 8_000,
@@ -222,8 +226,23 @@ export class GoalRouter {
 
       if (response.toolCalls.length > 0) {
         messages.push({ role: "assistant", content: response.text, toolCalls: response.toolCalls, ...(response.raw ? { raw: response.raw } : {}) });
+        const final = response.toolCalls.find(c => c.name === "routing_result");
+        if (final) {
+          const validation = response.toolCalls.length !== 1 ? {ok: false as const, failureKind: "format" as const, errors: ["Submit routing_result alone, after completing evidence lookups."]} : validateDecisionText(JSON.stringify(final.input), ctx, this.store, seen);
+          if (validation.ok) {budget.counters.resultTransport = "native routing_result"; return {kind: "decision", route: validation.value};}
+          budget.counters[validation.failureKind === "format" ? "invalidFinal" : "semanticErrors"]++;
+          lastErrors = validation.errors;
+          budget.errors.push(...validation.errors.map(e => `${model.id}: final routing tool: ${e}`));
+          for (const call of response.toolCalls) messages.push({role: "tool", toolCallId: call.id, toolName: call.name, content: renderToolError({code: "invalid_routing_result", message: validation.errors.join("; "), correction: "Correct the routing decision and call routing_result alone.", retryable: !repaired}), isError: true});
+          if (repaired) break;
+          repaired = true;
+          continue;
+        }
         for (const call of response.toolCalls) {
           const result = this.executeTool(call, ctx, seen, budget);
+          if (result.isError) budget.counters.invalidTools++;
+          if (result.ask) budget.counters.resultTransport = "native ask_user";
+          if (result.isError) budget.errors.push(`${model.id}: invalid tool arguments (${call.name}): ${result.content}`);
           if (result.ask) return { kind: "clarify", ask: result.ask };
           messages.push({ role: "tool", toolCallId: call.id, toolName: call.name, content: result.content, isError: result.isError });
         }
@@ -231,9 +250,10 @@ export class GoalRouter {
       }
 
       const validation = response.stopReason === "max_tokens"
-        ? { ok: false as const, errors: ["The response was truncated. Return a shorter complete routing decision."] }
+        ? { ok: false as const, failureKind: "format" as const, errors: ["The response was truncated. Return a shorter complete routing decision."] }
         : validateDecisionText(response.text, ctx, this.store, seen);
-      if (validation.ok) return { kind: "decision", route: validation.value };
+      if (validation.ok) {budget.counters.resultTransport = "validated JSON fallback"; return { kind: "decision", route: validation.value };}
+      budget.counters[validation.failureKind === "format" ? "invalidFinal" : "semanticErrors"]++;
       lastErrors = validation.errors;
       budget.errors.push(...validation.errors.map(e => `${model.id}: ${e}`));
       messages.push({ role: "assistant", content: response.text, ...(response.raw ? { raw: response.raw } : {}) });
@@ -397,7 +417,7 @@ export class GoalRouter {
     userEventId: string,
     ask: AskUserInput,
     ctx: RoutingContext,
-    meta: { model: string; attempts: number; escalated: boolean; fallback: string | null; ledgerQueries: number; errors: string[]; normalized: string[] },
+    meta: { counters: Counters; model: string; attempts: number; escalated: boolean; fallback: string | null; ledgerQueries: number; errors: string[]; normalized: string[] },
   ): RoutingResult {
     const text = renderClarification(ask);
     const turn = this.store.transaction(() => {
@@ -417,6 +437,7 @@ export class GoalRouter {
           escalated: meta.escalated,
           fallback: meta.fallback,
           ledger_queries: meta.ledgerQueries,
+          diagnostics: { ...ctx.diagnostics, ...meta.counters },
           reason: ask.question,
           validation_errors: meta.errors,
           ...(meta.normalized.length ? { normalized: meta.normalized } : {}),
@@ -433,7 +454,7 @@ export class GoalRouter {
     userEventId: string,
     route: ResolvedRoute,
     ctx: RoutingContext,
-    meta: { model: string; attempts: number; escalated: boolean; fallback: string | null; ledgerQueries: number; errors: string[]; normalized: string[] },
+    meta: { counters: Counters; model: string; attempts: number; escalated: boolean; fallback: string | null; ledgerQueries: number; errors: string[]; normalized: string[] },
   ): RoutingResult {
     const parts = this.store.transaction(() => {
       const bound: RoutedPart[] = [];
@@ -479,6 +500,7 @@ export class GoalRouter {
           escalated: meta.escalated,
           fallback: meta.fallback,
           ledger_queries: meta.ledgerQueries,
+          diagnostics: { ...ctx.diagnostics, ...meta.counters },
           reason: route.reason,
           validation_errors: meta.errors,
           ...(meta.normalized.length ? { normalized: meta.normalized } : {}),

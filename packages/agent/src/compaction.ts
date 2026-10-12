@@ -79,21 +79,12 @@ export function createCompactor(options: CompactorOptions): Compact {
     let checkpoint: string | null = null;
     const rollover = chat.compactionCount >= budgets.maxCompactionsPerChat;
     let rolledOver = false;
-    if (store.requireTask(taskId).general && !turn.laneId) {
-      // General has a bounded cross-day raw window; no overlapping checkpoint.
-      // Preserve chat rollover with a capsule that does not claim to cover that raw window.
-      if (rollover) {
-        const prior = store.latestHistoryRecord(taskId);
-        const content: TaskHandover = { task_objective: store.requireTask(taskId).objective, completion_criteria: "", verified_progress: "General history is supplied separately as a bounded chronological window.", outstanding_requests: [], decisions: [], constraints: [], files_and_tests: [], blockers: [], next_action: "Continue the current request with the separately supplied General history.", key_evidence: [] };
-        const capsule = store.recordHistoryRecord(refs, { kind: "handover", from: prior?.from ?? 0, to: prior?.to ?? 0, content, mechanical: true });
-        store.rolloverChat(chat.id, capsule); rolledOver = true;
-      }
-    } else if (rollover) {
+    if (rollover) {
       options.onStatus?.("Refreshing this long task's context…");
       const capsule = await writeHandover(writer, refs, signal);
       if (capsule === "cancelled") return null;
-      if (capsule) { store.rolloverChat(chat.id, capsule); rolledOver = true; }
-    } else {
+      if (capsule) rolledOver = true;
+    } else if (!store.requireTask(taskId).general || turn.laneId) {
       const span = planSpan(store, turn, budgets);
       if (span) {
         layers.push("checkpoint");
@@ -248,7 +239,7 @@ async function writeHandover(options: WriterOptions, refs: TaskRefs & { chat_id:
     validateSummary("handover", text, { store, taskId: task.id, range, latestTurn: turn.projectTurn, maxTokens: budgets.summaryMax, render: (c) => renderRecord(draft(c)) }),
   );
   if (result === "cancelled") return "cancelled";
-  if (result.ok) return store.recordHistoryRecord(refs, { kind: "handover", from: range.from, to: range.to, content: result.value });
+  if (result.ok) return store.transaction(() => { const capsule = store.recordHistoryRecord(refs, { kind: "handover", from: range.from, to: range.to, content: result.value }); store.rolloverChat(refs.chat_id, capsule); return capsule; });
   store.recordWarning(refs, { kind: "compactor_failed", detail: `Handover capsule failed; using the bounded mechanical fallback: ${result.errors.join("; ")}` });
   // A failed writer has not absorbed the new span. Preserve its pending range
   // across rollover and replay so the next checkpoint reads the exact turns.
@@ -261,7 +252,9 @@ async function writeHandover(options: WriterOptions, refs: TaskRefs & { chat_id:
   }
   return store.transaction(() => {
     if (span) store.recordOmission(refs, { from: span.turns[0]!.projectTurn, to: span.turns.at(-1)!.projectTurn });
-    return store.recordHistoryRecord(refs, { kind: "handover", ...covered, content, mechanical: true });
+    const capsule = store.recordHistoryRecord(refs, { kind: "handover", ...covered, content, mechanical: true });
+    store.rolloverChat(refs.chat_id, capsule);
+    return capsule;
   });
 }
 

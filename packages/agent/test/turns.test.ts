@@ -43,15 +43,15 @@ describe("turn lifecycle", () => {
     await second.socrates.handle("Where is alpha?");
     const [step1, step2] = second.model.requests;
     const text = contextText(step1!);
-    expect(text).toContain("[TURN 1]\nUSER:\nStart the project work.\n\nSOCRATES:\nStarted.");
-    expect(text).toContain("[TURN 2 — full]\nUSER:\nWhat does a.txt say?\n\nTOOL CALL [e1] read");
+    expect(text).toContain("### USER_REQUEST\n```text\nStart the project work.");
+    expect(text).toContain("call_ref: g1/t1/e1\ntool_name: read");
     expect(text).not.toContain("[TURN 1 — full]");
 
     // Within the turn, the assembled context never changes; only the rolling breakpoint moves.
     expect(contextParts(step2!).map((p) => p.text)).toEqual(contextParts(step1!).map((p) => p.text));
     const marks = (r: typeof step1) => r!.messages.flatMap((m) => (m.role === "user" && typeof m.content !== "string" ? m.content.filter((p) => p.cache).map((p) => p.text.slice(0, 14)) : m.role === "tool" && m.cache ? ["tool"] : []));
-    expect(marks(step1)).toEqual(["[TURN 1]\nUSER:", "[TURN 2 — full", "<CURRENT_TIME>"]);
-    expect(marks(step2)).toEqual(["[TURN 1]\nUSER:", "[TURN 2 — full", "tool"]);
+    expect(marks(step1)).toEqual(["## EXCHANGE\ntu", "## PREVIOUS_EX", "## COVERAGE\nsc", "# TASK\ntask_re"]);
+    expect(marks(step2)).toEqual(["## EXCHANGE\ntu", "## PREVIOUS_EX", "## COVERAGE\nsc", "tool"]);
     // Across turns, the goal-stable block is identical.
     expect(contextParts(step1!)[0]!.text).toBe(contextParts(first.model.requests[0]!)[0]!.text);
   });
@@ -71,8 +71,8 @@ describe("turn lifecycle", () => {
 
     const part2 = contextText(model.requests[2]!);
     expect(part2).toContain('<EVIDENCE_FROM_PART_1 task="Fix the server">\nfiles_changed: a.txt\nnote: a.txt now says beta.\nevidence: g1/t1/e1 (edit)');
-    expect(part2).toContain('this_turn: part 2 of 2 of the user\'s message — "write the docs"');
-    expect(part2).toContain("<CURRENT_USER_MESSAGE>\nFix a.txt, then write the docs\n</CURRENT_USER_MESSAGE>");
+    expect(part2).toContain('part: 2 of 2; assigned request: "write the docs"');
+    expect(part2).toContain("## TEXT\n```text\nwrite the docs\n```");
     // Part 2 has clean history: it is a new task.
     expect(part2).not.toContain("[TURN");
     // The qualified handle opens part 1's evidence from part 2's task.
@@ -145,12 +145,12 @@ describe("turn lifecycle", () => {
   it("gives the general task recent activity and ignores goal state and completion", async () => {
     const w = await world();
     const { socrates, model } = w.socrates([general()], [final({ full_answer: "Hi! Last time we started the server work.", goal_note: "chatty", task_complete: { reason: "greeted" } })]);
-    await socrates.handle("Hi, how's it going?");
+    await socrates.handle("What work is pending?");
     const text = contextText(model.requests[0]!);
-    expect(text).toContain("<RECENT_ACTIVITY>");
+    expect(text).toContain("# RELATED_WORK_STATE");
     expect(text).toContain("Project work · Fix the server");
-    expect(text).not.toContain("<CURRENT_TASK>");
-    expect(text).not.toContain("<GOAL_STATE>");
+    expect(text).toContain("# TASK\n");
+    expect(text).toContain("# GOAL\n");
     const generalGoal = w.store.getGeneralGoal()!;
     expect(generalGoal.note).toBeNull();
     expect(w.store.listTasks(generalGoal.id)[0]!.status).toBe("open");
@@ -204,8 +204,8 @@ describe("turn lifecycle", () => {
     const second = w.socrates([continueTask()], [final()]);
     await second.socrates.handle("Continue.");
     const text = contextText(second.model.requests[0]!);
-    expect(text).toContain("USER:\nDo the long thing.\n\nSOCRATES:\n(The user stopped this turn after 0 tool calls; no answer was given.)");
-    expect(text).toContain("note: Interrupted by the user after 0 tool calls.");
+    expect(text).toContain("(The user stopped this turn after 0 tool calls; no answer was given.)");
+    expect(text).toContain("Interrupted by the user after 0 tool calls.");
   });
 
   it("binds the application's workspace to a new goal before the agent runs", async () => {

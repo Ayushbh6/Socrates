@@ -1,15 +1,14 @@
 import { createHash } from "node:crypto";
-import { generalHistoryParts } from "./history";
+import { generalHistoryParts, taskHistory, historyParts } from "./history";
 import type { Attachment, Effort, EventRefs, FinalAnswer, ModelClient, TurnStop } from "@socrates/contracts";
 import { homedir } from "node:os";
-import { abortable } from "@socrates/shared";
+import { abortable, countTokens } from "@socrates/shared";
 import { TokenCalibration } from "@socrates/providers";
 import { GoalRouter, type RoutedPart, laneSummaries, renderActivity } from "@socrates/router";
-import type { Goal, Lane, LedgerStore, Task, Turn } from "@socrates/store";
+import { foregroundTurns, selectContextHistory, contextSection, contextTime, currentRequest, type Goal, type Lane, type LedgerStore, type Task, type Turn } from "@socrates/store";
 import type { SemanticHit, SemanticIndex } from "@socrates/retrieval";
 import { type AccessGrant, type AccessPolicy, type Approve, type CapabilityCatalog, RunState, type ShelfOptions, type SupervisorOptions, ToolRunner, WorkspaceRoot, canReadAutomatically, capabilityCandidates, skillShelf } from "@socrates/tools";
 import { attachmentImages, requestAttachments } from "./attachments";
-import { taskHistory } from "./history";
 import { CHAT_ROUTES, assembleContext, projectQuery } from "./context";
 import { type LaneView, laneNotice, lanesBlock } from "./lanes";
 import { RELATED_MAX_SECTIONS } from "./project-context";
@@ -140,7 +139,7 @@ export interface HandleOptions {
    * one is made in the goal, named for now by `title`.
    */
   target?: { taskId: string } | { goalId: string; title: string };
-  /** False: the chat never rolls over into a new one, however often it is compacted (standard mode). */
+  /** @deprecated Ignored. All modes use the same sixth-trigger rollover policy. */
   rollover?: boolean;
   /**
    * Flow mode's "Keep my next message in this task": `target` is a task the
@@ -516,7 +515,7 @@ export class Socrates {
         await beforeBind("taskId" in options.target ? [options.target.taskId] : []);
         parts = [this.bindChosen(message, laneId, options.target, userEventId, options.pinned === true)];
       } else {
-        reading = this.askGate(gateMessage, userEventId, this.store.currentBinding(laneId)?.task.id ?? null, signal);
+        reading = this.askGate(message, userEventId, null, signal, options.replyTo);
         const remembered = await this.rememberedForRouting(gateMessage, await reading, signal);
         const routed = await this.router.route(message, signal, { laneId, userEventId, ...(options.replyTo ? {clarificationTurnId: options.replyTo} : options.newRequest ? {clarificationTurnId: null} : {}), laneActivity: this.laneActivity(), beforeBind, ...(remembered ? { remembered } : {}) });
         if (routed.kind === "clarify") {
@@ -609,12 +608,22 @@ export class Socrates {
    * (agent-harness.md, "Memory"): never throws, and reads as nothing without a
    * gate, with memory switched off, or when the decider fails or is slow.
    */
-  private askGate(message: string, userEventId: string, taskId: string | null, signal: AbortSignal): Promise<GateReading | null> {
+  private askGate(message: string, userEventId: string, taskId: string | null, signal: AbortSignal, replyTo?: string): Promise<GateReading | null> {
     const gate = this.options.gate?.() ?? null;
     if (!gate) return Promise.resolve(null);
     const settings = this.options.memory?.() ?? MEMORY_ON;
-    const attachments = ((this.store.getEvent(userEventId)?.payload as { attachments?: { name: string }[] } | undefined)?.attachments ?? []).map((a) => a.name);
-    return gate.read({ message, previousAnswer: taskId ? this.previousAnswer(taskId) : null, attachments, ask: { recall: settings.use, save: settings.save }, trace: { role: "decision", userEventId } }, signal);
+    const event = this.store.requestRoot(userEventId);
+    const clarification = replyTo ? this.store.clarification(replyTo) : null;
+    const root = clarification ? this.store.requestRoot(clarification.requestId) : event;
+    const lane = event.payload.lane_id ?? null;
+    const task = taskId ? this.store.requireTask(taskId) : null;
+    const turns = task ? (task.general && !lane ? this.store.listTasks(task.goalId).flatMap(t => this.store.turnsForTask(t.id)).filter(t => !t.laneId) : this.store.turnsForTask(task.id).filter(t => t.laneId === lane)).sort((a,b) => b.projectTurn-a.projectTurn) : foregroundTurns(this.store, [lane]);
+    const history = selectContextHistory(this.store, turns, {budget: 4_000, decider: true, timeZone: this.options.timeZone, excludeRequest: root.id, asOf: event.at});
+    const attachments = root.payload.attachments ?? [];
+    const context = [contextSection("RECENT_CONVERSATION", history.text || "none"),
+      contextSection("CURRENT_TIME", `at: ${contextTime(event.at, this.options.timeZone)}\ntimezone: ${this.options.timeZone}`),
+      currentRequest({id: root.id, at: root.at, text: root.payload.text, attachments: attachments.map(a => ({name: a.name, mediaType: a.media_type})), clarification: clarification ? {question: clarification.detail, answer: message} : null}, this.options.timeZone)].join("\n\n");
+    return gate.read({ message: root.payload.text, previousAnswer: null, context, attachments: attachments.map(a => a.name), ask: { recall: settings.use, save: settings.save }, trace: { role: "decision", userEventId } }, signal);
   }
 
   /** What the router is told the user has asked to be remembered, when the gate expects the message to lean on it. */
@@ -816,9 +825,11 @@ export class Socrates {
       const generalHistory = goal.general && !turn.laneId ? generalHistoryParts(store, turn, this.options.timeZone, previousTurn ?? this.budgets.previousTurn, generalHistoryBudget, turnNow) : null;
       store.appendEvent("context_diagnostics", {
         contextHash: createHash("sha256").update(JSON.stringify(assembled.map(p => p.text))).digest("hex"), contextParts: assembled.length,
+        session: (() => {const c = store.currentChat(turn.taskId!); return {chatRef: c.id, sequence: c.ordinal, compactions: c.compactionCount, handoverRef: c.handoverRef, continuationOf: c.continuationOf};})(),
+        historyScope: goal.general && !turn.laneId ? "general_cross_day" : turn.laneId ? "lane_task" : "selected_task",
         activityAsOf: turnNow.toISOString(), timeZone: this.options.timeZone,
-        history: generalHistory ? { budget: generalHistory.budget, used: generalHistory.used, included: generalHistory.included, omitted: generalHistory.omitted, dates: generalHistory.dates } : null,
-        memory: { recall: gated?.recall ?? null, threshold: RECALL_AT, matched: remembered.ids.length, explanation: !memorySettings.use ? "Memory disabled" : gated?.recall == null ? "Recall gate unavailable" : gated.recall < RECALL_AT ? "Recall below threshold" : remembered.ids.length ? "Matching saved memories supplied" : "No matching saved memories" },
+        history: generalHistory ? { budget: generalHistory.budget, used: generalHistory.used, included: generalHistory.included, omitted: generalHistory.omitted, dates: generalHistory.dates } : (() => {const h = taskHistory(store, turn.id); const parts = historyParts(store, h, previousTurn ?? this.budgets.previousTurn, this.options.timeZone); return {budget: this.budgets.trigger, used: parts.reduce((sum,p)=>sum + countTokens(p.text),0), included: h.turns.map(t=>t.projectTurn), omitted: h.omitted ? h.omitted.to-h.omitted.from+1 : 0, dates: h.turns.map(t=>store.requestRoot(t.userEventId).at)};})(),
+        memory: { recall: gated?.recall ?? null, threshold: RECALL_AT, matched: remembered.ids.length, explanation: !memorySettings.use ? "Memory disabled" : gated?.recall == null ? gated?.unavailableReason ?? "Recall gate unavailable" : gated.recall < RECALL_AT ? "Recall below threshold" : remembered.ids.length ? "Matching saved memories supplied" : "No matching saved memories" },
       }, { goal_id: goal.id, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id });
       return assembled;
     };
@@ -829,7 +840,7 @@ export class Socrates {
       store,
       model: this.options.compactorModel ?? this.options.model,
       turn,
-      budgets: options.rollover === false ? { ...this.budgets, maxCompactionsPerChat: Number.POSITIVE_INFINITY } : this.budgets,
+      budgets: this.budgets,
       assemble,
       refreshHistory: this.options.semantic ? async (signal) => { semantic.task = await ownHistory(signal); } : undefined,
       ...(this.options.retryDelaysMs ? { retryDelaysMs: this.options.retryDelaysMs } : {}),

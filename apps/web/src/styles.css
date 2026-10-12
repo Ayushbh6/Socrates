@@ -840,3 +840,13 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .terminal-empty > span { font-family: var(--mono); font-size: .7rem; max-width: 90%; overflow: hidden; text-overflow: ellipsis; }
 .terminal-error { margin: .3rem 1rem; color: var(--danger); font-size: .8rem; }
 @media (max-width: 760px) { .terminal-heading { display: none; } .terminal-bar { flex-wrap: wrap; } .terminal-tabs { flex-basis: 65%; } .terminal-actions { margin-left: auto; } .terminal-meta .terminal-folder { display: block; } }
+
+.session-handover { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20rem; overflow: auto; font-size: .8rem; line-height: 1.6; padding: 1rem; border-radius: 12px; background: var(--surface); }
+.continued-note details { margin-top: .7rem; }
+.continued-note summary { cursor: pointer; }
+.session-continuation-content { flex: 1 1 18rem; min-width: 0; }
+.session-continuation-title { display: flex; align-items: center; gap: .45rem; color: var(--ink); font-weight: 550; }
+.session-continuation-content > small { display: block; margin-top: .25rem; }
+.session-handover section + section { margin-top: .9rem; }
+.session-handover p { margin: .25rem 0 0; white-space: pre-wrap; }
+.continued-note .quiet-button { display: inline-flex; align-items: center; gap: .4rem; }

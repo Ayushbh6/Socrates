@@ -11,7 +11,7 @@ import { call, contextText, final, world } from "./helpers";
 type Out = { text: string } | { toolCalls: { name: string; input: unknown }[] };
 
 /** The exact user message a router or agent request is about. */
-const messageOf = (request: ModelRequest) => /<CURRENT_USER_MESSAGE>\n([\s\S]*?)\n<\/CURRENT_USER_MESSAGE>/.exec(contextText(request))?.[1]?.split("\n")[0] ?? "";
+const messageOf = (request: ModelRequest) => /# CURRENT_REQUEST\n[\s\S]*?## TEXT\n`{3,}text\n([\s\S]*?)\n`{3,}/.exec(contextText(request))?.[1]?.split("\n")[0] ?? "";
 
 /** A model that answers by message, so runs that overlap get their own answers in any order. */
 class Responder implements ModelClient {
@@ -88,7 +88,7 @@ describe("lanes", () => {
     await s.handle("How is the server work going?");
     const mainRouting = contextText(router.requests.at(-1)!);
     expect(mainRouting).not.toContain("Also add a README.");
-    expect(mainRouting).toMatch(/<KNOWN_GOALS>\nCURRENT\nlabel: current\ntitle: Project work/);
+    expect(mainRouting).toContain('route_label: current\ntitle: "Project work"');
     await s.close();
   });
 
@@ -205,8 +205,8 @@ describe("lanes", () => {
   it("asks and answers a routing clarification inside the lane, without touching main", async () => {
     const w = await world();
     const router = new Responder("test:router", (m, request) => {
-      if (m === "Open the other project.") return { toolCalls: [{ name: "ask_user", input: { question: "Which project?", candidates: [{ label: "Project work", detail: "The server work", goal_label: "current" }], allow_new: true } }] };
-      if (contextText(request).includes("<ROUTING_NOTE>")) return createGoal("Website", "Build the website");
+      if (m === "Open the other project." && !contextText(request).includes("# ROUTING_CLARIFICATION")) return { toolCalls: [{ name: "ask_user", input: { question: "Which project?", candidates: [{ label: "Project work", detail: "The server work", goal_label: "current" }], allow_new: true } }] };
+      if (contextText(request).includes("# ROUTING_CLARIFICATION")) return createGoal("Website", "Build the website");
       return continueTask();
     });
     const agent = new Responder("test:agent", (m) => final({ full_answer: `Done: ${m}` }));
@@ -218,7 +218,7 @@ describe("lanes", () => {
 
     // Main carries on with its own task.
     await s.handle("Keep going on the server.");
-    expect(contextText(router.requests.at(-1)!)).not.toContain("<ROUTING_NOTE>");
+    expect(contextText(router.requests.at(-1)!)).not.toContain("# ROUTING_CLARIFICATION");
 
     const answered = await s.handle("A new website.", { lane: asked.laneId! });
     expect(answered.kind === "answered" && answered.parts[0]!.task.title).toBe("Build the website");
@@ -507,7 +507,10 @@ describe("the main conversation sees its lanes", () => {
     await s.handle("How are the lanes doing?");
     const mainContext = contextText(agent.requests.at(-1)!);
     const block = /<LANES>\n([\s\S]*?)\n<\/LANES>/.exec(mainContext)![1]!;
-    expect(block).toBe([
+    expect(block.match(/^## ITEM$/gm)).toHaveLength(3);
+    expect(block).toContain("task_ref: g3/t1");
+    expect(block).toContain("source_refs: g4/t1");
+    expect(block.replace(/^(?:## ITEM|goal_ref:.*|task_ref:.*|lane_ref:.*|status:.*|source_refs:.*)\n/gm, "").replace(/^summary: /gm, "")).toBe([
       `lane 2 · working since 10:00 · g3/t1 "Read a.txt" in goal "Reading" · workspace project`,
       `  latest step: read a.txt`,
       `lane 3 · waiting for the user's approval · g4/t1 "Run forever" in goal "Runner" · workspace project`,
@@ -516,8 +519,8 @@ describe("the main conversation sees its lanes", () => {
       `  note: Finished Note the plan.`,
       `  answer: Done with Note the plan. All good.`,
     ].join("\n"));
-    expect(mainContext.indexOf("<LANES>")).toBeGreaterThan(mainContext.indexOf("<CURRENT_TASK>"));
-    expect(mainContext.indexOf("<LANES>")).toBeLessThan(mainContext.indexOf("<CURRENT_USER_MESSAGE>"));
+    expect(mainContext.indexOf("<LANES>")).toBeGreaterThan(mainContext.indexOf("# TASK"));
+    expect(mainContext.indexOf("<LANES>")).toBeLessThan(mainContext.indexOf("# CURRENT_REQUEST"));
     // A lane's own context does not list the lanes.
     expect(contextText(agent.requests.find((r) => messageOf(r) === "Note the plan.")!)).not.toContain("<LANES>");
     expect(notes.notice).toBe("Lane 1 finished: Write notes — Done with Note the plan.");
@@ -531,8 +534,8 @@ describe("the main conversation sees its lanes", () => {
   it("lane results carry a one-line notice for main: finished, stopped, a question, or handed-off work", async () => {
     const w = await world();
     const hold = gate();
-    const router = new Responder("test:router", (m) => {
-      if (m === "Open the other project.") return { toolCalls: [{ name: "ask_user", input: { question: "Which project do you mean? The server or the docs.", candidates: [{ label: "Project work", detail: "The server work", goal_label: "current" }], allow_new: true } }] };
+    const router = new Responder("test:router", (m, request) => {
+      if (m === "Open the other project." && !contextText(request).includes("# ROUTING_CLARIFICATION")) return { toolCalls: [{ name: "ask_user", input: { question: "Which project do you mean? The server or the docs.", candidates: [{ label: "Project work", detail: "The server work", goal_label: "current" }], allow_new: true } }] };
       return continueTask();
     });
     const agent = new Responder("test:agent", async (m) => {
@@ -676,7 +679,7 @@ it("uses live run state after restart, including while a recovered lane resumes"
   const agent = new Responder("agent", async (m) => { if (m === "Resume") { started.open(); await hold.opened; } return final(); });
   const s = socrates(w.store, router, agent);
   await s.handle("Status");
-  expect(contextText(router.requests.at(-1)!)).toContain("lane 1 — stopped");
+  expect(contextText(router.requests.at(-1)!)).toContain("lane_number: 1\ngoal_ref: g1\ntask_ref: g1/t1\nstatus: stopped");
   expect(contextText(agent.requests.at(-1)!)).toContain("lane 1 · stopped");
   expect(contextText(agent.requests.at(-1)!)).toContain("lane 2 · idle");
   w.clock.advance(60_000);

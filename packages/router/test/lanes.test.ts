@@ -47,14 +47,16 @@ describe("routing with lanes beside the conversation", () => {
     store.closeLane(closed.id);
 
     const ctx = buildRoutingContext(store, "How is it going?", { timeZone: "UTC" });
-    expect(ctx.input).toContain(`<LANES>\nlane 1 — working — goal g1 "Shop" · task g1/t1 "Checkout" · workspace —\nlane 2 — finished at 10:00 — goal g1 "Shop" · task g1/t2 "Docs" · workspace —\n</LANES>`);
+    expect(ctx.input).toContain("# ACTIVE_LANES\n## LANE");
+    expect(ctx.input).toContain("lane_number: 1\ngoal_ref: g1\ntask_ref: g1/t1\nstatus: working");
+    expect(ctx.input).toContain("lane_number: 2\ngoal_ref: g1\ntask_ref: g1/t2\nstatus: finished");
     expect(ctx.laneSelectors).toEqual({ goals: [1, 1], tasks: ["g1/t1", "g1/t2"] });
-    expect(buildRoutingContext(store, "Next.", { timeZone: "UTC", laneId: working.id }).input).not.toContain("lane 1 —");
+    expect(buildRoutingContext(store, "Next.", { timeZone: "UTC", laneId: working.id }).input).not.toContain("lane_number: 1");
 
     clock.advance(25 * 3_600_000);
     const later = buildRoutingContext(store, "How is it going?", { timeZone: "UTC" });
-    expect(later.input).toContain("lane 1 — working");
-    expect(later.input).not.toContain("lane 2");
+    expect(later.input).toContain("lane_number: 1");
+    expect(later.input).not.toContain("lane_number: 2");
     store.closeLane(working.id);
     expect(buildRoutingContext(store, "How is it going?", { timeZone: "UTC" }).input).not.toContain("<LANES>");
   });

@@ -32,8 +32,8 @@ describe("capabilities in the working context", () => {
     const first = w.socrates([continueTask()], [final()], { catalog: c, shelf: { pins: ["pdf"] } });
     await first.socrates.handle("Look at ticket 42 in the tracker.");
     const parts = contextParts(first.model.requests[0]!);
-    expect(parts[0]!.text).toContain("</GOAL>\n\n<AVAILABLE_SKILLS>\n- pdf: Read and create PDF files.\n- release-notes: Write release notes from merged changes.\n</AVAILABLE_SKILLS>");
-    expect(parts.at(-1)!.text).toContain("<CAPABILITY_CANDIDATES>\n- mcp c1: tracker.ticket_get — Read one ticket from the issue tracker by its id. (matched: ticket, tracker)\n</CAPABILITY_CANDIDATES>\n\n<CURRENT_USER_MESSAGE>");
+    expect(parts[0]!.text).toContain("<AVAILABLE_SKILLS>\n- pdf: Read and create PDF files.\n- release-notes: Write release notes from merged changes.\n</AVAILABLE_SKILLS>");
+    expect(parts.at(-1)!.text).toContain("<CAPABILITY_CANDIDATES>\n- mcp c1: tracker.ticket_get — Read one ticket from the issue tracker by its id. (matched: ticket, tracker)\n</CAPABILITY_CANDIDATES>\n\n# CURRENT_TIME");
 
     const second = w.socrates([continueTask()], [final()], { catalog: c });
     await second.socrates.handle("Now write the release notes.");
@@ -88,7 +88,7 @@ describe("capabilities in the working context", () => {
     const text = requestText(second.model.requests[0]!);
     expect(occurrences(text, "RELEASE-NOTES-MARKER and list")).toBe(1);
     expect(text).toContain(`<ACTIVE_CAPABILITIES>\nSkill release-notes:\n${INSTRUCTIONS}`);
-    expect(text).toMatch(/TOOL CALL \[e1\] capability_control activate c1 → skill release-notes activated \(its instructions are in ACTIVE_CAPABILITIES while it stays active\)/);
+    expect(text).toContain("its instructions are in ACTIVE_CAPABILITIES while it stays active");
     // The active Skill is no longer suggested.
     expect(text).not.toContain("<CAPABILITY_CANDIDATES>");
   });

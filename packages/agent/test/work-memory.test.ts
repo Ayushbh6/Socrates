@@ -45,22 +45,24 @@ function seed(store: LedgerStore, root: string, entries: { name: string | null; 
 }
 
 describe("the project's index", () => {
-  it("is shown as <WORK_MEMORY> from Socrates' own record, never from a file in the repository", async () => {
+  it("is shown as PROJECT_MEMORY from Socrates' own record, never from a file in the repository", async () => {
     // The live v0.1.20 keeps its own project memory at this path; v2 must neither show nor change it.
     const w = await world({ files: { ".socrates/MEMORY.md": LEGACY } });
     seed(w.store, w.root, [{ name: "store-schema", text: "Store schema\nSteps\n1. Bump the version." }, { name: "flaky-tests", text: "Flaky tests\nSteps\n1. Rerun alone." }, { name: null, text: INDEX }]);
     const { socrates, model } = w.socrates([continueTask(), continueTask()], [final(), final()]);
     await socrates.handle("Change the schema.");
     const first = contextParts(model.requests[0]!)[0]!.text;
-    expect(first).toContain(`<WORK_MEMORY>\n${INDEX}\n</WORK_MEMORY>`);
+    expect(first).toContain("# PROJECT_MEMORY");
+    expect(first).toContain("topic_ref: topic:store-schema");
+    expect(first).toContain("Fix a flaky test");
     expect(first).not.toContain("socrates_doc");
-    expect(first.indexOf("<WORK_MEMORY>")).toBeLessThan(first.indexOf("<GOAL>"));
+    expect(first.indexOf("# PROJECT_MEMORY")).toBeLessThan(first.indexOf("# GOAL"));
     expect(readFileSync(path.join(w.root, ".socrates/MEMORY.md"), "utf8")).toBe(LEGACY);
 
     // A new index is shown from the next turn.
     seed(w.store, w.root, [{ name: "release", text: "Release\n1. Tag." }, { name: null, text: "- Release → topic release · turn 20" }]);
     await socrates.handle("Release it.");
-    expect(contextParts(model.requests.at(-1)!)[0]!.text).toContain("<WORK_MEMORY>\n- Release → topic release · turn 20\n</WORK_MEMORY>");
+    expect(contextParts(model.requests.at(-1)!)[0]!.text).toContain("topic_ref: topic:release");
   });
 
   it("is left out without a project, when empty or when memories are not used, and is held to its budget", () => {

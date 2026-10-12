@@ -85,7 +85,7 @@ export interface ModelRequest {
    * calls may need them) but forbids new calls, as in the working agent's
    * wrap-up after a limit. Default "auto".
    */
-  toolChoice?: "auto" | "none";
+  toolChoice?: "auto" | "none" | "required";
   maxOutputTokens?: number;
   temperature?: number;
   signal?: AbortSignal;

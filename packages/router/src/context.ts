@@ -7,15 +7,16 @@ import {
   type Turn,
   type Workspace,
   excerpt,
+  quoteEvidence, contextSection, contextTime, currentRequest, selectContextHistory, foregroundTurns,
   toFtsQuery,
 } from "@socrates/store";
 import { type SemanticHit, fuse, recencyBoost } from "@socrates/retrieval";
 import { countTokens, truncateToTokens, eventTime, zonedParts } from "@socrates/shared";
-import { laneSummaries, renderLanesForRouter } from "./lanes";
+import { laneSummaries } from "./lanes";
 
 /**
  * Builds everything the Goal Router sees (Goal-router.md, "Exact router input"):
- * CURRENT_TIME, RECENT_ACTIVITY, RECENT_EXACT_HISTORY, KNOWN_GOALS, and the
+ * RECENT_CONVERSATION, GOAL_DIRECTORY, optional evidence, CURRENT_TIME, and the
  * current user message as the final block. Also returns the label table the
  * validator uses to resolve the router's answer back to real goals and tasks.
  */
@@ -57,10 +58,12 @@ export interface RoutingContext {
   laneSelectors: { goals: number[]; tasks: string[] };
   /** The rendered turn-specific router input. */
   input: string;
+  diagnostics: { historyBudget: number; historyUsed: number; includedTurns: number[]; omitted: number; asOf: string };
 }
 
 export interface BuildContextOptions {
   defaultFolder?: string;
+  requestId?: string;
   timeZone: string;
   /** Explicit question being answered; null means a fresh request. Undefined supports older harness clients. */
   clarificationTurnId?: string | null;
@@ -124,38 +127,31 @@ export function buildRoutingContext(store: LedgerStore, message: string, options
     });
   });
 
-  const exchanges = collectHistory(store, options.historyBudgetTokens ?? ROUTER_HISTORY_BUDGET_TOKENS, goals, laneId ? [null, laneId] : [null]);
+  const root = options.requestId ? store.requestRoot(pending?.turn.userEventId ?? options.requestId) : null;
+  const exchanges = selectContextHistory(store, foregroundTurns(store, laneId ? [null, laneId] : [null]), {
+    budget: options.historyBudgetTokens ?? ROUTER_HISTORY_BUDGET_TOKENS, previousBudget: 10_000,
+    timeZone: options.timeZone, excludeRequest: root?.id, asOf: now.toISOString(),
+  });
   const answeringClarification = pending !== null;
   const zeroHistory = !store.hasAnyActivity();
-
   const sections = [
-    section("CURRENT_TIME", renderTime(now, options.timeZone)),
-    section("RECENT_ACTIVITY", renderActivity(store, now, options.timeZone)),
-    section("RECENT_EXACT_HISTORY", exchanges.text || "None"),
-    section("KNOWN_GOALS", renderKnownGoals(store, goals, current)),
+    contextSection("RECENT_CONVERSATION", exchanges.text || "none"),
+    contextSection("HISTORY_COVERAGE", `selection: newest_eligible_exchanges\npresentation_order: oldest_to_newest\nbudget_tokens: ${exchanges.budget}\nincluded_tokens: ${exchanges.used}\nolder_history_omitted: ${exchanges.omitted > 0}`),
+    contextSection("CURRENT_BINDING", `goal_ref: ${current ? `g${current.goal.number}` : "none"}\ntask_ref: ${current ? `g${current.goal.number}/t${current.task.number}` : "none"}`),
+    contextSection("GOAL_DIRECTORY", `as_of: ${contextTime(now, options.timeZone)}\ncoverage: current goal and at most ${MAX_OLDER_CANDIDATES} older candidates; omitted work available through ledger_query\n\n${renderKnownGoals(store, goals, current)}`),
   ];
-  if (options.defaultFolder) sections.push(section("DEFAULT_WORKING_FOLDER", options.defaultFolder + "\nGeneral and new unbound work start here. Existing projects keep their attached folder. Access permissions still apply. Do not ask for a folder merely because General has no workspace."));
-  // Work running or recently finished in parallel lanes, other than the lane being routed.
+  if (options.remembered) sections.push(contextSection("RECALLED_MEMORIES", options.remembered));
   const lanes = laneSummaries(store, now, laneId, options.laneActivity);
-  if (lanes.length) sections.push(section("LANES", renderLanesForRouter(store, lanes, now, options.timeZone)));
+  if (lanes.length) sections.push(contextSection("ACTIVE_LANES", lanes.map(l => `## LANE\nlane_ref: ${l.lane.id}\nlane_number: ${l.lane.number}\ngoal_ref: ${l.goal ? `g${l.goal.number}` : "none"}\ntask_ref: ${l.goal && l.task ? `g${l.goal.number}/t${l.task.number}` : "none"}\nstatus: ${l.status}\nsummary:\n${quoteEvidence(excerpt(l.latestStep ?? l.task?.continuationNote ?? "none", 300))}`).join("\n\n")));
   const laneSelectors = {
-    goals: lanes.flatMap((l) => (l.goal ? [l.goal.number] : [])),
-    tasks: lanes.flatMap((l) => (l.goal && l.task ? [`g${l.goal.number}/t${l.task.number}`] : [])),
+    goals: lanes.flatMap(l => l.goal ? [l.goal.number] : []),
+    tasks: lanes.flatMap(l => l.goal && l.task ? [`g${l.goal.number}/t${l.task.number}`] : []),
   };
-  if (answeringClarification) {
-    sections.push(
-      section(
-        "ROUTING_NOTE",
-        "This request paused for the routing clarification recorded below. " +
-          "The current message answers it. Route the ORIGINAL request to the selected subject, rather than treating the selection as a new objective. You must return a decision now; ask_user is not available." +
-          (pending ? `\nPending request (bounded excerpt): ${truncateToTokens(pending.request, 400).text}\nPrevious question and candidates: ${pending.question}` : ""),
-      ),
-    );
-  }
-  if (options.remembered) sections.push(section("REMEMBERED", options.remembered));
-  // Images are named apart from the message, whose exact text request ranges index.
-  if (options.attachments?.length) sections.push(section("CURRENT_ATTACHMENTS", attachedLine(options.attachments)));
-  sections.push(section("CURRENT_USER_MESSAGE", message.trim() ? message : IMAGES_ONLY));
+  sections.push(contextSection("WORKSPACE_CONTEXT", `default_working_folder: ${JSON.stringify(options.defaultFolder ?? "none")}\nselection_basis: configured working-folder resolver; existing projects keep their folder. Access permissions still apply.`));
+  if (pending) sections.push(contextSection("ROUTING_CLARIFICATION", `original_request_ref: ${root?.id ?? pending.turn.userEventId}\nquestion:\n${quoteEvidence(pending.question)}\nreply:\n${quoteEvidence(message)}\nRoute the original request now. ask_user is unavailable.`));
+  sections.push(contextSection("CURRENT_TIME", `at: ${contextTime(now, options.timeZone)}\ntimezone: ${options.timeZone}`));
+  sections.push(currentRequest({ id: root?.id ?? "unknown", at: root?.at ?? now.toISOString(), text: pending?.request ?? message,
+    attachments: options.attachments?.map(name => ({ name })) }, options.timeZone));
 
   return {
     now,
@@ -168,16 +164,8 @@ export function buildRoutingContext(store: LedgerStore, message: string, options
     pending,
     laneSelectors,
     input: sections.join("\n\n"),
+    diagnostics: { historyBudget: exchanges.budget, historyUsed: exchanges.used, includedTurns: exchanges.turns.map(t => t.projectTurn), omitted: exchanges.omitted, asOf: now.toISOString() },
   };
-}
-
-function section(name: string, body: string): string {
-  return `<${name}>\n${body}\n</${name}>`;
-}
-
-function renderTime(now: Date, timeZone: string): string {
-  const p = zonedParts(now, timeZone);
-  return `${p.date} ${p.time} (${p.weekday}, ${timeZone})`;
 }
 
 // ── Task labels ───────────────────────────────────────────────────────────
@@ -258,6 +246,7 @@ export function renderActivity(store: LedgerStore, now: Date, timeZone: string, 
     const failed = calls.filter(e => e.status === "error" || ((e.result?.result as { exit_code?: number } | undefined)?.exit_code ?? 0) !== 0).length;
     const note = store.noteState(task.id);
     const invalid = warnings.some(w => w.kind === "final_answer_invalid");
+    lines.push(`\n## ITEM\ngoal_ref: g${goal.number}\ntask_ref: g${goal.number}/t${task.number}\nlane_ref: ${turn.laneId ?? "none"}\nstatus: ${task.status}\nsource_refs: turn_number ${turn.projectTurn}\nsummary:`);
     lines.push(`g${goal.number}/t${task.number} turn_number ${turn.projectTurn} | ${goal.title} · ${task.title} | requested ${eventTime(requestAt, timeZone)}; completed ${turn.completedAt ? eventTime(turn.completedAt, timeZone) : "unknown"}; task updated ${task.updatedAt} | chat/task ${task.status}; execution ${turn.status}; tool calls ${calls.length}, failed commands/calls ${failed}; answer validation ${invalid ? "invalid metadata" : "no recorded validation failure"}; note ${note.freshness} (source ${note.sourceTurn ?? "unknown"}).`);
     // Summaries are explicitly task-current, not falsely attributed to every historical turn.
     if (task.continuationNote) lines.push(`Task summary (may cover later turns; ${note.freshness}): ${excerpt(task.continuationNote, 360)}${task.continuationNote.length > 360 ? " [excerpt; context_retrieve inspect task for full note]" : ""}`);
@@ -265,113 +254,22 @@ export function renderActivity(store: LedgerStore, now: Date, timeZone: string, 
   return lines.join("\n");
 }
 
-// ── RECENT_EXACT_HISTORY ──────────────────────────────────────────────────
-
-function tagFor(exchange: Exchange, goals: Map<string, GoalEntry>, store: LedgerStore): string {
-  if (exchange.kind === "clarification") return "[routing clarification — not bound to any task]";
-  const tags = exchange.bindings.map(({ goalId, taskId }) => {
-    const entry = [...goals.values()].find((g) => g.goal.id === goalId);
-    const goal = entry?.goal ?? store.requireGoal(goalId);
-    const goalTag = goal.general ? "general" : (entry?.label ?? `"${goal.title}"`);
-    const taskEntry = entry?.tasks.find((t) => t.task.id === taskId);
-    const task = taskEntry?.task ?? store.requireTask(taskId);
-    const taskTag = goal.general ? "general" : (taskEntry?.label ?? `"${task.title}"`);
-    const workspace = goal.workspaceId ? (store.getWorkspace(goal.workspaceId)?.name ?? "—") : "—";
-    return `goal=${goalTag} · task=${taskTag} · workspace=${workspace}`;
-  });
-  return `[${tags.join(" + ")}]`;
-}
-
-function renderExchange(tag: string, user: string, response: string, attachments: string[] = []): string {
-  const said = [user.trim() ? user : "", attachments.length ? attachedLine(attachments) : ""].filter(Boolean).join("\n");
-  return `${tag}\nUSER:\n${said}\n\nSOCRATES:\n${response}`;
-}
-
-/** Shown in place of a message that is only images; the stored text stays exactly what the user sent. */
-const IMAGES_ONLY = "(No text: the user sent only the images in CURRENT_ATTACHMENTS.)";
-
-/** "[The user attached 2 images: a.png, b.png]" */
-function attachedLine(names: string[]): string {
-  return `[The user attached ${names.length === 1 ? "an image" : `${names.length} images`}: ${names.join(", ")}]`;
-}
-
-/**
- * Walk backward through the flow's completed exchanges and keep the newest
- * complete pairs that fit the budget, presented oldest to newest. Purely
- * chronological: no semantic or keyword filtering.
- */
-function collectHistory(
-  store: LedgerStore,
-  budget: number,
-  goals: Map<string, GoalEntry>,
-  lanes: (string | null)[],
-): { text: string; newest: Exchange | null } {
-  const blocks: string[] = [];
-  let used = 0;
-  let newest: Exchange | null = null;
-  for (const exchange of store.recentExchanges(lanes)) {
-    newest ??= exchange;
-    const tag = tagFor(exchange, goals, store);
-    const block = renderExchange(tag, exchange.userMessage, exchange.response, exchange.attachments);
-    const tokens = countTokens(block);
-    if (used + tokens <= budget) {
-      blocks.push(block);
-      used += tokens;
-      continue;
-    }
-    if (blocks.length === 0) {
-      // The newest exchange alone exceeds the budget: include a marked, bounded excerpt.
-      const half = Math.floor((budget - countTokens(tag) - 100) / 2);
-      const user = truncateToTokens(exchange.userMessage, half);
-      const response = truncateToTokens(exchange.response, half);
-      blocks.push(
-        renderExchange(
-          `${tag} [bounded excerpt — the complete exchange remains in storage]`,
-          user.text + (user.truncated ? "\n[…truncated]" : ""),
-          response.text + (response.truncated ? "\n[…truncated]" : ""),
-        ),
-      );
-    }
-    break;
-  }
-  return { text: blocks.reverse().join("\n\n"), newest };
-}
-
-// ── KNOWN_GOALS ───────────────────────────────────────────────────────────
-
 function renderGoalEntry(store: LedgerStore, entry: GoalEntry): string {
-  const lines = [`label: ${entry.label}`, `title: ${entry.goal.title}`, `workspace: ${entry.workspace?.name ?? "—"}`];
-  if (entry.goal.general) lines.push("kind: the general conversation goal");
-  // Only the user changes a goal's status.
-  if (entry.goal.status !== "open") lines.push(`status: ${entry.goal.status} (set by the user)`);
-  if (entry.goal.objective) lines.push(`objective: ${excerpt(entry.goal.objective, 300)}`);
-  if (entry.goal.note) lines.push(`note: ${excerpt(entry.goal.note, 300)}`);
-  const anchors = store.listAnchors(entry.goal.id);
-  if (anchors.length) {
-    lines.push("anchors:");
-    for (const a of anchors.slice(0, 5)) lines.push(`- ${a.path} — ${excerpt(a.summary, 100)}`);
-  }
-  if (entry.tasks.length) {
-    lines.push("tasks:");
-    for (const { label, task } of entry.tasks) {
-      const note = task.continuationNote ? `; ${excerpt(task.continuationNote, 140)}` : "";
-      const by = task.status !== "open" && store.statusSource(task.id)?.by === "user" ? " by the user" : "";
-      lines.push(`- ${label}: ${task.title} — ${task.status}${by}${note}`);
-    }
+  const goal = entry.goal;
+  const note = store.goalNoteState(goal.id);
+  const lines = ["## GOAL", `goal_ref: g${goal.number}`, `route_label: ${entry.label}`, `title: ${JSON.stringify(goal.title)}`,
+    `objective: ${JSON.stringify(excerpt(goal.objective ?? "", 300))}`, `workspace_ref: ${goal.workspaceId ?? "none"}`,
+    `workspace_name: ${JSON.stringify(entry.workspace?.name ?? "none")}`, `status: ${goal.status}${store.listEvents({goalId: goal.id, type: "goal_status_set"}).length > 0 ? " (set by the user)" : ""}`,
+    `anchor_refs: ${JSON.stringify(store.listAnchors(goal.id).slice(0, 8).map(a => ({path: a.path, role: a.role, summary: excerpt(a.summary ?? "", 200)})))}`,
+    `\n### GOAL_NOTE\ntext:\n${quoteEvidence(excerpt(goal.note ?? "none", 300))}\nsource_turn_ref: ${note.sourceTurn ?? "unknown"}\nfreshness: ${note.freshness}`];
+  for (const { label, task } of entry.tasks) {
+    const n = store.noteState(task.id);
+    lines.push(`\n### TASK\ntask_ref: g${goal.number}/t${task.number}\nroute_label: ${label}\ntitle: ${JSON.stringify(task.title)}\nobjective: ${JSON.stringify(excerpt(task.objective, 300))}\ncompletion_criteria: ${JSON.stringify(excerpt(task.completionCriteria ?? "none", 300))}\nstatus: ${task.status}${store.statusSource(task.id)?.by === "user" ? " (set by the user)" : ""}\n\n#### CONTINUATION_NOTE\ntext:\n${quoteEvidence(excerpt(task.continuationNote ?? "none", 300))}\nsource_turn_ref: ${n.sourceTurn ?? "unknown"}\nfreshness: ${n.freshness}`);
   }
   return lines.join("\n");
 }
-
 function renderKnownGoals(store: LedgerStore, goals: Map<string, GoalEntry>, current: CurrentBinding | null): string {
-  const blocks: string[] = [];
-  const cur = goals.get("current");
-  blocks.push(cur ? `CURRENT\n${renderGoalEntry(store, cur)}` : "CURRENT\nNone");
-  const older = [...goals.values()].filter((g) => g.kind === "older");
-  if (older.length) blocks.push(`OLDER\n${older.map((g) => renderGoalEntry(store, g)).join("\n\n")}`);
-  if (!current?.goal.general) {
-    blocks.push(
-      "GENERAL\nlabel: general\ntitle: General conversation — greetings, small talk, and unrelated quick questions with no task anchor",
-    );
-  }
+  const blocks = [...goals.values()].map(entry => renderGoalEntry(store, entry));
+  if (!current?.goal.general) blocks.push("## GOAL\ngoal_ref: general\nroute_label: general\ntitle: General conversation\nobjective: Greetings, small talk and quick questions without a task anchor. Task fields must be null; the harness chooses the day.");
   return blocks.join("\n\n");
 }

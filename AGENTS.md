@@ -17,7 +17,7 @@ This file hands the project to whichever agent harness works on it next. Read it
 
 - **Live app:** `pnpm socrates` builds the web app, serves http://127.0.0.1:4200 with data in `~/.socrates-v2`, prints a one-time login link and opens a browser tab. Keep it running in the background with output in `.socrates/app.log`. To restart: `lsof -ti tcp:4200 | xargs kill`, then `pnpm socrates > .socrates/app.log 2>&1` in the background.
 - **Checks:** `pnpm typecheck`, `pnpm test` (Vitest), and `pnpm --filter @socrates/web build`.
-- **Flaky test:** about one full run in three, `packages/agent/test/review-regressions.test.ts` "cancels a pending approval at the turn deadline" fails, because it uses a 40 ms deadline. It passes when run on its own.
+- **Deadline test:** the pending-approval regression now permits 1 second for setup and asserts approval was reached before testing deadline cancellation. Avoid running the full suite concurrently with local embedding/live evals: their CPU load can time out PTY tests.
 - **Trying things on real data without touching it:**
   1. Copy `~/.socrates-v2` to a temp folder and delete `terminals.json` and `.server-lock.db*` from the copy.
   2. Run `SOCRATES_HOME=<copy> SOCRATES_PORT=4300 pnpm exec tsx apps/server/src/main.ts`.
@@ -77,13 +77,17 @@ The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `serv
 
 Ask before starting each one.
 
+**Context-routing implementation approved for release (13 Oct):** the user reviewed `docs/reviews/context-routing-results-2026-10-12.md` and authorized final checks, commit, push and restart. `docs/context-routing-plan.md` is implemented: canonical decider/router/worker inputs, native routing result, same-task sixth-trigger rollover in both modes, linked session UI and Inspect. Prior full tests: 1,001 passed, 1 skipped; typecheck/build passed. Router latest 70/72 versus 61/72 baseline; actual queries 18/18 independent and 18/18 connected. Residual task splitting and one unsupported day-end chat-status claim remain documented. Baseline report is unchanged.
+
+**Decider decision (13 Oct):** retain Perplexity and existing thresholds, as explicitly agreed by the user. It now passes unchanged quality floors and repeated context probes (18/18); the previous day's question-insensitivity is not reproducible, cause still unproven. Jev scored 15/18 context probes and suggested more unnecessary saves. See `docs/reviews/decider-alternatives-2026-10-13.md`, trial-log entry 64. Post-work gating remains a lossy request/answer/tool-call digest, not the full transcript; the main agent writes memories from its working transcript and can retrieve evidence. Improving this digest is a separate follow-up, not part of the approved release.
+
 Plan agreed 2026-10-11: `docs/terminal-output-and-memory.md` (trial log entry 57).
 
 1. ~~**T1, long terminal output**~~: done (trial log entry 58).
 2. ~~**M4a, work memory out of repositories**~~: done (trial log entry 59). Was: same index-plus-topics structure, moved to `~/.socrates-v2/memory/projects/<project-id>/`; memory-only writer that runs after the answer is saved; repository files (including live v0.1.20's `.socrates/MEMORY.md`, which shares the old path) are never read or written as Socrates' memory.
 3. ~~**G1, answer grounding and routing**~~: done (trial log entry 60). Left open: the router still answers about 1 in 3 General history questions in prose (one repair), and `openai/gpt-6-luna` misses the Q5–Q10 project-flow fixtures (see the trial log's suggestions).
 
-All three agreed phases (T1, M4a, G1) and the six review fixes are done (trial log entry 61). Saved-output cursors now resume within long lines; literal search covers all chunks and regex discloses oversized lines it skipped. Inspect shows capture gaps. Disabling saving cancels background writers, durable writes schedule indexing, and semantic topic search scopes before ranking. `pnpm eval:review-fixes` checks runtime-generated long-output evidence and fresh-chat project-memory recall with real models in disposable fixtures. Ask the user what is next. Candidates are in the trial log's "Suggested" list: the router still answers some history questions in prose, `gpt-6-luna` misses the Q5–Q10 fixtures (worth a router-model comparison), and the items below.
+Previously shipped: all three agreed phases (T1, M4a, G1) and the six review fixes are done (trial log entry 61). Saved-output cursors now resume within long lines; literal search covers all chunks and regex discloses oversized lines it skipped. Inspect shows capture gaps. Disabling saving cancels background writers, durable writes schedule indexing, and semantic topic search scopes before ranking. `pnpm eval:review-fixes` checks runtime-generated long-output evidence and fresh-chat project-memory recall with real models in disposable fixtures. Ask the user what is next. Candidates are in the trial log's "Suggested" list: the router still answers some history questions in prose, `gpt-6-luna` misses the Q5–Q10 fixtures (worth a router-model comparison), and the items below.
 
 Later, only if use asks for it: T2 (log viewer, export, pinning) and M4b (restart-safe memory jobs, revision history, measuring whether notes help, the old "Memory follow-ups" item).
 The Standard/Flow verification and its three agreed implementation points are complete (trial log entry 50). The linked routing-question implementation is complete in entry 51. Ordinary routing after switching modes remains the agreed behaviour; no automatic pin or routing hint was added.

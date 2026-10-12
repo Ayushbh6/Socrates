@@ -241,6 +241,7 @@ export interface QuestionDetail {
     reason: string;
     decision: unknown;
     validationErrors: string[];
+    diagnostics?: EventPayloads["routing_completed"]["diagnostics"];
   } | null;
   /** The router's question, when it asked one instead of routing. */
   clarification: string | null;
@@ -333,7 +334,7 @@ export function question(log: CallLog, store: LedgerStore, userEventId: string):
   return {
     question: base,
     totals: log.totalsForRequests(ids),
-    routing: routed ? { model: routed.model, attempts: routed.attempts, escalated: routed.escalated, fallback: routed.fallback, ledgerQueries: routed.ledger_queries, reason: routed.reason, decision: routed.decision, validationErrors: routed.validation_errors ?? [] } : null,
+    routing: routed ? { model: routed.model, attempts: routed.attempts, escalated: routed.escalated, fallback: routed.fallback, ledgerQueries: routed.ledger_queries, reason: routed.reason, decision: routed.decision, validationErrors: routed.validation_errors ?? [], diagnostics: routed.diagnostics } : null,
     clarification: asked?.question ?? null,
     parts: partsOf(store, userEventId),
     calls: log.forRequests(ids),
@@ -376,6 +377,21 @@ const BLOCK = /<([A-Z][A-Z_]+)(?:\s[^>]*)?>\n[\s\S]*?\n<\/\1>/g;
 export function blocksOf(parts: TextPart[]): ContextBlock[] {
   const blocks: ContextBlock[] = [];
   for (const part of parts) {
+    // Markdown sections outside collision-safe evidence fences. Old XML traces remain readable.
+    const headings: {at: number; name: string}[] = [];
+    let offset = 0, fence = 0;
+    for (const line of part.text.split("\n")) {
+      const marker = /^(`{3,})/.exec(line);
+      if (marker) { if (!fence) fence = marker[1]!.length; else if (marker[1]!.length >= fence) fence = 0; }
+      const heading = !fence && /^(#{1,2}) ([A-Z][A-Z_]+)\s*$/.exec(line);
+      if (heading) headings.push({at: offset, name: heading[2]!});
+      offset += line.length + 1;
+    }
+    if (headings.length) {
+      if (headings[0]!.at > 0) headings.unshift({at: 0, name: "CONTEXT"});
+      headings.forEach((h, i) => { const text = part.text.slice(h.at, headings[i+1]?.at ?? part.text.length).trim(); blocks.push({name: h.name, tokens: countTokens(text), text, cacheAfter: !!part.cache && i === headings.length-1}); });
+      continue;
+    }
     const found: ContextBlock[] = [];
     let at = 0;
     const plain = (text: string) => { if (text.trim()) found.push({ name: plainName(text), tokens: countTokens(text), text: text.trim(), cacheAfter: false }); };
@@ -460,7 +476,7 @@ export interface TraceCall {
   rebuilt: boolean;
   /** The first call of a group: the context message cut into its blocks. */
   context: ContextBlock[] | null;
-  diagnostics?: { activityAsOf: string; timeZone: string; history: { budget: number; used: number; included: number[]; omitted: number; dates: string[] } | null; memory: { recall: number | null; threshold: number; matched: number; explanation: string } } | null;
+  diagnostics?: { session?: {chatRef: string; sequence: number; compactions: number; handoverRef: string | null; continuationOf: string | null}; historyScope?: string; activityAsOf: string; timeZone: string; history: { budget: number; used: number; included: number[]; omitted: number; dates: string[] } | null; memory: { recall: number | null; threshold: number; matched: number; explanation: string } } | null;
   notes?: { field: string; outcome: string; reason: string | null; length: number | null; attempts: number }[];
   /** The turn's work-memory step as it went: pending, then how it ended (agent-harness.md, "Work memory"). */
   workMemory?: { outcome: string; detail: string | null; writes: number }[];

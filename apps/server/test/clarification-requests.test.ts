@@ -10,7 +10,7 @@ const result = (id: string) => (m: Record<string, any>) => m.type === "result" &
 
 async function setup(options: {hold?: Promise<void>} = {}) {
   const clock = fixedClock("2026-10-10T13:03:00Z");
-  const router = new Responder("router", message => message === original || message === "Another ambiguous request" ? ask : general());
+  const router = new Responder("router", (message, request) => (message === original || message === "Another ambiguous request") && !JSON.stringify(request.messages).includes("# ROUTING_CLARIFICATION") ? ask : general());
   const agent = new Responder("agent", async message => {if (message === "Hold main" && options.hold) await options.hold; return final({full_answer: `Finished: ${message}`});});
   const s = await liveServer(router, agent, {settings: {chat: {provider: "gemini", model: "chat"}, router: {provider: "gemini", model: "router"}, timeZone: "Europe/Vienna"}, deps: {clock}});
   const old = s.rt.store.ensureGeneral("Europe/Vienna", new Date("2026-10-09T08:00:00Z"));

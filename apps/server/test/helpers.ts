@@ -88,7 +88,7 @@ type Out = ({ text: string } | { toolCalls: { name: string; input: unknown }[] }
 export const messageOf = (request: ModelRequest) => {
   const first = request.messages[0]!.content;
   const text = typeof first === "string" ? first : first.map((p) => p.text).join("");
-  return /<CURRENT_USER_MESSAGE>\n([\s\S]*?)\n<\/CURRENT_USER_MESSAGE>/.exec(text)?.[1]?.split("\n")[0] ?? "";
+  return /# CURRENT_REQUEST\n[\s\S]*?## TEXT\n`{3,}text\n([\s\S]*?)\n`{3,}/.exec(text)?.[1]?.split("\n")[0] ?? "";
 };
 
 /** A model that answers by message, so overlapping runs each get their own answers, possibly after waiting. */

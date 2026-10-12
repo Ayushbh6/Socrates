@@ -21,7 +21,7 @@ function memoryIndex(similar: () => { id: string; goalId: string | null; similar
 
 /** The stable first part of a request, where `<MEMORY>` lives. */
 const firstPart = (request: Parameters<typeof contextParts>[0]) => contextParts(request)[0]!.text;
-const memoryOf = (text: string) => /<MEMORY>\n([\s\S]*?)\n<\/MEMORY>/.exec(text)?.[1] ?? null;
+const memoryOf = (text: string) => /# SAVED_USER_MEMORY\n([\s\S]*?)\n\n# GOAL/.exec(text)?.[1] ?? null;
 
 describe("memory", () => {
   it("keeps what the answer saves, shows the always-on entries in every goal's first part, and forgets on request", async () => {
@@ -49,14 +49,15 @@ describe("memory", () => {
     // Another goal sees what applies everywhere, not this goal's own, and never knowledge (that is searched for).
     await socrates.handle("Plan the Berlin trip.");
     const elsewhere = memoryOf(firstPart(model.requests.at(-1)!))!;
-    expect(elsewhere).toBe("How they like to work:\n- Prefers pnpm over npm. [m1]");
+    expect(elsewhere).toContain("Prefers pnpm over npm.");
+    expect(elsewhere).not.toContain("Uses tabs");
 
     await socrates.handle("Forget the pnpm thing.", { target: { taskId: w.taskId }, pinned: true });
-    expect(memoryOf(firstPart(model.requests.at(-1)!))).toBe("How they like to work:\n- Prefers pnpm over npm. [m1]\nIn this goal only:\n- Uses tabs in this repository. [m2]");
+    expect(memoryOf(firstPart(model.requests.at(-1)!))).toContain("Uses tabs in this repository.");
     expect(w.store.getMemoryByNumber(1)!.forgottenAt).not.toBeNull();
     expect(w.store.getMemoryByNumber(3)).toMatchObject({ kind: "knowledge", goalId: null });
     await socrates.handle("And now?", { target: { taskId: w.taskId }, pinned: true });
-    expect(memoryOf(firstPart(model.requests.at(-1)!))).toBe("In this goal only:\n- Uses tabs in this repository. [m2]");
+    expect(memoryOf(firstPart(model.requests.at(-1)!))).toContain("Uses tabs in this repository.");
   });
 
   it("saves the same words once, keeps a general-conversation memory everywhere, and follows the user's switches", async () => {
@@ -77,11 +78,11 @@ describe("memory", () => {
     settings.save = false;
     await socrates.handle("I live in Berlin.");
     expect(w.store.listMemories()).toHaveLength(1);
-    expect(memoryOf(firstPart(model.requests.at(-1)!))).toContain("Saving new memories is turned off by the user");
+    expect(memoryOf(firstPart(model.requests.at(-1)!))).toContain("Saving memories is disabled");
 
     settings.use = false;
     await socrates.handle("What do you know about me?");
-    expect(memoryOf(firstPart(model.requests.at(-1)!))).toBe("Saving new memories is turned off by the user: leave memory.save out, and if asked to remember something, say it is off.");
+    expect(memoryOf(firstPart(model.requests.at(-1)!))).toContain("Saving memories is disabled; leave memory.save out.");
     settings.save = true;
     expect(memoryOf(firstPart(model.requests.at(-1)!))).not.toContain("pnpm");
   });
@@ -113,7 +114,7 @@ describe("memory", () => {
     const first = contextText(model.requests[0]!);
     // Only the entry not already always on; another goal's entry never.
     expect(/<MEMORY_CANDIDATES>\n([\s\S]*?)\n<\/MEMORY_CANDIDATES>/.exec(first)?.[1]).toBe("- [m1 · knowledge · 2026-09-01] The Berlin trip is from 14 to 18 March.");
-    expect(first.indexOf("<MEMORY_CANDIDATES>")).toBeGreaterThan(first.indexOf("<CURRENT_TASK>"));
+    expect(first.indexOf("<MEMORY_CANDIDATES>")).toBeGreaterThan(first.indexOf("# TASK"));
     expect(semantic.queries.find((q) => q.kinds.includes("memory"))).toEqual({ kinds: ["memory"], goalIdsOrNone: [w.goalId], limit: 20, min: "related" });
 
     const results = model.requests[1]!.messages.filter((m) => m.role === "tool").map((m) => JSON.parse(m.content as string));

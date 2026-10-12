@@ -2,12 +2,11 @@ import type { EventPayloads, ModelMessage, TextPart } from "@socrates/contracts"
 import type { SemanticHit } from "@socrates/retrieval";
 import { type AccessPolicy, type ActiveCapabilities, type WorkspaceRoot, describeAccess } from "@socrates/tools";
 import { renderActivity } from "@socrates/router";
-import { truncateToTokens, zonedParts } from "@socrates/shared";
-import type { Goal, LedgerStore, Task, Turn } from "@socrates/store";
+import { countTokens, truncateToTokens } from "@socrates/shared";
+import { quoteEvidence, contextSection, contextTime, currentRequest, foregroundTurns, renderContextExchange, type LedgerStore, type Task, type Turn } from "@socrates/store";
 import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
-import { attachmentLines, requestAttachments, requestText } from "./attachments";
 import { generalHistoryParts, clarificationLine, historyParts, taskHistory } from "./history";
-import { type MemorySettings, memoryBlock } from "./memory";
+import type { MemorySettings } from "./memory";
 import { projectContext } from "./project-context";
 import { retrievedHistory } from "./retrieval";
 
@@ -69,51 +68,52 @@ export function assembleContext(input: ContextInput): TextPart[] {
   const goal = store.requireGoal(turn.goalId!);
   const task = store.requireTask(turn.taskId!);
 
-  const parts: TextPart[] = [{ text: `${[userBlock(input.user), input.memory ? memoryBlock(store, goal, input.memory) : null, input.workMemory ?? null, goalBlock(store, goal), input.shelf ?? null, activeCapabilities(input.capabilities)].filter(Boolean).join("\n\n")}\n\n` }];
+  const note = store.goalNoteState(goal.id);
+  const stable = [
+    contextSection("USER_CONTEXT", quoteEvidence(input.user ? `The user's name is ${input.user}.` : "none")),
+    input.memory ? contextSection("SAVED_USER_MEMORY", (input.memory.use ? store.profileMemories(goal.id).map(m => `## MEMORY\nmemory_ref: ${m.handle}\nscope: ${m.goalId ? `goal ${m.goalId}` : "user"}\ntext:\n${quoteEvidence(m.text)}\nsource_refs: ${m.sourceTurnId ?? "unknown"}`).join("\n\n") : "none") + (input.memory.save ? "" : "\nSaving memories is disabled; leave memory.save out.")) : null,
+    input.workMemory ?? null,
+    contextSection("GOAL", `goal_ref: g${goal.number}\ntitle: ${JSON.stringify(goal.title)}\nobjective: ${JSON.stringify(goal.objective)}\nworkspace_ref: ${goal.workspaceId ?? "none"}\n\n## GOAL_NOTE\ntext:\n${quoteEvidence(goal.note ?? "none")}\nsource_turn_ref: ${note.sourceTurn ?? "unknown"}\nfreshness: ${note.freshness}\nfreshness_reason: ${JSON.stringify(note.reason ?? "none")}`),
+    input.shelf ?? null, activeCapabilities(input.capabilities),
+  ].filter(Boolean);
+  const parts: TextPart[] = [{ text: stable.join("\n\n") + "\n\n" }];
   const budgets = input.budgets ?? DEFAULT_BUDGETS;
   const history = taskHistory(store, turn.id);
   const general = task.general && !turn.laneId;
-  parts.push(...(general ? generalHistoryParts(store, turn, input.timeZone, budgets.previousTurn, input.generalHistoryBudget, input.now).parts : historyParts(store, history, budgets.previousTurn)));
-  const message = currentMessage(store, turn, input.vision ?? false);
+  const selected = general ? generalHistoryParts(store, turn, input.timeZone, budgets.previousTurn, input.generalHistoryBudget, input.now) : null;
+  const historyBlocks = selected?.parts ?? historyParts(store, history, budgets.previousTurn, input.timeZone);
+  parts.push({text: "# TASK_HISTORY\n"}, ...historyBlocks);
+  parts.push({text: `## COVERAGE\nscope: ${general ? "general_cross_day" : turn.laneId ? "lane_task" : "selected_task"}\nbudget_tokens: ${general ? selected!.budget : "session compaction policy"}\nincluded_tokens: ${historyBlocks.reduce((n,p) => n + countTokens(p.text), 0)}\nincluded_turn_refs: ${(selected?.included ?? history.turns.map(t => t.projectTurn)).join(", ")}\nolder_history_omitted: ${selected ? selected.omitted > 0 : !!history.summary || !!history.omitted}\nexcerpts: marked in each exchange\nomitted_ranges: ${history.omitted ? JSON.stringify(history.omitted) : "none"}\n\n`, cache: true});
+  const message = store.requestForTurn(turn.id);
+  const root = store.requestRoot(turn.userEventId);
   const boundary = Math.max(history.summary?.to ?? 0, history.omitted?.to ?? 0);
-
-  const time = zonedParts(input.now, input.timeZone);
+  const chat = store.currentChat(task.id);
+  const taskNote = store.noteState(task.id);
+  // A new task can depend explicitly on an earlier proposal. Keep that source outside task history.
+  const predecessor = !general && !history.turns.length && !history.summary && /\b(option\s+\w+|(?:that|this|your|the above)\s+(?:proposal|plan|approach|suggestion)|as (?:discussed|above)|do (?:that|it)|go ahead)\b/i.test(message.request)
+    ? foregroundTurns(store, [turn.laneId]).find(t => t.status !== "in_progress" && !store.redoneTurnIds().has(t.id) && t.taskId !== task.id && t.projectTurn < turn.projectTurn && t.userEventId !== turn.userEventId) : null;
+  const handoff = predecessor ? contextSection("REQUEST_HANDOFF", `source_turn_refs: ${predecessor.id}\nreason: current request refers to preceding work; source evidence, not selected-task history\n\n## REFERENCED_CONTEXT\n${quoteEvidence(renderContextExchange(store, predecessor, {timeZone: input.timeZone, budget: 3_000}))}`) : null;
+  const retrieved = general ? null : retrievedHistory(store, {taskId: task.id, message: message.request, boundary, maxTokens: budgets.retrievedMax,
+    ...(input.semantic ? {semantic: input.semantic.task, siblings: goal.general ? [] : input.semantic.siblings} : {}),
+    excludeTurnIds: new Set([...store.turnsForUserEvent(turn.userEventId).map(t => t.id), ...history.turns.map(t => t.id), ...(predecessor ? [predecessor.id] : [])]), now: input.now, timeZone: input.timeZone});
+  const project = projectContext({store, goalId: goal.id, workspace: input.workspace ?? null, access: input.access, query: projectQuery(task, message.request), semantic: {anchors: input.semantic?.anchors ?? [], related: input.semantic?.related ?? []}, maxTokens: budgets.projectContextMax ?? DEFAULT_BUDGETS.projectContextMax});
+  const relatedWork = general && /\b(?:pending|unfinished|current work|open tasks|working on|task status|catch me up)\b/i.test(message.request);
   const volatile = [
-    block("CURRENT_TIME", `${input.now.toISOString()} (${time.date} ${time.time}, ${time.weekday}, ${input.timeZone}); frozen for this turn`),
-    goal.general ? null : goalState(store, goal, task),
-    task.general && !turn.laneId ? block("CURRENT_TASK_REF", `g${goal.number}/t${task.number}; turn_number ${turn.projectTurn}; ${task.title}. Daily General chat; open does not mean unfinished work.`) : currentTask(task, input.part, store.requestForTurn(turn.id).request, laneOf(store, turn), taskStatus(store, task, turn)),
-    task.general ? block("RECENT_ACTIVITY", input.activitySnapshot ?? renderActivity(store, input.now, input.timeZone, turn.userEventId)) : null,
-    store.noteState(task.id).freshness === "outdated" ? block("NOTE_FRESHNESS", `The retained continuation note is outdated: ${store.noteState(task.id).reason}. Inspect the latest exact turn evidence before relying on it.`) : null,
+    contextSection("TASK", `task_ref: g${goal.number}/t${task.number}\ntitle: ${JSON.stringify(task.title)}\nobjective: ${JSON.stringify(task.objective)}\ncompletion_criteria: ${JSON.stringify(task.completionCriteria ?? "none")}\n${taskStatus(store, task, turn).join("\n")}\n${input.part ? `part: ${input.part.order} of ${input.part.count}; assigned request: ${JSON.stringify(message.request)}; do only this part\n` : ""}${turn.laneId ? `lane_ref: ${turn.laneId}\nlane: you are lane ${store.requireLane(turn.laneId).number}, working this task beside the main conversation.${laneOf(store, turn)?.handedOff ? ' The user wrote this message in the main conversation; it was handed to you because you work this task. "The lane" in it means you.' : ''}\n` : ""}\n## CONTINUATION_NOTE\ntext:\n${quoteEvidence(task.continuationNote ?? "none")}\nsource_turn_ref: ${taskNote.sourceTurn ?? "unknown"}\nfreshness: ${taskNote.freshness}\nfreshness_reason: ${JSON.stringify(taskNote.reason ?? "none")}`),
+    contextSection("SESSION", `chat_ref: ${chat.id}\nsequence: ${chat.ordinal}\ncontinuation_of: ${chat.continuationOf ?? "none"}\nhandover_ref: ${chat.handoverRef ?? "none"}\ncompactions_completed: ${chat.compactionCount}`),
+    handoff,
     redoneFrom(store, turn),
-    input.lanes ?? null,
-    input.access ? block("ACCESS", describeAccess(input.access, input.workspace?.root ?? null)) : null,
-    ...input.dependsOn.map((d) => evidenceFromPart(store, d.order, d.turn)),
-    general ? null : retrievedHistory(store, {
-      taskId: task.id,
-      message,
-      boundary,
-      maxTokens: budgets.retrievedMax,
-      ...(input.semantic ? { semantic: input.semantic.task, siblings: goal.general ? [] : input.semantic.siblings } : {}),
-      // The other parts of a compound message are never "older" history.
-      excludeTurnIds: new Set(store.turnsForUserEvent(turn.userEventId).map((t) => t.id)),
-      now: input.now,
-      timeZone: input.timeZone,
-    }),
-    input.memoryCandidates ?? null,
-    input.memoryHint ?? null,
-    projectContext({
-      store,
-      goalId: goal.id,
-      workspace: input.workspace ?? null,
-      access: input.access,
-      query: projectQuery(task, store.requestForTurn(turn.id).request),
-      semantic: { anchors: input.semantic?.anchors ?? [], related: input.semantic?.related ?? [] },
-      maxTokens: input.budgets?.projectContextMax ?? DEFAULT_BUDGETS.projectContextMax,
-    }),
+    ...([{content: retrieved, scope: "selected_goal"}, {content: input.memoryCandidates, scope: "applicable_memory"}, {content: project, scope: "selected_goal"}]).flatMap(({content, scope}) => content ? [contextSection("RETRIEVED_CONTEXT", `## ITEM\nsource_ref: ${JSON.stringify(contextReferences(content, goal.number, task.number, input.workspace?.root))}\nscope: ${scope}\ncoverage: bounded; exclusions marked in content\nreason: applicable historical or project evidence\ncontent:\n${quoteEvidence(content)}`)] : []),
+    input.dependsOn.length ? contextSection("DEPENDENCY_RESULTS", input.dependsOn.map(d => `## DEPENDENCY\npart_ref: ${d.order}\nturn_ref: ${d.turn.id}\noutcome: ${d.turn.status}\nevidence_refs: ${JSON.stringify(store.evidenceForTurn(d.turn.id).slice(0, HANDOFF_MAX_EVIDENCE).map(e => `g${store.requireGoal(d.turn.goalId!).number}/t${store.requireTask(d.turn.taskId!).number}/${e.handle}`))}\nanswer:\n${quoteEvidence(d.turn.responseEventId ? (store.getEvent(d.turn.responseEventId)!.payload as EventPayloads["assistant_response"]).text : "unavailable")}\n${quoteEvidence(evidenceFromPart(store, d.order, d.turn))}`).join("\n\n")) : null,
+    relatedWork || input.lanes ? contextSection("RELATED_WORK_STATE", `as_of: ${contextTime(input.now, input.timeZone)}\n${[relatedWork ? input.activitySnapshot ?? renderActivity(store, input.now, input.timeZone, turn.userEventId) : null, input.lanes].filter(Boolean).join("\n")}`) : null,
+    input.access ? contextSection("ACCESS", `working_folder: ${JSON.stringify(input.workspace?.root ?? "none")}\nallowed_folders: ${JSON.stringify(input.access.folders)}\napproval_mode: ${input.access.approvals}\nrestrictions:\n${describeAccess(input.access, input.workspace?.root ?? null)}`) : null,
+    input.memoryHint ? contextSection("MEMORY_SAVE_HINT", input.memoryHint) : null,
     input.candidates ?? null,
-    `<CURRENT_USER_MESSAGE>\n${message}\n</CURRENT_USER_MESSAGE>`,
+    contextSection("CURRENT_TIME", `at: ${contextTime(input.now, input.timeZone)}\ntimezone: ${input.timeZone}\nfrozen_for_turn: true`),
+    !input.vision && message.attachments.length ? "The current model cannot see images: use the attachment path with read when needed." : null,
+    currentRequest({id: root.id, at: root.at, turnId: turn.id, text: message.request, clarification: message.clarification, attachments: message.attachments.map(a => ({name: a.name, mediaType: a.media_type, path: a.path}))}, input.timeZone),
   ].filter((b): b is string => b !== null);
-  parts.push({ text: volatile.join("\n\n") });
+  parts.push({text: volatile.join("\n\n")});
   return parts;
 }
 
@@ -167,18 +167,6 @@ export function redoneFrom(store: LedgerStore, turn: Turn): string | null {
   return block("REDONE_FROM", lines.join("\n\n"));
 }
 
-function goalBlock(store: LedgerStore, goal: Goal): string {
-  const workspace = goal.workspaceId ? store.getWorkspace(goal.workspaceId) : null;
-  const anchors = store.listAnchors(goal.id);
-  const lines = [
-    `title: ${goal.title}`,
-    ...(goal.objective ? [`objective: ${goal.objective}`] : []),
-    `workspace: ${workspace ? workspace.name : "none yet"}`,
-  ];
-  if (anchors.length) lines.push("anchors:", ...anchors.map((a) => `- ${a.path} — ${a.role}${a.summary ? `: ${a.summary}` : ""}${a.status === "provisional" ? " (provisional)" : ""}`));
-  return block("GOAL", lines.join("\n"));
-}
-
 function activeCapabilities(c: ContextInput["capabilities"]): string | null {
   if (!c.skills.length && !c.mcpTools.length && !c.staleSkills?.length) return null;
   const lines: string[] = [];
@@ -191,16 +179,6 @@ function activeCapabilities(c: ContextInput["capabilities"]): string | null {
   if (c.staleSkills?.length) lines.push(`Stale Skills (instructions withheld; search and activate again): ${c.staleSkills.join(", ")}`);
   if (c.mcpTools.length) lines.push(`Active MCP tools: ${c.mcpTools.join(", ")}`);
   return block("ACTIVE_CAPABILITIES", lines.join("\n"));
-}
-
-function goalState(store: LedgerStore, goal: Goal, current: Task): string {
-  const others = store.listTasks(goal.id, { status: "open" }).filter((t) => !t.general && t.id !== current.id);
-  const shown = others.slice(0, GOAL_STATE_MAX_TASKS - 1);
-  const freshness = store.goalNoteState(goal.id);
-  const lines = [`note: ${goal.note ?? "none yet"}${freshness.freshness === "outdated" ? ` (outdated: ${freshness.reason}; inspect exact evidence)` : ""}`, "open_tasks:", `- t${current.number} ${current.title} — current`];
-  for (const t of shown) lines.push(`- t${t.number} ${t.title} — open`);
-  if (others.length > shown.length) lines.push(`- … and ${others.length - shown.length} more open tasks`);
-  return block("GOAL_STATE", lines.join("\n"));
 }
 
 /** The lane a turn runs in, and whether its message was handed over from the main conversation. */
@@ -229,23 +207,6 @@ function taskStatus(store: LedgerStore, task: Task, turn: Turn): string[] {
   return lines;
 }
 
-function currentTask(task: Task, part: ContextInput["part"], partRequest: string, lane: { number: number; handedOff: boolean } | null, status: string[]): string {
-  const lines = [
-    `title: ${task.title}`,
-    `objective: ${task.objective}`,
-    ...(task.completionCriteria ? [`completion_criteria: ${task.completionCriteria}`] : []),
-    ...status,
-    `note: ${task.continuationNote ?? "New task."}`,
-  ];
-  if (part) {
-    lines.push(`this_turn: part ${part.order} of ${part.count} of the user's message — ${JSON.stringify(partRequest)}. Do only this part; the other parts run separately.`);
-  }
-  if (lane) {
-    lines.push(`lane: you are lane ${lane.number}, working this task beside the main conversation.${lane.handedOff ? ` The user wrote this message in the main conversation; it was handed to you because you work this task. "The lane" in it means you.` : ""}`);
-  }
-  return block("CURRENT_TASK", lines.join("\n"));
-}
-
 /**
  * The bounded handoff from a finalized earlier part (agent-harness.md,
  * "Evidence handoff between parts"), built mechanically from its ledger entry.
@@ -272,17 +233,6 @@ function evidenceFromPart(store: LedgerStore, order: number, turn: Turn): string
 }
 
 /** The exact user message, once. A compound part sees the whole message; its own part is named in CURRENT_TASK. */
-function currentMessage(store: LedgerStore, turn: Turn, vision: boolean): string {
-  const bound = store.listEvents({ turnId: turn.id, type: "turn_bound" })[0]!.payload as EventPayloads["turn_bound"];
-  const original = (store.getEvent(bound.request_event_id)!.payload as EventPayloads["user_message"]).text;
-  const { clarification } = store.requestForTurn(turn.id);
-  const attachments = requestAttachments(store, turn);
-  const source = (store.getEvent(bound.request_event_id)!.payload as EventPayloads["user_message"]).context_from_task;
-  const previous = source && !(store.requireTask(turn.taskId!).general && !turn.laneId) ? store.turnsForTask(source).findLast(t => t.responseEventId) : null;
-  const earlier = previous ? truncateToTokens(`Earlier General request: ${store.requestForTurn(previous.id).request}\nAnswer: ${(store.getEvent(previous.responseEventId!)!.payload as EventPayloads["assistant_response"]).text}`, 1000).text : "";
-  return [requestText(original, attachments), earlier ? `<CONTINUED_GENERAL_CONTEXT>\n${earlier}\n</CONTINUED_GENERAL_CONTEXT>` : "", clarification ? clarificationLine(clarification) : "", attachmentLines(attachments, vision)].filter(Boolean).join("\n");
-}
-
 /** Synchronize only capability exposure. Keep native calls and exact stored evidence intact.
  * An in-flight activation carries its instructions until linearized; don't duplicate it in the prefix. */
 export function refreshCapabilityContext(messages: ModelMessage[], capabilities: ActiveCapabilities): ModelMessage[] {
@@ -312,4 +262,14 @@ export function refreshCapabilityContext(messages: ModelMessage[], capabilities:
     next[0] = { ...first, content: parts };
   }
   return changed ? next : messages;
+}
+
+/** Concrete retrieval handles in legacy bounded payloads; never substitute a vague placeholder. */
+function contextReferences(content: string, goal: number, task: number, root?: string): string[] {
+  const refs = new Set<string>();
+  for (const m of content.matchAll(/\[TURN (\d+)/g)) refs.add(`turn_number ${m[1]}`);
+  for (const m of content.matchAll(/\[(m\d+)\b/g)) refs.add(m[1]!);
+  for (const m of content.matchAll(/^anchor (.+?) —/gm)) refs.add(`read ${JSON.stringify(root ? `${root}/${m[1]}` : m[1])}`);
+  for (const m of content.matchAll(/^--- (.+?)(?: › [^\n]*?)? \(lines (\d+)–(\d+)\)/gm)) refs.add(`read ${JSON.stringify(m[1])} lines ${m[2]}–${m[3]}`);
+  return refs.size ? [...refs] : [`g${goal}/t${task}`];
 }

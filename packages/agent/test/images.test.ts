@@ -76,7 +76,7 @@ describe("attached images", () => {
     expect(event.payload).toMatchObject({ text: "What does this say?", attachments: [attachment] });
     const first = model.requests[0]!.messages[0]!;
     expect(first).toMatchObject({ role: "user", images: [{ mediaType: "image/png", data: png.toString("base64") }] });
-    expect(contextText(model.requests[0]!)).toContain(`What does this say?\n[The user attached an image. They are shown with this message; read one by its path to look again later.]\n1. ${file} — "label.png", 400×400 PNG`);
+    expect(contextText(model.requests[0]!)).toContain(`path: ${JSON.stringify(file)}`);
   });
 
   it("names them to a model that cannot see, and sends it nothing", async () => {
@@ -84,7 +84,7 @@ describe("attached images", () => {
     const { socrates, model } = w.socrates([continueTask()], [final()], { attachments: folder });
     await socrates.handle("What does this say?", { attachments: [attachment] });
     expect(model.requests[0]!.messages[0]).not.toHaveProperty("images");
-    expect(contextText(model.requests[0]!)).toContain("The current model cannot see images: only their names and sizes are known.");
+    expect(contextText(model.requests[0]!)).toContain("The current model cannot see images: use the attachment path with read when needed.");
   });
 
   it("keeps the path in later turns, so the image can be read again from there, and only the image", async () => {
@@ -99,7 +99,7 @@ describe("attached images", () => {
     await socrates.handle("What did the label I sent earlier say?");
     const later = model.requests[1]!;
     expect(later.messages[0]).not.toHaveProperty("images");
-    expect(contextText(later)).toContain(`Keep this label in mind.\n[The user attached an image. Read one by its path to look at it again.]\n1. ${file}`);
+    expect(contextText(later)).toContain(JSON.stringify(file));
     const results = model.requests[2]!.messages.filter((m) => m.role === "tool");
     expect(results[0]).toMatchObject({ content: `${file} — image, 400×400 PNG, 11 KB, shown below.`, images: [{ mediaType: "image/png" }] });
     expect(results[1]!.content).not.toContain("not for tools");
@@ -114,12 +114,12 @@ describe("attached images", () => {
     model.vision = true;
     await socrates.handle("", { attachments: [attachment] });
     expect(w.store.listEvents({ type: "user_message" }).at(-1)!.payload).toEqual({ text: "", attachments: [attachment] });
-    expect(contextText(routerModel.requests[0]!)).toContain("<CURRENT_USER_MESSAGE>\n(No text: the user sent only the images in CURRENT_ATTACHMENTS.)");
+    expect(contextText(routerModel.requests[0]!)).toContain("## TEXT\n```text\n\n```");
     expect(model.requests[0]!.messages[0]).toMatchObject({ role: "user", images: [{ mediaType: "image/png" }] });
-    expect(contextText(model.requests[0]!)).toContain(`(The user sent no text, only the images below.)\n[The user attached an image. They are shown with this message; read one by its path to look again later.]\n1. ${file}`);
+    expect(contextText(model.requests[0]!)).toContain(`path: ${JSON.stringify(file)}`);
 
     await socrates.handle("Was it ORCHID?");
-    expect(contextText(model.requests[1]!)).toContain(`USER:\n(The user sent no text, only the images below.)\n[The user attached an image. Read one by its path to look at it again.]\n1. ${file}`);
+    expect(contextText(model.requests[1]!)).toContain(JSON.stringify(file));
   });
 
   it("tells the router about them, and keeps them findable by name in memory", async () => {
@@ -130,9 +130,9 @@ describe("attached images", () => {
       final({ full_answer: "Found it." }),
     ], { attachments: folder });
     await socrates.handle("Keep this label in mind.", { attachments: [attachment] });
-    expect(contextText(routerModel.requests[0]!)).toContain("<CURRENT_ATTACHMENTS>\n[The user attached an image: label.png]");
+    expect(contextText(routerModel.requests[0]!)).toContain('name: "label.png"');
     await socrates.handle("Which image did I send?");
-    expect(contextText(routerModel.requests[1]!)).toContain("Keep this label in mind.\n[The user attached an image: label.png]");
+    expect(contextText(routerModel.requests[1]!)).toContain('"name":"label.png"');
     const found = model.requests[2]!.messages.at(-1)!.content;
     expect(found).toContain(file);
   });

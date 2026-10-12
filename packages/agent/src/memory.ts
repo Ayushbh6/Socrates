@@ -1,7 +1,7 @@
 import type { EventRefs, MemoryProposal } from "@socrates/contracts";
 import { DEFAULT_THRESHOLDS, type SemanticHit, rankMemories } from "@socrates/retrieval";
 import { countTokens, zonedParts } from "@socrates/shared";
-import { type Goal, type LedgerStore, type Memory, StoreError } from "@socrates/store";
+import { type Goal, type LedgerStore, type Memory, StoreError, quoteEvidence } from "@socrates/store";
 import { type GateReading, RECALL_AT, RECALL_STRONG_AT, SAVE_AT } from "./gates";
 
 /** The user's two memory switches (architecture/server.md, "Settings"). */
@@ -94,7 +94,7 @@ export function memoryForRouting(store: LedgerStore, input: { message: string; s
   let used = 0;
   for (const { memory } of ranked) {
     const goal = memory.goalId ? store.getGoal(memory.goalId) : null;
-    const line = `- [${memory.kind} · ${zonedParts(new Date(memory.updatedAt), input.timeZone).date}${goal ? ` · limited to goal "${goal.title}"` : ""}] ${memory.text}`;
+    const line = `## MEMORY\nmemory_ref: ${memory.handle}\nscope: ${goal ? "project" : "user"}\ngoal_ref: ${goal ? `g${goal.number}` : "none"}\ntext:\n${quoteEvidence(memory.text)}\nsource_refs: ${memory.sourceTurnId ?? "unknown"}`;
     const cost = countTokens(line) + 1;
     if (used + cost > MEMORY_ROUTING_MAX_TOKENS) continue;
     lines.push(line);

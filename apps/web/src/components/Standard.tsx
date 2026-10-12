@@ -1,3 +1,4 @@
+import { SessionContinuation } from "./SessionContinuation";
 import { useEffect, useMemo, useState } from "react";
 import { allQuestions, chatThread, chatTitle, groupChats, newThread, withoutArchived } from "../lib/chats";
 import { chatBusy, currentRoute } from "../lib/model";
@@ -45,6 +46,8 @@ export function Standard({ app, mode, dock, onMode, onSettings }: { app: AppStat
   const goals = useMemo(() => groupChats(app.goals, main), [app.goals, main]);
   const goal = route ? app.goals.find((g) => g.number === route.goal.number) : undefined;
   const task = goal?.tasks.find((t) => t.number === route?.task.number);
+  const session = task?.sessions?.find(s => s.sequence === chat);
+  const activeSession = task?.sessions?.find(s => !s.closedAt);
 
   useEffect(() => {
     if (!app.focusedRequest) return;
@@ -125,8 +128,9 @@ export function Standard({ app, mode, dock, onMode, onSettings }: { app: AppStat
       )}
 
       <section className="chat-main" aria-label="Chat">
-        <Thread app={app} conversation="main" shown={shown} focus={focus} onRedone={(id) => setView({ fresh: main.at(-1)?.key ?? null, goal: null, sent: id })} before={chat > 1 && goal && task ? <Continued onBack={() => setView({ chat: { goal: goal.number, task: task.number, chat: chat - 1 } })} /> : null} empty={fresh || !main.length ? (freshGoal ? `What's next for ${freshGoal.title}?` : "What should we work on?") : "Nothing has been asked in this chat yet."} />
+        <Thread app={app} conversation="main" shown={shown} focus={focus} onRedone={(id) => setView({ fresh: main.at(-1)?.key ?? null, goal: null, sent: id })} before={chat > 1 && goal && task ? <SessionContinuation handover={session?.handover} sequence={chat} onBack={() => setView({ chat: { goal: goal.number, task: task.number, chat: chat - 1 } })} /> : null} empty={fresh || !main.length ? (freshGoal ? `What's next for ${freshGoal.title}?` : "What should we work on?") : "Nothing has been asked in this chat yet."} />
         <div className="chat-composer">
+          {task && goal && activeSession && activeSession.sequence !== chat && <aside className="continued-note" role="status"><span>Viewing an earlier session. Your next reply continues in {chatTitle(task.title, activeSession.sequence)}.</span><button type="button" className="quiet-button" onClick={() => setView({chat: {goal: goal.number, task: task.number, chat: activeSession.sequence}})}>Open current session</button></aside>}
           <Composer app={app} conversation="main" laneNumber={null} variant="panel" chat={target} placeholder={task ? "Reply…" : "Ask Socrates…"} onModel={onSettings} onNewLane={() => null} onSent={(id) => { setFollowing(id); if (fresh) setView({ ...fresh, sent: id }); }} />
         </div>
         <TerminalDock app={app} dock={dock} variant="docked" />
@@ -144,11 +148,3 @@ export function Standard({ app, mode, dock, onMode, onSettings }: { app: AppStat
 }
 
 /** The start of a chat that took over from a full one. */
-function Continued({ onBack }: { onBack: () => void }) {
-  return (
-    <aside className="continued-note" aria-label="Continued from the previous chat">
-      <span>Automatically continued from the previous chat after extensive context compression. Socrates carries over what matters.</span>
-      <button type="button" className="quiet-button" onClick={onBack}>Open the previous chat</button>
-    </aside>
-  );
-}

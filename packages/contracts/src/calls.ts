@@ -19,7 +19,7 @@ export interface CallRecord {
     system: string;
     messages: ModelMessage[];
     tools: ToolDefinition[];
-    toolChoice: "auto" | "none";
+    toolChoice: "auto" | "none" | "required";
     maxOutputTokens: number | null;
     temperature: number | null;
     effort: string | null;

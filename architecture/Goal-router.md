@@ -199,138 +199,24 @@ The user who sees the wrong workspace corrects it with one click or one sentence
 
 ## Exact router input
 
-The router uses a fixed system prompt followed by one turn-specific input. The turn-specific input has this order:
+The canonical Markdown contract is in `docs/context-routing-plan.md`, sections 3–7; the common evidence renderer is `packages/store/src/context-exchanges.ts`. Fixed routing instructions and API tool schemas precede one variable input, in this order:
 
-```text
-<CURRENT_TIME>
-2026-09-01T14:32 local (Tuesday)
-</CURRENT_TIME>
+1. `RECENT_CONVERSATION`: newest eligible foreground exchanges selected backward, presented oldest first. The previous exchange includes tool arguments/results/status; older exchanges are Q&A. The total is 20,000 tokens, including metadata, with a 10,000-token previous-exchange sub-limit. There is no semantic filtering of this chronological window.
+2. `HISTORY_COVERAGE`: selection/order, measured budget/usage and omitted-history flag.
+3. `CURRENT_BINDING`: current goal/task references. This may differ from the last completed exchange when work is still running.
+4. `GOAL_DIRECTORY`: explicit snapshot time, bounded coverage, stable references and request-local routing labels. Each goal has title, objective, workspace, status, anchor manifest and note provenance/freshness. Each task has title, objective, completion criteria, status and note provenance/freshness. Task objective and criteria each have a 300-character excerpt cap; full definitions remain in the ledger.
+5. Optional `RECALLED_MEMORIES`, `ACTIVE_LANES`, then `WORKSPACE_CONTEXT` and optional `ROUTING_CLARIFICATION`.
+6. `CURRENT_TIME`, frozen for routing, then the original `CURRENT_REQUEST`, once and last. Clarification replies are separate evidence attached to that request.
 
-<RECENT_ACTIVITY>
-Last 48 hours (detail):
-2026-09-01 14:02  website-x   Checkout flow fix — tests pass, staging deploy
-2026-08-31       personal    German Day 10 — dative prepositions, Day 11 next
+The directory always includes the current goal when present, with up to six tasks, plus at most three older goal candidates with up to three tasks each, and the General route. Older candidates use existing keyword/semantic fusion with recency and open-goal boosts; recent goals fill unused slots. Existing `older_N`, `current`, `latest`, `task_N` label validation remains. Candidate retrieval and chronological history are independent: seeing an exchange does not automatically make its goal a selectable directory candidate. `ledger_query` resolves destinations outside the shortlist. The anchor manifest is bounded to eight short entries; full files never enter the router here.
 
-Last 7 days (one line each):
-2026-08-29  website-x   Payment provider integration
-2026-08-27  personal    German Day 9
-</RECENT_ACTIVITY>
+`RECENT_ACTIVITY` is no longer duplicated in router input. Task/chat status is not execution outcome or an obligation. Historical fields carry request/completion timestamps, stable retrieval references, answer-validation status/reason, and explicit excerpt markers. Collision-safe fences quote source content. Historical validator messages are evidence, not current policy. Unfinished/current requests and set-aside Redo attempts are excluded. Tool capture gaps are distinct from prompt excerpts.
 
-<RECENT_EXACT_HISTORY>
-[goal=current · task=current · workspace=website-x]
-USER:
-Can you review the checkout flow in Website X?
-
-SOCRATES:
-The current checkout path drops the discount code on retry...
-
-[goal=older_1 · task=latest · workspace=personal]
-USER:
-The agent prompt feels too complicated. Can you review it?
-
-SOCRATES:
-Yes. The core prompt currently mixes stable behavior with provider guidance...
-</RECENT_EXACT_HISTORY>
-
-<KNOWN_GOALS>
-CURRENT
-label: current
-title: Memory system review
-workspace: website-x
-note: Reviewed compaction. The remaining concern is preserving large tool results.
-tasks:
-- current: Preserving large tool results — active
-- task_1: Compaction provenance fix — completed
-
-OLDER
-label: older_1
-title: Agent prompt improvement
-workspace: personal
-note: Simplify the core prompt and keep provider-specific guidance outside it.
-tasks:
-- latest: Split provider guidance out of the core prompt — open
-</KNOWN_GOALS>
-
-<CURRENT_USER_MESSAGE>
-Did that compaction fix preserve tool results?
-</CURRENT_USER_MESSAGE>
-```
-
-The current message is last so it is never buried between summaries and history. It is not repeated in a separate `latest exchange` field.
-
-### The sections are built independently
-
-#### 1. `<CURRENT_TIME>` and `<RECENT_ACTIVITY>`
-
-The harness injects the current date and time as a fixed header. Time is injected, never fetched: the router needs no clock tool, and temporal references such as "yesterday" or "last week" resolve against the header plus the activity notepad.
-
-The notepad is a **derived view, never stored prose** — a mechanical query over the ledger rendered fresh on every request, never cached across turns. It renders the last 48 hours in detail and the last 7 days as one line per task. It is bounded (~15 lines) and sits in the dynamic suffix, so it never disturbs the cache-stable prefix.
-
-#### 2. `RECENT_EXACT_HISTORY`
-
-This section is purely chronological. Starting immediately before the current user message, the harness walks backward through the flow's exact Q&A trail and takes the newest complete pairs that fit within the history budget. A turn the user asked again in another task is left out (`agent-harness.md`, "Redo in another task"); its redo is in the trail where it was asked.
-
-There is no semantic, vector, BM25, keyword, file, or topic filtering in this section.
-
-Every included Q&A pair is tagged with the goal, task, and workspace to which it was already bound. The tag uses a human-readable title or a temporary label created for this router request, never an internal database identifier. A tag records existing ownership; it does not influence candidate retrieval or make a new routing decision.
-
-One flow spans all workspaces: the section is chronological across workspace switches, because that is how the user experienced it. The tags carry the structure.
-
-#### 3. `KNOWN_GOALS`
-
-This section is assembled separately. It contains:
-
-1. the current goal, always, when one exists, with a small index of its open and recently completed tasks (label, title, status); and
-2. up to three older goal candidates found by hybrid retrieval over every saved goal title, goal note, task continuation note, and lightweight anchor manifest. Each older candidate carries a small task index too: its most recently updated task, labelled `latest`, and up to two other open tasks. When fewer than three goals match the message, the remaining slots are filled with the goals most recently active in the last seven days, so vague temporal references ("the project from yesterday") still see them; and
-3. the general goal, labelled `general`, unless it is already the current goal.
-
-Hybrid retrieval fuses the keyword and meaning rankings of goals (a goal ranks by its own best match or its best task's) and adds two small boosts (`agent-harness.md`, "Embeddings and hybrid retrieval"); without an embedding index it uses every signal except semantic similarity:
-
-- semantic/vector similarity;
-- BM25 or equivalent keyword matching; and
-- a small recency boost; and
-- a small boost for open, long-running goals whose scope plausibly contains the request.
-
-Candidate retrieval is grounded in the exact current user message and the project's lightweight identity, such as its name and stated purpose. It searches goal titles, goal notes, task continuation notes, and anchor names, roles, and short summaries. It never injects full anchor files into the router request.
-
-This matters for elliptical requests. In a project named `German`, the message `Okay, let's start today's lesson` should retrieve an open goal titled `Ongoing German learning` even when the last German lesson is outside the recent exact-history window. Its continuation note and an anchor summary such as `30-day-plan.md — curriculum and lesson sequence` provide additional evidence.
-
-Appearing in recent exact history may improve a goal's recency signal, but it is neither required nor sufficient for selection. A goal outside the recent-history window can still be retrieved.
-
-Retrieval only creates a shortlist. The Goal Router—not the retrieval system—decides whether the message continues the current goal and task, resumes a candidate, creates a new goal or task, needs clarification, or is compound.
-
-The labels `older_1`, `older_2`, and `older_3` are temporary ranks for this request. A goal created 23 goals ago may still be labelled `older_1`; there is no `older_23` label. Task labels follow the same rule and are interpreted within the selected goal: in the current goal, `current` is the current task and `task_1`, `task_2`, ... are its other listed tasks; in an older goal, `latest` is its most recently updated task and `task_1`, `task_2`, ... are its other listed tasks.
-
-#### 4. `LANES`
-
-Present only when work runs or recently finished in parallel lanes beside the conversation (`agent-harness.md`, "Lanes"); a lane being routed does not see itself. One line per open lane, selecting its earliest unfinished turn before its most recently finished turn so queued handoffs do not hide ongoing work (the host's live turn overrides this ledger-only fallback, including after restart): its number, status (working, waiting for the user's answer, finished or stopped with the time), and its goal and task with `gN` and `gN/tN` selectors. A lane that finished or stopped more than `24` hours ago is left out. The selectors are valid labels without a `ledger_query`.
-
-A message that only asks how a lane's work is going routes to `general`, even when the lane works on the current task, and is answered from `<LANES>` without disturbing the lane. A message that changes or adds to a lane's work routes to that lane's task by its selectors and is handed to the lane. New, separate work is never routed into a lane's task merely because the lane exists.
-
-#### 5. `REMEMBERED`
-
-Present only when the memory gate (`agent-harness.md`, "Memory") expects the message to lean on something the user asked Socrates to remember (recall at least `0.5`). At most `6` saved memories of any goal that match the message by words or meaning, within `250` tokens, one per line as `- [kind · date · limited to goal "Title"] text`; the goal is named only for a memory limited to one goal, and there are no handles. They tell the router what the message is about (a trip, a person, a project), which a bare "my trip" does not; they are not goals or tasks, so it routes only to labels it was given, and a message that depends on one is not unclear: it does not ask what it refers to. Without the gate, or when it expects no recall, the block is absent and the router is unchanged.
-
-#### 6. `CURRENT_USER_MESSAGE`
-
-This is the exact current query. It appears once, after both context sections, and is always the final block read by the router. When the message has images, `CURRENT_ATTACHMENTS` names them just before it (and `REMEMBERED`, when present, comes before that). A message that is only images has no text; in its place the router reads "(No text: the user sent only the images in CURRENT_ATTACHMENTS.)". Such a message continues the conversation: the current task, or `general` when there is none. It is never asked about and never compound, and the stored message stays empty.
-
-### Recent-history token budget
-
-The router-history budget is a fixed `20,000` tokens. Like every budget in Socrates, it is an absolute number under the universal `180,000`-token ceiling defined in `agent-harness.md` ("Token budget and trigger points") and never a percentage of the served model's context window.
-
-The harness builds `RECENT_EXACT_HISTORY` as follows:
-
-1. Start with the completed Q&A pair immediately preceding the current message.
-2. Walk backward chronologically.
-3. Add only complete pairs while they fit within the budget.
-4. Present the selected pairs in normal oldest-to-newest reading order.
-5. Never include the current user message inside recent history.
-6. If the newest single exchange exceeds the entire budget, include a clearly marked bounded excerpt and retain the complete exchange in storage.
-
-The budget is measured in tokens. The architecture must not encode “last three messages” or another fixed pair count.
+`ACTIVE_LANES` contains bounded recorded state, not another lane's raw transcript. Memory matching keeps existing thresholds and a 250-token routing allowance; records now include memory, scope and source references. Empty optional blocks are omitted. The router does not receive the worker's project files or full task context before choosing ownership.
 
 ## Router output
+
+The logical decision schema is unchanged. OpenAI/OpenRouter requests expose `routing_result` as a native final-result tool and require a tool response. Ledger lookups and `ask_user` remain available where valid. A final result must be alone; mixed final/lookup responses execute neither. JSON-text fallback remains for other providers and compatible clients. Existing validation, one bounded final correction, escalation/fallback and equivalent-route normalization remain. Diagnostics distinguish invalid final responses, invalid tool calls, semantic rejections and the accepted transport. Successful ledger rounds are not counted as repairs.
 
 The router returns strict structured data. It has exactly two tools — `ledger_query` and `ask_user`, described below — and may call `ledger_query` before committing to a decision:
 
@@ -577,85 +463,11 @@ The router reasons about the outcome, not keyword overlap alone.
 
 ## Context assembly after goal and task selection
 
-Router context and working-agent context are separate. The Goal Router receives project-wide evidence to select the owning goal and task. Only after the backend binds the turn to that goal and task does it build the Main Coding Agent's focused context.
+Only after binding does the worker assemble its selected goal/task context. The exact order and field names are in `docs/context-routing-plan.md`, section 7. Stable user/project memory and goal instructions precede `TASK_HISTORY`, then task/session state and explicitly labelled handoffs, retrieval and dependencies. Frozen current time and the current request are last.
 
-After a decision is validated, an optional host `beforeBind` hook receives its existing task destinations (including today's General task) before binding. The server uses it to let earlier accepted messages in the same task finish first, including Standard's queue, so the bound turn's history includes their answers. The router's selection is unchanged; new goals and tasks are still materialized by the binding transaction.
+An existing project task receives its own earlier exchanges across its session chain: latest checkpoint/handover, retained older Q&A, and the previous relevant exchange with tools (20k sub-limit). Existing 160k/80k/180k compaction thresholds, 30k retained/intact windows, 8k summaries/retrieval and 3k project context remain. General is the explicit 30k cross-day exception; lane history retains its isolation. A new task referencing a preceding proposal may receive a bounded `REQUEST_HANDOFF`; this is source evidence outside its task history.
 
-The working-agent request has exactly one layout, defined in `agent-harness.md` ("Working-agent context"). It orders blocks from most stable to most volatile for prompt caching: the stable prefix, then goal-stable blocks (`<GOAL>`, `<AVAILABLE_SKILLS>`, `<ACTIVE_CAPABILITIES>`), then chat history, then turn-volatile blocks (`<GOAL_STATE>`, `<CURRENT_TASK>`, optional `<RECENT_ACTIVITY>`, optional `<LANES>`, `<RETRIEVED_HISTORY>`, `<PROJECT_CONTEXT>`, `<CAPABILITY_CANDIDATES>`), and finally `<CURRENT_USER_MESSAGE>`. This section describes how the goal- and task-specific blocks are filled.
-
-For the German example, the selected sections contain:
-
-```text
-<GOAL>
-title: Ongoing German learning
-objective: Reach B1 German through daily structured lessons.
-workspace: personal
-anchors:
-- 30-day-plan.md — curriculum and lesson sequence
-</GOAL>
-
-... chat history of the new task (empty on its first turn) ...
-
-<GOAL_STATE>
-note: Covers German lessons and practice toward B1. Day 9 completed.
-open_tasks:
-- t11 Complete the Day 10 lesson — active
-</GOAL_STATE>
-
-<CURRENT_TASK>
-title: Complete the Day 10 lesson
-objective: Work through Day 10 of the 30-day plan (dative prepositions in context).
-completion_criteria: The Day 10 lesson and its practice exercises are completed and reviewed.
-status: active
-note: New task. Day 9 completed dative prepositions.
-</CURRENT_TASK>
-
-<PROJECT_CONTEXT>
-anchor 30-day-plan.md — goal_plan (124 lines; outline, relevant sections below)
-- 30-day plan (line 1)
-- Day 1 (line 4)
-- … one line per day …
---- 30-day-plan.md › Day 10 (lines 40–43)
-## Day 10
-Dative prepositions in context: …
-</PROJECT_CONTEXT>
-
-<CURRENT_USER_MESSAGE>
-Okay, let's start today's lesson.
-</CURRENT_USER_MESSAGE>
-```
-
-### `GOAL` and `GOAL_STATE`
-
-Goal context is split by how often it changes. `<GOAL>` holds the goal's title, objective, workspace, and anchor manifest, which change rarely and therefore sit before the chat history. `<GOAL_STATE>` holds the goal note and a small index of open tasks, which change from turn to turn and therefore sit after it. Goal context is deliberately concise: the overarching objective, durable user constraints and preferences, anchor manifests, and the open-task index. It does not include other tasks' transcripts.
-
-The goal note is written only through the optional `goal_note` field of the Main Coding Agent's `FinalAnswer`, validated by the harness (see "Final result" in `agent-harness.md`). The Goal Router never writes it.
-
-### `CURRENT_TASK`
-
-The backend supplies the selected task's title, objective, completion criteria, status, and latest continuation note. The note is the short hidden field returned by the Main Coding Agent after the previous turn in this task. It records verified progress, unresolved work, important constraints, and what is likely to matter next. The continuation note is task-local.
-
-### Chat history
-
-Chat history is a mechanical chronological sequence of the turns already bound to the selected task chat, preceded by its active history checkpoint or handover capsule when one exists. It does not include interleaved turns from other tasks or goals and applies no semantic filtering.
-
-It has no separate token cap. Every completed turn of the current task chat is attached in its three-tier shape (N−1 with full tool activity, older turns as Q&A only), presented oldest to newest, until the `160,000`-token compaction trigger fires; size is then managed only by the compaction design in `agent-harness.md`. Exact messages and tool evidence remain in persistent storage even after compaction removes them from the prompt.
-
-### `RECENT_ACTIVITY`
-
-When the turn is bound to the `general` task, the working agent receives the same ledger-derived `<RECENT_ACTIVITY>` notepad the router sees. This is what lets Socrates greet the user with a short recap—"Last time we fixed the checkout flow and finished German Day 10. Want to pick one of those up?"—without any tool call. Turns bound to a real task do not receive it; their goal and task blocks already carry the relevant state.
-
-### `RETRIEVED_HISTORY`
-
-After excluding turns already present in chat history, the backend performs hybrid retrieval over the selected task's older exchanges—those compacted into a checkpoint or held in an earlier chat of the task's continuation chain—and, when specifically relevant to the current request, over the ledger entries of other tasks in the same goal.
-
-Concretely: the current task's exchanges that history no longer shows (covered by the active checkpoint or capsule, or omitted), filtered to the eligible older turn range before ranking or limiting, ranked by the fused keyword and meaning rankings against the current user message plus a small recency boost, at most three; and at most one exchange of another task in the same goal, on a meaning match at the `strong` floor only, because keyword matching across tasks is too noisy. A meaning match on one of a turn's tool calls finds that turn's exchange. Turns of the current message (other compound parts) are never retrieved, and the general goal takes no other task's history. Everything fits `8,000` tokens and is shown oldest first, each labelled `[TURN k — YYYY-MM-DD]` and, for another task, `(retrieved from task gN/tM "Title")`, so that when two exchanges disagree the later one is recognisable as current. Without an embedding index, the block is this task's keyword matches only. The block is omitted when nothing matches.
-
-Hybrid retrieval uses semantic similarity, BM25 or equivalent keyword matching, and recency. It first retrieves compact ledger entries or turn references, then expands only the exact source exchanges or evidence required for the current turn. A summary is never treated as a replacement for its exact source.
-
-This section is therefore different from chat history: chat history is chronological and guaranteed recent; retrieved history is relevance-selected and explicitly excludes what chat history already shows.
-
-A new task begins with clean conversational history. It receives goal context and only specifically relevant evidence from previous tasks. It does not inherit their transcripts. Switching tasks is context replacement, not compaction.
+`RELATED_WORK_STATE` is conditional: General questions about pending/current work, or parallel lane state. A greeting does not automatically receive unrelated open-task summaries. Notes remain summaries; exact evidence wins. Covered exchanges do not reappear through a raw-history rebuild or ordinary retrieval. Targeted retrieval remains available and labelled.
 
 ## The ledger
 
@@ -726,6 +538,8 @@ Both cite the same event log; neither duplicates it. A task with no compaction h
 A genuinely long task — hundreds of turns — would otherwise accumulate many rounds of compaction, and agent accuracy degrades the same way it does in a very long single chat in any harness. The user of a standard harness handles this manually: they request a handover prompt and continue in a new chat. In Zen mode the harness does it automatically and invisibly.
 
 ### The rule
+
+Both Flow and Standard complete five compaction episodes in the current session. The next required compaction (sixth trigger) atomically stores a validated handover and opens a linked session in the same task. A mode switch or daily General transition is not a compaction. The original in-flight turn keeps its recorded chat origin; active task ownership moves to the linked session, and later sends use it. No terminal is restarted.
 
 A chat holds at most **five compactions**. When the compaction trigger would fire for the **sixth** time in the same chat, the harness performs an automatic rollover instead of compacting (see "Compaction count and rollover" in `agent-harness.md`):
 

@@ -1,3 +1,4 @@
+import { SessionContinuation } from "./SessionContinuation";
 import { X } from "lucide-react";
 import { LayoutGroup } from "motion/react";
 import { type CSSProperties, type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
@@ -74,6 +75,8 @@ export function Flow({ app, mode, dock, onMode, onSettings }: { app: AppState; m
   const route = exchange?.route ?? currentRoute(list);
   const goal = useMemo(() => (route ? app.goals.find((g) => g.number === route.goal.number) ?? null : null), [route, app.goals]);
 
+  const session = goal?.tasks.find(t => t.number === route?.task.number)?.sessions?.find(s => !s.closedAt);
+
   useEffect(() => dock.context(route?.goal.number, route?.task.number), [dock.context, route?.goal.number, route?.task.number]);
 
   // The newest work stays in view while it grows, unless the reader scrolls up or looks at an earlier question.
@@ -121,6 +124,7 @@ export function Flow({ app, mode, dock, onMode, onSettings }: { app: AppState; m
             )}
             {exchange && (
               <>
+                {latest && session && session.sequence > 1 && <SessionContinuation sequence={session.sequence} handover={session.handover} />}
                 <QuestionCard text={exchange.message} attachments={exchange.attachments} note={exchange.state === "working" || exchange.state === "sending" ? exchange.note : null} />
                 <section className="answer" aria-live="polite">
                   <div className="answer-dock">{docked && <Orb state={state} docked />}</div>

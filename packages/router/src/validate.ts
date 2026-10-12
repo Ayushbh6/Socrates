@@ -47,7 +47,7 @@ export interface ResolvedRoute {
   reason: string;
 }
 
-export type Validation<T> = { ok: true; value: T } | { ok: false; errors: string[] };
+export type Validation<T> = { ok: true; value: T } | { ok: false; errors: string[]; failureKind?: "format" | "semantic" };
 
 /** Selectors returned by ledger_query in the current routing run. */
 export interface SeenSelectors {
@@ -74,7 +74,7 @@ export function validateDecisionText(text: string, ctx: RoutingContext, store: L
   try {
     raw = extractJson(text);
   } catch {
-    return { ok: false, errors: ["Return exactly one JSON object matching the routing schema, with no other text."] };
+    return { ok: false, failureKind: "format", errors: ["Return exactly one JSON object matching the routing schema, with no other text."] };
   }
   // The reason is only shown in Inspect: a missing one is filled in rather than asked for again.
   const normalized: string[] = [];
@@ -92,7 +92,7 @@ export function validateDecisionText(text: string, ctx: RoutingContext, store: L
   const parsed = RouterDecision.safeParse(raw);
   if (!parsed.success) {
     return {
-      ok: false,
+      ok: false, failureKind: "format",
       errors: parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`),
     };
   }

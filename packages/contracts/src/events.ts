@@ -34,6 +34,7 @@ export interface EventPayloads {
     escalated: boolean;
     fallback: string | null;
     ledger_queries: number;
+    diagnostics?: { historyBudget: number; historyUsed: number; includedTurns: number[]; omitted: number; asOf: string; invalidFinal: number; invalidTools: number; semanticErrors: number; resultTransport: string };
     reason: string;
     validation_errors?: string[];
     /** Fields the harness set aside instead of asking for a repair, such as a task label on a general route. */
@@ -118,7 +119,7 @@ export interface EventPayloads {
    */
   turn_interrupted: { project_turn: number; reason: "cancelled" | "failed" | "restarted"; tool_calls: number; continuation_note: string; partial_answer?: string };
   /** An operational warning about one turn, such as a rejected final answer or anchor proposal. */
-  context_diagnostics: { contextHash: string; contextParts: number; activityAsOf: string; timeZone: string; history: { budget: number; used: number; included: number[]; omitted: number; dates: string[] } | null; memory: { recall: number | null; threshold: number; matched: number; explanation: string } };
+  context_diagnostics: { contextHash: string; contextParts: number; session?: {chatRef: string; sequence: number; compactions: number; handoverRef: string | null; continuationOf: string | null}; historyScope?: string; activityAsOf: string; timeZone: string; history: { budget: number; used: number; included: number[]; omitted: number; dates: string[] } | null; memory: { recall: number | null; threshold: number; matched: number; explanation: string } };
   note_outcome: import("./agent").NoteOutcome & { source_turn: string; correction?: boolean };
   agent_warning: { kind: "note_failed" | "note_review" | "final_answer_invalid" | "anchor_rejected" | "memory_rejected" | "model_error" | "agent_error" | "context_limit" | "compactor_failed" | "compaction_failsafe"; detail: string };
   /**

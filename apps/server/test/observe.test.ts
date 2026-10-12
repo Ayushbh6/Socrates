@@ -58,8 +58,8 @@ describe("the model-call log", () => {
     const calls = (await request("GET", `/api/observe/questions/${work.userEventId}`)).json().calls;
     const call = (await request("GET", `/api/observe/calls/${calls[1].id}`)).json();
     const names = call.blocks.map((b: { name: string | null }) => b.name);
-    expect(names).toEqual(expect.arrayContaining(["USER", "GOAL", "CURRENT_TASK", "CURRENT_USER_MESSAGE"]));
-    expect(call.blocks.find((b: { name: string }) => b.name === "USER").text).toContain("Ada");
+    expect(names).toEqual(expect.arrayContaining(["USER_CONTEXT", "GOAL", "TASK", "CURRENT_REQUEST"]));
+    expect(call.blocks.find((b: { name: string }) => b.name === "USER_CONTEXT").text).toContain("Ada");
     expect(call.blocks.every((b: { tokens: number }) => b.tokens > 0)).toBe(true);
     expect(call.sizes.system).toBeGreaterThan(100);
     expect(call.sizes.tools).toBeGreaterThan(100);
@@ -195,14 +195,14 @@ describe("the trace of a message", () => {
     expect(trace.items[0]).toMatchObject({ kind: "user", text: "What is the vault code in my notes?", lane: null });
     const [, routerCall, routing, turn, first, second, answer] = trace.items;
     expect(routerCall).toMatchObject({ group: "router", call: { role: "router" } });
-    expect(routerCall.context.map((b: { name: string }) => b.name)).toEqual(expect.arrayContaining(["RECENT_EXACT_HISTORY", "KNOWN_GOALS", "CURRENT_USER_MESSAGE"]));
+    expect(routerCall.context.map((b: { name: string }) => b.name)).toEqual(expect.arrayContaining(["RECENT_CONVERSATION", "GOAL_DIRECTORY", "CURRENT_REQUEST"]));
     expect(routing).toMatchObject({ routing: { attempts: 1 } });
     expect(turn.part).toMatchObject({ move: "new_goal", to: { task: { title: "Read the notes" } } });
 
     // The first agent step: its context in blocks, its thinking, and the read it called with the file as the tool answered.
     expect(first).toMatchObject({ group: "turn", reasoning: "I should read the notes first.", entered: [], rebuilt: false });
-    expect(first.context.map((b: { name: string }) => b.name)).toEqual(expect.arrayContaining(["GOAL", "CURRENT_TASK", "CURRENT_USER_MESSAGE"]));
-    expect(first.diagnostics).toMatchObject({ history: null, memory: { threshold: 0.5 } });
+    expect(first.context.map((b: { name: string }) => b.name)).toEqual(expect.arrayContaining(["GOAL", "TASK", "CURRENT_REQUEST"]));
+    expect(first.diagnostics).toMatchObject({ history: {budget: 160000, included: []}, memory: { threshold: 0.5 } });
     expect(second.diagnostics).toEqual(first.diagnostics);
     expect(first.notes).toEqual(expect.arrayContaining([expect.objectContaining({ field: "continuation_note", outcome: "saved" })]));
     expect(first.toolCalls).toHaveLength(1);

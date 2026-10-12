@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from
 import path from "node:path";
 import { callLine } from "@socrates/retrieval";
 import { countTokens } from "@socrates/shared";
-import type { Evidence, Goal, LedgerStore, WorkMemoryEntry } from "@socrates/store";
+import { quoteEvidence, type Evidence, type Goal, type LedgerStore, type WorkMemoryEntry } from "@socrates/store";
 import { WORK_MEMORY_INDEX_MAX_TOKENS, WORK_TOPIC_MAX_CHARS, type WorkspaceRoot } from "@socrates/tools";
 import type { MemorySettings } from "./memory";
 export { WORK_MEMORY_INDEX_MAX_TOKENS } from "@socrates/tools";
@@ -82,16 +82,19 @@ export function workMemoryBlock(store: LedgerStore, project: WorkProject | null,
   const index = store.workMemoryIndex(project.id)?.text.trim();
   if (!index) return null;
   const lines = index.split("\n");
+  const header = `# PROJECT_MEMORY\nproject_ref: ${project.id}`;
   const shown: string[] = [];
-  let used = countTokens("<WORK_MEMORY>\n\n</WORK_MEMORY>") + 40;
+  let used = countTokens(header) + 60;
   for (const line of lines) {
-    used += countTokens(line) + 1;
-    if (used > WORK_MEMORY_INDEX_MAX_TOKENS) break;
-    shown.push(line);
+    const name = line.match(/\btopic[: ]+([a-z0-9-]+)/i)?.[1];
+    const record = name ? `## TOPIC\ntopic_ref: topic:${name}\ndescription:\n${quoteEvidence(line)}` : `index_note:\n${quoteEvidence(line)}`;
+    const cost = countTokens(record) + 2;
+    if (used + cost > WORK_MEMORY_INDEX_MAX_TOKENS) break;
+    shown.push(record); used += cost;
   }
   const left = lines.length - shown.length;
   if (left > 0) shown.push(`(${left} older line${left === 1 ? "" : "s"} not shown: the index is over its budget of ${WORK_MEMORY_INDEX_MAX_TOKENS} tokens; merge related lines or drop the stalest when you next update it)`);
-  return `<WORK_MEMORY>\n${shown.join("\n")}\n</WORK_MEMORY>`;
+  return `${header}\n\n${shown.join("\n\n")}`;
 }
 
 const CHANGES = new Set(["edit", "apply_patch", "terminal"]);

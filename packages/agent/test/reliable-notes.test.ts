@@ -115,6 +115,6 @@ it("keeps a failed goal-note update stale through later no-change answers", asyn
   expect(w.store.goalNoteState(w.goalId).freshness).toBe("outdated");
   expect(w.store.noteState(w.taskId).freshness).toBe("current");
   await socrates.handle("Next");
-  expect(JSON.stringify(model.requests.at(-1)!.messages[0])).toContain("outdated:");
+  expect(JSON.stringify(model.requests.at(-1)!.messages[0])).toContain("freshness: outdated");
   expect(w.store.goalNoteState(w.goalId).freshness).toBe("outdated");
 });

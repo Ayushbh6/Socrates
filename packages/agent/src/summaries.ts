@@ -78,7 +78,7 @@ export function renderSpan(store: LedgerStore, turns: Turn[], prior: HistoryReco
     const activity = evidence.slice(0, SPAN_ACTIVITY_LINES).map((e) => `- ${collapsedLine({ ev: e, state: { kind: "collapsed", reason: null } })}`);
     if (evidence.length > SPAN_ACTIVITY_LINES) activity.push(`- … ${evidence.length - SPAN_ACTIVITY_LINES} more tool calls`);
     const exchange = renderExchangeTurn(store, t);
-    return activity.length ? exchange.replace("\n\nSOCRATES:\n", `\n\nTOOL ACTIVITY:\n${activity.join("\n")}\n\nSOCRATES:\n`) : exchange;
+    return activity.length ? exchange.replace("\n### FINAL_ANSWER\n", `\n### TOOL_ACTIVITY\n${activity.join("\n")}\n\n### FINAL_ANSWER\n`) : exchange;
   });
   const priorBlock = prior ? [`[PRIOR ${prior.kind === "checkpoint" ? "CHECKPOINT" : "HANDOVER CAPSULE"} ref="${prior.handle}" turns="${rangeText(prior.from, prior.to)}"]`, renderRecord(prior)] : [];
   return [`<COMPACTED_SPAN turns ${rangeText(range.from, range.to)}>`, ...blocks, ...priorBlock, "</COMPACTED_SPAN>"].join("\n\n");

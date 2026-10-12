@@ -14,10 +14,10 @@ describe("routing outcomes and binding", () => {
     expect(result.parts[0]!.task.general).toBe(true);
 
     const input = routerModel.requests[0]!.messages[0]!.content as string;
-    expect(input).toContain("<RECENT_EXACT_HISTORY>\nNone\n</RECENT_EXACT_HISTORY>");
-    expect(input).toContain("CURRENT\nNone");
+    expect(input).toContain("# RECENT_CONVERSATION\nnone");
+    expect(input).toContain("# CURRENT_BINDING\ngoal_ref: none");
     expect(input).toContain("label: general");
-    expect(input.trimEnd().endsWith("<CURRENT_USER_MESSAGE>\nHi, how are you?\n</CURRENT_USER_MESSAGE>")).toBe(true);
+    expect(input).toContain("## TEXT\n```text\nHi, how are you?\n```");
   });
 
   it("persists the exact message before routing", async () => {
@@ -51,8 +51,8 @@ describe("routing outcomes and binding", () => {
     ]);
     const result = await router.route("Could that memory fix lose information?");
     const input = routerModel.requests[0]!.messages[0]!.content as string;
-    expect(input).toContain("- current: Investigate issue #42 — open");
-    expect(input).toContain("- task_1: Review memory system — open");
+    expect(input).toContain('route_label: current\ntitle: "Investigate issue #42"');
+    expect(input).toContain('route_label: task_1\ntitle: "Review memory system"');
     expect(result.kind === "routed" && result.parts[0]!.task.title).toBe("Review memory system");
   });
 
@@ -126,8 +126,8 @@ describe("a message that is only images", () => {
     ]);
     const result = await router.route("", undefined, { userEventId: user.id });
     const input = routerModel.requests[0]!.messages[0]!.content as string;
-    expect(input).toContain("<CURRENT_ATTACHMENTS>\n[The user attached an image: screen.png]\n</CURRENT_ATTACHMENTS>");
-    expect(input.trimEnd().endsWith("<CURRENT_USER_MESSAGE>\n(No text: the user sent only the images in CURRENT_ATTACHMENTS.)\n</CURRENT_USER_MESSAGE>")).toBe(true);
+    expect(input).toContain('name: "screen.png"');
+    expect(input).toContain("## TEXT\n```text\n\n```");
     expect(routerModel.requests[1]!.messages.at(-1)!.content).toContain("request must be an exact, ordered sub-request");
     expect(result.kind === "routed" && result.parts.map((p) => p.task.title)).toEqual(["Review onboarding page"]);
     expect(store.getEvent(user.id)!.payload).toEqual({ text: "", attachments: [attachment] });
@@ -138,7 +138,7 @@ describe("a message that is only images", () => {
     // Later routing shows the exchange with only its images.
     const { router: next, routerModel: nextModel } = routerWith(store, [continueTask()]);
     await next.route("And the footer?");
-    expect(nextModel.requests[0]!.messages[0]!.content).toContain("USER:\n[The user attached an image: screen.png]\n\nSOCRATES:");
+    expect(nextModel.requests[0]!.messages[0]!.content).toContain('"name":"screen.png"');
   });
 });
 
@@ -302,9 +302,9 @@ describe("ledger_query and ask_user", () => {
     ]);
     const r2 = await answer.router.route("The German one.");
     const req = answer.routerModel.requests[0]!;
-    expect(req.tools!.map((t) => t.name)).toEqual(["ledger_query"]);
-    expect(req.messages[0]!.content).toContain("[routing clarification — not bound to any task]");
-    expect(req.messages[0]!.content).toContain("<ROUTING_NOTE>");
+    expect(req.tools!.map((t) => t.name)).toEqual(["ledger_query", "routing_result"]);
+    expect(req.messages[0]!.content).toContain("# ROUTING_CLARIFICATION");
+    expect(req.messages[0]!.content).toContain("# ROUTING_CLARIFICATION");
     expect(r2.kind === "routed" && r2.parts[0]!.task.title).toBe("Day 10 lesson");
   });
 
@@ -331,18 +331,18 @@ describe("router context", () => {
 
     const ctx = buildRoutingContext(store, "Okay, let's start today's lesson.", { timeZone: TZ });
     expect(ctx.goals.get("older_1")?.goal.title).toBe("Ongoing German learning");
-    expect(ctx.input).toContain("- 30-day-plan.md — curriculum and lesson sequence");
-    expect(ctx.input).toContain("- latest: German Day 9 — open; Day 9 dative done.");
+    expect(ctx.input).toContain('"path":"30-day-plan.md","role":"goal_plan"');
+    expect(ctx.input).toContain('route_label: latest\ntitle: "German Day 9"');
   });
 
   it("keeps only complete exchanges within the history budget, oldest first, tagged with labels", async () => {
     const { store } = setup();
     await exchange(store, "first message", createGoal("Socrates development", "Review memory system"), "first answer");
     await exchange(store, "second message", continueTask(), "second answer");
-    const ctx = buildRoutingContext(store, "third", { timeZone: TZ, historyBudgetTokens: 30 });
+    const ctx = buildRoutingContext(store, "third", { timeZone: TZ, historyBudgetTokens: 300 });
     expect(ctx.input).toContain("second message");
     expect(ctx.input).not.toContain("first message");
-    expect(ctx.input).toContain("[goal=current · task=current · workspace=—]");
+    expect(ctx.input).toContain("goal_ref: g1\ntask_ref: g1/t1");
     const full = buildRoutingContext(store, "third", { timeZone: TZ });
     expect(full.input.indexOf("first message")).toBeLessThan(full.input.indexOf("second message"));
   });
@@ -353,7 +353,7 @@ describe("router context", () => {
     clock.set("2026-09-01T14:02:00Z");
     await exchange(store, "Checkout", createTask("Checkout flow fix"), "ok", "Tests pass, staging deploy.");
     const ctx = buildRoutingContext(store, "hi", { timeZone: TZ });
-    expect(ctx.input).toContain("chat/task open; execution completed");
-    expect(ctx.input).toContain("requested Friday 2026-08-28 09:00:00 UTC");
+    expect(ctx.input).toContain("execution_status: completed");
+    expect(ctx.input).toContain("requested_at: 2026-08-28T09:00:00+00:00");
   });
 });

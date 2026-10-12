@@ -136,7 +136,7 @@ export interface PartView {
 export interface QuestionDetail {
   question: Omit<QuestionRow, keyof Totals>;
   totals: Totals;
-  routing: { model: string; attempts: number; escalated: boolean; fallback: string | null; ledgerQueries: number; reason: string; decision: unknown; validationErrors: string[] } | null;
+  routing: { model: string; attempts: number; escalated: boolean; fallback: string | null; ledgerQueries: number; reason: string; decision: unknown; validationErrors: string[]; diagnostics?: { historyBudget: number; historyUsed: number; includedTurns: number[]; omitted: number; asOf: string; invalidFinal: number; invalidTools: number; semanticErrors: number; resultTransport: string } } | null;
   clarification: string | null;
   parts: PartView[];
   calls: CallRow[];
@@ -420,7 +420,7 @@ export interface TraceCall {
   entered: { role: string; label: string; tokens: number; text: string }[];
   rebuilt: boolean;
   context: ContextBlock[] | null;
-  diagnostics?: { activityAsOf: string; timeZone: string; history: { budget: number; used: number; included: number[]; omitted: number; dates: string[] } | null; memory: { recall: number | null; threshold: number; matched: number; explanation: string } } | null;
+  diagnostics?: { session?: {chatRef: string; sequence: number; compactions: number; handoverRef: string | null; continuationOf: string | null}; historyScope?: string; activityAsOf: string; timeZone: string; history: { budget: number; used: number; included: number[]; omitted: number; dates: string[] } | null; memory: { recall: number | null; threshold: number; matched: number; explanation: string } } | null;
   notes?: { field: string; outcome: string; reason: string | null; length: number | null; attempts: number }[];
   workMemory?: { outcome: string; detail: string | null; writes: number }[];
 }

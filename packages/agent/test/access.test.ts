@@ -17,17 +17,17 @@ describe("access", () => {
     ], { access: () => policy });
     await socrates.handle("Fix the port.");
     const text = contextText(model.requests[0]!);
-    const block = /<ACCESS>\n([\s\S]*?)\n<\/ACCESS>/.exec(text)![1]!;
+    const block = /restrictions:\n([\s\S]*?)\n\n#/.exec(text)![1]!;
     expect(block).toBe(`starts in: ${realpathSync(w.root)}. Relative paths and commands begin here; any other path is absolute or starts with ~/.\nfiles: ${w.root}. Any other path, including the workspace when it is not listed, asks the user first, who may refuse.\napprovals: the user approves each edit, patch, command and changing MCP call before it runs, and may refuse. Reading and searching need no approval.`);
-    expect(text.indexOf("<ACCESS>")).toBeGreaterThan(text.indexOf("<CURRENT_TASK>"));
-    expect(text.indexOf("<ACCESS>")).toBeLessThan(text.indexOf("<CURRENT_USER_MESSAGE>"));
+    expect(text.indexOf("# ACCESS")).toBeGreaterThan(text.indexOf("# TASK"));
+    expect(text.indexOf("# ACCESS")).toBeLessThan(text.indexOf("# CURRENT_REQUEST"));
     expect(w.approvals).toEqual([{ kind: "action", tool: "edit", detail: "Edit server.js", preview: "--- replace\n30\n+++ with\n3000" }]);
     expect(readFileSync(path.join(w.root, "server.js"), "utf8")).toBe("const port = 3000;\n");
 
     const plain = await world();
     const classic = plain.socrates([continueTask()], [final()]);
     await classic.socrates.handle("Continue.");
-    expect(contextText(classic.model.requests[0]!)).not.toContain("<ACCESS>");
+    expect(contextText(classic.model.requests[0]!)).not.toContain("# ACCESS");
   });
 
   it("keeps outside-folder grants across compound parts, and expires them at the next message", async () => {

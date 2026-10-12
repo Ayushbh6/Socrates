@@ -24,9 +24,9 @@ describe("the agent loop", () => {
     expect(first.system).toBe(AGENT_SYSTEM_PROMPT);
     expect(first.tools!.map((t) => t.name)).toEqual(["read", "glob", "grep", "edit", "apply_patch", "terminal", "terminal_control", "context_retrieve", "capability_search", "capability_control"]);
     const text = contextText(first);
-    const order = ["<GOAL>", "[TURN 1 — full]", "<GOAL_STATE>", "<CURRENT_TASK>", "<CURRENT_USER_MESSAGE>"].map((b) => text.indexOf(b));
+    const order = ["# GOAL", "## PREVIOUS_EXCHANGE", "# TASK\n", "# CURRENT_TIME", "# CURRENT_REQUEST"].map((b) => text.indexOf(b));
     expect(order.every((at, i) => at >= 0 && (i === 0 || at > order[i - 1]!))).toBe(true);
-    expect(text.trimEnd().endsWith("<CURRENT_USER_MESSAGE>\nFix the port.\n</CURRENT_USER_MESSAGE>")).toBe(true);
+    expect(text.trimEnd().endsWith("## TEXT\n```text\nFix the port.\n```")).toBe(true);
     // Results come back as native tool messages in the in-flight turn.
     expect(model.requests[1]!.messages.at(-1)).toMatchObject({ role: "tool", toolName: "read" });
 
@@ -128,8 +128,8 @@ describe("the agent loop", () => {
     const { socrates, model } = w.socrates([continueTask(), continueTask(), continueTask()], [final(), final(), final()], { profile: () => ({ name }) });
     await socrates.handle("What is my name?");
     const first = contextText(model.requests[0]!);
-    expect(first.startsWith("<USER>\nThe user's name is Ada.\n</USER>\n\n<GOAL>")).toBe(true);
-    expect(AGENT_SYSTEM_PROMPT).toContain("<USER>");
+    expect(first.startsWith("# USER_CONTEXT\n```text\nThe user's name is Ada.\n```")).toBe(true);
+    expect(AGENT_SYSTEM_PROMPT).toContain("USER_CONTEXT");
     // A name changed between two messages counts from the next one.
     name = "Grace";
     await socrates.handle("And now?");
@@ -212,7 +212,7 @@ describe("the agent loop", () => {
     const result = await socrates.handle("Read x.txt.");
     expect(result).toMatchObject({ text: "Which folder is the project in?" });
     expect(model.requests[1]!.messages.at(-1)!.content).toContain("no_workspace");
-    expect(contextText(model.requests[0]!)).toContain("workspace: none yet");
+    expect(contextText(model.requests[0]!)).toContain("workspace_ref: none");
   });
 
   it("returns a declined approval to the agent as a corrective error", async () => {

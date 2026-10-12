@@ -1,7 +1,6 @@
-import type { EventPayloads, TextPart } from "@socrates/contracts";
-import { countTokens, truncateToTokens, eventTime } from "@socrates/shared";
-import type { Evidence, HistoryRecord, LedgerStore, Turn } from "@socrates/store";
-import { head, headTail } from "@socrates/tools";
+import type { TextPart } from "@socrates/contracts";
+import { countTokens } from "@socrates/shared";
+import { renderContextExchange, quoteEvidence, type Evidence, type HistoryRecord, type LedgerStore, type Turn } from "@socrates/store";
 import { attachmentLines, requestAttachments, requestText } from "./attachments";
 import { omissionMarker, renderRecord } from "./summaries";
 
@@ -9,12 +8,6 @@ import { omissionMarker, renderRecord } from "./summaries";
 export const PREVIOUS_TURN_BUDGET_TOKENS = 20_000;
 /** Step 2 of the fitting ladder never trims a result below this size. */
 export const TRIM_FLOOR_TOKENS = 1_500;
-
-/** Room kept inside a trimmed result's cap for its omission marker. */
-const MARKER_TOKENS = 60;
-
-/** Calls that collapse to one line in step 1: reproducible, or already reflected on disk. */
-const COLLAPSIBLE = new Set(["edit", "apply_patch", "glob", "grep", "context_retrieve", "capability_search", "capability_control", "terminal_control"]);
 
 /** What chat history holds for one request: an optional summary and the turns after it. */
 export interface History {
@@ -52,66 +45,25 @@ export function taskHistory(store: LedgerStore, currentTurnId: string): History 
  * the newest is fitted to the N−1 budget. Cache breakpoints fall after the
  * last stable part before N−1, and after N−1.
  */
-export function historyParts(store: LedgerStore, history: History, previousTurnBudget = PREVIOUS_TURN_BUDGET_TOKENS): TextPart[] {
+export function historyParts(store: LedgerStore, history: History, previousTurnBudget = PREVIOUS_TURN_BUDGET_TOKENS, timeZone = "UTC"): TextPart[] {
   const parts: TextPart[] = [];
-  if (history.summary) parts.push({ text: `${renderRecord(history.summary)}\n\n` });
+  if (history.summary) parts.push({ text: `${promptHistoryRecord(history.summary)}\n\n` });
   if (history.omitted) parts.push({ text: `${omissionMarker(history.omitted)}\n\n` });
   const last = history.turns.at(-1);
-  for (const t of history.turns.slice(0, -1)) parts.push({ text: `${renderExchangeTurn(store, t)}\n\n` });
+  for (const t of history.turns.slice(0, -1)) parts.push({ text: `${renderExchangeTurn(store, t, timeZone)}\n\n` });
   if (parts.length) parts[parts.length - 1]!.cache = true;
-  if (last) parts.push({ text: `${renderFullTurn(store, last, previousTurnBudget)}\n\n`, cache: true });
+  if (last) parts.push({ text: `${renderFullTurn(store, last, previousTurnBudget, timeZone)}\n\n`, cache: true });
   return parts;
 }
 
 /** A turn as its request and final response only (tier 3). */
-export function renderExchangeTurn(store: LedgerStore, turn: Turn): string {
-  return `[TURN ${turn.projectTurn}]\nUSER:\n${userSection(store, turn)}\n\nSOCRATES:\n${responseSection(store, turn)}`;
+export function renderExchangeTurn(store: LedgerStore, turn: Turn, timeZone = "UTC"): string {
+  return renderContextExchange(store, turn, {timeZone});
 }
 
-/** The previous turn with its tool calls and results, reduced step by step until it fits (tier 2). */
-export function renderFullTurn(store: LedgerStore, turn: Turn, budget = PREVIOUS_TURN_BUDGET_TOKENS): string {
-  const user = userSection(store, turn);
-  const response = responseSection(store, turn);
-  const calls = store.evidenceForTurn(turn.id).map(toCall);
-  const render = () =>
-    [`[TURN ${turn.projectTurn} — full]`, "USER:", user, "", ...calls.flatMap((c) => [renderCall(c), ""]), "SOCRATES:", response].join("\n");
-  const fixed = countTokens(`[TURN ${turn.projectTurn} — full]\nUSER:\n${user}\n\nSOCRATES:\n${response}`) + calls.length;
-  const total = () => fixed + calls.reduce((n, c) => n + c.tokens(), 0);
-  if (total() <= budget) return render();
-
-  // Step 1: collapse what is reproducible or stale.
-  calls.forEach((c, i) => {
-    const stale = c.ev.tool === "read" && c.path !== null && calls.slice(i + 1).some((later) => later.changed.includes(c.path!));
-    if (stale) c.state = { kind: "collapsed", reason: "stale" };
-    else if (COLLAPSIBLE.has(c.ev.tool) || (c.ev.tool === "terminal" && succeeded(c.ev))) c.state = { kind: "collapsed", reason: null };
-  });
-  if (total() <= budget) return render();
-
-  // Step 2: one cap for every remaining result larger than it, never below the floor.
-  const full = calls.filter((c) => c.state.kind !== "collapsed");
-  if (full.length) {
-    const withCap = (cap: number) => fixed + calls.reduce((n, c) => n + (c.state.kind === "collapsed" ? c.tokens() : c.headerTokens + Math.min(c.resultTokens, cap)), 0);
-    let cap = TRIM_FLOOR_TOKENS;
-    let high = Math.max(...full.map((c) => c.resultTokens));
-    if (withCap(cap) <= budget) {
-      while (cap < high) {
-        const mid = Math.ceil((cap + high) / 2);
-        if (withCap(mid) <= budget) cap = mid;
-        else high = mid - 1;
-      }
-    }
-    for (const c of full) if (c.resultTokens > cap) c.state = { kind: "trimmed", cap };
-  }
-
-  // Step 3: collapse the oldest remaining calls until the rendered turn fits.
-  let text = render();
-  for (const c of calls) {
-    if (total() <= budget && countTokens(text) <= budget) break;
-    if (c.state.kind === "collapsed") continue;
-    c.state = { kind: "collapsed", reason: null };
-    text = render();
-  }
-  return text;
+/** Canonical previous exchange; tool records and coverage fit the same budget as router history. */
+export function renderFullTurn(store: LedgerStore, turn: Turn, budget = PREVIOUS_TURN_BUDGET_TOKENS, timeZone = "UTC"): string {
+  return renderContextExchange(store, turn, {tools: true, budget, timeZone});
 }
 
 interface Call {
@@ -126,45 +78,6 @@ interface Call {
   resultTokens: number;
   state: { kind: "full" } | { kind: "trimmed"; cap: number } | { kind: "collapsed"; reason: "stale" | null };
   tokens(): number;
-}
-
-function toCall(ev: Evidence): Call {
-  const header = `TOOL CALL [${ev.handle}] ${ev.tool} ${compactInput(ev.input)}`;
-  const result = ev.result?.content ?? "(no result was recorded)";
-  const r = (ev.result?.result ?? null) as Record<string, unknown> | null;
-  let collapsedTokens: number | null = null;
-  return {
-    ev,
-    path: ev.tool === "read" && typeof r?.path === "string" ? r.path : null,
-    changed: changedPaths(ev),
-    header,
-    headerTokens: countTokens(header) + 1,
-    result,
-    resultTokens: countTokens(result),
-    // A Skill's instructions live in ACTIVE_CAPABILITIES; history never repeats them.
-    state: skillActivation(ev) ? { kind: "collapsed", reason: null } : { kind: "full" },
-    tokens() {
-      if (this.state.kind === "collapsed") return (collapsedTokens ??= countTokens(collapsedLine(this)) + 1);
-      // A trimmed result also carries its omission marker.
-      return this.headerTokens + (this.state.kind === "trimmed" ? Math.min(this.resultTokens, this.state.cap) : this.resultTokens);
-    },
-  };
-}
-
-function skillActivation(ev: Evidence): boolean {
-  const r = (ev.result?.result ?? null) as Record<string, unknown> | null;
-  return ev.tool === "capability_control" && ev.status === "ok" && r?.kind === "skill" && r.status === "activated";
-}
-
-function renderCall(c: Call): string {
-  if (c.state.kind === "collapsed") return collapsedLine(c);
-  if (c.state.kind === "full") return `${c.header}\n${c.result}`;
-  const hint = `trimmed to fit; context_retrieve inspect ${c.ev.handle} returns the complete result`;
-  const failedCommand = c.ev.tool === "terminal" || c.ev.status === "error";
-  // The cap includes the omission marker.
-  const room = c.state.cap - MARKER_TOKENS;
-  const shown = c.ev.tool === "read" || !failedCommand ? head(c.result, room, hint) : headTail(c.result, room, hint);
-  return `${c.header}\n${shown.text}`;
 }
 
 /** One call in the linearization grammar, with its evidence handle. */
@@ -216,19 +129,6 @@ function target(tool: string, input: Record<string, unknown>): string {
   return value === undefined ? "" : `${oneLine(String(value), 120)} `;
 }
 
-function changedPaths(ev: Evidence): string[] {
-  if (ev.status !== "ok") return [];
-  const r = (ev.result?.result ?? null) as Record<string, unknown> | null;
-  if (ev.tool === "edit" && typeof r?.path === "string") return [r.path];
-  if (ev.tool === "apply_patch" && Array.isArray(r?.files)) return (r.files as { path: string; from?: string }[]).flatMap((f) => [f.path, ...(f.from ? [f.from] : [])]);
-  return [];
-}
-
-function succeeded(ev: Evidence): boolean {
-  const r = (ev.result?.result ?? null) as Record<string, unknown> | null;
-  return ev.status === "ok" && r?.status === "completed" && r.exit_code === 0;
-}
-
 function diffStat(diff: unknown): string {
   if (typeof diff !== "string") return "changed";
   let added = 0;
@@ -238,11 +138,6 @@ function diffStat(diff: unknown): string {
     else if (line.startsWith("-") && !line.startsWith("---")) removed++;
   }
   return `+${added} −${removed}`;
-}
-
-function compactInput(input: unknown): string {
-  const text = typeof input === "string" ? input : JSON.stringify(input ?? {});
-  return text.length > 2_000 ? `${text.slice(0, 2_000)}… (input shortened; the full call is stored)` : text;
 }
 
 function oneLine(text: string, max: number): string {
@@ -266,51 +161,43 @@ export function clarificationLine(c: { question: string; answer: string }): stri
   return `(Before this request was routed, Socrates asked: ${JSON.stringify(c.question)} The user answered: ${JSON.stringify(c.answer)})`;
 }
 
-function responseSection(store: LedgerStore, turn: Turn): string {
-  if (turn.responseEventId) return (store.getEvent(turn.responseEventId)!.payload as EventPayloads["assistant_response"]).text;
-  const interruption = store.interruption(turn.id);
-  if (!interruption) return "(No answer was given.)";
-  const calls = `${interruption.tool_calls} tool call${interruption.tool_calls === 1 ? "" : "s"}`;
-  if (interruption.reason === "cancelled" && interruption.partial_answer) return `${interruption.partial_answer}\n\n(The user stopped this turn after ${calls}, while this answer was being written; it is incomplete.)`;
-  return interruption.reason === "cancelled" ? `(The user stopped this turn after ${calls}; no answer was given.)`
-    : interruption.reason === "restarted" ? `(Socrates stopped while this turn ran, after ${calls}; no answer was given.)`
-    : `(This turn failed after ${calls}; no answer was given.)`;
+/** Checkpoints stay distinguishable from exact exchanges and quote their generated content. */
+export function promptHistoryRecord(record: HistoryRecord): string {
+  return `## ${record.kind === "checkpoint" ? "CHECKPOINT" : "HANDOVER"}\n${record.kind === "handover" ? "handover_ref" : "checkpoint_ref"}: ${record.handle}\nsource_chat_ref: ${record.chatId}\ncovers_turn_refs: ${record.from}–${record.to}\nretrieve_refs: ${record.handle}\nmechanical: ${record.mechanical}\nsource: ${record.mechanical ? "mechanical fallback" : "generated summary; exact evidence takes precedence"}\n${record.kind === "checkpoint" ? "summary" : "content"}:\n${quoteEvidence(renderRecord(record))}`;
 }
 
 /** General has one chronological evidence window across daily tasks, never lane history. */
 export function generalHistoryParts(store: LedgerStore, current: Turn, timeZone: string, previousBudget = 20_000, totalBudget = 30_000, asOf = store.clock.now()): { parts: TextPart[]; included: number[]; omitted: number; used: number; budget: number; dates: string[] } {
   const redone = store.redoneTurnIds();
-  const candidates = store.listTasks(current.goalId!).flatMap(task => {
-    const boundary = Math.max(store.latestHistoryRecord(task.id)?.to ?? 0, store.pendingOmission(task.id)?.to ?? 0);
-    return store.turnsForTask(task.id).filter(t => t.projectTurn < current.projectTurn && t.userEventId !== current.userEventId && !t.laneId && t.status !== "in_progress" && t.projectTurn > boundary && (t.completedAt ?? t.createdAt) <= asOf.toISOString() && !redone.has(t.id));
-  }).sort((a, b) => store.requestRoot(a.userEventId).at.localeCompare(store.requestRoot(b.userEventId).at) || a.projectTurn - b.projectTurn);
-  const parts: TextPart[] = [];
-  const included: number[] = [], dates: string[] = [];
-  // Reserve a fixed allowance for the explicit window/omission marker.
-  let used = 0;
-  const room = Math.max(0, totalBudget - 180);
-  for (let i = candidates.length - 1; i >= 0; i--) {
-    const t = candidates[i]!;
-    const requested = store.requestRoot(t.userEventId).at;
-    const invalid = store.listEvents({ turnId: t.id, type: "agent_warning" }).some(e => (e.payload as EventPayloads["agent_warning"]).kind === "final_answer_invalid");
-    const label = `[General exchange g${store.requireGoal(t.goalId!).number}/t${store.requireTask(t.taskId!).number}; turn_number ${t.projectTurn}; id ${t.id}; REQUESTED ${eventTime(requested, timeZone)}; FINISHED ${t.completedAt ? eventTime(t.completedAt, timeZone) : "unknown"}; execution ${t.status}; answer validation ${invalid ? "invalid metadata; visible answer preserved" : "see recorded evidence"}]`;
-    const newest = i === candidates.length - 1;
-    const cap = Math.min(room - used, newest ? previousBudget : room);
-    if (cap < 180) break;
-    const content = `${label}\n${newest ? renderFullTurn(store, t, Math.max(1, cap - countTokens(label) - 5)) : renderExchangeTurn(store, t)}`.replace(/context_retrieve inspect (e\d+)/g, `context_retrieve inspect g${store.requireGoal(t.goalId!).number}/t${store.requireTask(t.taskId!).number}/$1`);
-    let text = content;
-    if (countTokens(text) > cap - 3) {
-      const marker = `\n[EXCERPT: omitted content remains in context_retrieve inspect turn_number ${t.projectTurn}.]`;
-      text = truncateToTokens(content, Math.max(0, cap - countTokens(marker) - 5)).text + marker;
+  const units: {at: number; text?: string; turn?: Turn; taskId?: string}[] = [];
+  for (const task of store.listTasks(current.goalId!)) {
+    const record = store.latestHistoryRecord(task.id), omission = store.pendingOmission(task.id);
+    const boundary = Math.max(record?.to ?? 0, omission?.to ?? 0);
+    if (record) units.push({at: record.to, taskId: task.id, text: `task_ref: g${store.requireGoal(task.goalId).number}/t${task.number}\n${promptHistoryRecord(record)}`});
+    if (omission) units.push({at: omission.to, text: omissionMarker(omission)});
+    for (const t of store.turnsForTask(task.id)) {
+      if (t.projectTurn < current.projectTurn && store.requestRoot(t.userEventId).id !== store.requestRoot(current.userEventId).id && !t.laneId && t.status !== "in_progress" && t.projectTurn > boundary && (t.completedAt ?? t.createdAt) <= asOf.toISOString() && !redone.has(t.id)) units.push({at: t.projectTurn, turn: t});
     }
-    const cost = countTokens(text + "\n\n");
-    if (used + cost > room) break;
-    parts.unshift({ text: text + "\n\n", cache: true });
-    included.unshift(t.projectTurn); dates.unshift(requested); used += cost;
-    if (text !== content && !newest) break; // Keep a contiguous newest window, with one marked oldest excerpt.
   }
-  const omitted = candidates.length - included.length;
-  const notice = `<GENERAL_HISTORY_WINDOW>Chronological General exchanges; ${totalBudget} token total allowance, previous-turn allowance ${previousBudget}. Included ${included.length} exchanges; turn references and request dates accompany each exchange. ${omitted} eligible older exchanges omitted; checkpoint-covered and explicitly omitted spans are not replayed. context_retrieve can recover older exact evidence. Notes are summaries; exact answers and tool evidence take precedence.</GENERAL_HISTORY_WINDOW>\n\n`;
-  parts.unshift({ text: notice });
-  return { parts, included, omitted, used: used + countTokens(notice), budget: totalBudget, dates };
+  units.sort((a,b) => b.at-a.at);
+  const picked: {at: number; text: string; turn?: Turn}[] = [];
+  let used = 0, newest = true;
+  // The active capsule is required: reserve it before selecting bounded exact evidence.
+  const active = store.latestHistoryRecord(current.taskId!);
+  const mandatory = units.find(u => u.taskId === current.taskId && u.text && active && u.text.includes(`ref: ${active.handle}\n`));
+  if (mandatory && countTokens(mandatory.text!) < totalBudget - 180) {picked.push({...mandatory, text: mandatory.text!}); used += countTokens(mandatory.text! + "\n\n");}
+  for (const u of units) {
+    if (u === mandatory) continue;
+    const room = totalBudget - 180 - used;
+    if (room < 100) break;
+    const text = u.turn ? renderContextExchange(store, u.turn, {timeZone, tools: newest, budget: Math.min(room, newest ? previousBudget : room)}) : u.text!;
+    if (!text || countTokens(text + "\n\n") > room) break;
+    picked.push({...u,text}); used += countTokens(text + "\n\n");
+    if (u.turn) newest = false;
+  }
+  picked.sort((a,b) => a.at-b.at);
+  const turns = picked.flatMap(u=>u.turn ? [u.turn] : []);
+  const omitted = units.length-picked.length;
+  const notice = `## GENERAL_HISTORY_WINDOW\ntotal_allowance: ${totalBudget}\nprevious_exchange_allowance: ${previousBudget}\nomitted_records: ${omitted}\nCheckpoint-covered and explicitly omitted spans are not replayed. context_retrieve can recover exact older evidence. Notes are summaries; answers and tool evidence take precedence.\n\n`;
+  return {parts:[{text:notice}, ...picked.map(u=>({text:u.text + "\n\n", cache:true}))], included:turns.map(t=>t.projectTurn), omitted, used:used+countTokens(notice), budget:totalBudget, dates:turns.map(t=>store.requestRoot(t.userEventId).at)};
 }
