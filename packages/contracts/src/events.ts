@@ -181,7 +181,7 @@ export interface EventPayloads {
    */
   work_memory_written: { project_id: string; root: string; target: "index" | "topic"; name: string | null; text: string };
   /** The step after a turn that may record what it established: queued, then how it ended. */
-  work_memory_step: { project_id: string; outcome: "pending" | "written" | "nothing" | "not_worth" | "skipped" | "failed"; detail: string | null; writes: number };
+  work_memory_step: { project_id: string; outcome: "pending" | "written" | "nothing" | "not_worth" | "skipped" | "failed"; detail: string | null; writes: number; decision?: { budget: number; estimatedTokens: number; images: number; omittedCalls: number; fallback: string | null } };
   /** The goal's Skill shelf, resolved once and frozen so ordinary turns stay cache-stable. */
   skill_shelf_frozen: { skills: { name: string; description: string }[] };
 }

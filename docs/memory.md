@@ -54,7 +54,7 @@ Forgetting removes an entry from everything Socrates uses and from the index. Th
 
 ### The gates (M3a)
 
-**Built 2026-10-10.** One decider request per user message, asked **first**, as soon as the message is recorded. The plan said "beside the router", and the first build ran it with the turn's searches; the trial showed why that is wrong: the router (which runs before the agent and never saw memory) asked "which goal is this?" for "What dates is my trip again?" although the trip was a saved memory. So the router now waits for the decider (about 0.3 s against several seconds of routing) and, when recall is likely, is shown the matching memories (`REMEMBERED`). In a lane or a standard-mode chat there is no router and the decider runs while the turn is set up. Calls are logged with the user message they belong to (the turn is not known yet), and the Inspect panel joins them to the turns by it. State: the user's message and the last answer in that chat, truncated. Two yes/no questions:
+**Built 2026-10-10.** One decider request per user message, asked **first**, as soon as the message is recorded. The plan said "beside the router", and the first build ran it with the turn's searches; the trial showed why that is wrong: the router (which runs before the agent and never saw memory) asked "which goal is this?" for "What dates is my trip again?" although the trip was a saved memory. So the router now waits for the decider (about 0.3 s against several seconds of routing) and, when recall is likely, is shown the matching memories (`REMEMBERED`). In a lane or a standard-mode chat there is no router and the decider runs while the turn is set up. Calls are logged with the user message they belong to (the turn is not known yet), and the Inspect panel joins them to the turns by it. Current state (13 October update): full current request and original image pixels, with up to 4k chronological Q&A; both stages have a 157,286-token estimated total ceiling including questions/images. See the bounded-input contract in `architecture/agent-harness.md`. Two yes/no questions:
 
 - `recall`: would the reply be better if Socrates first looked up what it knows about this user or an earlier conversation?
 - `save`: does the user state a lasting fact, standing preference or rule, decision, or correction that would matter later? (The first wording left out decisions and rules; with it, save found 19 of 22 worth saving at 0.4, with the new wording 22 of 22.)
@@ -70,7 +70,7 @@ Without a key or when the call fails (timeout 2 s, then skipped for 30 s like th
 
 **Result (`pnpm eval:decider`, 78 labelled messages: 17 that need a recall, 22 worth saving, 40 that need neither; ten are the user's real phrasing and are not committed).** Recall at 0.5 found 17 of 17, and 3 of the other 61 also reached it; at 0.85 it found 15 of 17, and none of the others did. Save at 0.4 found 22 of 22, and 2 of the other 56 reached it ("Use my usual commit message style" at 0.90 is a real miss: it reads as a standing preference). Median 272 ms, one call in 78 near 3 s (which our 2 s limit would drop), about $0.000007 a message. Limits: the labels and most messages are mine, and the user's real ledger held only three messages, so no real sample of it could be labelled; the Inspect page's live rates replace this once there is traffic. The thresholds stay at 0.5, 0.85 and 0.4 for now.
 
-**Images.** The decider accepts them. The first version sends the message text and the image names; passing the pixels (resized, base64) is a small follow-up.
+**Images (shipped 13 October).** Both stages receive the original request’s actual static image pixels, normalized to PNG at up to 1,536px. Missing/unsupported animated inputs explicitly bypass the classifier; no partial-image classification. The original attachments remain preserved.
 
 ### Work memory (M3b, agreed 2026-10-10)
 
@@ -93,7 +93,7 @@ User memory is facts about the user. Work memory is **how things are done in one
 
 **Result.** `pnpm eval:decider` (24 finished turns, ten worth recording): at 0.5 it found 9 of 10 and none of the fourteen others (the miss, a dependency upgrade at 0.19, is arguably not a repeatable procedure). Tried on a copy: one task wrote an index line and a topic file with steps and pitfalls (turn 5); a second similar task updated the same file and line (turns 5, 6) instead of adding a copy. Not yet measured: whether a later conversation that did not make the notes follows them better than one without (the "recurring change done twice" test), which needs real use; the Inspect panel shows how often the notes are written.
 
-**Privacy.** The gate sends each user message and the last answer's opening to OpenRouter and Perplexity. The chat model already sees everything when it is hosted, but a user running local models would not expect it. Settings gets "Memory gates" with a switch and the model name, and says what is sent.
+**Privacy.** The gate sends the full current message, original static image pixels and up to 4k recent Q&A to OpenRouter and Perplexity. After eligible project work it also sends the full final answer and bounded factual tool summaries. The existing decider/use/save switches control these paths. The chat model already sees everything when it is hosted, but a user running local models would not expect it. Settings gets "Memory gates" with a switch and the model name, and says what is sent.
 
 ## What the user sees and controls
 
@@ -129,3 +129,10 @@ A knowledge graph; a general "user model"; memory from tool output; per-workspac
 - M2: candidates by meaning and by keywords alone; floors; budget; nothing shown when nothing matches.
 - M3a (done): gate thresholds against a scripted decider; fail-open on timeout and error, a user stop not counted as one; the nudges appear only above their thresholds; only the needed questions are sent; logs written with the price and the turn; the Inspect rates; the switch and the no-key state.
 - M3b (done): the index is shown in the stable part and re-read each turn, left out when empty, a link out of the project, or memories off, and cut at its budget with a note; the extra step runs only after real work the decider marks, keeps the answer, stops at its step limit and asks before anything but the notes; only the two kinds of notes file skip approval.
+
+
+## Image-aware decisions and bounded post-work evidence (13 October 2026)
+
+Replaces the 800-character/24-line post-work digest. The full request, linked clarification, original static images and complete final answer are mandatory classifier evidence; remaining room contains prioritized tool summaries in chronological order. Total allowance is 60% of Perplexity’s 262,144-token context (157,286 estimated tokens), including questions and images. Overlong tools are marked excerpts with retrieval references and omissions are counted.
+
+Mandatory overflow skips the classifier and asks the configured main agent to assess the evidence in a bounded memory-only step; it may save nothing. Both normal and fallback writers are limited to 60k estimated input tokens and eight calls. Full ledger evidence is never trimmed. The background decision gets up to 30 seconds, first-stage classification stays at two. Inspect reports image counts, estimates versus allowance, omissions and reasons for fallback. `eval:decision-input` checks actual image understanding, both runtime stages, a late lesson and real-agent no-save fallback; `eval:work-memory` exercises real foreground work plus writing/recall.

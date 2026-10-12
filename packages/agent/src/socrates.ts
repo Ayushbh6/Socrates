@@ -1,26 +1,26 @@
 import { createHash } from "node:crypto";
-import { generalHistoryParts, taskHistory, historyParts } from "./history";
+import { generalHistoryParts, taskHistory, historyParts, userSection } from "./history";
 import type { Attachment, Effort, EventRefs, FinalAnswer, ModelClient, TurnStop } from "@socrates/contracts";
 import { homedir } from "node:os";
 import { abortable, countTokens } from "@socrates/shared";
-import { TokenCalibration } from "@socrates/providers";
+import { TokenCalibration, DECIDER_INPUT_TOKENS } from "@socrates/providers";
 import { GoalRouter, type RoutedPart, laneSummaries, renderActivity } from "@socrates/router";
 import { foregroundTurns, selectContextHistory, contextSection, contextTime, currentRequest, type Goal, type Lane, type LedgerStore, type Task, type Turn } from "@socrates/store";
 import type { SemanticHit, SemanticIndex } from "@socrates/retrieval";
 import { type AccessGrant, type AccessPolicy, type Approve, type CapabilityCatalog, RunState, type ShelfOptions, type SupervisorOptions, ToolRunner, WorkspaceRoot, canReadAutomatically, capabilityCandidates, skillShelf } from "@socrates/tools";
-import { attachmentImages, requestAttachments } from "./attachments";
+import { attachmentImages, requestAttachments, decisionImages } from "./attachments";
 import { CHAT_ROUTES, assembleContext, projectQuery } from "./context";
 import { type LaneView, laneNotice, lanesBlock } from "./lanes";
 import { RELATED_MAX_SECTIONS } from "./project-context";
 import { fallbackAnswer, mechanicalNote } from "./final";
 import type { Draft } from "./draft";
-import { type AgentLimits, DEFAULT_LIMITS, type RunOutcome, runAgent, runFollowUp } from "./loop";
+import { type AgentLimits, DEFAULT_LIMITS, type RunOutcome, runAgent, runFollowUp, requestTokens } from "./loop";
 import { AGENT_SYSTEM_PROMPT } from "./prompt";
 import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
 import { createCompactor } from "./compaction";
 import { applyAnchors, type AnchorDecision, type AnchorChange } from "./anchors";
 import { type GateReading, type MemoryGate, RECALL_AT } from "./gates";
-import { WORK_AT, WORK_FOLLOW_UP_MAX_STEPS, type WorkProject, WorkMemoryFiles, WorkMemorySteps, didRealWork, workMemoryBlock, workMemoryProject, workMemorySkill, workState } from "./work-memory";
+import { WORK_AT, WORK_FOLLOW_UP_MAX_STEPS, type WorkProject, WorkMemoryFiles, WorkMemorySteps, didRealWork, workMemoryBlock, workMemoryProject, workMemorySkill, buildWorkDecision, workFallbackState } from "./work-memory";
 import { MEMORY_ON, type MemoryChange, type MemorySettings, applyMemory, memoryCandidates, memoryForRouting, memoryHint } from "./memory";
 export { MAX_GOAL_ANCHORS } from "./anchors";
 
@@ -608,10 +608,11 @@ export class Socrates {
    * (agent-harness.md, "Memory"): never throws, and reads as nothing without a
    * gate, with memory switched off, or when the decider fails or is slow.
    */
-  private askGate(message: string, userEventId: string, taskId: string | null, signal: AbortSignal, replyTo?: string): Promise<GateReading | null> {
+  private async askGate(message: string, userEventId: string, taskId: string | null, signal: AbortSignal, replyTo?: string): Promise<GateReading | null> {
     const gate = this.options.gate?.() ?? null;
-    if (!gate) return Promise.resolve(null);
+    if (!gate) return null;
     const settings = this.options.memory?.() ?? MEMORY_ON;
+    if (!settings.use && !settings.save) return null;
     const event = this.store.requestRoot(userEventId);
     const clarification = replyTo ? this.store.clarification(replyTo) : null;
     const root = clarification ? this.store.requestRoot(clarification.requestId) : event;
@@ -623,7 +624,9 @@ export class Socrates {
     const context = [contextSection("RECENT_CONVERSATION", history.text || "none"),
       contextSection("CURRENT_TIME", `at: ${contextTime(event.at, this.options.timeZone)}\ntimezone: ${this.options.timeZone}`),
       currentRequest({id: root.id, at: root.at, text: root.payload.text, attachments: attachments.map(a => ({name: a.name, mediaType: a.media_type})), clarification: clarification ? {question: clarification.detail, answer: message} : null}, this.options.timeZone)].join("\n\n");
-    return gate.read({ message: root.payload.text, previousAnswer: null, context, attachments: attachments.map(a => a.name), ask: { recall: settings.use, save: settings.save }, trace: { role: "decision", userEventId } }, signal);
+    const prepared = await decisionImages(attachments, signal).catch(() => null);
+    if (!prepared || signal.aborted) return null;
+    return gate.read({ images: prepared.images, imageFailure: prepared.unavailable, message: root.payload.text, previousAnswer: null, context, attachments: attachments.map(a => a.name), ask: { recall: settings.use, save: settings.save }, trace: { role: "decision", userEventId } }, signal);
   }
 
   /** What the router is told the user has asked to be remembered, when the gate expects the message to lean on it. */
@@ -902,20 +905,38 @@ export class Socrates {
     const signal = AbortSignal.any([this.lifetime.signal, controller.signal]);
     this.workSteps.schedule(project.id, async () => {
       let writes = 0;
+      let decision: import("@socrates/contracts").EventPayloads["work_memory_step"]["decision"];
       const end = (outcome: "written" | "nothing" | "not_worth" | "skipped" | "failed", detail: string | null) => {
-        try { store.recordWorkMemoryStep(refs, { project_id: project.id, outcome, detail, writes }); } catch { /* The store closed under a step that outlived it. */ }
+        try { store.recordWorkMemoryStep(refs, { project_id: project.id, outcome, detail, writes, ...(decision ? { decision } : {}) }); } catch { /* The store closed under a step that outlived it. */ }
       };
       try {
         if (signal.aborted) return end("skipped", controller.signal.aborted ? "Saving memories was turned off" : "Socrates stopped before the step ran");
         if (!(this.options.memory?.() ?? MEMORY_ON).save) return end("skipped", "Saving memories was turned off");
-        const work = await gate.readWork({
-          state: workState({ request: input.request, calls, answer: input.answer }),
+        const attachments = requestAttachments(store, turn);
+        const prepared = await decisionImages(attachments, signal);
+        const packetInput = { request: userSection(store, turn), calls, answer: input.answer, images: prepared.images, reference: `turn_number ${turn.projectTurn}` };
+        const packet = buildWorkDecision(packetInput);
+        const fallback = prepared.unavailable ?? (packet.overflow ? `Mandatory input exceeds ${DECIDER_INPUT_TOKENS}-token allowance; full turn retained` : null);
+        decision = { budget: DECIDER_INPUT_TOKENS, estimatedTokens: packet.estimatedTokens, images: prepared.images.length, omittedCalls: packet.omitted, fallback };
+        const work = fallback ? null : await gate.readWork({
+          state: packet.state, images: prepared.images,
           trace: { role: "decision", userEventId: turn.userEventId, turnId: turn.id, goalId: goal.id, taskId: turn.taskId, chatId: turn.chatId },
         }, signal);
         if (signal.aborted) return end("skipped", controller.signal.aborted ? "Saving memories was turned off" : "Socrates stopped before the step ran");
         if (!(this.options.memory?.() ?? MEMORY_ON).save) return end("skipped", "Saving memories was turned off");
-        if (work === null) return end("skipped", "The decider could not be asked");
-        if (work < WORK_AT) return end("not_worth", `The decider said ${work.toFixed(2)}`);
+        if (!fallback && work === null) return end("skipped", "The decider could not be asked");
+        if (work !== null && work < WORK_AT) return end("not_worth", `The decider said ${work.toFixed(2)}`);
+        if (fallback && attachments.length && !this.options.model.vision) return end("skipped", "Image assessment fallback unavailable: the configured agent cannot see images; no memory inferred");
+        const skill = { role: "user" as const, content: workMemorySkill(turn.projectTurn) };
+        const tools = this.runner.workMemoryDefinitions();
+        let messages = [...input.transcript, skill];
+        // Always bound the writer too. Native reasoning/tool results in the working
+        // transcript can be much larger than the compact decider packet.
+        if (fallback || requestTokens(AGENT_SYSTEM_PROMPT, messages, tools) > 60_000) {
+          const images = prepared.unavailable && this.options.model.vision ? await attachmentImages(attachments) : prepared.images;
+          if (attachments.length && this.options.model.vision && images.length !== attachments.length) return end("skipped", "Original images unavailable for main-agent fallback; no memory inferred");
+          messages = [{ role: "user", content: `${fallback ? `Classifier bypass: ${fallback}. Assess eligibility; do not assume saving is needed.\n` : ""}${workMemoryBlock(store, project, this.options.memory?.() ?? MEMORY_ON) ?? ""}\n${workFallbackState(packetInput)}`, ...(this.options.model.vision && images.length ? { images } : {}) }, skill];
+        }
         const write = (target: "index" | "topic", name: string | null, text: string) => {
           if (!(this.options.memory?.() ?? MEMORY_ON).save) controller.abort(new Error("Saving memories was turned off"));
           signal.throwIfAborted();
@@ -928,8 +949,7 @@ export class Socrates {
           model: this.options.model,
           runner: this.runner,
           system: AGENT_SYSTEM_PROMPT,
-          messages: [...input.transcript, { role: "user", content: workMemorySkill(turn.projectTurn) }],
-          tools: this.runner.workMemoryDefinitions(),
+          messages, tools, maxInputTokens: 60_000,
           scope: { binding: { goalId: goal.id, taskId: turn.taskId!, chatId: turn.chatId, turnId: turn.id }, workspace: input.workspace, run: new RunState(), signal, workMemory: { projectId: project.id, write } },
           maxSteps: WORK_FOLLOW_UP_MAX_STEPS,
           ...(this.options.maxOutputTokens ? { maxOutputTokens: this.options.maxOutputTokens } : {}),

@@ -422,7 +422,8 @@ export interface TraceCall {
   context: ContextBlock[] | null;
   diagnostics?: { session?: {chatRef: string; sequence: number; compactions: number; handoverRef: string | null; continuationOf: string | null}; historyScope?: string; activityAsOf: string; timeZone: string; history: { budget: number; used: number; included: number[]; omitted: number; dates: string[] } | null; memory: { recall: number | null; threshold: number; matched: number; explanation: string } } | null;
   notes?: { field: string; outcome: string; reason: string | null; length: number | null; attempts: number }[];
-  workMemory?: { outcome: string; detail: string | null; writes: number }[];
+  workMemory?: { outcome: string; detail: string | null; writes: number; decision?: { budget: number; estimatedTokens: number; images: number; omittedCalls: number; fallback: string | null } }[];
+  decisionInput?: { budget: number; estimatedTokens: number; images: number } | null;
 }
 
 export type TraceItem =

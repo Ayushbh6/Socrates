@@ -479,7 +479,8 @@ export interface TraceCall {
   diagnostics?: { session?: {chatRef: string; sequence: number; compactions: number; handoverRef: string | null; continuationOf: string | null}; historyScope?: string; activityAsOf: string; timeZone: string; history: { budget: number; used: number; included: number[]; omitted: number; dates: string[] } | null; memory: { recall: number | null; threshold: number; matched: number; explanation: string } } | null;
   notes?: { field: string; outcome: string; reason: string | null; length: number | null; attempts: number }[];
   /** The turn's work-memory step as it went: pending, then how it ended (agent-harness.md, "Work memory"). */
-  workMemory?: { outcome: string; detail: string | null; writes: number }[];
+  workMemory?: { outcome: string; detail: string | null; writes: number; decision?: { budget: number; estimatedTokens: number; images: number; omittedCalls: number; fallback: string | null } }[];
+  decisionInput?: { budget: number; estimatedTokens: number; images: number } | null;
 }
 
 export type TraceItem =
@@ -540,7 +541,8 @@ export function trace(log: CallLog, store: LedgerStore, userEventId: string): { 
         entered: messages.map((m) => ({ role: m.role, label: enteredLabel(m), tokens: countTokens(messageText(m)), text: messageText(m) })),
         diagnostics: row.turnId ? store.listEvents({ turnId: row.turnId, type: "context_diagnostics" }).map(e => e.payload as EventPayloads["context_diagnostics"]).findLast(d => { const initial = requestMessages[0]; return initial?.role === "user" && typeof initial.content !== "string" && createHash("sha256").update(JSON.stringify(initial.content.slice(0, d.contextParts).map(p => p.text))).digest("hex") === d.contextHash; }) ?? null : null,
         notes: row.turnId ? store.listEvents({ turnId: row.turnId, type: "note_outcome" }).map(e => e.payload as EventPayloads["note_outcome"]) : [],
-        workMemory: row.turnId ? store.listEvents({ turnId: row.turnId, type: "work_memory_step" }).map(e => { const p = e.payload as EventPayloads["work_memory_step"]; return { outcome: p.outcome, detail: p.detail, writes: p.writes }; }) : [],
+        decisionInput: typeof response?.meta?.inputBudget === "number" && typeof response.meta.estimatedInputTokens === "number" && typeof response.meta.imageCount === "number" ? { budget: response.meta.inputBudget, estimatedTokens: response.meta.estimatedInputTokens, images: response.meta.imageCount } : null,
+        workMemory: row.turnId ? store.listEvents({ turnId: row.turnId, type: "work_memory_step" }).map(e => { const p = e.payload as EventPayloads["work_memory_step"]; return { outcome: p.outcome, detail: p.detail, writes: p.writes, ...(p.decision ? { decision: p.decision } : {}) }; }) : [],
         rebuilt: rebuilt && before !== undefined,
         context: fresh ? (first?.role === "user" ? blocksOf(typeof first.content === "string" ? [{ text: first.content }] : first.content) : []) : null,
       };

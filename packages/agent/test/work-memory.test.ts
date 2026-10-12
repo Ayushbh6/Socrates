@@ -126,9 +126,12 @@ describe("which turns are asked about", () => {
     expect(didRealWork([ev("terminal", { command: "pnpm dev" }, "ok", { status: "running" })])).toBe(false);
     expect(didRealWork([ev("terminal", { command: "pnpm test" }, "ok", { status: "completed", exit_code: 0 })])).toBe(true);
     const calls = [ev("read", { path: "src/schema.ts" }), ev("edit", { path: "src/schema.ts" }), ev("terminal", { command: "pnpm test" }, "error")];
-    expect(workState({ request: "Add a column to the store.", calls, answer: "Done." })).toBe(
-      "The user asked:\nAdd a column to the store.\n\nWhat the assistant did (tool calls, in order):\n- read src/schema.ts\n- edit src/schema.ts\n- terminal: pnpm test ✗\n\nThe assistant's answer:\nDone.",
-    );
+    const state = workState({ request: "Add a column to the store.", calls, answer: "Done." });
+    expect(state).toContain("Add a column to the store.");
+    expect(state).toContain("# FINAL_ANSWER");
+    expect(state).toContain("Done.");
+    expect(state).toContain("TOOL CALL [e1]");
+    expect(state).toContain("call_status: error");
     expect(WORK_QUESTION.instructions).toContain("repeatable procedure");
   });
 });
@@ -158,7 +161,7 @@ describe("recording what a turn established", () => {
 
     // The decider read the request, the calls and the answer.
     expect(Object.keys(asked.at(-1)!.questions)).toEqual(["work"]);
-    expect(asked.at(-1)!.state).toContain("- edit src/a.ts");
+    expect(asked.at(-1)!.state).toContain("edit src/a.ts");
     // The step continues the turn's conversation with the guide, and has only its two tools.
     const step = model.requests[2]!;
     const guide = step.messages.at(-1)!;

@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
-import type { Attachment, ImageData } from "@socrates/contracts";
+import sharp from "sharp";
+import type { Attachment, DecisionImage, ImageData } from "@socrates/contracts";
 import type { LedgerStore, Turn } from "@socrates/store";
 
 /** The images attached to the message a turn answers (agent-harness.md, "Images"). */
@@ -41,4 +42,28 @@ export async function attachmentImages(attachments: Attachment[], log?: (message
     }
   }
   return images;
+}
+
+/** Decision images are pixels, never filenames. Originals remain untouched for retrieval.
+ * Normalize orientation and fit within 1536px, without cropping. Animated inputs
+ * deliberately fall back: a single frame is not evidence of the whole attachment.
+ */
+export async function decisionImages(attachments: Attachment[], signal?: AbortSignal): Promise<{ images: DecisionImage[]; unavailable?: string }> {
+  const images: DecisionImage[] = [];
+  for (const attachment of attachments) {
+    signal?.throwIfAborted();
+    try {
+      const bytes = await readFile(attachment.path);
+      const source = sharp(bytes, { limitInputPixels: 40_000_000 });
+      const meta = await source.metadata();
+      if ((meta.pages ?? 1) > 1) return { images: [], unavailable: "Animated attachment requires main-agent assessment; decider does not support animation" };
+      const { data, info } = await source.rotate().resize(1536, 1536, { fit: "inside", withoutEnlargement: true }).png().toBuffer({ resolveWithObject: true });
+      images.push({ mediaType: "image/png", data: data.toString("base64"), width: info.width, height: info.height });
+    } catch {
+      signal?.throwIfAborted();
+      return { images: [], unavailable: `Attachment ${attachment.id} could not be prepared; no partial image decision was made` };
+    }
+  }
+  signal?.throwIfAborted();
+  return { images };
 }

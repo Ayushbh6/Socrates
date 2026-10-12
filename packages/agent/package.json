@@ -14,6 +14,7 @@
     "@socrates/shared": "workspace:*",
     "@socrates/store": "workspace:*",
     "@socrates/tools": "workspace:*",
+    "sharp": "0.33.5",
     "zod": "^4.1.0"
   }
 }

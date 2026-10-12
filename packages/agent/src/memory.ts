@@ -110,6 +110,9 @@ export function memoryForRouting(store: LedgerStore, input: { message: string; s
  * off or the gate did not say so.
  */
 export function memoryHint(settings: MemorySettings, reading: GateReading | null | undefined): string | null {
+  if (reading?.fallback && (settings.use || settings.save)) return `<MEMORY_HINT>
+The small memory classifier could not assess the complete input. Assess relevance yourself; this is not evidence that a memory should be saved.${settings.use ? " If the request depends on missing history, use context_retrieve before guessing." : ""}${settings.save ? " Save only supported durable facts or preferences; do not save merely because the classifier was bypassed." : " Saving is disabled."}
+</MEMORY_HINT>`;
   if (!settings.save || (reading?.save ?? 0) < SAVE_AT) return null;
   return "<MEMORY_HINT>\nA small model reads this message as possibly stating something lasting: a fact about the user, a standing preference, or a correction of how you work. If it does, save it with memory.save in your answer; if not, ignore this.\n</MEMORY_HINT>";
 }

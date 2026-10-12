@@ -136,6 +136,9 @@ importers:
       '@socrates/tools':
         specifier: workspace:*
         version: link:../tools
+      sharp:
+        specifier: 0.33.5
+        version: 0.33.5
       zod:
         specifier: ^4.1.0
         version: 4.6.5
@@ -3184,13 +3187,11 @@ snapshots:
     dependencies:
       color-name: 1.1.4
       simple-swizzle: 0.2.4
-    optional: true
 
   color@4.2.3:
     dependencies:
       color-convert: 2.0.1
       color-string: 1.9.1
-    optional: true
 
   combined-stream@1.0.8:
     dependencies:
@@ -3625,8 +3626,7 @@ snapshots:
       is-alphabetical: 2.0.1
       is-decimal: 2.0.1
 
-  is-arrayish@0.3.4:
-    optional: true
+  is-arrayish@0.3.4: {}
 
   is-buffer@1.1.6:
     optional: true
@@ -4502,7 +4502,6 @@ snapshots:
       '@img/sharp-wasm32': 0.33.5
       '@img/sharp-win32-ia32': 0.33.5
       '@img/sharp-win32-x64': 0.33.5
-    optional: true
 
   shebang-command@2.0.0:
     dependencies:
@@ -4543,7 +4542,6 @@ snapshots:
   simple-swizzle@0.2.4:
     dependencies:
       is-arrayish: 0.3.4
-    optional: true
 
   sonic-boom@4.2.1:
     dependencies:

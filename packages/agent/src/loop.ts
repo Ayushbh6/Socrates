@@ -389,6 +389,8 @@ export async function runFollowUp(input: {
   scope: CallScope;
   maxSteps: number;
   maxOutputTokens?: number;
+  /** Refuse unbounded replay/retrieval before any further model or tool call. */
+  maxInputTokens?: number;
   trace?: Pick<CallTrace, "userEventId" | "laneId">;
   onResponse?: (response: ModelResponse) => void;
 }): Promise<string | null> {
@@ -396,6 +398,7 @@ export async function runFollowUp(input: {
   const messages = [...input.messages];
   for (let step = 1; step <= input.maxSteps; step++) {
     scope.signal.throwIfAborted();
+    if (input.maxInputTokens && requestTokens(input.system, messages, input.tools) > input.maxInputTokens) throw new Error(`Memory assessment exceeded ${input.maxInputTokens}-token working budget; full evidence remains retrievable`);
     const response = await abortable(input.model.complete({
       system: input.system, messages: withRollingBreakpoint(messages), tools: input.tools, toolChoice: "auto",
       maxOutputTokens: input.maxOutputTokens ?? 16_000, signal: scope.signal,

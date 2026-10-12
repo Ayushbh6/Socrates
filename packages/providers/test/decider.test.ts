@@ -83,3 +83,20 @@ describe("the decider", () => {
     expect(records[1]).toMatchObject({ trace: { role: "decision" }, response: null, error: { kind: "server", status: 500 } });
   });
 });
+
+it("sends images as top-level decision state items and records actual image input", async () => {
+  const { url, seen } = await serve(() => ({json: REPLY}));
+  const records: CallRecord[] = [];
+  const decider = withDecisionRecording(new OpenRouterDecider({apiKey:"k",url}), r=>records.push(r));
+  const images = [{mediaType:"image/png" as const,data:"YWJj",width:10,height:20}];
+  await decider.decide({state:"Look at the image",images,questions:QUESTIONS});
+  expect(seen[0]!.body.state).toEqual(["Look at the image",{type:"image_url",image_url:{url:"data:image/png;base64,YWJj"}}]);
+  expect(records[0]!.request.messages[0]).toMatchObject({images});
+  expect(records[0]!.response!.meta).toMatchObject({inputBudget:157286,imageCount:1,estimatedInputTokens:expect.any(Number)});
+});
+
+it("refuses oversized input before HTTP instead of sending a prefix", async () => {
+  const { url, seen } = await serve(() => ({json: REPLY}));
+  await expect(new OpenRouterDecider({apiKey:"k",url}).decide({state:"word ".repeat(160000),questions:QUESTIONS})).rejects.toThrow("157286-token");
+  expect(seen).toHaveLength(0);
+});

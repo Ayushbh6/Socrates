@@ -1,5 +1,6 @@
 import { type CallRecord, type CallSink, type DecisionRequest, type DecisionResponse, type DeciderClient, ModelError } from "@socrates/contracts";
 import { newId } from "@socrates/shared";
+import { decisionOverflow, decisionTokens, DECIDER_INPUT_TOKENS } from "./decision-budget";
 import { postJson } from "./embeddings";
 
 /** The decider Socrates uses (architecture/agent-harness.md, "Memory"): a classifier that returns probabilities, not text. */
@@ -17,8 +18,12 @@ export class OpenRouterDecider implements DeciderClient {
   constructor(private readonly options: { apiKey: string; url?: string }) {}
 
   async decide(request: DecisionRequest, signal?: AbortSignal): Promise<DecisionResponse> {
+    const overflow = decisionOverflow(request);
+    if (overflow) throw new ModelError(overflow, "invalid_request");
+    if (request.images?.some(image => image.mediaType === "image/gif")) throw new ModelError("Decider images must be normalized to PNG, JPEG or WebP", "server");
+    const state = request.images?.length ? [request.state, ...request.images.map(image => ({ type: "image_url", image_url: { url: `data:${image.mediaType};base64,${image.data}` } }))] : request.state;
     const questions = Object.fromEntries(Object.entries(request.questions).map(([name, q]) => [name, { type: "noul", instructions: q.instructions, criteria: { true: q.yes, false: q.no } }]));
-    const body = (await postJson(this.options.url ?? DECISIONS_URL, { model: DECIDER_MODEL, state: request.state, questions }, { authorization: `Bearer ${this.options.apiKey}` }, signal, "The decider")) as {
+    const body = (await postJson(this.options.url ?? DECISIONS_URL, { model: DECIDER_MODEL, state, questions }, { authorization: `Bearer ${this.options.apiKey}` }, signal, "The decider")) as {
       model?: unknown; id?: unknown; answers?: Record<string, { noul?: unknown } | undefined>; usage?: { input_tokens?: unknown; output_tokens?: unknown; cost?: unknown };
     };
     const probabilities: Record<string, number> = {};
@@ -68,14 +73,14 @@ export function withDecisionRecording(decider: DeciderClient, sink: CallSink): D
           streamed: false,
           request: {
             system: Object.entries(request.questions).map(([name, q]) => `${name}: ${q.instructions}\n  yes: ${q.yes}\n  no: ${q.no}`).join("\n"),
-            messages: [{ role: "user", content: request.state }],
+            messages: [{ role: "user", content: request.state, ...(request.images?.length ? { images: request.images } : {}) }],
             tools: [], toolChoice: "auto", maxOutputTokens: null, temperature: null, effort: null,
           },
           response: response && {
             text: JSON.stringify(response.probabilities),
             toolCalls: [], reasoning: null, stopReason: "end",
             usage: { promptTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0 },
-            meta: { probabilities: response.probabilities, id: response.id, ...(response.usage.costUsd !== null ? { usage: { cost: response.usage.costUsd } } : {}) },
+            meta: { inputBudget: DECIDER_INPUT_TOKENS, estimatedInputTokens: decisionTokens(request), imageCount: request.images?.length ?? 0, probabilities: response.probabilities, id: response.id, ...(response.usage.costUsd !== null ? { usage: { cost: response.usage.costUsd } } : {}) },
           },
           error: error === null ? null : {
             kind: error instanceof ModelError ? error.kind : "unexpected",

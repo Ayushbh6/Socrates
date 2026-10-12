@@ -206,7 +206,15 @@ export interface DecisionQuestion {
   no: string;
 }
 
+export interface DecisionImage extends ImageData {
+  /** Dimensions of the actual transmitted image, for conservative budgeting. */
+  width?: number;
+  height?: number;
+}
+
 export interface DecisionRequest {
+  /** Actual image contents, in attachment order. */
+  images?: DecisionImage[];
   /** The text the questions are about. */
   state: string;
   /** Questions by name; the answers come back under the same names. */

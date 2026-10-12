@@ -111,3 +111,8 @@ The `note_repair` call role is included in worker usage totals and displayed as 
 ## Context and routing diagnostics (2026-10-12)
 
 Worker `context_diagnostics` includes session identity/counter/handover link and history scope, measured usage, included turns, omissions and frozen boundary. Router `routing_completed.diagnostics` includes history budget/usage/references/as-of, invalidFinal, invalidTools, semanticErrors and resultTransport. Inspect displays these separately from normalization and successful lookup rounds. These are snapshots of supplied context, not reconstructions from today's ledger. Full provider calls retain the exact supplied text and response.
+
+
+### Memory input diagnostics (13 October 2026)
+
+Decision recordings preserve actual image inputs as normal user-message images. Response metadata adds `inputBudget`, `estimatedInputTokens` and `imageCount`; provider usage remains independent. The optional `work_memory_step.decision` payload records `budget`, `estimatedTokens`, `images`, `omittedCalls` and nullable `fallback`, even when no classifier ran. Trace cards expose these under Context and note diagnostics. Missing fields on older calls mean unavailable, not zero or reconstructed contemporary settings. A fallback is an assessment request, never proof that memory was saved; the step outcome and write count remain authoritative.

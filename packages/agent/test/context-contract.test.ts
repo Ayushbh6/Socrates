@@ -67,7 +67,7 @@ describe('canonical context contracts', () => {
     await socrates.handle('Continue'); expect(calls[0]).toContain('Start the project work.'); expect(calls[0]).not.toContain('TOOL_CALL');
     expect(calls[0]).toContain('# CURRENT_TIME');
     const logs:string[]=[]; const bounded=new MemoryGate({decider:{id:'no',async decide(){throw Error('must not call');}},log:m=>logs.push(m)});
-    expect(await bounded.read({message:'x',previousAnswer:null,attachments:[],ask:{recall:true,save:true},trace:{role:'decision'},context:'token '.repeat(30000)})).toMatchObject({recall:null,save:null,unavailableReason:expect.stringContaining('24000')});
+    expect(await bounded.read({message:'x',previousAnswer:null,attachments:[],ask:{recall:true,save:true},trace:{role:'decision'},context:'token '.repeat(160000)})).toMatchObject({recall:null,save:null,unavailableReason:expect.stringContaining('157286')});
     expect(logs[0]).toContain('exceeds');
   });
   it('enforces total history allowance and preserves retrieval references on oversized fields', async () => {
