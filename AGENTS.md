@@ -26,7 +26,7 @@ This file hands the project to whichever agent harness works on it next. Read it
 
 ## Live evals and replays (need `SOCRATES_ENV_FILE=.env`; they cost a little money)
 
-- `pnpm eval:router-compare <model…>`: routing fixtures (Q, T, G1). Use `ROUTER_EFFORT=off` to match the live router (`openai/gpt-6-luna`), `ROUTER_RUNS=3` (single runs swing by ±6 of 72) and `ROUTER_ONLY=G1` for one scenario. It prints correct, repaired and normalized counts with repair reasons. Compare before and after on the same number of runs.
+- `pnpm eval:router-compare <model…>`: routing fixtures (Q, T, G1) plus recorded image-eval Q6/Q11 inputs. Use `ROUTER_EFFORT=off` to match the live router (`openai/gpt-6-luna`), `ROUTER_RUNS=3` (single runs swing by ±6 of 72 stateful steps) and `ROUTER_ONLY=G1` for one scenario. `ROUTER_ONLY=R` selects the two recorded cases, or use `R-Q6`/`R-Q11`. Three full runs now report 72 stateful steps plus six recorded first-decision probes, separately and in the total. Q6 remains unresolved, even after a passing sample; its failures count normally. It prints correct, repaired and normalized counts with repair reasons. Compare before and after on the same number of runs.
 - `pnpm eval:terminal-output`, `pnpm eval:work-memory`, `pnpm eval:decider` and `pnpm eval:memory` cover T1, M4a, the decider and recall.
 - **Replaying real conversations without touching them** (used for trial log entries 56 and 60):
   1. Back up `~/.socrates-v2/ledger.db` read-only (`sqlite3 "file:…?mode=ro" ".backup …"`) into the scratch folder.
@@ -42,7 +42,7 @@ This file hands the project to whichever agent harness works on it next. Read it
 - **Model outputs are noisy:** judge prompt changes on repeated runs, and report numbers honestly (trial log entries 58–60 show the format).
 - **Live data:** `~/.socrates-v2` is the user's real v2 data. Read it only through a read-only backup, and never touch `~/.socrates` (v0.1.20).
 
-## Where things stand (handoff verified 2026-10-16; released through entry 66)
+## Where things stand (2026-10-16; release through entry 72)
 
 The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `server.md`, `web.md`, `observability.md`). The trial log numbers each change. Recently shipped, newest last:
 
@@ -75,9 +75,11 @@ The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `serv
 
 ## Next, in the order agreed with the user
 
-No new implementation phase is authorized. First orient and confirm understanding; wait for the user to select the next task.
+No further implementation phase is authorized after the combined-guidance release in entry 72. First orient and confirm understanding; wait for the user to select the next task.
 
-**Latest implementation release:** `6f10176` (13 Oct), image-aware bounded memory decisions. Local and remote matched on 16 Oct before this documentation handoff. Release checks: 1,014 tests passed, one skipped, typecheck/build passed; live tests and their limitations are in `docs/reviews/decision-input-results-2026-10-13.md`. The legacy `eval:work-memory` expected-write assertion failed because the model declined duplicate documented knowledge; do not claim every live eval passed. The replacement new-lesson/save/fresh-task-recall scenario passed. For the next chat, read trial entries 63–67 and the three reports named below; older entries are historical, not current release blockers.
+**Routing guidance (16 Oct, entry 72):** only the tested continuation/reference guidance and goal/task membership check were authorized for release. The router resolves the preceding request's subject before matching task objectives, keeps follow-ups with their owning task even when completed, and checks that returned labels belong together. Input order, output schema, model, temperature/effort mapping and number of model calls remain unchanged. Recorded synthetic image-eval Q6 and Q11 are now part of both routing eval commands, with separate first-decision scores. **Maths Q6 remains unresolved:** the model can name the right equation but return the other maths task's label. Do not report this as a complete fix or ship the explicit-task-reference prototype; that prototype regressed broader routing. Release checks: 1,019 tests passed, one skipped; typecheck/build passed. Fresh live eval: stateful 69/72 (one provider network failure, two linked task-splitting failures), recorded Q6 2/3 and Q11 3/3.
+
+**Previous implementation release:** `6f10176` (13 Oct), image-aware bounded memory decisions. Local and remote matched on 16 Oct before the documentation handoff. Its release checks: 1,014 tests passed, one skipped, typecheck/build passed; live tests and their limitations are in `docs/reviews/decision-input-results-2026-10-13.md`. The legacy `eval:work-memory` expected-write assertion failed because the model declined duplicate documented knowledge; do not claim every live eval passed. The replacement new-lesson/save/fresh-task-recall scenario passed. For the next chat, read trial entries 63–72 and the reports named below; older entries are historical, not current release blockers.
 
 **Context-routing implementation released (13 Oct, `fae72dc`):** the user reviewed `docs/reviews/context-routing-results-2026-10-12.md` and authorized final checks, commit, push and restart. `docs/context-routing-plan.md` is implemented: canonical decider/router/worker inputs, native routing result, same-task sixth-trigger rollover in both modes, linked session UI and Inspect. Prior full tests: 1,001 passed, 1 skipped; typecheck/build passed. Router latest 70/72 versus 61/72 baseline; actual queries 18/18 independent and 18/18 connected. Residual task splitting and one unsupported day-end chat-status claim remain documented. Baseline report is unchanged.
 

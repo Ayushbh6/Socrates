@@ -14,7 +14,7 @@ import {
 import { type Chat, type Goal, type LedgerStore, type Task, type Turn, parseGoalSelector, parseTaskSelector, toFtsQuery } from "@socrates/store";
 import type { SemanticSearch } from "@socrates/retrieval";
 import { type RoutingContext, buildRoutingContext, candidateQuery } from "./context";
-import { ROUTER_SYSTEM_PROMPT } from "./prompt";
+import { ROUTER_NATIVE_SYSTEM_PROMPT } from "./prompt";
 import { ASK_USER_TOOL, LEDGER_QUERY_TOOL, ROUTING_RESULT_TOOL, executeLedgerQuery, renderToolError } from "./tools";
 import {
   type ResolvedPart,
@@ -199,7 +199,7 @@ export class GoalRouter {
       try {
         signal?.throwIfAborted();
         const completion = model.complete({
-          system: ROUTER_SYSTEM_PROMPT + "\nSubmit the final decision through routing_result. Use native ledger_query for evidence or ask_user for genuine destination ambiguity. Never imitate a tool call as text.",
+          system: ROUTER_NATIVE_SYSTEM_PROMPT,
           ...(/^(openrouter|openai):/.test(model.id) ? {toolChoice: "required" as const} : {}),
           messages,
           tools,

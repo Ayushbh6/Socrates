@@ -97,6 +97,8 @@ Message count must not determine the boundary. A task does not split merely beca
 
 ### Trivial and elliptical messages
 
+The router first resolves the subject of the preceding user request and its answer before matching task objectives. An optional exercise or offer appended by the assistant does not itself change the user's subject. A follow-up stays with the task that answered that subject, even if completed; a question about past work does not reopen it. Before returning, the prompt asks the model to verify that the selected task belongs to the selected goal and copy both labels from that goal's directory entry. These are guidance, not deterministic guarantees; the recorded maths Q6 below remains unresolved. No extra selection field, second model call, input reordering, or provider-setting change is involved.
+
 Most real traffic is short, unanchored, and elliptical. The resolution rules are:
 
 | Message shape | Resolution |
@@ -765,6 +767,11 @@ This preserves the product illusion of one seamless conversation while giving ev
 ## Q1-Q12 validation sequence
 
 These natural user messages are the baseline routing test. They are kept as an executable fixture in `packages/router/eval/fixtures.ts`: an oracle replay test proves each expected decision is valid in the exact context the router sees, and `pnpm eval:router` grades a live model on the same messages.
+
+Both `pnpm eval:router` and `pnpm eval:router-compare` also include the recorded synthetic image/conversation failures from 16 October 2026, stored in `packages/router/eval/recorded-inputs.json`. The original chronological exchanges, notes, current binding, goal/task directory and current query are preserved; only the local fixture root is replaced with `/fixture/image-context`. Each is sent with the current production system prompt and tool definitions. These are **first-decision probes**, without repair, ledger-query execution or worker execution; their per-case scores are printed separately from the 24-step stateful suite, and failures still count in the overall total. Three runs now comprise 72 stateful steps plus six recorded probes. `ROUTER_ONLY=R` selects both recorded cases; `R-Q6` or `R-Q11` selects one.
+
+- **R-Q6 — unresolved:** “For that equation, why do I subtract before dividing?” follows the full answer about `4x + 8 = 24`. The completed current task is “Practise linear equations”; the open sibling is “Solve equations with x on both sides”. Correct routing selects `current/current`, with `reopen_task: false`. The model can still describe the correct equation while selecting the sibling's valid label. A passing sample never clears the unresolved marker.
+- **R-Q11 — regression case:** the user explicitly returns to the German website reference image after maths. The current goal/task are the website; maths is `older_1`. Correct routing selects `current/current`. A reason naming the website does not excuse a maths label. This checks destination selection, not image recovery.
 
 Under the goal/task/chat model, Q2–Q10 are **tasks** — bounded pieces of work inside one durable `Socrates development` goal in the `socrates` workspace. Q2–Q4 are one task, Q5–Q6 another, and so on. Each row tests both decisions the router makes: which goal owns the message, and which task inside it. Q11–Q12 test workspace resolution in a separate scenario.
 

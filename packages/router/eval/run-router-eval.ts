@@ -14,6 +14,7 @@ import { fixedClock } from "@socrates/shared";
 import { LedgerStore } from "@socrates/store";
 import { GoalRouter } from "../src";
 import { SCENARIOS, completeStep, describeExpectation, describeResult, grade, evaluationIdentities } from "./fixtures";
+import { RECORDED_CASES, runRecordedCase } from "./recorded-fixtures";
 
 loadEvaluationEnvironment();
 const provider = process.env.SOCRATES_PROVIDER ?? "gemini";
@@ -65,7 +66,20 @@ async function main(): Promise<number> {
     store.close();
     console.log("");
   }
-  console.log(`${passed}/${total} routing decisions correct.`);
+  console.log(`${passed}/${total} stateful routing decisions correct.\n`);
+  console.log("Recorded cases: first decision with current prompt/tools; no repair or worker execution.");
+  for (const fixture of RECORDED_CASES) {
+    total++;
+    try {
+      const result = await runRecordedCase(routerModel, fixture);
+      if (result.passed) passed++;
+      console.log(`${result.passed ? "PASS" : "FAIL"} ${fixture.id} [${fixture.status}]: ${result.detail}`);
+    } catch (error) {
+      console.log(`ERROR ${fixture.id} [${fixture.status}]: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  console.log("R-Q6 remains unresolved regardless of this run's score.");
+  console.log(`${passed}/${total} total routing decisions correct.`);
   return passed === total ? 0 : 1;
 }
 
