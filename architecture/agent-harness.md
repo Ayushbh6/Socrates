@@ -1,5 +1,7 @@
 # Socrates Agent Harness
 
+Current release reference: context/routing/session continuity shipped in `fae72dc`; image-aware bounded memory decisions shipped in `6f10176`. Trial-log entries 63–66 and their linked result reports distinguish implemented behavior from historical model-quality findings. Handoff status and next authorized scope are maintained in `AGENTS.md`.
+
 ## Objective
 
 Build a production coding-agent harness with:
