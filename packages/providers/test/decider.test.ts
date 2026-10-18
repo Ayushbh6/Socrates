@@ -30,7 +30,7 @@ const QUESTIONS = {
   recall: { instructions: "Would looking up what is known about the user help?", yes: "Depends on the past.", no: "Self-contained." },
   save: { instructions: "Does the user state a lasting fact?", yes: "A lasting fact.", no: "One-off." },
 };
-const REPLY = { model: "perplexity/pplx-decider-v1.1-27b-20261006", answers: { recall: { type: "noul", noul: 0.12 }, save: { type: "noul", noul: 0.98 } }, usage: { input_tokens: 97, output_tokens: 1, cost: 0.00000194 }, id: "gen-dec-1" };
+const REPLY = { model: "perplexity/pplx-decider-v1.2-20261016", answers: { recall: { type: "noul", noul: 0.12 }, save: { type: "noul", noul: 0.98 } }, usage: { input_tokens: 97, output_tokens: 1, cost: 0.00000194 }, id: "gen-dec-1" };
 
 describe("the decider", () => {
   it("sends yes/no questions to OpenRouter's decisions endpoint and reads back P(yes) with the price", async () => {

@@ -20,7 +20,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { OpenRouterDecider } from "@socrates/providers";
+import { DECIDER_MODEL, DECIDER_BACKUP_MODEL, OpenRouterDecider } from "@socrates/providers";
 import { loadEvaluationEnvironment } from "../../router/eval/environment";
 import { GATE_QUESTIONS, RECALL_AT, RECALL_STRONG_AT, SAVE_AT, WORK_AT, WORK_QUESTION, gateState, workState } from "../src";
 
@@ -108,7 +108,10 @@ const CASES: Case[] = [
 const real = fileURLToPath(new URL("../../../.socrates/evals/decider-real.json", import.meta.url));
 if (existsSync(real)) CASES.push(...(JSON.parse(readFileSync(real, "utf8")) as Case[]));
 
-const decider = new OpenRouterDecider({ apiKey });
+const model = process.argv[2] ?? DECIDER_MODEL;
+if (model !== DECIDER_MODEL && model !== DECIDER_BACKUP_MODEL) throw new Error("Choose the primary or backup decider model.");
+const decider = new OpenRouterDecider({ apiKey, model });
+console.log(`Evaluating ${model} directly (no failover).`);
 const rows: { message: string; previous: string | null; recall: number; save: number; wantRecall: number; wantSave: number; ms: number }[] = [];
 let cost = 0, tokens = 0;
 for (const [message, previous, wantRecall, wantSave] of CASES) {
@@ -209,4 +212,4 @@ assert.ok(recalls.falsePositives / recalls.negatives <= 0.15, `recall: ${recalls
 const works = workScore(WORK_AT);
 assert.ok(works.found / works.positives >= 0.8, `work: only ${pct(works.found, works.positives)} of the turns worth recording reach ${WORK_AT}`);
 assert.ok(works.wrong / works.negatives <= 0.2, `work: ${works.wrong}/${works.negatives} turns not worth recording reach ${WORK_AT}`);
-console.log("Passed.");
+console.log(`Passed. Total API cost: $${cost.toFixed(8)}.`);

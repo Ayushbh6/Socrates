@@ -105,7 +105,7 @@ export class MemoryGate {
     const limit = AbortSignal.any([AbortSignal.timeout(this.options.timeoutMs ?? timeoutMs), ...(signal ? [signal] : [])]);
     try {
       // Raced as well as passed down, so a client that ignores the signal cannot hold up the reply.
-      return (await abortable(this.options.decider.decide({ state, questions, trace, ...(images?.length ? { images } : {}) }, limit), limit)).probabilities;
+      return (await abortable(this.options.decider.decide({ state, questions, trace, timeoutMs: this.options.timeoutMs ?? timeoutMs, ...(images?.length ? { images } : {}) }, limit), limit)).probabilities;
     } catch (error) {
       if (!signal?.aborted) {
         this.unavailableUntil = now + RETRY_AFTER_MS;

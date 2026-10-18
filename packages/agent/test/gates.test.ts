@@ -1,6 +1,7 @@
 import type { DeciderClient, DecisionRequest, DecisionResponse } from "@socrates/contracts";
 import type { SemanticHit, SemanticIndex, SemanticQuery } from "@socrates/retrieval";
 import { LedgerStore } from "@socrates/store";
+import { FailoverDecider } from "@socrates/providers";
 import { describe, expect, it } from "vitest";
 import { continueTask } from "../../router/test/helpers";
 import { GATE_ANSWER_CHARS, GATE_MESSAGE_CHARS, GATE_QUESTIONS, MemoryGate, gateState, memoryCandidates, memoryHint } from "../src";
@@ -38,6 +39,19 @@ describe("what the gate sends", () => {
 });
 
 describe("the memory gate", () => {
+  it("passes each stage's deadline and accepts backup decisions without disabling the gate", async () => {
+    const primary = fakeDecider(() => "fail");
+    const backup = fakeDecider(() => ({ recall: 0.9, save: 0.8 }));
+    const gate = new MemoryGate({ decider: new FailoverDecider({ primary: primary.decider, backup: backup.decider }) });
+    expect(await gate.read(input())).toEqual({ recall: 0.9, save: 0.8 });
+    expect(primary.asked[0]!.timeoutMs).toBe(2_000);
+    expect(backup.asked[0]!.timeoutMs).toBe(2_000);
+    expect(await gate.readWork({ state: "Verified work", trace: { role: "decision" } })).toBe(0);
+    expect(backup.asked[1]!.timeoutMs).toBe(30_000);
+    expect(primary.asked).toHaveLength(1);
+    expect(await gate.read(input())).toEqual({ recall: 0.9, save: 0.8 });
+  });
+
   it("asks only the questions that matter and returns the probabilities", async () => {
     const { decider, asked } = fakeDecider(() => ({ recall: 0.1, save: 0.97 }));
     const gate = new MemoryGate({ decider });

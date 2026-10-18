@@ -505,8 +505,10 @@ export class Runtime {
   private startDecider(env: Record<string, string | undefined>): void {
     this.gate = null;
     try {
-      const decider = (this.deps.makeDecider ?? makeDecider)(env);
-      if (decider) this.gate = new MemoryGate({ decider: withDecisionRecording(decider, (call) => this.saveCall(call, env)), log: this.log });
+      const sink = (call: CallRecord) => this.saveCall(call, env);
+      const injected = this.deps.makeDecider?.(env);
+      const decider = this.deps.makeDecider ? (injected ? withDecisionRecording(injected, sink) : null) : makeDecider(env, sink);
+      if (decider) this.gate = new MemoryGate({ decider, log: this.log });
     } catch (error) {
       this.log(`the memory decider is unavailable: ${redact(message(error), env)}`);
     }

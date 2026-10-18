@@ -1,7 +1,7 @@
 import type { DecisionRequest } from "@socrates/contracts";
 import { countTokens } from "@socrates/shared";
 
-/** Perplexity V1.1: 262,144 context tokens; use at most 60%, never a fill target. */
+/** Perplexity V1.2 and Jev 1.14: 262,144 context tokens; use at most 60%, never a fill target. */
 export const DECIDER_CONTEXT_TOKENS = 262_144;
 export const DECIDER_INPUT_TOKENS = Math.floor(DECIDER_CONTEXT_TOKENS * 0.6);
 

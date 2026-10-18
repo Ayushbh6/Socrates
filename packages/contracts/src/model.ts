@@ -213,6 +213,8 @@ export interface DecisionImage extends ImageData {
 }
 
 export interface DecisionRequest {
+  /** Local end-to-end deadline, including any backup attempt; never sent to the provider. */
+  timeoutMs?: number;
   /** Actual image contents, in attachment order. */
   images?: DecisionImage[];
   /** The text the questions are about. */
@@ -239,7 +241,7 @@ export interface DecisionResponse {
  * slower step is worth taking. It is not a chat model.
  */
 export interface DeciderClient {
-  /** The model's identity, such as "openrouter:perplexity/pplx-decider-v1.1-27b". */
+  /** The model's identity, such as "openrouter:perplexity/pplx-decider-v1.2". */
   readonly id: string;
   decide(request: DecisionRequest, signal?: AbortSignal): Promise<DecisionResponse>;
 }

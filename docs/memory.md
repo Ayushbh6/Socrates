@@ -18,7 +18,10 @@ Socrates already remembers *work*: the ledger keeps every exchange, `context_ret
 
 ## What the decider is
 
-`perplexity/pplx-decider-v1.1-27b` is not a chat model. It reads text (and images) and a question, and returns a **probability**, not words: a yes/no question gives P(yes), a choice question gives a probability per option. Output is free, input is $0.02 per million tokens, and Perplexity's own recorded runs show a median of 0.26 s. OpenRouter serves it at `POST /api/alpha/decisions` (alpha, so the shape may change); Perplexity's own `POST /v1/decisions` has the same body. The weights are open but need about 49 GiB of GPU memory, so it is a hosted call.
+`perplexity/pplx-decider-v1.2` is not a chat model. It reads text (and images) and a question, and returns a **probability**, not words: a yes/no question gives P(yes), a choice question gives a probability per option. Output is free, input is $0.02 per million tokens, and Perplexity's own recorded runs show a median of 0.26 s. OpenRouter serves it at `POST /api/alpha/decisions` (alpha, so the shape may change); Perplexity's own `POST /v1/decisions` has the same body. The weights are open but need about 49 GiB of GPU memory, so it is a hosted call.
+
+**Availability (18 October 2026).** Perplexity V1.1 has no OpenRouter endpoints. The primary is now V1.2; the backup is [TypeSafe Jev 1.14](https://openrouter.ai/typesafe/jev-1.14), $0.042 per million input tokens with free output. Both support images and a 262,144-token context. The backup receives the same full request after a primary failure or timeout. It handles subsequent calls for 30 seconds before the primary is retried. The shared foreground/background deadlines remain 2/30 seconds, with 1/5 seconds reserved for a backup attempt; shared credential/billing errors and user cancellation are not retried. Thresholds are unchanged. Each actual attempt is shown in Inspect. `pnpm eval:decider` tests the primary directly; append `typesafe/jev-1.14` to test the backup directly without hiding failures behind failover. Release measurements are in trial-log entry 74.
+
 
 That makes it a cheap, fast **gate**: it decides *whether* something is worth a slower step, and the slower step does the work.
 
@@ -93,7 +96,7 @@ User memory is facts about the user. Work memory is **how things are done in one
 
 **Result.** `pnpm eval:decider` (24 finished turns, ten worth recording): at 0.5 it found 9 of 10 and none of the fourteen others (the miss, a dependency upgrade at 0.19, is arguably not a repeatable procedure). Tried on a copy: one task wrote an index line and a topic file with steps and pitfalls (turn 5); a second similar task updated the same file and line (turns 5, 6) instead of adding a copy. Not yet measured: whether a later conversation that did not make the notes follows them better than one without (the "recurring change done twice" test), which needs real use; the Inspect panel shows how often the notes are written.
 
-**Privacy.** The gate sends the full current message, original static image pixels and up to 4k recent Q&A to OpenRouter and Perplexity. After eligible project work it also sends the full final answer and bounded factual tool summaries. The existing decider/use/save switches control these paths. The chat model already sees everything when it is hosted, but a user running local models would not expect it. Settings gets "Memory gates" with a switch and the model name, and says what is sent.
+**Privacy.** The gate sends the full current message, original static image pixels and up to 4k recent Q&A to OpenRouter and Perplexity (or TypeSafe when the backup is used). After eligible project work it also sends the full final answer and bounded factual tool summaries. The existing decider/use/save switches control these paths. The chat model already sees everything when it is hosted, but a user running local models would not expect it. Settings gets "Memory gates" with a switch and the model name, and says what is sent.
 
 ## What the user sees and controls
 
