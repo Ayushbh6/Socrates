@@ -1,5 +1,5 @@
 import { AlertTriangle, Brain, Check, ChevronRight, CornerDownRight, FilePen, FileText, History, LoaderCircle, Puzzle, Search, SquareTerminal, Wrench, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { diffLines } from "../lib/evidence";
@@ -7,6 +7,7 @@ import type { Exchange } from "../lib/model";
 import type { CallView } from "../lib/types";
 import { type Segment, type ToolStep, type WorkItem, arriving, callFailed, callVerb, elapsed, groupLabel, thoughtLabel, waitingLine, workSegments, workSummary } from "../lib/work";
 import { EvidenceViewer, ThinkingViewer } from "./EvidenceViewer";
+import { STAGE_MIN_MS, orientedLine, progressLine, progressTrail } from "../lib/progress";
 
 /** The current time, every second while `on`. */
 function useNow(on: boolean): number {
@@ -36,10 +37,13 @@ export function Work({ exchange }: { exchange: Exchange }) {
   // Nothing streams and nothing runs: the model is reading or thinking before its first word.
   const waiting = active && !arriving(exchange);
   const status = waiting ? <LiveStatus label={waitingLine(exchange)} since={exchange.lastAt ?? exchange.at} now={now} /> : null;
-  if (!segments.length) return status;
+  // Before any work shows, the routing line says what is happening.
+  if (!segments.length) return waiting ? <ProgressLine exchange={exchange} now={now} /> : null;
+  const oriented = orientedLine(exchange);
 
   const body = (
     <div className="work-body">
+      {oriented && <Oriented exchange={exchange} label={oriented.label} ms={oriented.ms} />}
       {segments.map((segment, i) => <SegmentView key={i} segment={segment} newest={active && i === segments.length - 1} now={now} />)}
       {status}
     </div>
@@ -54,6 +58,67 @@ export function Work({ exchange }: { exchange: Exchange }) {
         <ChevronRight aria-hidden className="work-chevron" />
       </button>
       {expanded && body}
+    </div>
+  );
+}
+
+/**
+ * The routing line: one line under the question while a message gets started,
+ * changing in place as the server reports each stage. A stage stays at least
+ * STAGE_MIN_MS so it can be read; clicking opens the stages so far.
+ */
+function ProgressLine({ exchange, now }: { exchange: Exchange; now: number }) {
+  const count = exchange.progress.length;
+  // A page that joins mid-way starts at the newest stage rather than replaying them.
+  const [shown, setShown] = useState(() => Math.max(0, count - 1));
+  const shownAt = useRef(Date.now());
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (shown >= count - 1) return;
+    const timer = setTimeout(() => { shownAt.current = Date.now(); setShown((s) => Math.min(s + 1, count - 1)); }, Math.max(0, STAGE_MIN_MS - (Date.now() - shownAt.current)));
+    return () => clearTimeout(timer);
+  }, [shown, count]);
+  const label = progressLine(exchange, shown, now);
+  const seconds = Math.max(0, Math.floor((now - Date.parse(exchange.at)) / 1000));
+  return (
+    <div className="progress-line" data-open={open}>
+      <button type="button" className="progress-head" onClick={() => setOpen(!open)} aria-expanded={open} disabled={!count}>
+        <span className="progress-dot" aria-hidden />
+        <span className="progress-label" role="status"><span key={label} className="progress-swap"><span className="shimmer">{label}</span></span></span>
+        {seconds >= 1 && <span className="live-time">{seconds}s</span>}
+        {count > 0 && <ChevronRight aria-hidden className="work-chevron" />}
+      </button>
+      {open && <Trail exchange={exchange} shown={shown} />}
+    </div>
+  );
+}
+
+function Trail({ exchange, shown, settled }: { exchange: Exchange; shown: number; settled?: boolean }) {
+  return (
+    <ol className="progress-trail">
+      {progressTrail(exchange, shown, settled).map((item, i) => (
+        <li key={i} data-done={item.done}>
+          {item.done ? <Check aria-hidden /> : <span className="progress-dot" aria-hidden />}
+          <span>{item.label}</span>
+          <span className="live-time">{elapsed(item.offsetMs)}</span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/** Once work shows: how long getting started took, opening to the stages (this page only). */
+function Oriented({ exchange, label, ms }: { exchange: Exchange; label: string; ms: number }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="progress-line" data-open={open}>
+      <button type="button" className="progress-head oriented" onClick={() => setOpen(!open)} aria-expanded={open}>
+        <Check aria-hidden />
+        <span>{label}</span>
+        <span className="live-time">{elapsed(ms)}</span>
+        <ChevronRight aria-hidden className="work-chevron" />
+      </button>
+      {open && <Trail exchange={exchange} shown={exchange.progress.length - 1} settled />}
     </div>
   );
 }

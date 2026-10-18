@@ -42,7 +42,7 @@ This file hands the project to whichever agent harness works on it next. Read it
 - **Model outputs are noisy:** judge prompt changes on repeated runs, and report numbers honestly (trial log entries 58–60 show the format).
 - **Live data:** `~/.socrates-v2` is the user's real v2 data. Read it only through a read-only backup, and never touch `~/.socrates` (v0.1.20).
 
-## Where things stand (2026-10-18; release through entry 77)
+## Where things stand (2026-10-18; release through entry 78)
 
 The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `server.md`, `web.md`, `observability.md`). The trial log numbers each change. Recently shipped, newest last:
 
@@ -53,6 +53,7 @@ The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `serv
 - **Sidebar menus:** a goal's or chat's actions sit behind one ⋯ menu in the Standard sidebar.
 - **Tools without a workspace:** a workspace is only where a turn starts; with no folder, work starts in the home folder and asks before paths outside the user's folders.
 - **General by day:** the General goal holds one task per day ("General · Fri 9 Oct"), listed under Chats in Standard.
+- **Routing line (entry 78):** until work shows, one line under the question names the real stage (memory check, finding the goal and task, searching earlier tasks, repair, opening Goal → Task, starting work); Standard shows Preparing this task…. Stages are live only (`progress` message), never saved.
 - **Failures look the same:** every failed tool call, or command that exits non-zero, gets the red ✗ and counts as "N tool calls failed".
 - **Lean fixed prompt:** the system prompt and tools are about 5.4k tokens per request (was 7.4k); `packages/agent/test/fixed-overhead.test.ts` holds the budget.
 - **Redo in another task:** a misrouted question is asked again in a chosen task ("Redo in…" on the route line); the first attempt is set aside, never moved (`architecture/agent-harness.md`, "Redo in another task").
@@ -75,7 +76,7 @@ The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `serv
 
 ## Next, in the order agreed with the user
 
-Entry 77 fixed three review caveats (decider primary now 1.5 of 2 s; conditional closure after fixed commands; status not blocked by unrouted messages). Agreed next: the guided routing "living line" (Codex plan of 18 Oct: live-only server progress stages, then one updating line in Flow, shorter in Standard), which needs new pre-route live activity because the page currently receives nothing between `message` and `routed`. Confirm the plan with the user before coding it. Entry 75 records trace/entry/router-effort UI changes; entry 74 records the replacement decider and backup. Q6 remains unresolved (latest recorded check 2/3; Q11 3/3).
+Entry 77 fixed three review caveats (decider primary now 1.5 of 2 s; conditional closure after fixed commands; status not blocked by unrouted messages). Entry 78 shipped the routing line (live-only `progress` stages from server to page; `web.md`, "Routing line"). No further phase is authorized; ask the user what is next. Entry 75 records trace/entry/router-effort UI changes; entry 74 records the replacement decider and backup. Q6 remains unresolved (latest recorded check 2/3; Q11 3/3).
 
 **Routing guidance (16 Oct, entry 72):** only the tested continuation/reference guidance and goal/task membership check were authorized for release. The router resolves the preceding request's subject before matching task objectives, keeps follow-ups with their owning task even when completed, and checks that returned labels belong together. Input order, output schema, model, temperature/effort mapping and number of model calls remain unchanged. Recorded synthetic image-eval Q6 and Q11 are now part of both routing eval commands, with separate first-decision scores. **Maths Q6 remains unresolved:** the model can name the right equation but return the other maths task's label. Do not report this as a complete fix or ship the explicit-task-reference prototype; that prototype regressed broader routing. Release checks: 1,019 tests passed, one skipped; typecheck/build passed. Fresh live eval: stateful 69/72 (one provider network failure, two linked task-splitting failures), recorded Q6 2/3 and Q11 3/3.
 

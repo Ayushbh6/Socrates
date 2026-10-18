@@ -325,6 +325,10 @@ export interface TerminalView {
   exitedAt: string | null;
 }
 
+/** What a message is doing before its first model step, as the server reports it (live only). */
+export type ProgressStage = "remembering" | "recalling" | "routing" | "searching" | "rechecking" | "escalating" | "waiting" | "preparing" | "starting";
+export interface ProgressStep { stage: ProgressStage; at: string }
+
 export type ServerMessage =
   | ({ type: "state" } & LiveState)
   | ({ type: "activity" } & Activity)
@@ -334,6 +338,8 @@ export type ServerMessage =
   | ({ type: "approval" } & PendingApproval)
   | { type: "handed_off"; id: string; conversation: string; lane: number; mainReleased: boolean }
   | { type: "status"; id: string; conversation: string; text: string }
+  /** The stages so far of a message getting started; `seq` is its saved request, once recorded. */
+  | { type: "progress"; id: string; conversation: string; seq?: number; trail: ProgressStep[] }
   | { type: "result"; id: string; conversation: string; result: { kind: string; text: string; notices: string[] } }
   | { type: "error"; id?: string; conversation?: string; code: string; message: string }
   | { type: "reset"; seq: number }

@@ -82,7 +82,11 @@ type AttemptOutcome =
   | { kind: "invalid"; errors: string[] };
 
 interface Counters { invalidFinal: number; invalidTools: number; semanticErrors: number; resultTransport: string }
+/** Live-only routing stages for the page (architecture/web.md, "Routing line"); never recorded. */
+export type RoutingStage = "routing" | "searching" | "rechecking" | "escalating";
+
 interface Budget {
+  progress?: (stage: RoutingStage) => void;
   counters: Counters;
   ledgerQueries: number;
   messages: ModelMessage[];
@@ -124,7 +128,7 @@ export class GoalRouter {
   }
 
   /** Persist the exact message, route it, and bind it. A lane's message is recorded in that lane. */
-  async route(message: string, signal?: AbortSignal, options: { laneId?: string | null; userEventId?: string; clarificationTurnId?: string | null; laneActivity?: ReadonlyMap<string, string | null>; remembered?: string | null; beforeBind?: (taskIds: string[]) => Promise<void> } = {}): Promise<RoutingResult> {
+  async route(message: string, signal?: AbortSignal, options: { laneId?: string | null; userEventId?: string; clarificationTurnId?: string | null; laneActivity?: ReadonlyMap<string, string | null>; remembered?: string | null; beforeBind?: (taskIds: string[]) => Promise<void>; onProgress?: (stage: RoutingStage) => void } = {}): Promise<RoutingResult> {
     signal?.throwIfAborted();
     const laneId = options.laneId ?? null;
     const userEvent = options.userEventId ? this.store.getEvent(options.userEventId) : this.store.recordUserMessage(message, laneId);
@@ -147,15 +151,17 @@ export class GoalRouter {
     // Lanes are shown with their selectors, so routing to a lane's task needs no ledger query.
     for (const n of ctx.laneSelectors.goals) seen.goals.add(n);
     for (const t of ctx.laneSelectors.tasks) seen.tasks.add(t);
-    const budget: Budget = { counters: {invalidFinal: 0, invalidTools: 0, semanticErrors: 0, resultTransport: "none"}, ledgerQueries: 0, errors: [], normalized: [], messages: [{ role: "user", content: ctx.input }], trace: { userEventId: userEvent.id, laneId }, requests: 0 };
+    const budget: Budget = { counters: {invalidFinal: 0, invalidTools: 0, semanticErrors: 0, resultTransport: "none"}, ledgerQueries: 0, errors: [], normalized: [], messages: [{ role: "user", content: ctx.input }], trace: { userEventId: userEvent.id, laneId }, requests: 0, ...(options.onProgress ? { progress: options.onProgress } : {}) };
 
     let attempts = 1;
     let escalated = false;
     let modelId = this.routerModel.id;
+    budget.progress?.("routing");
     let outcome = await this.attempt(this.routerModel, ctx, seen, budget, signal);
     if (outcome.kind === "invalid" && this.mainModel) {
       attempts++;
       escalated = true;
+      budget.progress?.("escalating");
       modelId = this.mainModel.id;
       budget.messages.push({ role: "user", content: "The routing model failed to produce a valid decision. Continue using all prior ledger evidence and corrections. " + `Only ${LEDGER_QUERY_MAX_CALLS - budget.ledgerQueries} ledger queries remain. ` + outcome.errors.join("; ") });
       outcome = await this.attempt(this.mainModel, ctx, seen, budget, signal);
@@ -236,8 +242,10 @@ export class GoalRouter {
           for (const call of response.toolCalls) messages.push({role: "tool", toolCallId: call.id, toolName: call.name, content: renderToolError({code: "invalid_routing_result", message: validation.errors.join("; "), correction: "Correct the routing decision and call routing_result alone.", retryable: !repaired}), isError: true});
           if (repaired) break;
           repaired = true;
+          budget.progress?.("rechecking");
           continue;
         }
+        if (response.toolCalls.some(c => c.name === "ledger_query")) budget.progress?.("searching");
         for (const call of response.toolCalls) {
           const result = this.executeTool(call, ctx, seen, budget);
           if (result.isError) budget.counters.invalidTools++;
@@ -246,6 +254,7 @@ export class GoalRouter {
           if (result.ask) return { kind: "clarify", ask: result.ask };
           messages.push({ role: "tool", toolCallId: call.id, toolName: call.name, content: result.content, isError: result.isError });
         }
+        budget.progress?.("routing");
         continue;
       }
 
@@ -266,6 +275,7 @@ export class GoalRouter {
       });
       if (repaired) break;
       repaired = true;
+      budget.progress?.("rechecking");
     }
     return { kind: "invalid", errors: lastErrors };
   }

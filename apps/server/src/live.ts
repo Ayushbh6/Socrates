@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { type AnchorDecision, type Draft, type HandleResult, MAX_RUNNING_CHATS, MAX_RUNNING_LANES, RedoError, SocratesBusyError } from "@socrates/agent";
+import { type AnchorDecision, type Draft, type HandleResult, type ProgressStage, MAX_RUNNING_CHATS, MAX_RUNNING_LANES, RedoError, SocratesBusyError } from "@socrates/agent";
 import type { Attachment } from "@socrates/contracts";
 import { abortable } from "@socrates/shared";
 import type { ApprovalOrigin, ApprovalRequest } from "@socrates/tools";
@@ -112,6 +112,10 @@ interface Run {
   seq?: number;
   /** The current handed-off part; compound messages retain their main reservation. */
   handedTurnId?: string;
+  /** Its stages before work, newest last (live only; architecture/web.md, "Routing line"). */
+  progress: { stage: ProgressStage; at: string }[];
+  /** The saved request's sequence number as soon as it is recorded, for other pages' progress. */
+  requestSeq?: number;
   controller: AbortController;
   /** Settles once the message's work is recorded, however it ended. */
   settled?: Promise<unknown>;
@@ -423,7 +427,8 @@ export class LiveHub {
         }
       }
     }
-    // The replies being written now, after the saved activity they follow.
+    // Stages of messages still getting started, then the replies being written now.
+    for (const run of this.runs.values()) if (run.progress.length) this.send(socket, this.progressOf(run));
     for (const { message } of this.drafts.values()) this.send(socket, message);
     this.send(socket, { type: "terminals", terminals: this.terminals.list() });
   }
@@ -498,7 +503,7 @@ export class LiveHub {
     }
     const schedule = queuedSchedule ?? this.schedule();
     if (target && "taskId" in target) schedule.tasks.add(target.taskId);
-    const run: Run = { id, conversation: to === "new_lane" ? "starting" : to, chat: !!chat, tasks: schedule.tasks, schedule, controller: new AbortController() };
+    const run: Run = { id, conversation: to === "new_lane" ? "starting" : to, chat: !!chat, tasks: schedule.tasks, schedule, progress: [], controller: new AbortController() };
     this.acceptedIds.add(id);
     this.runs.set(id, run);
     const work = socrates.handle(text, {
@@ -515,7 +520,16 @@ export class LiveHub {
       ...(target ? (keep ? { target, pinned: true } : { target, alongside: true }) : {}),
       ...(redoOf ? { redoOf } : {}),
       beforeBind: (taskIds, signal) => this.beforeBind(run, taskIds, signal),
-      onRecorded: (userEventId) => { if (target || replyTo) run.seq = this.runtime.store.requestRoot(userEventId).seq; },
+      onRecorded: (userEventId) => {
+        run.requestSeq = this.runtime.store.requestRoot(userEventId).seq;
+        if (target || replyTo) run.seq = run.requestSeq;
+      },
+      onProgress: (stage) => {
+        // Repeats (routing again after a search) are one stage; nothing here may fail the message.
+        if (run.progress.at(-1)?.stage === stage) return;
+        run.progress.push({ stage, at: this.runtime.store.clock.now().toISOString() });
+        try { this.broadcast(this.progressOf(run)); } catch (error) { this.runtime.log(`progress broadcast failed: ${String(error)}`); }
+      },
       onBound: (turnId, taskId) => {
         run.tasks.add(taskId);
         schedule.bind();
@@ -617,6 +631,10 @@ export class LiveHub {
       await s.bound;
       if (taskIds.some((id) => s.tasks.has(id))) await Promise.race([s.done, s.handedOff]);
     })), signal);
+  }
+
+  private progressOf(run: Run): object {
+    return { type: "progress", id: run.id, conversation: run.conversation, ...(run.requestSeq !== undefined ? { seq: run.requestSeq } : {}), trail: run.progress };
   }
 
   /** The tasks with a message working in them now, as goal and task numbers, so a page knows which chats are busy. */

@@ -1,4 +1,4 @@
-import type { Activity, AttachmentView, ClarificationView, CallView, HistoryItem, KeepChoice, LiveState, PendingApproval, Place, ResultView, ServerMessage } from "./types";
+import type { Activity, AttachmentView, ClarificationView, CallView, HistoryItem, KeepChoice, LiveState, PendingApproval, Place, ProgressStep, ResultView, ServerMessage } from "./types";
 
 /**
  * What the page knows, built from history pages and the live connection
@@ -52,6 +52,8 @@ export interface Exchange {
   answers: string[];
   /** Initial reveal position when an indexed answer replaces a plain-text draft. */
   answerStarts: Record<number, number>;
+  /** Its stages before work, as they happened (live only; never in history). */
+  progress: ProgressStep[];
   draft: Draft | null;
   /** The model's thinking as it arrives, kept beside the reply's draft. */
   thinking: Draft | null;
@@ -198,6 +200,12 @@ function serverMessage(model: Model, message: ServerMessage): Model {
       return activity(model, { kind: "draft", seq: model.seq, at: new Date().toISOString(), conversation: message.conversation, turnId: message.turnId, call: message.call, draftKind: message.kind, text: message.text, ...(message.length ? { length: message.length } : {}), ...(message.handle ? { handle: message.handle } : {}) });
     case "status":
       return mapSent(model, message.id, (e) => ({ ...e, note: message.text }));
+    case "progress": {
+      // The sending page knows it by its id; others by the saved request's seq.
+      const mine = (e: Exchange) => e.sendId === message.id || (message.seq !== undefined && e.seq === message.seq);
+      const edit = (list: Exchange[]) => list.map((e) => (mine(e) ? { ...e, progress: message.trail } : e));
+      return { ...model, pending: edit(model.pending), conversations: Object.fromEntries(Object.entries(model.conversations).map(([k, list]) => [k, edit(list)])) };
+    }
     case "error":
       return message.id ? mapSent(model, message.id, (e) => (e.state === "sending" ? { ...e, state: "failed", note: message.message } : e)) : model;
     case "result":
@@ -420,7 +428,7 @@ export function fromHistory(item: HistoryItem, conversation: string): Exchange {
 }
 
 function blank(e: Partial<Exchange> & Pick<Exchange, "key" | "conversation" | "at" | "message">): Exchange {
-  return { requestId: null, seq: null, attachments: [], route: null, steps: [], answers: [], answerStarts: {}, draft: null, thinking: null, workedAt: null, lastAt: null, outputs: {}, draftCalls: {}, throughSeq: 0, question: null, clarification: null, state: "working", note: null, limit: null, sendId: null, redoneTo: null, redoneFrom: null, memories: [], turns: [], open: [], ...e };
+  return { requestId: null, seq: null, attachments: [], route: null, steps: [], answers: [], answerStarts: {}, progress: [], draft: null, thinking: null, workedAt: null, lastAt: null, outputs: {}, draftCalls: {}, throughSeq: 0, question: null, clarification: null, state: "working", note: null, limit: null, sendId: null, redoneTo: null, redoneFrom: null, memories: [], turns: [], open: [], ...e };
 }
 
 function bySeq(a: Exchange, b: Exchange): number {

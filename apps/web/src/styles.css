@@ -868,3 +868,25 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 @media (max-width: 760px) { .chat-title { min-width: 0; } .task-actions { gap: .25rem; } }
 
 .row-lifecycle { padding: .5rem .65rem; }
+
+/* The routing line (web.md, "Routing line"): one calm line while a message gets started. */
+.progress-line { margin: 0.25rem 0; min-height: 1.9rem; }
+.progress-head { display: flex; align-items: center; gap: 0.55rem; max-width: 100%; padding: 0.26rem 0.45rem; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 0.86rem; text-align: left; }
+.progress-head:not(:disabled):hover { background: var(--hover); color: var(--text); }
+.progress-head:disabled { cursor: default; }
+.progress-head svg:not(.work-chevron) { flex: none; width: 0.9rem; height: 0.9rem; color: var(--accent); }
+.progress-head.oriented { padding-left: 0; font-size: 0.85rem; }
+.progress-line[data-open="true"] .work-chevron { transform: rotate(90deg); }
+.progress-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The fade wraps the shimmer, so neither animation replaces the other; it starts visible. */
+.progress-swap { display: inline-block; animation: progress-in 180ms ease-out; }
+.progress-dot { flex: none; width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 0 rgba(21, 159, 159, 0.35); animation: progress-breathe 1.8s ease-in-out infinite; }
+.progress-trail { list-style: none; margin: 0.2rem 0 0.35rem 0.75rem; padding: 0.35rem 0 0.35rem 0.85rem; border-left: 1px solid rgba(21, 159, 159, 0.25); display: grid; gap: 0.3rem; font-size: 0.82rem; color: var(--muted); }
+.progress-trail li { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.progress-trail li > span:nth-child(2) { min-width: 0; overflow-wrap: anywhere; }
+.progress-trail li[data-done="false"] { color: var(--text); }
+.progress-trail svg { flex: none; width: 0.8rem; height: 0.8rem; color: var(--accent); }
+.progress-trail .progress-dot { width: 0.45rem; height: 0.45rem; margin: 0 0.18rem; }
+@keyframes progress-in { from { opacity: 0.35; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+@keyframes progress-breathe { 0%, 100% { box-shadow: 0 0 0 0 rgba(21, 159, 159, 0.35); opacity: 0.85; } 50% { box-shadow: 0 0 0 5px rgba(21, 159, 159, 0); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .progress-swap, .progress-dot { animation: none; } }

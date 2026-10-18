@@ -5,7 +5,7 @@ import type { Attachment, Effort, EventRefs, FinalAnswer, ModelClient, TurnStop 
 import { homedir } from "node:os";
 import { abortable, countTokens } from "@socrates/shared";
 import { TokenCalibration, DECIDER_INPUT_TOKENS } from "@socrates/providers";
-import { GoalRouter, type RoutedPart, laneSummaries, renderActivity } from "@socrates/router";
+import { GoalRouter, type RoutedPart, type RoutingStage, laneSummaries, renderActivity } from "@socrates/router";
 import { foregroundTurns, selectContextHistory, contextSection, contextTime, currentRequest, type Evidence, type Goal, type Lane, type LedgerStore, type Task, type Turn } from "@socrates/store";
 import type { SemanticHit, SemanticIndex } from "@socrates/retrieval";
 import { type AccessGrant, type AccessPolicy, type Approve, type CapabilityCatalog, RunState, type ShelfOptions, type SupervisorOptions, ToolRunner, WorkspaceRoot, canReadAutomatically, capabilityCandidates, skillShelf } from "@socrates/tools";
@@ -114,6 +114,8 @@ export interface HandleOptions {
   anchorDecisions?: AnchorDecision[];
   /** Quiet status lines while work continues, such as a context refresh during rollover. */
   onStatus?: (text: string) => void;
+  /** Each stage before work starts, as it really begins (live only; architecture/web.md, "Routing line"). */
+  onProgress?: (stage: ProgressStage) => void;
   /**
    * Where the message goes: omitted, the main conversation; "new", a new
    * lane; or an open lane's id. The first message of a lane is routed like
@@ -199,6 +201,9 @@ type RunOptions = HandleOptions & { accessGrants: AccessGrant[]; reading?: Promi
 export type HandleResult =
   | { kind: "clarify"; text: string; laneId: string | null; notice: string | null; notices: string[] }
   | { kind: "answered"; text: string; acknowledgment: string | null; parts: PartResult[]; laneId: string | null; notice: string | null; notices: string[] };
+
+/** What a message is doing before its first model step: the router's stages plus the harness's own. */
+export type ProgressStage = "remembering" | "recalling" | RoutingStage | "waiting" | "preparing" | "starting";
 
 /**
  * Whether a turn ends with a failure still standing, for "do X, then mark this
@@ -533,17 +538,17 @@ export class Socrates {
       let reading: Promise<GateReading | null> = Promise.resolve(null);
       if (laneId && target) {
         const userEvent = userEventId ? this.store.getEvent(userEventId)! : this.store.recordUserMessage(message, laneId);
-        reading = this.askGate(message, userEvent.id, target.task.id, signal);
+        reading = this.askGate(message, userEvent.id, target.task.id, signal, undefined, options.onProgress);
         const turn = this.store.bindTurn({ userEventId: userEvent.id, taskId: target.task.id, route: "lane" });
         parts = [{ order: 1, request: message, dependsOn: [], turn, goal: target.goal, task: target.task, chat: this.store.currentChat(target.task.id), clarification: null, created: { goal: false, task: false } }];
       } else if (options.target && !options.replyTo) {
-        reading = this.askGate(message, userEventId, "taskId" in options.target ? options.target.taskId : null, signal);
+        reading = this.askGate(message, userEventId, "taskId" in options.target ? options.target.taskId : null, signal, undefined, options.onProgress);
         await beforeBind("taskId" in options.target ? [options.target.taskId] : []);
         parts = [this.bindChosen(message, laneId, options.target, userEventId, options.pinned === true)];
       } else {
-        reading = this.askGate(message, userEventId, null, signal, options.replyTo);
-        const remembered = await this.rememberedForRouting(gateMessage, await reading, signal);
-        const routed = await this.router.route(message, signal, { laneId, userEventId, ...(options.replyTo ? {clarificationTurnId: options.replyTo} : options.newRequest ? {clarificationTurnId: null} : {}), laneActivity: this.laneActivity(), beforeBind, ...(remembered ? { remembered } : {}) });
+        reading = this.askGate(message, userEventId, null, signal, options.replyTo, options.onProgress);
+        const remembered = await this.rememberedForRouting(gateMessage, await reading, signal, options.onProgress);
+        const routed = await this.router.route(message, signal, { laneId, userEventId, ...(options.replyTo ? {clarificationTurnId: options.replyTo} : options.newRequest ? {clarificationTurnId: null} : {}), laneActivity: this.laneActivity(), beforeBind, ...(remembered ? { remembered } : {}), ...(options.onProgress ? { onProgress: options.onProgress } : {}) });
         if (routed.kind === "clarify") {
           const notice = laneId ? laneNotice(this.store.requireLane(laneId).number, { kind: "clarify", question: routed.text }) : null;
           return { kind: "clarify", text: routed.text, laneId, notice, notices: notice ? [notice] : [] };
@@ -634,11 +639,12 @@ export class Socrates {
    * (agent-harness.md, "Memory"): never throws, and reads as nothing without a
    * gate, with memory switched off, or when the decider fails or is slow.
    */
-  private async askGate(message: string, userEventId: string, taskId: string | null, signal: AbortSignal, replyTo?: string): Promise<GateReading | null> {
+  private async askGate(message: string, userEventId: string, taskId: string | null, signal: AbortSignal, replyTo?: string, progress?: (stage: ProgressStage) => void): Promise<GateReading | null> {
     const gate = this.options.gate?.() ?? null;
     if (!gate) return null;
     const settings = this.options.memory?.() ?? MEMORY_ON;
     if (!settings.use && !settings.save) return null;
+    progress?.("remembering");
     const event = this.store.requestRoot(userEventId);
     const clarification = replyTo ? this.store.clarification(replyTo) : null;
     const root = clarification ? this.store.requestRoot(clarification.requestId) : event;
@@ -656,8 +662,9 @@ export class Socrates {
   }
 
   /** What the router is told the user has asked to be remembered, when the gate expects the message to lean on it. */
-  private async rememberedForRouting(message: string, reading: GateReading | null, signal: AbortSignal): Promise<string | null> {
+  private async rememberedForRouting(message: string, reading: GateReading | null, signal: AbortSignal, progress?: (stage: ProgressStage) => void): Promise<string | null> {
     if (!(this.options.memory?.() ?? MEMORY_ON).use || (reading?.recall ?? 0) < RECALL_AT) return null;
+    progress?.("recalling");
     const semantic = this.options.semantic ? await this.options.semantic.search(message, { kinds: ["memory"], limit: 20, min: "related" }, signal) : [];
     return memoryForRouting(this.store, { message, semantic, now: this.store.clock.now(), timeZone: this.options.timeZone });
   }
@@ -717,6 +724,7 @@ export class Socrates {
     const goalId = part.goal.id;
     let acquired = false;
     try {
+      if (held && !held.settled && !held.cancelled) options.onProgress?.("waiting");
       await abortable(previous, signal);
       signal.throwIfAborted();
       acquired = true;
@@ -753,6 +761,7 @@ export class Socrates {
     const { store } = this;
     const turn = part.turn;
     const goal = store.requireGoal(turn.goalId!);
+    options.onProgress?.("preparing");
     const startedAt = (this.options.now ?? Date.now)();
     const workspace = this.workspaceFor(goal);
     const capabilities = this.runner.capabilities;
@@ -876,6 +885,7 @@ export class Socrates {
       ...(options.onStatus ? { onStatus: options.onStatus } : {}),
       ...(this.options.log ? { log: this.options.log } : {}),
     });
+    options.onProgress?.("starting");
     const outcome = await runAgent({
       model: this.options.model,
       runner: this.runner,
