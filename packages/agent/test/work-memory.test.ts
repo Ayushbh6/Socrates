@@ -388,6 +388,30 @@ describe("recording what a turn established", () => {
     } finally { await retrieval.close(); }
   });
 
+  it("does not record again what the answer saved as user memory, and marks what the user undid", async () => {
+    const w = await world();
+    let release!: (p: number) => void;
+    const { decider } = workDecider(() => new Promise<number>((done) => { release = done; }));
+    const lock = { text: "Resume stays one page and leads with the Socrates project.", kind: "knowledge" as const, scope: "goal" as const };
+    const undo = { text: "Drop the Bosch internship from the resume.", kind: "knowledge" as const, scope: "goal" as const };
+    const { socrates, model } = w.socrates([continueTask()], [final({ full_answer: "Locked.", memory: { save: [lock, undo], forget: [] } }), { text: "Nothing to record." }], { gate: () => new MemoryGate({ decider, timeoutMs: 60_000 }), memory: () => ({ save: true, use: true }) });
+    await socrates.handle("Lock it: one page, Socrates first, drop Bosch.");
+    const saved = w.store.listMemories();
+    expect(saved.map((m) => m.text)).toEqual(expect.arrayContaining([lock.text, undo.text]));
+    // The user clicks Undo on one before the step runs.
+    w.store.forgetMemory(saved.find((m) => m.text === undo.text)!.id, "user");
+    release(0.9);
+    await socrates.workMemoryIdle();
+    const guide = model.requests.at(-1)!.messages.at(-1)!;
+    const text = guide.role === "user" ? userText(guide.content) : "";
+    expect(text).toContain("Already saved this turn as user memory");
+    expect(text).toContain(`: ${JSON.stringify(lock.text)}`);
+    expect(text).toMatch(/- m\d+ \(undone by the user\): "Drop the Bosch internship/);
+    expect(steps(w.store)).toEqual(["pending", "nothing"]);
+    // Without saves this turn the guide carries no list.
+    expect(workMemorySkill(3)).not.toContain("Already saved");
+  });
+
   it("carries a guide that names the tool, the index's form and the turn", () => {
     const guide = workMemorySkill(41);
     expect(guide).toContain("this turn is turn 41");

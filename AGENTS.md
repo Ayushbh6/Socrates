@@ -42,7 +42,7 @@ This file hands the project to whichever agent harness works on it next. Read it
 - **Model outputs are noisy:** judge prompt changes on repeated runs, and report numbers honestly (trial log entries 58–60 show the format).
 - **Live data:** `~/.socrates-v2` is the user's real v2 data. Read it only through a read-only backup, and never touch `~/.socrates` (v0.1.20).
 
-## Where things stand (2026-10-18; release through entry 80)
+## Where things stand (2026-10-18; release through entry 81)
 
 The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `server.md`, `web.md`, `observability.md`). The trial log numbers each change. Recently shipped, newest last:
 
@@ -77,7 +77,7 @@ The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `serv
 
 ## Next, in the order agreed with the user
 
-Entry 77 fixed three review caveats (decider primary now 1.5 of 2 s; conditional closure after fixed commands; status not blocked by unrouted messages). Entry 78 shipped the routing line (live-only `progress` stages from server to page; `web.md`, "Routing line"). Entries 79 and 80 are phases 1 and 2 of `docs/goal-task-memory-plan.md` (memory per goal and task; asked after every finished turn). Phase 3 (Settings > Memory by goal and task) is agreed in outline but not authorized; ask the user first. Open from entry 80: a decision can be saved both as user memory and as work memory. Entry 75 records trace/entry/router-effort UI changes; entry 74 records the replacement decider and backup. Q6 remains unresolved (latest recorded check 2/3; Q11 3/3).
+Entry 77 fixed three review caveats (decider primary now 1.5 of 2 s; conditional closure after fixed commands; status not blocked by unrouted messages). Entry 78 shipped the routing line (live-only `progress` stages from server to page; `web.md`, "Routing line"). Entries 79 and 80 are phases 1 and 2 of `docs/goal-task-memory-plan.md` (memory per goal and task; asked after every finished turn). Phase 3 (Settings > Memory by goal and task) is agreed in outline but not authorized; ask the user first. Entry 81: a decision is saved once (the answer's user-memory save wins; the background step is told what it saved and skips it). Open: saved memory lines can guess the user's pronouns. Entry 75 records trace/entry/router-effort UI changes; entry 74 records the replacement decider and backup. Q6 remains unresolved (latest recorded check 2/3; Q11 3/3).
 
 **Routing guidance (16 Oct, entry 72):** only the tested continuation/reference guidance and goal/task membership check were authorized for release. The router resolves the preceding request's subject before matching task objectives, keeps follow-ups with their owning task even when completed, and checks that returned labels belong together. Input order, output schema, model, temperature/effort mapping and number of model calls remain unchanged. Recorded synthetic image-eval Q6 and Q11 are now part of both routing eval commands, with separate first-decision scores. **Maths Q6 remains unresolved:** the model can name the right equation but return the other maths task's label. Do not report this as a complete fix or ship the explicit-task-reference prototype; that prototype regressed broader routing. Release checks: 1,019 tests passed, one skipped; typecheck/build passed. Fresh live eval: stateful 69/72 (one provider network failure, two linked task-splitting failures), recorded Q6 2/3 and Q11 3/3.
 

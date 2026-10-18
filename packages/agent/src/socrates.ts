@@ -964,7 +964,12 @@ export class Socrates {
         if (!fallback && work === null) return end("skipped", "The decider could not be asked");
         if (work !== null && work < WORK_AT) return end("not_worth", `The decider said ${work.toFixed(2)}`);
         if (fallback && attachments.length && !this.options.model.vision) return end("skipped", "Image assessment fallback unavailable: the configured agent cannot see images; no memory inferred");
-        const skill = { role: "user" as const, content: workMemorySkill(turn.projectTurn, scope.general) };
+        // What the answer already saved as user memory is not recorded again (a decision is kept once).
+        const saved = store.listEvents({ turnId: turn.id, type: "memory_saved" }).map((e) => {
+          const p = e.payload as import("@socrates/contracts").EventPayloads["memory_saved"];
+          return { handle: `m${p.number}`, text: p.text, undone: !!store.getMemory(p.memory_id)?.forgottenAt };
+        });
+        const skill = { role: "user" as const, content: workMemorySkill(turn.projectTurn, scope.general, saved) };
         const tools = this.runner.workMemoryDefinitions();
         let messages = [...input.transcript, skill];
         // Always bound the writer too. Native reasoning/tool results in the working

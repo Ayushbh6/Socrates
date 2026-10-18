@@ -309,11 +309,16 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 
    **Validation:** typecheck and web build passed; **1,082 tests passed, one skipped (120 files)**. Tests now cover a plain answer and a read-only turn being asked, a 0.39 reading not written, the fake deciders keeping the finished-turn question apart from the message gates, and Inspect counting both calls.
 
+81. **A decision is saved once (2026-10-18).** **Asked:** "Fix the double-save first: a decision should not be saved both as user memory and as work memory. Propose how before coding." Proposed A (the answer's save wins; the background step is told what was saved and skips it) or B (work memory wins; the answer saves only facts about the user); the user chose **A**. **Done:** the step's writing guide now lists the memories the turn's answer saved (`mN` and its words, marked "undone by the user" when Undo was clicked before the step ran) and says never to record them again; the guide's first rule says nothing this turn already saved. The answer's memory rule now also excludes what `WORK_MEMORY` holds (the reverse case), within the unchanged 2,400-token system prompt ("It is saved with your answer" became "Saved with your answer"). The decider question is unchanged, so a turn whose only news was saved with the answer may still start the writer, which then records nothing.
+
+   **Validation:** typecheck and web build passed; **1,083 tests passed, one skipped (120 files)**. New test: the guide carries the turn's saves, marks an undone one, and the step records nothing; a guide without saves carries no list. **Live (DeepSeek Flash high, Perplexity V1.2, two disposable runs, deleted):** the resume rules message and a recruiter-portal lesson, each saved once as user memory with the step ending `nothing` in **4 of 4** turns (before: the rules were saved twice). **Seen:** with A, a goal lesson like the portal one also lands in user memory (goal scope), not in the goal's notes; and one saved line read "Wants his resume …", a pronoun the user never gave (suggested below).
+
 ## Suggested
 
 From memory phase 2 (entry 80):
 
-- **A decision can be saved twice:** once as a user memory (kind knowledge, from the answer) and once as goal work memory (the background step). Either the step could skip what the turn's answer already saved, or knowledge about one goal could live only in work memory.
+- ~~**A decision can be saved twice**~~: fixed in entry 81 (the answer's save wins).
+- **Saved memories can guess pronouns:** "Wants his resume kept to one page." The save rule asks for third-person sentences; it should say to write them without pronouns ("Wants the resume kept to one page.").
 
 Deferred by agreement (2026-10-11, `docs/terminal-output-and-memory.md`, "Later"), only if real use asks for them:
 

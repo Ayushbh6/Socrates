@@ -155,18 +155,21 @@ export function workFallbackState(input: WorkDecisionInput): string {
  * work is worth recording (docs/memory.md, M3b): zero cost on every other
  * turn. The step has only the `work_memory` tool and `context_retrieve`.
  */
-export function workMemorySkill(turnNumber: number, general = false): string {
+export function workMemorySkill(turnNumber: number, general = false, saved: { handle: string; text: string; undone: boolean }[] = []): string {
   const where = general
     ? "This is the General conversation: it keeps one memory for every day, so write at level goal and name topics by subject (devices, travel)."
     : "Write at level task first: what this task learned. Write at level goal what applies beyond this task, such as a lesson another task of this goal already holds (work_memory read lists their topics); then remove this task's copy with remove_topic.";
+  const already = saved.length
+    ? `\n\nAlready saved this turn as user memory, with the answer; never record these again, in any words (the user undid the ones marked so: do not keep them at all):\n${saved.map((m) => `- ${m.handle}${m.undone ? " (undone by the user)" : ""}: ${JSON.stringify(m.text)}`).join("\n")}`
+    : "";
   return `<WORK_MEMORY_SKILL>
 Your answer is saved. Assess whether the completed work established a reusable lesson; record only what a later turn should know. A classifier bypass is not a positive decision: retrieve missing evidence before saving; if you cannot verify a lesson, save nothing. Socrates keeps these notes outside the user's folders: use only the work_memory tool, and do not repeat your answer.
 
-1. Decide. Record only what this turn established: a repeatable procedure this work verified (its checks passed: the steps of a kind of change that will come up again), a lesson (a surprise or mistake, and the fix), or a new decision the user made or confirmed for this work (a plan, a rule, a name, a choice). Not a one-off edit, not a guess, not options or a draft the user has not chosen, not what the code or README already says plainly, not where the work stands (the continuation note holds that), not facts about the user themselves (saved with the answer). If nothing qualifies, reply "Nothing to record." and stop.
+1. Decide. Record only what this turn established: a repeatable procedure this work verified (its checks passed: the steps of a kind of change that will come up again), a lesson (a surprise or mistake, and the fix), or a new decision the user made or confirmed for this work (a plan, a rule, a name, a choice). Not a one-off edit, not a guess, not options or a draft the user has not chosen, not what the code or README already says plainly, not where the work stands (the continuation note holds that), not facts about the user themselves, and nothing this turn already saved (listed below, when there is any). If nothing qualifies, reply "Nothing to record." and stop.
 2. Where. ${where}
 3. Topic: one per procedure or lesson, a short kebab-case name. work_memory read first: if a topic already covers it, read it and rewrite it with write_topic, do not add a second one. Write a title line; "Steps" (numbered, imperative, naming the files and commands); "Pitfalls" (symptom → fix) when there are any; "Evidence: turns N, M" (this turn is turn ${turnNumber}; add the earlier turns it came from). At most about 300 words (${WORK_TOPIC_MAX_CHARS} characters).
 4. Index: write_index with that level's whole index, one line per topic, newest first: "- <what to do, in a few words> → topic <name> · turns N, M". Keep it under about 40 lines; when it is full, merge related lines or drop the stalest before adding one. No steps in the index.
-5. Finish with one short sentence naming the topics you wrote.
+5. Finish with one short sentence naming the topics you wrote.${already}
 </WORK_MEMORY_SKILL>`;
 }
 
