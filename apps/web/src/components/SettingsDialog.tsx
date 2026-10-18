@@ -284,7 +284,7 @@ function MemorySection({ app }: { app: AppState }) {
       <label className="memory-switch"><input type="checkbox" checked={switches.decider} disabled={busy} onChange={(e) => void toggle("decider", e.target.checked)} /> Ask a small model when to recall and save</label>
       <p className="settings-hint">{app.status!.decider === "no_key"
         ? "Needs an OpenRouter key; without one, Socrates recalls from keywords and meaning alone and saves when you ask."
-        : "Uses Perplexity Decider V1.2 through OpenRouter, with TypeSafe Jev 1.14 as an automatic backup. Sends your message, recent conversation and attached images; after verified project work, also the answer and tool summaries. These checks help Socrates recall and save useful information. Each attempt and its cost appear in Inspect."}</p>
+        : "Uses Perplexity Decider V1.2 through OpenRouter, with TypeSafe Jev 1.14 as an automatic backup. Sends your message, recent conversation and attached images; after each answer, also the answer and any tool summaries. These checks help Socrates recall and save useful information. Each attempt and its cost appear in Inspect."}</p>
       {list && !list.length && <p className="settings-hint">Nothing yet. Tell Socrates something about yourself, or add it below.</p>}
       {MEMORY_GROUPS.map(({ kind, title }) => {
         const entries = (list ?? []).filter((m) => m.kind === kind);

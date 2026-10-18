@@ -11,6 +11,7 @@
  * correction.
  *
  *   SOCRATES_ENV_FILE=.env pnpm eval:decider
+ *   DECIDER_ONLY=work SOCRATES_ENV_FILE=.env pnpm eval:decider   (finished turns only)
  *
  * Messages in `.socrates/evals/decider-real.json` (not committed; a list of
  * [message, previous answer or null, recall 0|1, save 0|1]) are scored with
@@ -114,7 +115,8 @@ const decider = new OpenRouterDecider({ apiKey, model });
 console.log(`Evaluating ${model} directly (no failover).`);
 const rows: { message: string; previous: string | null; recall: number; save: number; wantRecall: number; wantSave: number; ms: number }[] = [];
 let cost = 0, tokens = 0;
-for (const [message, previous, wantRecall, wantSave] of CASES) {
+const workOnly = process.env.DECIDER_ONLY === "work";
+for (const [message, previous, wantRecall, wantSave] of workOnly ? [] : CASES) {
   const t0 = performance.now();
   const answer = await decider.decide({ state: gateState({ message, previousAnswer: previous, attachments: [] }), questions: GATE_QUESTIONS });
   cost += answer.usage.costUsd ?? 0;
@@ -131,6 +133,7 @@ function score(question: "recall" | "save", at: number) {
   return { found, positives: positives.length, falsePositives, negatives: negatives.length, precision: found + falsePositives ? found / (found + falsePositives) : 1, recall: found / positives.length };
 }
 
+if (!workOnly) {
 const times = rows.map((r) => r.ms).sort((a, b) => a - b);
 console.log(`${rows.length} messages (${rows.filter((r) => r.wantRecall).length} want a recall, ${rows.filter((r) => r.wantSave).length} want a save, ${rows.filter((r) => !r.wantRecall && !r.wantSave).length} neither); median ${Math.round(times[Math.floor(times.length / 2)]!)} ms, max ${Math.round(times.at(-1)!)} ms; ${tokens} input tokens, $${cost.toFixed(6)} in all ($${(cost / rows.length).toFixed(7)} a message).\n`);
 for (const question of ["recall", "save"] as const) {
@@ -148,6 +151,7 @@ const mistakes = rows.flatMap((r) => [
   ...((r.save >= SAVE_AT) !== (r.wantSave === 1) ? [`  save   ${r.save.toFixed(2)} (wanted ${r.wantSave ? "yes" : "no"}): "${r.message.slice(0, 80)}"`] : []),
 ]);
 console.log(mistakes.length ? `Disagreements at the shipped thresholds:\n${mistakes.join("\n")}\n` : "No disagreements at the shipped thresholds.\n");
+}
 
 // ── Finished turns: is the work worth writing down for the project? (docs/memory.md, M3b) ──
 type Call = [tool: string, input: unknown, ok?: boolean];
@@ -181,35 +185,76 @@ const WORK: WorkCase[] = [
   ["Start migrating the importer to the new API.", [R("src/importer.ts"), E("src/importer.ts"), T("pnpm typecheck", false), E("src/importer.ts"), T("pnpm typecheck", false)], "I got the first half of the importer moved, but typecheck still fails in three places and I stopped there. Say if you want me to carry on.", 0],
   ["Add the two numbers and return the sum.", [E("src/sum.ts"), E("test/sum.test.ts"), T("pnpm test")], "Added sum(a, b) with a test; it passes.", 0],
   ["Change the default port to 4300.", [["grep", { pattern: "4200" }], E("src/config.ts"), E("README.md"), T("pnpm test")], "Changed the default port to 4300 in config.ts and the README. Tests pass.", 0],
+  // Conversations without tool calls (phase 2, docs/goal-task-memory-plan.md): every finished turn is asked.
+  // Worth recording: a decision the user made or confirmed for this work, or a lesson for next time.
+  ["ok lets lock it: one page, socrates project first, drop the bosch internship", [], "Agreed: the resume stays one page, leads with the Socrates project, and the Bosch internship is dropped. I'll keep to that in every revision.", 1],
+  ["We're keeping the memory step after the answer, in the background. Don't propose moving it before the answer again.", [], "Understood: the memory step stays after the answer, in the background and invisible, and I won't suggest moving it in front of the answer again.", 1],
+  ["The recruiter told me they reject cover letters over 250 words, so keep every letter under that.", [], "Noted: every cover letter for this search stays under 250 words. The last draft was 310, so it needs cutting.", 1],
+  ["Final plan: fly to Lisbon on the 12th, train to Porto on the 15th, fly home from Porto on the 19th.", [], "Locked in: Lisbon on the 12th, the train to Porto on the 15th, home from Porto on the 19th. I'll plan the days around that.", 1],
+  ["Last time the deploy broke because the .env file wasn't copied to the server. Keep that in mind for future deploys.", [], "Got it: a deploy here first copies .env to the server; missing it is what broke the last one.", 1],
+  ["Let's call the feature 'Living line' everywhere, in the code and in the docs.", [], "Agreed: it is called Living line everywhere, in identifiers, UI text and the architecture docs.", 1],
+  ["After the mock interview: I ramble on system design. We said I start with requirements, then one diagram, then trade-offs, right?", [], "Yes, that is what we agreed for your system-design answers: requirements first, then a single diagram, then the trade-offs, and stop there.", 1],
+  // Not worth recording: small talk, questions answered, opinions, drafts still open, and facts about the user (user memory keeps those).
+  ["hey buddy i am back again, whats up", [], "Hey! Not much on my side. What are we working on today?", 0],
+  ["What's the difference between TCP and UDP?", [], "TCP is connection-based and guarantees ordered delivery with retransmission; UDP sends independent datagrams with no delivery guarantee, so it is lighter and suits real-time traffic.", 0],
+  ["Give me three ideas for my resume summary.", [], "1. Backend engineer who builds agent tooling end to end. 2. Engineer focused on reliable developer tools. 3. Builder of AI coding harnesses with a product eye. Which direction do you like?", 0],
+  ["Thanks, that worked!", [], "Great, glad it's sorted.", 0],
+  ["what do you think of my resume? honest opinion", [], "Strong project section and clear impact numbers. The summary is generic and the skills list is too long; the education section could move to the end.", 0],
+  ["I'm a backend engineer, mostly Go and Postgres.", [], "Thanks, good to know. I'll keep Go and Postgres in mind.", 0],
+  ["From now on, always give me the short version first.", [], "Will do: short version first, details after.", 0],
+  ["What did we decide about the resume last week?", [], "Last week we settled on one page, the Socrates project first, and dropping the Bosch internship.", 0],
+  ["Should I use Postgres or SQLite for this side project?", [], "SQLite if it is single-user and local; Postgres if several people or services will write to it. Which is it?", 0],
+  ["Explain how the router works in simple words.", [], "Before Socrates starts working, the router reads your message and picks the goal and task it belongs to, so the right history and notes are loaded.", 0],
+  ["Draft an email to my landlord about the heating not working.", [], "Here is a draft: 'Dear Mr. Huber, the heating in my flat has not worked since Monday...' Want it more formal or shorter?", 0],
+  ["What's the weather usually like in Vienna in November?", [], "Cold and grey: around 3 to 9 °C, often foggy, with occasional early snow.", 0],
+  ["tell me what tools you have access to?", [], "I can read and edit files, run terminal commands, search the web, and look up earlier conversations and memory.", 0],
+  ["ok pls try again now", [], "Tried again: it still fails with the same permission error, so the key has not been updated yet.", 0],
+  ["yes pls sure", [], "Okay, going ahead with it now.", 0],
+  ["good morning! slept badly, so go easy on me today", [], "Good morning! Sorry to hear that. Let's keep it light; what's first?", 0],
+  ["Where do we stand on the project?", [], "The routing line is shipped, memory per goal is in, and the next agreed step is phase 2.", 0],
+  ["Summarize what we did today.", [], "Today we reviewed the pushes, fixed three caveats, shipped the routing line and split memory per goal and task.", 0],
+  ["Which of the three summaries would you pick?", [], "I would pick the second: it is the most concrete. Your call, though.", 0],
+  ["Make that email shorter.", [], "Shorter: 'Dear Mr. Huber, the heating has been off since Monday. Could you send someone this week? Thanks.'", 0],
+  ["Translate 'see you tomorrow' to German.", [], "'Bis morgen.'", 0],
+  ["What time is it in Tokyo right now?", [], "It is 6:12 in the morning in Tokyo.", 0],
+  ["can you explain that again but simpler", [], "Sure: the step after the answer writes notes quietly, so the next chat can use them.", 0],
+  ["Interesting, I didn't know that.", [], "Most people don't; it is a common surprise.", 0],
+  ["Go with option 2 for the resume summary.", [], "Done: the summary is now 'Engineer focused on reliable developer tools', and I'll use it in the other versions too.", 1],
+  ["For this project use British spelling in all the docs.", [], "Will do: British spelling throughout this project's docs (colour, organise, behaviour).", 1],
 ];
 const evidence = (calls: Call[]) => calls.map(([tool, input, ok = true], i) => ({ taskId: "t", number: i + 1, handle: `e${i + 1}`, callId: `c${i}`, tool, turnId: "x", input, status: ok ? ("ok" as const) : ("error" as const), result: null, createdAt: "" }));
-const workRows: { request: string; p: number; want: number; ms: number }[] = [];
+const workRows: { request: string; p: number; want: number; ms: number; talk: boolean }[] = [];
 for (const [request, calls, answer, want] of WORK) {
   const t0 = performance.now();
   const reply = await decider.decide({ state: workState({ request, calls: evidence(calls), answer }), questions: { work: WORK_QUESTION } });
   cost += reply.usage.costUsd ?? 0;
-  workRows.push({ request, p: reply.probabilities.work!, want, ms: performance.now() - t0 });
+  workRows.push({ request, p: reply.probabilities.work!, want, ms: performance.now() - t0, talk: calls.length === 0 });
 }
-const workScore = (at: number) => {
-  const positives = workRows.filter((r) => r.want === 1), negatives = workRows.filter((r) => r.want === 0);
+const workScore = (at: number, rows = workRows) => {
+  const positives = rows.filter((r) => r.want === 1), negatives = rows.filter((r) => r.want === 0);
   const found = positives.filter((r) => r.p >= at).length, wrong = negatives.filter((r) => r.p >= at).length;
   return { found, positives: positives.length, wrong, negatives: negatives.length };
 };
-console.log(`work: ${workRows.length} finished turns (${workRows.filter((r) => r.want).length} worth recording); at or above  found  wrongly asked`);
-for (const at of [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.85]) {
-  const w = workScore(at);
-  console.log(`  ${at.toFixed(2).padStart(13)}  ${pct(w.found, w.positives).padStart(6)}  ${`${w.wrong}/${w.negatives}`.padStart(13)}${at === WORK_AT ? " ← shipped" : ""}`);
+for (const [label, rows] of [["all", workRows], ["with tool calls", workRows.filter((r) => !r.talk)], ["conversation only", workRows.filter((r) => r.talk)]] as const) {
+  console.log(`work, ${label}: ${rows.length} finished turns (${rows.filter((r) => r.want).length} worth recording); at or above  found  wrongly asked`);
+  for (const at of [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.85]) {
+    const w = workScore(at, [...rows]);
+    console.log(`  ${at.toFixed(2).padStart(13)}  ${pct(w.found, w.positives).padStart(6)}  ${`${w.wrong}/${w.negatives}`.padStart(13)}${at === WORK_AT ? " ← shipped" : ""}`);
+  }
 }
 const workMistakes = workRows.filter((r) => (r.p >= WORK_AT) !== (r.want === 1)).map((r) => `  work ${r.p.toFixed(2)} (wanted ${r.want ? "yes" : "no"}): "${r.request.slice(0, 70)}"`);
 console.log(workMistakes.length ? `\nDisagreements at the shipped threshold:\n${workMistakes.join("\n")}\n` : "\nNo disagreements at the shipped threshold.\n");
 
 // Measured 2026-10-10 (see docs/memory.md): the floors below leave room under what was measured.
+if (!workOnly) {
 const saves = score("save", SAVE_AT), recalls = score("recall", RECALL_AT);
 assert.ok(saves.recall >= 0.85, `save: only ${pct(saves.found, saves.positives)} of the messages worth saving reach ${SAVE_AT}`);
 assert.ok(saves.falsePositives / saves.negatives <= 0.2, `save: ${saves.falsePositives}/${saves.negatives} messages not worth saving reach ${SAVE_AT}`);
 assert.ok(recalls.recall >= 0.8, `recall: only ${pct(recalls.found, recalls.positives)} of the messages needing a recall reach ${RECALL_AT}`);
 assert.ok(recalls.falsePositives / recalls.negatives <= 0.15, `recall: ${recalls.falsePositives}/${recalls.negatives} messages not needing a recall reach ${RECALL_AT}`);
+}
 const works = workScore(WORK_AT);
 assert.ok(works.found / works.positives >= 0.8, `work: only ${pct(works.found, works.positives)} of the turns worth recording reach ${WORK_AT}`);
-assert.ok(works.wrong / works.negatives <= 0.2, `work: ${works.wrong}/${works.negatives} turns not worth recording reach ${WORK_AT}`);
+// Every finished turn is asked (phase 2), so most are noise: its floor is tighter than the save gate's.
+assert.ok(works.wrong / works.negatives <= 0.1, `work: ${works.wrong}/${works.negatives} turns not worth recording reach ${WORK_AT}`);
 console.log(`Passed. Total API cost: $${cost.toFixed(8)}.`);

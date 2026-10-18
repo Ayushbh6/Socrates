@@ -18,13 +18,20 @@ export { WORK_MEMORY_INDEX_MAX_TOKENS, resolveTopicRef, topicRef } from "@socrat
  * topic:<level>/<name>`. It is kept by Socrates, never in the user's folders:
  * the ledger holds every write (`work_memory_written`), and Socrates' data
  * folder holds the same notes as files, `<data>/memory/goals/<goal>/` with
- * each task's under `tasks/<task>/`. After verified work the decider may say
+ * each task's under `tasks/<task>/`. After every finished turn the decider may say
  * it is worth recording; the agent then writes the notes in a step of its
- * own, after the answer is saved, with a memory-only tool.
+ * own, after the answer is saved, with a memory-only tool. Every finished
+ * turn is asked, conversations without tools too.
  */
 
-/** At or above this chance that a finished turn established something worth writing down, the agent is asked to record it. */
-export const WORK_AT = 0.5;
+/**
+ * At or above this chance that a finished turn established something worth
+ * writing down, the agent is asked to record it. Every finished turn is asked
+ * (phase 2, docs/goal-task-memory-plan.md); `pnpm eval:decider` measured 0.4 at
+ * 18 of 19 worth recording and none of 38 others, conversation and tool turns
+ * alike, where 0.5 missed three borderline ones (trial log entry 80).
+ */
+export const WORK_AT = 0.4;
 /** The step may make this many model requests. */
 export const WORK_FOLLOW_UP_MAX_STEPS = 8;
 /** Of the index budget, the task's own lines may take at most this much; the goal's take the rest. */
@@ -86,22 +93,6 @@ export function workMemoryBlock(store: LedgerStore, scope: WorkScope | null, set
   }
   if (goalIndex?.text.trim()) parts.push(scope.general ? "# GENERAL" : "# THIS_GOAL", ...indexRecords(goalIndex, "goal", left).records);
   return parts.join("\n\n");
-}
-
-const CHANGES = new Set(["edit", "apply_patch", "terminal"]);
-
-/**
- * Whether a finished turn verified something worth asking about: at least
- * one change or command that succeeded (an edit or patch that applied, a
- * command that exited 0). A turn whose changes all failed is not asked.
- */
-export function didRealWork(calls: Evidence[]): boolean {
-  return calls.some((c) => {
-    if (!CHANGES.has(c.tool) || c.status !== "ok") return false;
-    if (c.tool !== "terminal") return true;
-    const result = c.result?.result as { exit_code?: unknown; status?: unknown } | null | undefined;
-    return result?.exit_code === 0 && result.status === "completed";
-  });
 }
 
 export interface WorkDecisionInput {
@@ -171,7 +162,7 @@ export function workMemorySkill(turnNumber: number, general = false): string {
   return `<WORK_MEMORY_SKILL>
 Your answer is saved. Assess whether the completed work established a reusable lesson; record only what a later turn should know. A classifier bypass is not a positive decision: retrieve missing evidence before saving; if you cannot verify a lesson, save nothing. Socrates keeps these notes outside the user's folders: use only the work_memory tool, and do not repeat your answer.
 
-1. Decide. Record only what this work verified (its checks passed): a repeatable procedure (the steps of a kind of change that will come up again) or a lesson (a surprise or mistake, and the fix). Not a one-off edit, not a guess, not what the code or README already says plainly, not where the work stands (the continuation note holds that). If nothing qualifies, reply "Nothing to record." and stop.
+1. Decide. Record only what this turn established: a repeatable procedure this work verified (its checks passed: the steps of a kind of change that will come up again), a lesson (a surprise or mistake, and the fix), or a new decision the user made or confirmed for this work (a plan, a rule, a name, a choice). Not a one-off edit, not a guess, not options or a draft the user has not chosen, not what the code or README already says plainly, not where the work stands (the continuation note holds that), not facts about the user themselves (saved with the answer). If nothing qualifies, reply "Nothing to record." and stop.
 2. Where. ${where}
 3. Topic: one per procedure or lesson, a short kebab-case name. work_memory read first: if a topic already covers it, read it and rewrite it with write_topic, do not add a second one. Write a title line; "Steps" (numbered, imperative, naming the files and commands); "Pitfalls" (symptom → fix) when there are any; "Evidence: turns N, M" (this turn is turn ${turnNumber}; add the earlier turns it came from). At most about 300 words (${WORK_TOPIC_MAX_CHARS} characters).
 4. Index: write_index with that level's whole index, one line per topic, newest first: "- <what to do, in a few words> → topic <name> · turns N, M". Keep it under about 40 lines; when it is full, merge related lines or drop the stalest before adding one. No steps in the index.

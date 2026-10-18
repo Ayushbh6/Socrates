@@ -54,11 +54,14 @@ describe("memory", () => {
 
   it("asks the decider about each message, records the call with its price, and follows the switch and the key", async () => {
     const asked: DecisionRequest[] = [];
+    const finished: DecisionRequest[] = [];
     const decider: DeciderClient = {
       id: "openrouter:perplexity/pplx-decider-v1.1-27b",
       async decide(request) {
-        asked.push(request);
-        return { model: "perplexity/pplx-decider-v1.1-27b-20261006", probabilities: { recall: 0.2, save: 0.95 }, usage: { inputTokens: 40, outputTokens: 1, costUsd: 0.0000008 }, id: "gen-dec-1" };
+        // After each answer the finished turn is asked too (work memory); this test is about the message gates.
+        if ("work" in request.questions) finished.push(request);
+        else asked.push(request);
+        return { model: "perplexity/pplx-decider-v1.1-27b-20261006", probabilities: Object.fromEntries(Object.keys(request.questions).map((q) => [q, ({ recall: 0.2, save: 0.95, work: 0.1 } as Record<string, number>)[q]!])), usage: { inputTokens: 40, outputTokens: 1, costUsd: 0.0000008 }, id: "gen-dec-1" };
       },
     };
     const router = new Responder("r", (_m, request) => (naming(request) ? { text: "Tooling" } : createGoal("Shop", "Set up tooling")));
@@ -76,15 +79,19 @@ describe("memory", () => {
     expect(asked).toHaveLength(1);
     expect(asked[0]!.state).toContain("## TEXT\n```text\nI always want short answers.\n```");
     expect(Object.keys(asked[0]!.questions)).toEqual(["recall", "save"]);
-    const [decision] = live.rt.calls!.list({ role: "decision" });
+    // The message's call, not the finished turn's (both are role decision).
+    const decision = live.rt.calls!.list({ role: "decision" }).find((c) => live.rt.calls!.get(c.id)?.response?.text?.includes("recall"));
+    expect(finished).toHaveLength(1);
     expect(decision).toMatchObject({ role: "decision", model: "openrouter:perplexity/pplx-decider-v1.1-27b", ok: true, promptTokens: 40, costUsd: 0.0000008, userEventId: expect.any(String) });
     expect(live.rt.calls!.get(decision!.id)?.response?.text).toBe('{"recall":0.2,"save":0.95}');
 
     // The Inspect page's rates: a likely save the agent did not take up shows as such.
     expect((await call("GET", "/api/observe/decider?range=all")).body).toMatchObject({
-      answered: 1, failed: 0, medianMs: expect.any(Number), costUsd: 0.0000008,
+      // The message's call and the finished turn's.
+      answered: 2, failed: 0, medianMs: expect.any(Number), costUsd: 0.0000016,
       recall: { likely: 0, likelyOffered: 0, unlikely: 1, unlikelyOffered: 0 },
       save: { likely: 1, likelySaved: 0, unlikely: 0, unlikelySaved: 0 },
+      work: { likely: 0, likelyWrote: 0, unlikely: 1 },
     });
 
     // Switched off in settings: not asked, no rebuild.

@@ -8,11 +8,17 @@ import { GATE_ANSWER_CHARS, GATE_MESSAGE_CHARS, GATE_QUESTIONS, MemoryGate, gate
 import { contextText, final, world } from "./helpers";
 
 /** A decider that answers from a script, remembers what it was asked, and can fail or stall. */
+/** A decider for the message gates; the finished-turn question asked after every answer is kept apart (`finished`) and answered no. */
 function fakeDecider(answer: () => { recall?: number; save?: number } | "fail" | "stall") {
   const asked: DecisionRequest[] = [];
+  const finished: DecisionRequest[] = [];
   const decider: DeciderClient = {
     id: "fake:decider",
     async decide(request: DecisionRequest, signal?: AbortSignal): Promise<DecisionResponse> {
+      if ("work" in request.questions) {
+        finished.push(request);
+        return { model: "fake", probabilities: { work: 0 }, usage: { inputTokens: 10, outputTokens: 1, costUsd: null }, id: null };
+      }
       asked.push(request);
       const out = answer();
       if (out === "fail") throw new Error("decider is down");
@@ -21,7 +27,7 @@ function fakeDecider(answer: () => { recall?: number; save?: number } | "fail" |
       return { model: "fake", probabilities: Object.fromEntries(Object.keys(request.questions).map((q) => [q, p[q as "recall" | "save"] ?? 0])), usage: { inputTokens: 10, outputTokens: 1, costUsd: null }, id: null };
     },
   };
-  return { decider, asked };
+  return { decider, asked, finished };
 }
 
 const input = (over: Partial<Parameters<MemoryGate["read"]>[0]> = {}) => ({
@@ -47,7 +53,7 @@ describe("the memory gate", () => {
     expect(primary.asked[0]!.timeoutMs).toBe(2_000);
     expect(backup.asked[0]!.timeoutMs).toBe(2_000);
     expect(await gate.readWork({ state: "Verified work", trace: { role: "decision" } })).toBe(0);
-    expect(backup.asked[1]!.timeoutMs).toBe(30_000);
+    expect(backup.finished[0]!.timeoutMs).toBe(30_000);
     expect(primary.asked).toHaveLength(1);
     expect(await gate.read(input())).toEqual({ recall: 0.9, save: 0.8 });
   });

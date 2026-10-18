@@ -6,7 +6,7 @@ import { Retrieval } from "@socrates/retrieval";
 import { LedgerStore } from "@socrates/store";
 import { describe, expect, it } from "vitest";
 import { continueTask, general } from "../../router/test/helpers";
-import { MemoryGate, WORK_MEMORY_INDEX_MAX_TOKENS, WORK_QUESTION, WorkMemoryFiles, didRealWork, workMemoryBlock, workMemoryScope, workMemorySkill, workState } from "../src";
+import { MemoryGate, WORK_MEMORY_INDEX_MAX_TOKENS, WORK_QUESTION, WorkMemoryFiles, WORK_AT, workMemoryBlock, workMemoryScope, workMemorySkill, workState } from "../src";
 import { call, contextParts, final, tempDir, world } from "./helpers";
 
 /**
@@ -128,14 +128,8 @@ describe("the task's and goal's indexes", () => {
 describe("which turns are asked about", () => {
   const ev = (tool: string, input: unknown, status: "ok" | "error" = "ok", result: unknown = null) => ({ taskId: "t", number: 1, handle: "e1", callId: "c", tool, turnId: "x", input, status, result: result === null ? null : { result } as never, createdAt: "" });
 
-  it("are those with one change or command that succeeded; the decider reads them as lines", () => {
-    expect(didRealWork([ev("read", { path: "a" }), ev("grep", { pattern: "x" })])).toBe(false);
-    // One applied edit is enough: a short verified fix counts.
-    expect(didRealWork([ev("edit", { path: "a" })])).toBe(true);
-    expect(didRealWork([ev("edit", { path: "a" }, "error")])).toBe(false);
-    expect(didRealWork([ev("terminal", { command: "pnpm test" }, "ok", { status: "completed", exit_code: 1 })])).toBe(false);
-    expect(didRealWork([ev("terminal", { command: "pnpm dev" }, "ok", { status: "running" })])).toBe(false);
-    expect(didRealWork([ev("terminal", { command: "pnpm test" }, "ok", { status: "completed", exit_code: 0 })])).toBe(true);
+  it("are every finished turn; the decider reads its calls as lines", () => {
+    expect(WORK_AT).toBe(0.4);
     const calls = [ev("read", { path: "src/schema.ts" }), ev("edit", { path: "src/schema.ts" }), ev("terminal", { command: "pnpm test" }, "error")];
     const state = workState({ request: "Add a column to the store.", calls, answer: "Done." });
     expect(state).toContain("Add a column to the store.");
@@ -144,6 +138,10 @@ describe("which turns are asked about", () => {
     expect(state).toContain("TOOL CALL [e1]");
     expect(state).toContain("call_status: error");
     expect(WORK_QUESTION.instructions).toContain("repeatable procedure");
+    expect(WORK_QUESTION.instructions).toContain("a new decision the user made or confirmed");
+    expect(WORK_QUESTION.instructions).toContain("a fact or preference about the user themselves");
+    // A conversation without tools reads as the request and the answer.
+    expect(workState({ request: "Lock it: one page.", calls: [], answer: "Agreed." })).toContain("shown_calls: 0");
   });
 });
 
@@ -261,7 +259,9 @@ describe("recording what a turn established", () => {
   it("does not hold the chat: the next message runs while the step is still waiting", async () => {
     const w = await world();
     let release!: (p: number) => void;
-    const { decider } = workDecider(() => new Promise<number>((done) => { release = done; }));
+    let calls = 0;
+    // The first turn's question waits; the second turn, a plain answer, is asked too and answered no.
+    const { decider } = workDecider(() => calls++ === 0 ? new Promise<number>((done) => { release = done; }) : 0);
     const { socrates } = w.socrates([continueTask(), continueTask()], [...work, final({ full_answer: "Second answer." }), { text: "Nothing to record." }], { gate: () => new MemoryGate({ decider, timeoutMs: 60_000 }), memory: () => ({ save: true, use: true }) });
     await socrates.handle("Add the module a.");
     const second = await socrates.handle("And now?");
@@ -312,18 +312,19 @@ describe("recording what a turn established", () => {
     expect(steps(w.store)).toEqual(["pending", "nothing"]);
   });
 
-  it("is not asked when the decider says no, nothing was verified or saving is off; it is skipped when Socrates stops", async () => {
+  it("asks after a turn without changes too, writes nothing when the decider says no or saving is off, and is skipped when Socrates stops", async () => {
     for (const setup of [
-      { work: 0.1, steps: work, memory: { save: true, use: true }, expected: ["pending", "not_worth"] },
-      { work: 0.9, steps: [{ toolCalls: [call("read", { path: "nothing" })] }, final()], memory: { save: true, use: true }, expected: [] },
-      { work: 0.9, steps: work, memory: { save: false, use: true }, expected: [] },
+      { work: 0.1, steps: work, memory: { save: true, use: true }, expected: ["pending", "not_worth"], writer: false },
+      { work: 0.39, steps: [final({ full_answer: "Hello!" })], memory: { save: true, use: true }, expected: ["pending", "not_worth"], writer: false },
+      { work: 0.9, steps: [{ toolCalls: [call("read", { path: "nothing" })] }, final()], memory: { save: true, use: true }, expected: ["pending", "written"], writer: true },
+      { work: 0.9, steps: work, memory: { save: false, use: true }, expected: [], writer: false },
     ]) {
       const w = await world();
       const { decider } = workDecider(() => setup.work);
       const { socrates, model } = w.socrates([continueTask()], [...setup.steps, ...memory], { gate: () => new MemoryGate({ decider }), memory: () => setup.memory });
       await socrates.handle("Add the module a.");
       await socrates.workMemoryIdle();
-      expect(model.requests).toHaveLength(setup.steps.length);
+      expect(model.requests).toHaveLength(setup.steps.length + (setup.writer ? memory.length : 0));
       expect(steps(w.store)).toEqual(setup.expected);
     }
 

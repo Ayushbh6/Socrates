@@ -21,7 +21,7 @@ import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
 import { createCompactor } from "./compaction";
 import { applyAnchors, type AnchorDecision, type AnchorChange } from "./anchors";
 import { type GateReading, type MemoryGate, RECALL_AT } from "./gates";
-import { WORK_AT, WORK_FOLLOW_UP_MAX_STEPS, type WorkScope, WorkMemoryFiles, WorkMemorySteps, didRealWork, workMemoryBlock, workMemoryScope, workMemorySkill, buildWorkDecision, workFallbackState } from "./work-memory";
+import { WORK_AT, WORK_FOLLOW_UP_MAX_STEPS, type WorkScope, WorkMemoryFiles, WorkMemorySteps, workMemoryBlock, workMemoryScope, workMemorySkill, buildWorkDecision, workFallbackState } from "./work-memory";
 import { MEMORY_ON, type MemoryChange, type MemorySettings, applyMemory, memoryCandidates, memoryForRouting, memoryHint } from "./memory";
 export { MAX_GOAL_ANCHORS } from "./anchors";
 
@@ -913,15 +913,15 @@ export class Socrates {
     const written = outcome.kind === "interrupted" ? outcome.partial : outcome.kind === "answer" ? outcome.answer.full_answer : null;
     const stopped = signal.aborted && !(outcome.kind === "answer" && outcome.notes.some(n => n.reason === "cancelled"));
     const result = this.persist(part, goal, workspace, stopped ? { kind: "interrupted", reason: "cancelled", detail: null, toolCalls: outcome.toolCalls, steps: outcome.steps, partial: written } : outcome, options.anchorDecisions ?? []);
-    // After verified work the decider may say it is worth recording: the notes are written in a step of their own, once the answer is saved.
+    // After every finished turn the decider may say it is worth recording: the notes are written in a step of their own, once the answer is saved.
     if (!stopped && outcome.kind === "answer" && outcome.stop === "final") this.queueWorkMemory({ turn, goal, scope: memoryScope, workspace, request, transcript: outcome.transcript, answer: outcome.answer.full_answer });
     return result;
   }
 
   /**
    * The work-memory step (agent-harness.md, "Work memory"): after a turn whose
-   * answer is saved, when it verified a change or command and saving memories
-   * is on, the decider is asked whether the work established something worth
+   * answer is saved (any finished turn, with or without tools), when saving
+   * memories is on, the decider is asked whether the turn established something worth
    * recording; on yes, the agent continues the turn's conversation with the
    * writing guide and only the memory-only tool and context_retrieve. It runs
    * in the background, one at a time per goal, so the chat moves on. Its
@@ -934,7 +934,7 @@ export class Socrates {
     const settings = this.options.memory?.() ?? MEMORY_ON;
     const gate = this.options.gate?.();
     const calls = store.evidenceForTurn(turn.id);
-    if (!settings.save || !gate || !didRealWork(calls)) return;
+    if (!settings.save || !gate) return;
     const refs: EventRefs = { goal_id: goal.id, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id };
     store.recordWorkMemoryStep(refs, { outcome: "pending", detail: null, writes: 0 });
     const controller = new AbortController();
