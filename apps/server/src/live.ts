@@ -231,14 +231,15 @@ export class LiveHub {
     return this.closing;
   }
 
-  /** A status change cannot overtake accepted work, even before its route is known. */
+  /** A status change cannot overtake accepted work for this task. A message still being
+   * routed holds no task yet: it binds after the change and sees the new status. */
   taskBusy(taskId: string): boolean {
     return !!this.runtime.socrates?.taskBusy(taskId) || this.hasQueuedTask(taskId) ||
-      [...this.runs.values()].some(r => !r.tasks.size || r.tasks.has(taskId));
+      [...this.runs.values()].some(r => r.tasks.has(taskId));
   }
 
   hasQueuedTask(taskId: string): boolean {
-    const matches = (s: Schedule) => !s.tasks.size || s.tasks.has(taskId);
+    const matches = (s: Schedule) => s.tasks.has(taskId);
     return this.queue.some(q => matches(q.schedule)) ||
       [...this.runs.values()].filter(r => matches(r.schedule)).length > 1;
   }

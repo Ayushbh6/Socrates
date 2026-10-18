@@ -51,8 +51,14 @@ export class OpenRouterDecider implements DeciderClient {
   }
 }
 
-/** Reserve half the caller's budget (up to 5 seconds) for the backup. A failed primary rests for
- * 30 seconds; successful backup calls do not extend that cooldown. */
+/** The backup's share of a deadline: a quarter, between 0.5 and 5 seconds (Jev answered a forced
+ * failover in under 0.3 s), so the preferred primary keeps most of the time (1.5 of 2 s in the foreground). */
+export function backupReserveMs(timeoutMs: number): number {
+  return Math.min(Math.max(timeoutMs / 4, 500), 5_000, timeoutMs / 2);
+}
+
+/** Reserve backupReserveMs for the backup. A failed primary rests for 30 seconds; successful
+ * backup calls do not extend that cooldown. */
 export class FailoverDecider implements DeciderClient {
   readonly id: string;
   private primaryUnavailableUntil = 0;
@@ -73,7 +79,7 @@ export class FailoverDecider implements DeciderClient {
       if (now() >= this.primaryUnavailableUntil) {
         const primaryController = new AbortController();
         const primaryLimit = AbortSignal.any([limit, primaryController.signal]);
-        const primaryTimer = setTimeout(() => primaryController.abort(new ModelError("The primary decider timed out; trying the backup.", "aborted")), timeoutMs - Math.min(timeoutMs / 2, 5_000));
+        const primaryTimer = setTimeout(() => primaryController.abort(new ModelError("The primary decider timed out; trying the backup.", "aborted")), timeoutMs - backupReserveMs(timeoutMs));
         try {
           return await abortable(this.options.primary.decide(request, primaryLimit), primaryLimit);
         } catch (error) {

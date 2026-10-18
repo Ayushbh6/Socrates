@@ -45,4 +45,22 @@ describe('task lifecycle across modes and tabs', () => {
     expect(s.rt.store.statusSource(task.id)).toMatchObject({by:'user',reason:'Okay, I think this task is complete now.'});
     expect(s.rt.store.requireGoal(goal.id).status).toBe('open');
   });
+  it('lets a status change through while an unrelated message is still being routed', async () => {
+    let release!:()=>void;
+    const routing=new Promise<void>(r=>release=r);
+    const router=new Responder('r',async()=>{ await routing; return continueTask(); });
+    const agent=new Responder('a',async text=>final({full_answer:`Answer: ${text}`}));
+    const s=await liveServer(router,agent);
+    const page=await s.page();
+    page.send({type:'hello'});
+    const goal=s.rt.store.createGoal({title:'Algebra'});
+    const task=s.rt.store.createTask(goal.id,{title:'Equation'});
+    const status=(value:string)=>s.app.inject({method:'POST',url:`/api/goals/${goal.number}/tasks/${task.number}/status`,headers:{host:`127.0.0.1:${s.rt.config.port}`,authorization:`Bearer ${s.token}`},payload:{status:value}});
+    page.send({type:'send',id:'routing',text:'Something new',to:'main'});
+    await expect.poll(()=>router.requests.length).toBeGreaterThan(0);
+    expect((await status('completed')).statusCode).toBe(200);
+    expect(s.rt.store.requireTask(task.id).status).toBe('completed');
+    release();
+    await page.next(result('routing'));
+  });
 });

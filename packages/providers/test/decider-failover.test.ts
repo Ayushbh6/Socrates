@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type CallRecord, type DeciderClient, type DecisionRequest, type DecisionResponse, ModelError } from "@socrates/contracts";
-import { DECIDER_MODEL, DECIDER_BACKUP_MODEL, FailoverDecider, makeDecider, withDecisionRecording } from "../src";
+import { DECIDER_MODEL, DECIDER_BACKUP_MODEL, FailoverDecider, backupReserveMs, makeDecider, withDecisionRecording } from "../src";
 
 const request: DecisionRequest = {
   state: "The user's full request and history.",
@@ -73,6 +73,12 @@ describe("decider failover", () => {
     expect(backup.decide).toHaveBeenCalledTimes(2);
   });
 
+  it("gives the primary most of the deadline", () => {
+    expect(backupReserveMs(2_000)).toBe(500);
+    expect(backupReserveMs(30_000)).toBe(5_000);
+    expect(backupReserveMs(600)).toBe(300);
+  });
+
   it.each([2_000, 30_000])("reserves backup time inside the %s ms deadline, even if the primary ignores abort", async timeoutMs => {
     vi.useFakeTimers();
     let resolvePrimary!: (response: DecisionResponse) => void;
@@ -81,7 +87,9 @@ describe("decider failover", () => {
     const records: CallRecord[] = [];
     const decider = new FailoverDecider({ primary: withDecisionRecording(primary, r => records.push(r)), backup: withDecisionRecording(backup, r => records.push(r)) });
     const pending = decider.decide({ ...request, timeoutMs });
-    await vi.advanceTimersByTimeAsync(timeoutMs - Math.min(timeoutMs / 2, 5_000) + 10);
+    await vi.advanceTimersByTimeAsync(timeoutMs - backupReserveMs(timeoutMs) - 10);
+    expect(backup.decide).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(20);
     await expect(pending).resolves.toEqual(response);
     expect(vi.mocked(primary.decide).mock.calls[0]![1]!.aborted).toBe(true);
     expect(backup.decide).toHaveBeenCalledTimes(1);

@@ -47,6 +47,27 @@ describe('human-controlled task lifecycle', () => {
     expect(w.store.listEvents({type:'task_status_set'})).toHaveLength(0);
     expect(result.kind === 'answered' && result.text).toContain('Task status was not changed');
   });
+  it('closes conditional work when a later command passes after a failure', async () => {
+    const w = await world();
+    const {socrates} = w.socrates([], [
+      {toolCalls:[{name:'terminal',input:{command:'exit 1',timeout_ms:1000}}]},
+      {toolCalls:[{name:'terminal',input:{command:'exit 0',timeout_ms:1000}}]},
+      final({task_complete:{reason:'Fix the test, then mark this task complete.'}}),
+    ]);
+    const result = await socrates.handle('Fix the test, then mark this task complete.');
+    expect(w.store.requireTask(w.taskId).status).toBe('completed');
+    expect(result.kind === 'answered' && result.text).not.toContain('Task status was not changed');
+  });
+  it('does not close conditional work when a failure follows the last passing command', async () => {
+    const w = await world();
+    const {socrates} = w.socrates([], [
+      {toolCalls:[{name:'terminal',input:{command:'exit 0',timeout_ms:1000}}]},
+      {toolCalls:[{name:'terminal',input:{command:'exit 2',timeout_ms:1000}}]},
+      final({task_complete:{reason:'Run the checks, then mark this task complete.'}}),
+    ]);
+    await socrates.handle('Run the checks, then mark this task complete.');
+    expect(w.store.requireTask(w.taskId).status).toBe('open');
+  });
   it('does not close conditional work after a failed command', async () => {
     const w = await world();
     const {socrates} = w.socrates([], [

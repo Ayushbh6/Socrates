@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { abortable, countTokens } from "@socrates/shared";
 import { TokenCalibration, DECIDER_INPUT_TOKENS } from "@socrates/providers";
 import { GoalRouter, type RoutedPart, laneSummaries, renderActivity } from "@socrates/router";
-import { foregroundTurns, selectContextHistory, contextSection, contextTime, currentRequest, type Goal, type Lane, type LedgerStore, type Task, type Turn } from "@socrates/store";
+import { foregroundTurns, selectContextHistory, contextSection, contextTime, currentRequest, type Evidence, type Goal, type Lane, type LedgerStore, type Task, type Turn } from "@socrates/store";
 import type { SemanticHit, SemanticIndex } from "@socrates/retrieval";
 import { type AccessGrant, type AccessPolicy, type Approve, type CapabilityCatalog, RunState, type ShelfOptions, type SupervisorOptions, ToolRunner, WorkspaceRoot, canReadAutomatically, capabilityCandidates, skillShelf } from "@socrates/tools";
 import { attachmentImages, requestAttachments, decisionImages } from "./attachments";
@@ -199,6 +199,22 @@ type RunOptions = HandleOptions & { accessGrants: AccessGrant[]; reading?: Promi
 export type HandleResult =
   | { kind: "clarify"; text: string; laneId: string | null; notice: string | null; notices: string[] }
   | { kind: "answered"; text: string; acknowledgment: string | null; parts: PartResult[]; laneId: string | null; notice: string | null; notices: string[] };
+
+/**
+ * Whether a turn ends with a failure still standing, for "do X, then mark this
+ * task complete". In call order, a failed call or command counts until a later
+ * command passes (exit 0); a command still running always counts.
+ */
+export function unresolvedFailure(evidence: Evidence[]): boolean {
+  let failing = false;
+  for (const e of evidence) {
+    const output = e.result?.result as { exit_code?: number; status?: string } | null | undefined;
+    if (output?.status === "running") return true;
+    if (e.status === "error" || (typeof output?.exit_code === "number" && output.exit_code !== 0)) failing = true;
+    else if (output?.exit_code === 0) failing = false;
+  }
+  return failing;
+}
 
 /**
  * Interrupt every turn a stopped process left running, before a new Socrates
@@ -1038,10 +1054,7 @@ export class Socrates {
     const { answer } = outcome;
     const anchors = applyAnchors({ store, goal, workspace: store.requireGoal(goal.id).workspaceId ? workspace : null, turn, proposals: answer.anchors, decisions: anchorDecisions, refs, access: this.options.access?.() ?? null });
     const requested = taskStatusRequest(part.request);
-    const failures = store.evidenceForTurn(turn.id).some(e => {
-      const output = e.result?.result as { exit_code?: number; status?: string } | null | undefined;
-      return e.status === "error" || (typeof output?.exit_code === "number" && output.exit_code !== 0) || output?.status === "running";
-    });
+    const failures = unresolvedFailure(store.evidenceForTurn(turn.id));
     const maySetStatus = !task.general && requested && (!part.created.task || requested.conditional) && outcome.stop === "final" && !outcome.notes.some(n => n.outcome === "failed") &&
       (!requested.conditional || (!!answer.task_complete && !failures)) && !this.options.hasQueuedTask?.(task.id);
     const statusNotice = requested?.status === "completed" && !maySetStatus && !task.general
