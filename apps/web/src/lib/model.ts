@@ -523,7 +523,9 @@ export function sendTarget(conversation: string, mainBusy: boolean): "send" | "q
  * clears the choice, so a message written while an earlier question is shown
  * is appended after the last one, and the canvas follows it.
  */
-export function viewedExchange(list: Exchange[], selected: string | null, pendingLane: Exchange | null = null): Exchange | null {
+export function viewedExchange(list: Exchange[], selected: string | null | undefined, pendingLane: Exchange | null = null): Exchange | null {
+  // Fresh pages leave saved history in the sidebar, while live work remains visible.
+  if (selected === undefined) return pendingLane ?? list.findLast(e => e.state === "working" || e.state === "sending") ?? null;
   return pendingLane ?? (selected ? list.find((e) => e.key === selected) : null) ?? list.at(-1) ?? null;
 }
 

@@ -49,7 +49,7 @@ export async function detectVision(provider: string, model: string, env: Record<
 export const EFFORT_BODY: Record<string, (effort: Effort) => Record<string, unknown>> = {
   openai: (effort) => ({ reasoning_effort: effort === "off" ? "none" : effort }),
   deepseek: (effort) => (effort === "off" ? { thinking: { type: "disabled" } } : { reasoning_effort: effort }),
-  openrouter: (effort) => ({ reasoning: effort === "off" ? { enabled: false } : { effort } }),
+  openrouter: (effort) => ({ reasoning: effort === "off" ? { enabled: false } : { enabled: true, effort } }),
 };
 
 export function makeModel(provider: string, model: string, env: Record<string, string | undefined> = process.env, options: { vision?: boolean } = {}): ModelClient {

@@ -6,6 +6,7 @@ import {
   type CallRow, duration, inspectHref, percent, type QuestionRow, type Range, roleLabel, shortModel, speed, tokens, type Trace, type TraceCall, type TraceItem, usd,
 } from "../lib/observe";
 import { MoveChip, PromptBar, Fold, prettyJson, usePolled } from "./inspect-kit";
+import { ModelOutput, TraceInputs, RoutingResult } from "./TraceDocument";
 import { Prose } from "./Prose";
 
 /** How a turn's work-memory step went, in words. */
@@ -137,9 +138,9 @@ function Item({ item, open, widest, growth, onCall }: { item: TraceItem; open: b
             {item.routing.escalated ? " · escalated to the main model" : ""}{item.routing.fallback ? ` · fallback “${item.routing.fallback}”` : ""}
           </p>
           {item.routing.diagnostics && <Fold title="Routing context and validation" open={open}><p>{item.routing.diagnostics.historyUsed.toLocaleString()} / {item.routing.diagnostics.historyBudget.toLocaleString()} history tokens · turns {item.routing.diagnostics.includedTurns.join(", ") || "none"} · {item.routing.diagnostics.omitted} older exchanges omitted.</p><p>Snapshot: {item.routing.diagnostics.asOf}. Format failures: {item.routing.diagnostics.invalidFinal}; invalid tool calls: {item.routing.diagnostics.invalidTools}; semantic validation failures: {item.routing.diagnostics.semanticErrors}. Transport: {item.routing.diagnostics.resultTransport}.</p></Fold>}
-          {item.routing.reason && <p className="card-text">“{item.routing.reason}”</p>}
+          {item.routing.reason && item.routing.decision == null && <p className="card-text">“{item.routing.reason}”</p>}
           {item.routing.validationErrors.length > 0 && <Fold title="Rejected answers" meta={`${item.routing.validationErrors.length}`} open={open}><pre>{item.routing.validationErrors.join("\n")}</pre></Fold>}
-          {item.routing.decision != null && <Fold title="The decision as returned" open={open}><pre>{JSON.stringify(item.routing.decision, null, 2)}</pre></Fold>}
+          {item.routing.decision != null && <RoutingResult input={item.routing.decision} />}
         </article>
       );
     case "turn":
@@ -173,7 +174,6 @@ function Item({ item, open, widest, growth, onCall }: { item: TraceItem; open: b
 function CallCard({ item, open, widest, growth, onCall }: { item: TraceCall; open: boolean; widest: number; growth: number | null; onCall: (id: string) => void }) {
   const c = item.call;
   const enteredTokens = item.entered.reduce((n, e) => n + e.tokens, 0);
-  const contextTokens = item.context?.reduce((n, b) => n + b.tokens, 0) ?? 0;
   return (
     <article className="card card-call" data-group={item.group} data-failed={!c.ok && c.error?.kind !== "aborted"}>
       <header>
@@ -192,29 +192,19 @@ function CallCard({ item, open, widest, growth, onCall }: { item: TraceCall; ope
       <PromptBar call={c} widest={widest} />
       {c.error && <p className="inspect-note" role="alert">{c.error.kind === "aborted" ? "Stopped before it finished." : `Failed: ${c.error.kind}${c.error.status ? ` ${c.error.status}` : ""}: ${c.error.message}`}</p>}
 
-      <Fold title="Context and note diagnostics" meta={item.diagnostics ? item.diagnostics.memory.explanation : "Context diagnostics unavailable"}>
+      {(item.diagnostics || item.decisionInput || item.notes?.length || item.workMemory?.length) ? <Fold title="Context and note diagnostics" meta={item.diagnostics?.memory.explanation}>
         {item.diagnostics ? <>
           {item.diagnostics.session && <p>Session {item.diagnostics.session.sequence} · {item.diagnostics.session.compactions} compactions · handover {item.diagnostics.session.handoverRef ?? "none"} · history scope {item.diagnostics.historyScope ?? "unknown"}</p>}
           <p>Activity snapshot: {diagnosticDate(item.diagnostics.activityAsOf, item.diagnostics.timeZone)} · {item.diagnostics.timeZone}</p>
           <p>{item.diagnostics.memory.explanation}. Recall: {item.diagnostics.memory.recall?.toFixed(2) ?? "unknown"}; threshold: {item.diagnostics.memory.threshold}; matched memories: {item.diagnostics.memory.matched}.</p>
           {item.diagnostics.history && <p>History: {item.diagnostics.history.used.toLocaleString()} / {item.diagnostics.history.budget.toLocaleString()} tokens. Included turns: {item.diagnostics.history.included.join(", ") || "none"}. Older exchanges omitted: {item.diagnostics.history.omitted}. Dates: {diagnosticDate(item.diagnostics.history.dates[0], item.diagnostics.timeZone)} to {diagnosticDate(item.diagnostics.history.dates.at(-1), item.diagnostics.timeZone)}.</p>}
-        </> : <p>Unknown for this recorded call; diagnostics are not reconstructed from today’s state.</p>}
+        </> : null}
         {item.decisionInput && <p>Memory decision input: ~{item.decisionInput.estimatedTokens.toLocaleString()} / {item.decisionInput.budget.toLocaleString()} tokens (60% ceiling) · {item.decisionInput.images} images supplied. Estimate includes questions and image allowance; provider usage is shown above.</p>}
         {item.workMemory?.filter(s => s.decision).map((s, i) => <p key={`decision-${i}`}>Finished-turn assessment: ~{s.decision!.estimatedTokens.toLocaleString()} / {s.decision!.budget.toLocaleString()} tokens · {s.decision!.images} images · {s.decision!.omittedCalls} tool summaries omitted. {s.decision!.fallback ? `Main-agent fallback: ${s.decision!.fallback}. This does not automatically save a memory.` : "Classifier input fits its allowance."}</p>)}
         {item.notes?.map((n, i) => <p key={i}>{n.field === "continuation_note" ? "Continuation note" : "Goal note"} {n.field === "goal_note" && n.outcome === "saved" && n.length === 0 ? "unchanged" : n.outcome}. {n.length ?? "Unknown"} characters; {n.attempts} repair attempts. {n.reason}</p>)}
         {item.workMemory?.length ? <p>Work-memory step: {item.workMemory.map((s) => WORK_STEP[s.outcome] ?? s.outcome).join(" → ")}{item.workMemory.at(-1)!.writes ? ` (${item.workMemory.at(-1)!.writes} ${item.workMemory.at(-1)!.writes === 1 ? "write" : "writes"})` : ""}{item.workMemory.at(-1)!.detail ? `. ${item.workMemory.at(-1)!.detail}` : ""}</p> : null}
-      </Fold>
-      {item.context && (
-        <Fold title={item.rebuilt ? "Context updated" : "Context it was given"} meta={`${item.context.length} blocks · ~${tokens(contextTokens)} text tokens`} open={open}>
-          <div className="blocks">
-            {item.context.map((b, i) => (
-              <Fold key={i} title={b.name ? <code className="block-name">{b.name}</code> : <span className="muted">text</span>} meta={<>~{tokens(b.tokens)} text tokens{b.cacheAfter ? <b className="cache-mark" title="A prompt-cache breakpoint follows this block">cache point</b> : null}</>} tone={b.name ?? "plain"}>
-                <pre>{b.text}</pre>
-              </Fold>
-            ))}
-          </div>
-        </Fold>
-      )}
+      </Fold> : null}
+      <TraceInputs id={c.id} context={item.context} rebuilt={item.rebuilt} open={open} />
       {item.entered.length > 0 && (
         <Fold title="Changed or added since the last step" meta={`${item.entered.length} message${item.entered.length === 1 ? "" : "s"} · ~${tokens(enteredTokens)} text tokens`} open={open}>
           <div className="blocks">
@@ -227,8 +217,8 @@ function CallCard({ item, open, widest, growth, onCall }: { item: TraceCall; ope
         </Fold>
       )}
       {item.reasoning && <Fold title="Thinking shown" meta={`~${tokens(item.reasoningTextTokens)} text tokens`} open={open}><pre className="thinking">{item.reasoning}</pre></Fold>}
-      {item.text.trim() && <Fold title={item.toolCalls.length ? "Said before the tools" : "Said"} open={open || !item.toolCalls.length}><pre className="said">{item.text}</pre></Fold>}
-      {item.toolCalls.map((t) => (
+      {item.text.trim() && <Fold title={item.toolCalls.length ? "Said before the tools" : "Said"} open={open || !item.toolCalls.length}><ModelOutput text={item.text} /></Fold>}
+      {item.toolCalls.map((t) => t.name === "routing_result" ? <Fold key={t.id} title="Routing decision returned" meta="Structured result" open={open}><RoutingResult input={t.input} /></Fold> : (
         <Fold key={t.id} title={<><b className="tool-name">{t.name}</b> <span className="tool-args">{summarize(t.input)}</span></>} meta={t.result ? (t.result.isError ? "error" : `~${tokens(t.result.tokens)} text tokens back`) : "no result in a later request"} tone={t.result?.isError ? "error" : "tool"} open={open}>
           <h5>Called with</h5>
           <pre>{JSON.stringify(t.input, null, 2)}</pre>

@@ -85,6 +85,8 @@ Routing clarification phases appear under one original query in the question lis
 5. **compactions** between steps, with the size before and after, and a step whose context compaction rebuilt says so and shows the new context in blocks;
 6. **the answer**: the saved final answer, or the part written before a stop.
 
+The web reader joins context blocks into one formatted, scrollable document, with the exact recorded system prompt available in a separate lazy-loaded tab via `GET /api/observe/calls/:id`. Raw request still exposes the original source and cache markers. Native `routing_result` is a terminal routing decision, not an executed tool waiting for a later response; its fields are displayed as a readable summary. Agent `full_answer` envelopes show prose with the complete recorded fields still accessible. Worker context diagnostics are omitted when inapplicable; routing diagnostics remain attached to the recorded routing event, never reconstructed from current state.
+
 A tool's result is the tool message that entered the next step's context, so it is exactly what the model saw (cut as the harness cut it), not a second recording. A step whose first message differs says **Context updated** and shows the new blocks; explicit compaction events establish when compaction occurred. Changed or added messages are found by their unchanged content-hash prefix, including rewrites without a change in message count. Tool results are joined from the full next request, even if its first context message changed; breakpoints for the prompt cache move at every step, so they are stored apart from the messages and do not count as a difference.
 
 ### The database view

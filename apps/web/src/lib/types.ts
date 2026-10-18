@@ -8,7 +8,7 @@ export interface ModelInUse {
   source: "settings" | "detected";
   /** Whether the model can see images; reported for the chat model. */
   vision?: boolean;
-  /** The chat model's thinking levels, weakest first, its default, and the one in use; absent when it has none to choose. */
+  /** The model's thinking levels, weakest first, its default, and the one in use; absent when it has none to choose. */
   effort?: { levels: Effort[]; default: Effort | null; current: Effort | null };
 }
 

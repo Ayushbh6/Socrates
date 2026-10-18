@@ -40,6 +40,7 @@ export const api = {
   setWorkingFolder: (id: string) => call<Settings>("PUT", "/api/settings", { workingFolder: id }),
   setSettings: (patch: SettingsPatch) => call<Settings>("PUT", "/api/settings", patch),
   providers: () => call<Provider[]>("GET", "/api/providers"),
+  modelEfforts: (provider: string, model: string) => call<{ levels: import("./types").Effort[]; default: import("./types").Effort | null }>("GET", `/api/model-efforts?provider=${encodeURIComponent(provider)}&model=${encodeURIComponent(model)}`),
   models: (provider: string) => call<{ models: ListedModel[] }>("GET", `/api/models?provider=${encodeURIComponent(provider)}`).then((r) => r.models),
   removeKey: (name: string) => call<null>("DELETE", `/api/keys/${encodeURIComponent(name)}`),
   keys: () => call<Record<string, boolean>>("GET", "/api/keys"),

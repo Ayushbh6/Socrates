@@ -16,12 +16,7 @@ import { Settings, SettingsPatch, loadSettings, saveSettings } from "./settings"
 import { DEFAULT_TITLER, nameChat } from "./titles";
 import { workspaceFolder } from "./views";
 
-/**
- * The routing model when none is chosen and there is an OpenRouter key: GPT-6 Luna, with thinking off.
- * `pnpm eval:router-compare` on the routing fixtures (2026-10-10): 22/22 and 20/22 at the model's own
- * thinking level, 20/22 with it off at a median 1.9 s and $0.0002 a decision, against 18/22 at $0.005
- * for DeepSeek V4 Pro, and 21, 17 and 16 of 22 for Claude Haiku 5.5 at five times Luna's price.
- */
+/** Default routing uses GPT-6 Luna on OpenRouter with low thinking (trial log entry 75). */
 export const DEFAULT_ROUTER = { provider: "openrouter", model: "openai/gpt-6-luna" } as const;
 
 /** The order in which a chat provider is picked when none is chosen: the first with a key. */
@@ -320,6 +315,12 @@ export class Runtime {
     }
   }
 
+  /** Provider-reported thinking choices for the settings picker. */
+  async modelEfforts(provider: string, model: string): Promise<EffortLevels> {
+    if (!Object.hasOwn(PROVIDER_DEFAULTS, provider)) throw new SettingsError(`Unknown provider "${provider}".`);
+    return (this.deps.detectEfforts ?? detectEfforts)(provider, model, this.env());
+  }
+
   /** The chat model's thinking level now: the user's choice when the model accepts it, else Socrates' default; null leaves it to the provider. */
   effortInUse(): Effort | null {
     const efforts = this.models.chat?.effort;
@@ -370,6 +371,12 @@ export class Runtime {
       this.retrieval?.scheduleSync();
       this.announceChange();
       return next;
+    }
+    if (Object.hasOwn(sent, "router") && next.router?.effort) {
+      const capabilities = await this.modelEfforts(next.router.provider, next.router.model);
+      if (!capabilities.levels.includes(next.router.effort)) throw new SettingsError(capabilities.levels.length
+        ? `${next.router.model} cannot think at "${next.router.effort}"; choose ${capabilities.levels.join(", ")}.`
+        : `Thinking levels for ${next.router.model} are unavailable; choose the model default or try again.`);
     }
     return this.change(async () => {
       saveSettings(this.config.settingsPath, next);
@@ -543,17 +550,18 @@ export class Runtime {
     // A router the user did not choose is DEFAULT_ROUTER when there is an OpenRouter key, else the chat provider's own.
     const automatic = PROVIDER_DEFAULTS.openrouter.keys.some((k) => env[k]);
     const router: ModelInUse = this.settings.router
-      ? { ...this.settings.router, source: "settings" }
+      ? { provider: this.settings.router.provider, model: this.settings.router.model, source: "settings" }
       : automatic ? { ...DEFAULT_ROUTER, source: "detected" } : { provider: chat.provider, model: PROVIDER_DEFAULTS[chat.provider as Provider].router, source: chat.source };
-    const routerEffort: Effort | undefined = !this.settings.router && automatic ? "off" : undefined;
+    const routerEffort: Effort | undefined = this.settings.router?.effort ?? (!this.settings.router && automatic ? "low" : undefined);
     // Only the chat model reads files and attachments, so only it needs to know whether it can see; the router keeps its own thinking level.
-    const [vision, efforts] = await Promise.all([
+    const [vision, efforts, routingEfforts] = await Promise.all([
       (this.deps.detectVision ?? detectVision)(chat.provider, chat.model, env),
       (this.deps.detectEfforts ?? detectEfforts)(chat.provider, chat.model, env),
+      this.modelEfforts(router.provider, router.model),
     ]);
     this.deps.signal?.throwIfAborted();
     const compactor: ModelInUse | null = this.settings.compactor ? { ...this.settings.compactor, source: "settings" } : null;
-    this.models = { chat: { ...chat, vision, ...(efforts.levels.length ? { effort: { ...efforts, current: null } } : {}) }, router, compactor, titler: null };
+    this.models = { chat: { ...chat, vision, ...(efforts.levels.length ? { effort: { ...efforts, current: null } } : {}) }, router: { ...router, ...(routingEfforts.levels.length ? { effort: { ...routingEfforts, current: routerEffort ?? routingEfforts.default } } : {}) }, compactor, titler: null };
     if (this.models.chat?.effort) this.models.chat.effort.current = this.effortInUse();
     const build = this.deps.makeModel ?? makeModel;
     let model: ModelClient;

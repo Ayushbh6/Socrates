@@ -4,8 +4,8 @@ import { createPortal } from "react-dom";
 import { api } from "../lib/api";
 import { useDialog } from "../lib/dialog";
 import { type AppState, store } from "../lib/store";
-import { PROVIDER_LABELS } from "../lib/models";
-import type { Embeddings, ListedModel, MemoryKind, MemoryView, ModelChoice, Provider } from "../lib/types";
+import { EFFORT_LABELS, PROVIDER_LABELS } from "../lib/models";
+import type { Effort, Embeddings, ListedModel, MemoryKind, MemoryView, ModelChoice, ModelInUse, Provider } from "../lib/types";
 import { AccessControls } from "./AccessMenu";
 
 const EMBEDDERS: Embeddings["provider"][] = ["ollama", "openrouter", "openai", "custom"];
@@ -81,7 +81,7 @@ function useModelList(provider: string | undefined): ListedModel[] {
 
 function Models({ app, providers }: { app: AppState; providers: Provider[] }) {
   const [chat, setChat] = useState<ModelChoice | null>(app.settings!.chat);
-  const [router, setRouter] = useState<ModelChoice | null>(app.settings!.router);
+  const [router, setRouter] = useState<ModelChoice | null>(app.settings!.router ?? (app.status!.models.router ? { provider: app.status!.models.router.provider, model: app.status!.models.router.model, effort: app.status!.models.router.effort?.current ?? null } : null));
   const [compactor, setCompactor] = useState<ModelChoice | null>(app.settings!.compactor);
   const { busy, save, feedback } = useSave();
   const inUse = app.status!.models;
@@ -94,7 +94,7 @@ function Models({ app, providers }: { app: AppState; providers: Provider[] }) {
   };
   // A chat model keeps its thinking level only while it stays the same model.
   const typed = (choice: ModelChoice, model: string): ModelChoice =>
-    choice.effort === undefined ? { ...choice, model } : { ...choice, model, effort: model === app.settings!.chat?.model ? app.settings!.chat?.effort ?? null : null };
+    choice.effort === undefined ? { ...choice, model } : { ...choice, model, effort: model === choice.model ? choice.effort : null };
   const row = (label: string, choice: ModelChoice | null, kind: "main" | "router", set: (c: ModelChoice | null) => void, auto: string, listed: ListedModel[]) => (
     <div className="field-row">
       <span className="field-label">{label}</span>
@@ -115,6 +115,7 @@ function Models({ app, providers }: { app: AppState; providers: Provider[] }) {
       </p>
       {row("Chat", chat, "main", setChat, "Automatic: the first provider with a key", chatModels)}
       {row("Routing", router, "router", setRouter, "Automatic: GPT-6 Luna on OpenRouter, else the chat provider's router model", routerModels)}
+      <RouterThinking choice={router} inUse={inUse.router} onChange={setRouter} />
       {row("Compaction", compactor, "main", setCompactor, "Automatic: the chat model", compactorModels)}
       <p className="settings-hint">Compaction is the call that summarizes an old part of a long task so the work can go on. It copies the user's open requests word for word, so a strong model suits it; by default it is the chat model.</p>
       <div className="settings-actions">
@@ -123,6 +124,34 @@ function Models({ app, providers }: { app: AppState; providers: Provider[] }) {
       </div>
     </Section>
   );
+}
+
+/** Query the selected model, so levels from a previous selection cannot leak into the next. */
+function RouterThinking({ choice, inUse, onChange }: { choice: ModelChoice | null; inUse: ModelInUse | null; onChange: (c: ModelChoice) => void }) {
+  const provider = choice?.provider ?? inUse?.provider;
+  const model = choice?.model ?? inUse?.model;
+  const key = `${provider}:${model}`;
+  const [loaded, setLoaded] = useState<{ key: string; levels: Effort[]; error?: string } | null>(null);
+  useEffect(() => {
+    if (!provider || !model) return;
+    let alive = true;
+    const timer = setTimeout(() => {
+      api.modelEfforts(provider, model).then(result => alive && setLoaded({ key, levels: result.levels }),
+        () => alive && setLoaded({ key, levels: [], error: "Could not load thinking levels. Try selecting the model again." }));
+    }, 250);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [provider, model, key]);
+  const same = provider === inUse?.provider && model === inUse?.model;
+  const levels = loaded?.key === key ? loaded.levels : same ? inUse?.effort?.levels ?? [] : [];
+  return <div className="field-row routing-thinking">
+    <label htmlFor="router-thinking" className="field-label">Routing thinking</label>
+    <select id="router-thinking" disabled={!provider || !model || !levels.length} value={choice ? choice.effort ?? "" : inUse?.effort?.current ?? ""}
+      onChange={e => provider && model && onChange({ provider, model, effort: e.target.value as Effort || null })}>
+      <option value="">Model default</option>
+      {levels.map(level => <option key={level} value={level}>{EFFORT_LABELS[level]}</option>)}
+    </select>
+    <span className="settings-hint">{loaded?.key === key && loaded.error ? loaded.error : !levels.length ? loaded?.key === key ? "No thinking levels reported for this model." : "Loading thinking levels…" : "Applies to the router independently of the chat model."}</span>
+  </div>;
 }
 
 /** OpenRouter's default namer: an instruct model with no thinking mode (apps/server/src/titles.ts, DEFAULT_TITLER). */

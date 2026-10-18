@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Flow } from "./components/Flow";
+import { Flow, emptyFlowView } from "./components/Flow";
 import { Inspect } from "./components/Inspect";
 import { type Mode } from "./components/ModeSwitch";
 import { Onboarding } from "./components/Onboarding";
@@ -31,6 +31,7 @@ export function App() {
   const [route, setRoute] = useState(() => routeOf(location.hash));
   const [hash, setHash] = useState(() => location.hash);
   const [mode, setMode] = useState<Mode>("flow");
+  const [flowView, setFlowView] = useState(emptyFlowView);
   const [settings, setSettings] = useState(false);
   // The terminal panel stays as it is across a switch between flow and standard.
   const dock = useDock(app.terminals, JSON.stringify([app.status?.workingFolder, app.status?.access]));
@@ -52,7 +53,7 @@ export function App() {
     const props = { app, mode, dock, onMode: setMode, onSettings: () => setSettings(true) };
     return (
       <>
-        {mode === "standard" ? <Standard {...props} /> : <Flow {...props} />}
+        {mode === "standard" ? <Standard {...props} /> : <Flow {...props} view={flowView} setView={setFlowView} />}
         <RoutingQuestions app={app} enabled={!settings} />
         {settings && <SettingsDialog app={app} onClose={() => setSettings(false)} />}
       </>

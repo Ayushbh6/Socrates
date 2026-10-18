@@ -65,7 +65,7 @@ describe("thinking levels", () => {
     expect(EFFORT_BODY.openai!("off")).toEqual({ reasoning_effort: "none" });
     expect(EFFORT_BODY.openai!("xhigh")).toEqual({ reasoning_effort: "xhigh" });
     expect(EFFORT_BODY.openrouter!("off")).toEqual({ reasoning: { enabled: false } });
-    expect(EFFORT_BODY.openrouter!("high")).toEqual({ reasoning: { effort: "high" } });
+    expect(EFFORT_BODY.openrouter!("high")).toEqual({ reasoning: { enabled: true, effort: "high" } });
 
     const completion = { id: "c", object: "chat.completion", created: 0, model: "m", choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "ok" } }] };
     const captured: Captured[] = [];

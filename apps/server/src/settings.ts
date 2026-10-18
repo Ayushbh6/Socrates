@@ -7,7 +7,7 @@ import { writePrivateFile } from "./private-file";
 const PROVIDERS = Object.keys(PROVIDER_DEFAULTS) as [keyof typeof PROVIDER_DEFAULTS, ...(keyof typeof PROVIDER_DEFAULTS)[]];
 
 const ModelChoice = z.object({ provider: z.enum(PROVIDERS), model: z.string().trim().min(1).max(200) }).strict();
-/** The chat model, with the thinking level the user chose for it (null or absent: Socrates' default for the model). */
+/** A chat or routing model, with the thinking level the user chose for it (null or absent: Socrates' default for the model). */
 const ChatChoice = ModelChoice.extend({ effort: z.enum(EFFORTS).nullable().optional() }).strict();
 
 const TimeZone = z.string().refine((zone) => {
@@ -91,7 +91,7 @@ export type PriceSetting = z.infer<typeof PriceSetting>;
  */
 export const Settings = z.object({
   chat: ChatChoice.nullable().default(null),
-  router: ModelChoice.nullable().default(null),
+  router: ChatChoice.nullable().default(null),
   compactor: ModelChoice.nullable().default(null),
   titler: ModelChoice.nullable().default(null),
   embeddings: z.object({

@@ -17,6 +17,17 @@ const item = (over: Partial<HistoryItem>): HistoryItem => ({
 });
 
 describe("the conversation model", () => {
+  it("starts a fresh canvas empty while keeping saved history and live work selectable", () => {
+    let m = reduce(emptyModel(), { type: "history", conversation: "main", items: [item({})] });
+    const saved = m.conversations.main!;
+    expect(viewedExchange(saved, undefined)).toBeNull();
+    expect(viewedExchange(saved, saved[0]!.key)).toBe(saved[0]);
+    expect(viewedExchange(saved, null)).toBe(saved[0]);
+    m = reduce(m, { type: "sent", id: "fresh", text: "New question", to: "main", at });
+    expect(viewedExchange(m.conversations.main!, undefined)?.message).toBe("New question");
+    expect(saved).toHaveLength(1);
+  });
+
   it("turns a sent message into one exchange with its steps, tools and answer, then done", () => {
     let m = reduce(emptyModel(), { type: "sent", id: "c1", text: "Why does login fail?", to: "main", at });
     expect(m.conversations.main![0]).toMatchObject({ key: "cc1", state: "sending", sendId: "c1" });

@@ -1,7 +1,7 @@
 import { SessionContinuation } from "./SessionContinuation";
 import { X } from "lucide-react";
 import { LayoutGroup } from "motion/react";
-import { type CSSProperties, type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type PointerEvent, type Dispatch, type SetStateAction, useEffect, useMemo, useRef, useState } from "react";
 import { CONTINUE_MESSAGE, continueKeep, currentRoute, orbDocked, orbState, viewedExchange } from "../lib/model";
 import { useFollow } from "../lib/follow";
 import { type AppState, store } from "../lib/store";
@@ -24,12 +24,22 @@ import { TerminalDock } from "./TerminalDock";
  * an open canvas, the orb in the middle until the answer starts, the task and
  * goal notes beside it, and earlier questions in the sidebar.
  */
-export function Flow({ app, mode, dock, onMode, onSettings }: { app: AppState; mode: Mode; dock: Dock; onMode: (mode: Mode) => void; onSettings: () => void }) {
-  const [conversation, setConversation] = useState("main");
-  const [selected, setSelected] = useState<string | null>(null);
+export interface FlowView {
+  conversation: string;
+  selected: string | null | undefined;
+  following: string | null;
+  sent: string | null;
+  focused: number | null;
+}
+export const emptyFlowView = (): FlowView => ({ conversation: "main", selected: undefined, following: null, sent: null, focused: null });
+
+export function Flow({ app, mode, dock, onMode, onSettings, view, setView }: { app: AppState; mode: Mode; dock: Dock; onMode: (mode: Mode) => void; onSettings: () => void; view: FlowView; setView: Dispatch<SetStateAction<FlowView>> }) {
+  const { conversation, selected, following, sent } = view;
+  const setConversation = (conversation: string) => setView(v => ({ ...v, conversation }));
+  const setSelected = (selected: string | null) => setView(v => ({ ...v, selected }));
+  const setFollowing = (following: string | null) => setView(v => ({ ...v, following }));
+  const setSent = (sent: string | null) => setView(v => ({ ...v, sent }));
   const [sidebar, setSidebar] = useState(false);
-  const [following, setFollowing] = useState<string | null>(null);
-  const [sent, setSent] = useState<string | null>(null);
   // "Keep my next message in this task", for the main conversation's next message only.
   const [keep, setKeep] = useState<KeepChoice | null>(null);
   useEffect(() => setKeep(null), [conversation]);
@@ -54,10 +64,9 @@ export function Flow({ app, mode, dock, onMode, onSettings }: { app: AppState; m
   }, [following, app.model.conversations]);
 
   useEffect(() => {
-    if (!app.focusedRequest) return;
-    setConversation(app.focusedRequest.conversation);
-    setSelected(app.focusedRequest.key);
-    setSent(null);
+    if (!app.focusedRequest || app.focusedRequest.request === view.focused) return;
+    const focus = app.focusedRequest;
+    setView(v => ({ ...v, conversation: focus.conversation, selected: focus.key, sent: null, following: null, focused: focus.request }));
   }, [app.focusedRequest]);
 
   const list = app.model.conversations[conversation] ?? [];
@@ -65,6 +74,8 @@ export function Flow({ app, mode, dock, onMode, onSettings }: { app: AppState; m
   // Keep the question just sent on the canvas while earlier queued work is saved and run.
   const waiting = sent ? list.find((e) => e.sendId === sent && !e.route && (e.state === "working" || e.state === "sending")) ?? null : null;
   const exchange = viewedExchange(list, selected, pendingLane ?? waiting);
+  // Once live work appears on a fresh page, keep its completed answer in view too.
+  useEffect(() => { if (selected === undefined && exchange) setSelected(null); }, [selected, exchange?.key]);
   // An approval belongs to the question whose turn asked (a standard-mode chat's is not this canvas's); one without a turn, to the newest question here.
   const latest = exchange !== null && (exchange === list.at(-1) || exchange === pendingLane);
   const approvals = exchange ? (app.model.live?.approvals ?? []).filter((a) => (a.turnId ? exchange.turns.includes(a.turnId) : latest && a.conversation === conversation)) : [];
@@ -72,7 +83,7 @@ export function Flow({ app, mode, dock, onMode, onSettings }: { app: AppState; m
   const docked = orbDocked(state);
 
   // The notes follow the question on the canvas, or the newest routed one.
-  const route = exchange?.route ?? currentRoute(list);
+  const route = exchange ? exchange.route ?? currentRoute(list) : null;
   const goal = useMemo(() => (route ? app.goals.find((g) => g.number === route.goal.number) ?? null : null), [route, app.goals]);
 
   const session = goal?.tasks.find(t => t.number === route?.task.number)?.sessions?.find(s => !s.closedAt);
@@ -157,7 +168,7 @@ export function Flow({ app, mode, dock, onMode, onSettings }: { app: AppState; m
         app={app}
         open={sidebar}
         conversation={conversation}
-        selected={selected}
+        selected={selected ?? null}
         onClose={() => setSidebar(false)}
         onConversation={(c) => {
           setSent(null);

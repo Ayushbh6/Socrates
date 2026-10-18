@@ -364,3 +364,33 @@ table.grid tbody tr[data-open="true"] td { background: var(--tint); }
   .rail-foot { display: flex; margin: 0 0 0 auto; }
   .brand span small { display: none; }
 }
+
+/* One reading surface, with the recorded system prompt kept out of the context. */
+.trace-input { margin: 0 1rem 1rem; overflow: hidden; border: 1px solid var(--grid); border-radius: 0.75rem; background: var(--panel); }
+.trace-tabs { display: flex; gap: 1.5rem; padding: 0 1.15rem; border-bottom: 1px solid var(--grid); }
+.trace-tabs button { padding: 0.8rem 0; border: 0; border-bottom: 2px solid transparent; color: var(--muted); background: transparent; cursor: pointer; font: inherit; font-size: 0.83rem; }
+.trace-tabs button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+.trace-tabs button:focus-visible, .trace-reader:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.trace-reader { max-height: min(65vh, 42rem); overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 1.3rem 1.4rem; }
+.trace-document { font-size: 0.88rem; color: var(--text-2); line-height: 1.75; }
+.trace-document p { white-space: pre-line; }
+.trace-document h2 { padding-top: 1.1rem; border-top: 1px solid var(--grid); color: var(--text); }
+.trace-document > :first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.trace-document h3 { color: var(--accent); font-size: 0.87rem; }
+.trace-document h4 { font-size: 0.8rem; color: var(--muted); margin: 1rem 0 0.5rem; }
+.trace-evidence { padding-left: 1rem; border-left: 2px solid var(--grid); margin-bottom: 1.2rem; }
+.timeline .trace-document pre { margin: 0 0 1rem; padding: 0.8rem; max-height: none; font-size: 0.78rem; }
+.trace-document table { display: block; max-width: 100%; overflow-x: auto; }
+.trace-caption { color: var(--muted); font-size: 0.75rem; margin: 0 0 1rem; }
+.routing-result { padding: 0.4rem 1rem 1rem; }
+.routing-result > strong { color: var(--accent); font-size: 0.95rem; }
+.routing-result dl { margin: 0.7rem 0; font-size: 0.85rem; }
+.routing-result dl > div { display: grid; grid-template-columns: 6rem minmax(0, 1fr); gap: 1rem; padding: 0.4rem 0; }
+.routing-result dt { color: var(--muted); }
+.routing-result dd { margin: 0; overflow-wrap: anywhere; }
+@media (max-width: 600px) { .trace-reader { padding: 1rem; } .trace-input { margin: 0 0.5rem 0.5rem; } .routing-result dl > div { grid-template-columns: 4.5rem minmax(0, 1fr); gap: 0.5rem; } }
+
+.inspect .trace-document h2, .inspect .trace-document h3, .inspect .trace-document h4 { margin: 1.25rem 0 0.65rem; }
+.inspect .trace-document > :first-child { margin-top: 0; }
+
+.model-output { padding: 0.5rem 1rem 1rem; }
