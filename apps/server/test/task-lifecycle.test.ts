@@ -1,0 +1,48 @@
+import { describe, expect, it } from 'vitest';
+import { final } from '../../../packages/agent/test/helpers';
+import { continueTask } from '../../../packages/router/test/helpers';
+import { Responder, liveServer, messageOf } from './helpers';
+
+const result = (id:string) => (m:Record<string,any>) => m.type === 'result' && m.id === id;
+
+describe('task lifecycle across modes and tabs', () => {
+  it('blocks completion while running or queued, rejects stale clicks, syncs provenance and preserves Standard follow-ups', async () => {
+    let release!:()=>void;
+    const blocked=new Promise<void>(r=>release=r);
+    const agent=new Responder('a',async text=>{ if(text==='Long answer') await blocked; return final({full_answer:`Answer: ${text}`, task_complete:{reason:'Finished answering'}}); });
+    const router=new Responder('r',async()=>continueTask());
+    const s=await liveServer(router,agent);
+    const page=await s.page();
+    const other=await s.page();
+    page.send({type:'hello'});other.send({type:'hello'});
+    const goal=s.rt.store.createGoal({title:'Algebra'});
+    const task=s.rt.store.createTask(goal.id,{title:'Equation'});
+    const chat={goal:goal.number,task:task.number};
+    const url=`/api/goals/${goal.number}/tasks/${task.number}/status`;
+    const status=(value:string,revision?:number)=>s.app.inject({method:'POST',url,headers:{host:`127.0.0.1:${s.rt.config.port}`,authorization:`Bearer ${s.token}`},payload:{status:value,revision}});
+    page.send({type:'send',id:'long',text:'Long answer',to:'main',chat});
+    await expect.poll(()=>agent.requests.some(r=>messageOf(r)==='Long answer')).toBe(true);
+    expect((await status('completed')).statusCode).toBe(409);
+    page.send({type:'queue',id:'queued',text:'Thanks',chat});
+    await page.next(m=>m.type==='state' && m.queue.some((q:any)=>q.id==='queued'));
+    expect((await status('completed')).statusCode).toBe(409);
+    release();
+    await page.next(result('long'));await page.next(result('queued'));
+    expect(s.rt.store.requireTask(task.id).status).toBe('open');
+    expect((await status('completed',task.revision)).statusCode).toBe(409);
+    expect((await status('completed',s.rt.store.requireTask(task.id).revision)).statusCode).toBe(200);
+    expect(s.rt.store.statusSource(task.id)?.by).toBe('user');
+    await other.next(m=>m.type==='activity' && m.kind==='ledger');
+    page.send({type:'send',id:'why',text:'Why did that work?',to:'main',chat});
+    await page.next(result('why'));
+    expect(s.rt.store.requireTask(task.id).status).toBe('completed');
+    page.send({type:'send',id:'reopen',text:'Reopen this task.',to:'main',chat});
+    await page.next(result('reopen'));
+    expect(s.rt.store.requireTask(task.id).status).toBe('open');
+    page.send({type:'send',id:'close-flow',text:'Okay, I think this task is complete now.',to:'main',keep:chat});
+    await page.next(result('close-flow'));
+    expect(s.rt.store.requireTask(task.id).status).toBe('completed');
+    expect(s.rt.store.statusSource(task.id)).toMatchObject({by:'user',reason:'Okay, I think this task is complete now.'});
+    expect(s.rt.store.requireGoal(goal.id).status).toBe('open');
+  });
+});

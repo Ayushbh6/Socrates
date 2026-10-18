@@ -178,6 +178,7 @@ export class LiveHub {
 
   constructor(private readonly runtime: Runtime, options: { replayMax?: number } = {}) {
     this.replayMax = options.replayMax ?? REPLAY_MAX_EVENTS;
+    runtime.hasQueuedTask = id => this.hasQueuedTask(id);
     this.terminals = new TerminalPanel(runtime, (message) => this.broadcast(message), (socket, message) => this.send(socket, message));
     this.unsubscribe = runtime.store.onEvent((event) => {
       const activity = activityOf(runtime.store, event);
@@ -228,6 +229,18 @@ export class LiveHub {
     this.subscribed.clear();
     this.closing = Promise.allSettled(settling).then(() => {});
     return this.closing;
+  }
+
+  /** A status change cannot overtake accepted work, even before its route is known. */
+  taskBusy(taskId: string): boolean {
+    return !!this.runtime.socrates?.taskBusy(taskId) || this.hasQueuedTask(taskId) ||
+      [...this.runs.values()].some(r => !r.tasks.size || r.tasks.has(taskId));
+  }
+
+  hasQueuedTask(taskId: string): boolean {
+    const matches = (s: Schedule) => !s.tasks.size || s.tasks.has(taskId);
+    return this.queue.some(q => matches(q.schedule)) ||
+      [...this.runs.values()].filter(r => matches(r.schedule)).length > 1;
   }
 
   state() {

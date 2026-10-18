@@ -77,10 +77,13 @@ The familiar harness layout, for following everything at once. The switch in eit
 
 ## Status
 
-A goal or task is open, completed, or superseded (replaced by other work and no longer pursued), and the user has the final say (`agent-harness.md`, "Task status").
+Tasks share one human-controlled lifecycle in Flow and Standard (`agent-harness.md`, "Task status"). The current task sticker, expanded task/goal notes, Standard header and chat action menu show **Open**, **Completed by you**, or legacy **Completed**. **Mark complete** opens a confirmation naming the task. **Undo** immediately reopens it; later views offer **Reopen**. Expanded notes retain **Mark superseded** for work replaced by another task. Goal status remains a separate user action.
 
-- **Flow mode.** In the expanded task and goal notes the status is a menu: Open, Completed, Superseded. Each task in the goal note's list has the same menu. Under a closed task the note says who closed it: "You marked it completed" or "Socrates closed it:" with its reason. The task note has **Keep my next message in this task**: the note closes, the small note says "Next message stays here", and the composer shows "Next message stays in <task>" with × to let go of it. The next message in the main conversation then goes to that task without routing (reopening it if it was closed), and the pin is used up; switching to a lane drops it.
-- **Standard mode.** A goal folder's actions include a status menu; a completed goal is shown muted with a check, a superseded one muted and labelled. Chats have no status: a chat is never complete, so it is archived instead, and Socrates never closes one.
+Controls are disabled while work or queued messages can affect the task. Confirmation submits the captured revision, so another tab's work or status change cannot be overwritten silently. Status events refresh all connected views. Completion leaves the answer on screen, preserves history, and clears an existing Flow pin. Selecting completed history or asking about it does not itself reopen it. General daily chats have no lifecycle controls.
+
+Direct current-task chat instructions (for example “Mark this task complete”) target the task being viewed; queued/busy retries retain that destination. Ordinary Flow messages still route normally. The server applies a recognized human instruction only after the response and notes settle, never mid-response. Other wording can use the button.
+
+Settings → **Inactive tasks** provides a switch, month slider and numeric input (1–24, default **12 months**). Saving applies without a restart; shortening the interval may archive eligible tasks immediately. Inactivity uses calendar months and recorded task activity, not merely opening a view. General and busy/queued tasks are excluded. **Archived** shows the reason and offers **Restore**; restoring resets the inactivity clock without changing completion status or deleting history.
 
 ## Redo in another task
 

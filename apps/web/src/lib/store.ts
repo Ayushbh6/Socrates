@@ -64,6 +64,7 @@ export class Store {
   /** The chat each standard-mode message was sent to, so one that finds main busy is queued for the same chat. */
   private readonly replySends = new Map<string, string>();
   private readonly sentChats = new Map<string, ChatChoice>();
+  private readonly sentKeeps = new Map<string, KeepChoice>();
   /** The terminal sessions open on this page; their output never goes through the app's state. */
   private readonly terminalWatchers = new Map<string, TerminalWatcher>();
   private readonly restartListeners = new Set<(from: string, to: string) => void>();
@@ -117,6 +118,7 @@ export class Store {
     const id = newId();
     if (!this.command({ type: "send", id, text, to, ...named(attachments), ...(chat ? { chat } : {}), ...(keep ? { keep } : {}) })) return null;
     if (chat) this.sentChats.set(id, chat);
+    if (keep) this.sentKeeps.set(id, keep);
     this.dispatch({ type: "sent", id, text, to, at: new Date().toISOString(), attachments });
     return id;
   }
@@ -410,15 +412,17 @@ export class Store {
       const sent = Object.values(this.state.model.conversations).flat().find((e) => e.sendId === message.id);
       this.dispatch({ type: "unsent", id: message.id });
       const chat = this.sentChats.get(message.id);
+      const keep = this.sentKeeps.get(message.id);
       this.sentChats.delete(message.id);
-      if (sent && !this.queue(sent.message, sent.attachments, chat, undefined, message.id)) this.rejectedQueue(message.id, sent.message, "Socrates is reconnecting. Try again in a moment.", sent.attachments);
+      this.sentKeeps.delete(message.id);
+      if (sent && !this.queue(sent.message, sent.attachments, chat, keep, message.id)) this.rejectedQueue(message.id, sent.message, "Socrates is reconnecting. Try again in a moment.", sent.attachments);
       return;
     }
     if (message.type === "state") {
       for (const queued of message.queue) this.pendingQueue.delete(queued.id);
     }
     if (message.type === "accepted" || message.type === "result") this.pendingQueue.delete(message.id);
-    if ((message.type === "accepted" || message.type === "result" || message.type === "error") && message.id) this.sentChats.delete(message.id);
+    if ((message.type === "accepted" || message.type === "result" || message.type === "error") && message.id) { this.sentChats.delete(message.id); this.sentKeeps.delete(message.id); }
     if (message.type === "error") {
       const queued = message.id ? this.pendingQueue.get(message.id) : undefined;
       if (queued !== undefined && message.id) {
@@ -471,12 +475,15 @@ export class Store {
   }
 
   /** Set a goal's or task's status as the user chooses; a refusal is shown as a notice. */
-  async setStatus(what: { goal: number; task?: number }, status: LedgerStatus): Promise<void> {
+  async setStatus(what: { goal: number; task?: number }, status: LedgerStatus, revision?: number): Promise<boolean> {
     try {
-      await (what.task === undefined ? api.setGoalStatus(what.goal, status) : api.setTaskStatus(what.goal, what.task, status));
+      await (what.task === undefined ? api.setGoalStatus(what.goal, status) : api.setTaskStatus(what.goal, what.task, status, revision));
       await this.reloadGoals();
+      return true;
     } catch (error) {
       this.notice(error);
+      await this.reloadGoals();
+      return false;
     }
   }
 

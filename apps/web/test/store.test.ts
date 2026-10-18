@@ -42,6 +42,12 @@ describe('history recovery and unsent text', () => {
     expect(store.get().model.conversations.main!.at(-1)).toMatchObject({message:'The rejected message',state:'failed',note:'The queue is full.'});
   });
 
+  it('keeps a lifecycle command bound to its viewed task when a busy race queues it', async () => {
+    const store = new Store(); await store.start(); const socket = Socket.all[0]!; socket.open();
+    const id = store.send('Mark this task complete.', 'main', [], undefined, {goal:2,task:3});
+    socket.receive({type:'error',id,code:'main_busy',message:'Main is busy.'});
+    expect(socket.sent.at(-1)).toMatchObject({type:'queue',id,keep:{goal:2,task:3},text:'Mark this task complete.'});
+  });
   it('preserves a main-busy message if the fallback queue loses its connection', async () => {
     const store = new Store(); await store.start(); const socket = Socket.all[0]!; socket.open();
     const id = store.send('Keep the fallback','main');

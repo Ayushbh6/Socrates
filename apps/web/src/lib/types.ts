@@ -87,6 +87,7 @@ export interface Settings {
   /** The model that names standard-mode chats; null: qwen3-30b-a3b-instruct on OpenRouter when there is a key, else the routing model. */
   titler?: ModelChoice | null;
   embeddings: Embeddings;
+  inactiveTaskMonths?: number | null;
   timeZone: string | null;
   workingFolder: string | null;
   access: Access;
@@ -128,7 +129,7 @@ export interface ChatChoice {
 /** What is archived (architecture/server.md, "HTTP API"). */
 export interface ArchivedView {
   goals: { number: number; title: string; archivedAt: string; chats: number }[];
-  tasks: { goal: { number: number; title: string }; number: number; title: string; archivedAt: string }[];
+  tasks: { goal: { number: number; title: string }; number: number; title: string; archivedAt: string; archiveReason?: string | null }[];
 }
 
 export interface GoalView {
@@ -142,7 +143,7 @@ export interface GoalView {
   /** The goal standard mode shows as its plain chats, outside any goal. */
   chats?: boolean;
   workspace: string | null;
-  tasks: { number: number; startedAt?: string; title: string; chats?: number; sessions?: {id: string; sequence: number; continuationOf: string | null; handoverRef: string | null; compactions: number; openedAt: string; closedAt: string | null; handover: unknown}[]; status: string; closed?: ClosedBy | null; note: string | null; noteState?: { freshness: "current" | "outdated" | "unknown"; sourceTurn: string | null; reason: string | null; outcome: string | null }; objective?: string; completionCriteria?: string | null }[];
+  tasks: { number: number; revision?: number; startedAt?: string; title: string; chats?: number; sessions?: {id: string; sequence: number; continuationOf: string | null; handoverRef: string | null; compactions: number; openedAt: string; closedAt: string | null; handover: unknown}[]; status: string; closed?: ClosedBy | null; note: string | null; noteState?: { freshness: "current" | "outdated" | "unknown"; sourceTurn: string | null; reason: string | null; outcome: string | null }; objective?: string; completionCriteria?: string | null }[];
 }
 
 /** A goal's or task's status: open, completed, or superseded (replaced by other work). */

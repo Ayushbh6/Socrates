@@ -1,3 +1,4 @@
+import { TaskActions } from "./TaskActions";
 import { SessionContinuation } from "./SessionContinuation";
 import { useEffect, useMemo, useState } from "react";
 import { allQuestions, chatThread, chatTitle, groupChats, newThread, withoutArchived } from "../lib/chats";
@@ -102,6 +103,7 @@ export function Standard({ app, mode, dock, onMode, onSettings }: { app: AppStat
         <div className="chat-title">
           {task ? <><strong title={task.title}>{chatTitle(task.title, chat)}</strong>{!goal?.chats && <small title={goal?.title}>{goal?.title}</small>}</> : <><strong>{view && "request" in view ? "Routing question" : "New chat"}</strong>{freshGoal && <small>{freshGoal.title}</small>}</>}
         </div>
+        {goal && task && !goal.general && <TaskActions key={`${goal.number}/${task.number}`} goal={goal} task={task} />}
       </AppHeader>
       {sidebar && (
         <>
@@ -115,6 +117,11 @@ export function Standard({ app, mode, dock, onMode, onSettings }: { app: AppStat
             onRename={(what, title) => (what.task === undefined ? store.renameGoal(what.goal, title) : store.renameChat(what.goal, what.task, title))}
             onArchive={archive}
             onRestore={(what) => store.restore(what)}
+            taskActions={target => {
+              const g = app.goals.find(g => g.number === target.goal);
+              const t = g?.tasks.find(t => t.number === target.task);
+              return g && t ? <TaskActions goal={g} task={t} /> : null;
+            }}
             onStatus={(goal, status) => void store.setStatus({ goal }, status)}
             onOpenArchive={() => void store.loadArchived().catch(() => {})}
             onNewGoal={async (title) => {

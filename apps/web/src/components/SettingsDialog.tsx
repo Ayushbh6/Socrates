@@ -31,6 +31,7 @@ export function SettingsDialog({ app, onClose }: { app: AppState; onClose: () =>
         <Keys providers={providers} />
         <MemorySection app={app} />
         <MemorySearch app={app} />
+        <TaskArchiveSettings app={app} />
         <TimeZone app={app} />
         <Section title="Where Socrates works">
           <AccessControls app={app} approvals />
@@ -39,6 +40,23 @@ export function SettingsDialog({ app, onClose }: { app: AppState; onClose: () =>
     </div>,
     document.body,
   );
+}
+
+function TaskArchiveSettings({ app }: { app: AppState }) {
+  const saved = app.settings?.inactiveTaskMonths === undefined ? 12 : app.settings.inactiveTaskMonths;
+  const [months, setMonths] = useState(saved ?? 12);
+  const [enabled, setEnabled] = useState(saved !== null);
+  const { busy, save, feedback } = useSave();
+  return <Section title="Inactive tasks">
+    <p className="settings-hint">Archive tasks after this long without conversation or a status change. History is kept; archiving does not mark work completed. Restore a task from Archived to use it again.</p>
+    <label className="archive-enabled"><input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />Automatically archive inactive tasks</label>
+    <div className="archive-period">
+      <input aria-label="Inactivity period" type="range" min="1" max="24" step="1" value={months} disabled={!enabled || busy} onChange={e => setMonths(Number(e.target.value))} />
+      <label><input aria-label="Inactive months" type="number" min="1" max="24" value={months} disabled={!enabled || busy} onChange={e => setMonths(Number(e.target.value))} /> months</label>
+    </div>
+    <p className="settings-hint">Default: 12 months. Checks run on startup and hourly; saving a shorter period can archive older tasks immediately.</p>
+    <div className="settings-actions">{feedback}<button type="button" className="solid-button" disabled={busy || !Number.isInteger(months) || months < 1 || months > 24} onClick={() => save(() => store.saveSettings({ inactiveTaskMonths: enabled ? months : null }))}>Save inactivity period</button></div>
+  </Section>;
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {

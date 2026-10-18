@@ -86,6 +86,16 @@ export function Flow({ app, mode, dock, onMode, onSettings, view, setView }: { a
   const route = exchange ? exchange.route ?? currentRoute(list) : null;
   const goal = useMemo(() => (route ? app.goals.find((g) => g.number === route.goal.number) ?? null : null), [route, app.goals]);
 
+  const priorStatuses = useRef(new Map<string, string>());
+  useEffect(() => {
+    const next = new Map<string, string>(app.goals.flatMap(g => g.tasks.map(t => [`${g.number}/${t.number}`, t.status] as const)));
+    if (keep) {
+      const key = `${keep.goal}/${keep.task}`;
+      if (priorStatuses.current.get(key) === "open" && next.get(key) !== "open") setKeep(null);
+    }
+    priorStatuses.current = next;
+  }, [app.goals]);
+
   const session = goal?.tasks.find(t => t.number === route?.task.number)?.sessions?.find(s => !s.closedAt);
 
   useEffect(() => dock.context(route?.goal.number, route?.task.number), [dock.context, route?.goal.number, route?.task.number]);
@@ -149,6 +159,7 @@ export function Flow({ app, mode, dock, onMode, onSettings, view, setView }: { a
 
       <Composer
         app={app}
+        statusTarget={conversation === "main" && goal && !goal.general && route ? { goal: goal.number, task: route.task.number } : undefined}
         conversation={conversation}
         laneNumber={lane?.number ?? null}
         onModel={onSettings}

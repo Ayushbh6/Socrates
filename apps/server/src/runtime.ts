@@ -80,6 +80,7 @@ export class RuntimeBusyError extends Error {
  */
 export class Runtime {
   socrates: Socrates | null = null;
+  hasQueuedTask: (taskId: string) => boolean = () => false;
   settings: Settings;
   /** What the user must still do before Socrates takes messages. */
   setup: string[] = [];
@@ -355,7 +356,7 @@ export class Runtime {
     const sameChat = !!this.socrates && !!next.chat && !!inUse && next.chat.provider === inUse.provider && next.chat.model === inUse.model;
     // The model that names chats is used after an answer, never inside a turn, so it can change while Socrates works.
     const titlerOnly = !!this.socrates && !!this.models.router;
-    if (Object.keys(sent).every((key) => key === "access" || key === "profile" || key === "memory" || key === "prices" || key === "terminal" || (key === "chat" && sameChat) || (key === "titler" && titlerOnly))) {
+    if (Object.keys(sent).every((key) => key === "access" || key === "profile" || key === "memory" || key === "prices" || key === "terminal" || key === "inactiveTaskMonths" || (key === "chat" && sameChat) || (key === "titler" && titlerOnly))) {
       const effort = next.chat?.effort;
       if (sameChat && effort && !inUse!.effort?.levels.includes(effort)) {
         const levels = inUse!.effort?.levels ?? [];
@@ -580,6 +581,7 @@ export class Runtime {
     }
     this.socrates = new Socrates({
       store: this.store,
+      hasQueuedTask: id => this.hasQueuedTask(id),
       model,
       routerModel,
       ...(routerEffort ? { routerEffort } : {}),

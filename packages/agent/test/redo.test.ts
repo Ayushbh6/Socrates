@@ -21,7 +21,7 @@ describe("redo in another task", () => {
     const first = await socrates.handle("Fix the port.");
     if (first.kind !== "answered") throw new Error("expected an answer");
     const firstTurn = first.parts[0]!.turn;
-    expect(w.store.requireTask(w.taskId).status).toBe("completed");
+    expect(w.store.requireTask(w.taskId).status).toBe("open");
 
     const redo = await socrates.handle("Fix the port.", { target: { taskId: other.id }, pinned: true, redoOf: firstTurn.id });
     expect(redo).toMatchObject({ kind: "answered", parts: [{ task: { id: other.id }, status: "completed" }] });

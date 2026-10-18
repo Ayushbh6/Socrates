@@ -133,7 +133,7 @@ export function goalsView(store: LedgerStore, chatsGoal: number | null = null) {
       chats: goal.number === chatsGoal,
       workspace: goal.workspaceId ? (store.getWorkspace(goal.workspaceId)?.name ?? null) : null,
       updatedAt: goal.updatedAt,
-      tasks: store.listTasks(goal.id).map((task) => ({ number: task.number, title: task.title, status: task.status, closed: closedBy(store, task), objective: task.objective, completionCriteria: task.completionCriteria, note: task.continuationNote, noteState: store.noteState(task.id), chats: Math.max(1, store.listChats(task.id).length), sessions: store.listChats(task.id).map(chat => ({ id: chat.id, sequence: chat.ordinal, continuationOf: chat.continuationOf, handoverRef: chat.handoverRef, compactions: chat.compactionCount, openedAt: chat.openedAt, closedAt: chat.closedAt, handover: chat.handoverRef ? store.historyRecord(task.id, Number(chat.handoverRef.replace("hc-", "")))?.content ?? null : null })), updatedAt: task.updatedAt, startedAt: task.startedAt })),
+      tasks: store.listTasks(goal.id).map((task) => ({ number: task.number, revision: task.revision, title: task.title, status: task.status, closed: closedBy(store, task), objective: task.objective, completionCriteria: task.completionCriteria, note: task.continuationNote, noteState: store.noteState(task.id), chats: Math.max(1, store.listChats(task.id).length), sessions: store.listChats(task.id).map(chat => ({ id: chat.id, sequence: chat.ordinal, continuationOf: chat.continuationOf, handoverRef: chat.handoverRef, compactions: chat.compactionCount, openedAt: chat.openedAt, closedAt: chat.closedAt, handover: chat.handoverRef ? store.historyRecord(task.id, Number(chat.handoverRef.replace("hc-", "")))?.content ?? null : null })), updatedAt: task.updatedAt, startedAt: task.startedAt })),
     }));
 }
 
@@ -204,7 +204,10 @@ export function archivedView(store: LedgerStore) {
   const { goals, tasks } = store.listArchived();
   return {
     goals: goals.map((g) => ({ number: g.number, title: g.title, archivedAt: g.archivedAt!, chats: store.listTasks(g.id, { includeArchived: true }).length })),
-    tasks: tasks.map(({ task, goal }) => ({ goal: { number: goal.number, title: goal.title }, number: task.number, title: task.title, archivedAt: task.archivedAt! })),
+    tasks: tasks.map(({ task, goal }) => {
+      const archive = store.listEvents({ taskId: task.id, type: "task_archived" }).at(-1)?.payload as { source?: string; months?: number } | undefined;
+      return { goal: { number: goal.number, title: goal.title }, number: task.number, title: task.title, archivedAt: task.archivedAt!, archiveReason: archive?.source === "inactivity" ? `Inactive for ${archive.months} months` : null };
+    }),
   };
 }
 

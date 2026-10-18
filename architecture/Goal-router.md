@@ -131,7 +131,7 @@ There is exactly one general goal, holding one general task per day. The router 
 12. **The router has exactly two tools, both harness-bounded.** `ledger_query` is read-only over the ledger, capped at three calls per routing decision. `ask_user` ends the routing run with one structured clarification question. Neither can touch files, terminals, or state.
 13. **Clarify is always constructive.** The `ask_user` schema requires a non-empty candidates list; the harness rejects a question without candidates. The only permitted empty-candidates clarify is the zero-history start, which uses an explicit schema flag.
 14. **Compaction is strictly task-local.** It never summarizes multiple tasks or goals together. Switching tasks is context replacement, not compaction.
-15. **The user always has the final say.** The agent may propose task completion; the harness records it; the user can override, reopen, split, merge, or reassign any task at any time.
+15. **The human owns task completion.** Only explicit user instructions or UI actions authorize completion; a model proposal alone does not. Factual continuation notes do not infer closure. The user can reopen, split, merge, or reassign tasks.
 
 ## Routing outcomes
 
@@ -516,10 +516,10 @@ Rules:
 - **Append-only revisions, current projection.** Opening a task creates its first ledger revision. Each completed turn appends a new revision and atomically advances the task's current SQL projection; no prior revision is rewritten. A correction is a new turn or task, never a history rewrite.
 - **Models propose, the harness disposes.** The harness writes every field. Model-produced content — the router's goal and task binding, the agent's continuation note — passes through harness validation before it is persisted. No LLM ever writes storage directly, so nothing in the ledger can be corrupted by a hallucinating model.
 - **Bounded.** Title ≤ ~15 tokens, objective ≤ ~25 tokens, completion criteria ≤ ~35 tokens, continuation note target 1,200 characters, accepted up to 1,500 Unicode code points, derived lists capped. An entry is roughly 150–285 tokens, which is what makes retrieval arithmetic predictable.
-- **Active is derived, not stored.** The active task is the one bound to the most recent turn; every other `open` task is simply unfinished. Switching subjects therefore writes nothing. Completion and reopening are the only status changes, and both append revisions.
+- **Active is derived, not stored.** The active task is the one bound to the most recent turn; every other `open` task remains available; this does not assert unfinished work. Switching subjects therefore writes nothing. Completion and reopening are the only status changes, and both append revisions.
 - **No content duplication.** The entry holds pointers and one-line facts; the exact text lives only in the event log.
 - **Interrupted tasks still get entries.** A task cancelled mid-run is finalized by the harness with whatever note exists, or a mechanical "interrupted after N tool calls" fallback. "What was I in the middle of?" is exactly a notepad question, so a PA's notepad records interrupted work too.
-- **Task completion is proposed, recorded, and overridable.** The agent proposes completion in its final result; the harness records it; the user can always reopen the task naturally, and a reopened task continues under the same `task_id`.
+- **Human-controlled task completion.** Explicit user instructions or UI actions produce provenance-bearing `task_status_set` events after work settles. Autonomous `task_complete` proposals are ignored. A reopened task continues under the same `task_id`; questions about completed work preserve its status.
 
 ### Ledger entries versus history checkpoints
 
@@ -701,7 +701,7 @@ The rule underneath this table is **models propose, the harness disposes**: ever
 | Tool calls and tool results | — | Harness |
 | Files changed | — | Derived by the harness from tool execution |
 | Ledger entry | Continuation note by Main Coding Agent | Harness, created at task open, updated per turn |
-| Task completion | Main Coding Agent proposal | Harness records it; user can always override or reopen |
+| Task completion | Explicit human instruction or UI action | Harness validates and records user provenance after work settles |
 | Active capabilities | Main Coding Agent decisions | Capability runtime, not the router |
 | Visible answer | Main Coding Agent | Harness |
 | Short continuation note (task-local) | Main Coding Agent, in the same final result | Harness |

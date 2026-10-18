@@ -52,7 +52,7 @@ export function placeOf(store: LedgerStore, turnId: string): Place | null {
 export interface OriginalRequest { id: string; seq: number; at: string; message: string; attachments: AttachmentView[] }
 export type Activity = { seq: number; at: string; conversation: string; requestSeq?: number; original?: OriginalRequest } & ActivityBody;
 
-const LEDGER_EVENTS = new Set(["goal_created", "task_created", "task_revised", "goal_note_revised", "goal_workspace_bound", "anchor_revised", "goal_renamed", "task_renamed", "goal_archived", "goal_restored", "task_archived", "task_restored"]);
+const LEDGER_EVENTS = new Set(["task_status_set", "goal_status_set", "goal_created", "task_created", "task_revised", "goal_note_revised", "goal_workspace_bound", "anchor_revised", "goal_renamed", "task_renamed", "goal_archived", "goal_restored", "task_archived", "task_restored"]);
 
 /**
  * One event as an activity, or null for events the app does not show. A

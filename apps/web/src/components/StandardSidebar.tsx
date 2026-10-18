@@ -1,6 +1,6 @@
 import { SidebarHeading } from "./SidebarChrome";
 import { Archive, ArchiveRestore, Check, ChevronRight, CircleCheck, Ellipsis, Folder, FolderOpen, FolderPlus, LoaderCircle, Pencil, Plus, SquarePen } from "lucide-react";
-import { type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent, useState } from "react";
+import { type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent, type ReactNode, useState } from "react";
 import { type Chat, type GoalChats, chatKey } from "../lib/chats";
 import type { ArchivedView, LedgerStatus } from "../lib/types";
 import { Popover } from "./Popover";
@@ -20,7 +20,8 @@ const sameTarget = (a: Target | null, b: Target) => !!a && a.goal === b.goal && 
  * be renamed in place or archived; archived ones are listed at the bottom and
  * restored from there.
  */
-export function StandardSidebar({ goals, current, archived, onChat, onNew, onNewGoal, onRename, onArchive, onRestore, onStatus, onOpenArchive, onClose }: {
+export function StandardSidebar({ goals, current, archived, onChat, onNew, onNewGoal, onRename, onArchive, onRestore, onStatus, taskActions, onOpenArchive, onClose }: {
+  taskActions?: (target: Target) => ReactNode;
   onClose: () => void;
   goals: GoalChats[];
   current: Current;
@@ -80,6 +81,7 @@ export function StandardSidebar({ goals, current, archived, onChat, onNew, onNew
   const actions = (target: Target, title: string, goal?: GoalChats) => (
     <RowMenu
       title={title}
+      lifecycle={target.task !== undefined ? taskActions?.(target) : undefined}
       onRename={() => setRenaming({ target, value: title })}
       onArchive={() => void attempt(() => onArchive(target, title))}
       {...(goal ? { onNew: () => onNew(goal.number), status: goal.status, onStatus: (status: LedgerStatus) => onStatus(goal.number, status) } : {})}
@@ -170,7 +172,7 @@ export function StandardSidebar({ goals, current, archived, onChat, onNew, onNew
           ))}
           {archived?.tasks.map((t) => (
             <li key={`t${t.goal.number}/${t.number}`}>
-              <span title={t.title}>{t.title}<small>{t.goal.title}</small></span>
+              <span title={t.title}>{t.title}<small>{t.goal.title}{t.archiveReason ? ` · ${t.archiveReason}` : ""}</small></span>
               <button type="button" className="icon-button" onClick={() => void attempt(() => onRestore({ goal: t.goal.number, task: t.number }))} aria-label={`Restore ${t.title}`} title="Restore"><ArchiveRestore aria-hidden /></button>
             </li>
           ))}
@@ -189,7 +191,8 @@ export function StandardSidebar({ goals, current, archived, onChat, onNew, onNew
  * apps: a goal's new chat, rename, status and archive; a chat's rename and
  * archive. The menu is drawn in the page so the sidebar cannot clip it.
  */
-function RowMenu({ title, onRename, onArchive, onNew, status, onStatus }: {
+function RowMenu({ title, onRename, onArchive, onNew, status, onStatus, lifecycle }: {
+  lifecycle?: ReactNode;
   title: string;
   onRename: () => void;
   onArchive: () => void;
@@ -224,6 +227,7 @@ function RowMenu({ title, onRename, onArchive, onNew, status, onStatus }: {
               ))}
             </>
           )}
+          {lifecycle && <div className="row-lifecycle">{lifecycle}</div>}
           <hr />
           <button type="button" role="menuitem" onClick={run(onArchive)}><Archive aria-hidden />Archive</button>
         </Popover>

@@ -850,3 +850,21 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .session-handover section + section { margin-top: .9rem; }
 .session-handover p { margin: .25rem 0 0; white-space: pre-wrap; }
 .continued-note .quiet-button { display: inline-flex; align-items: center; gap: .4rem; }
+
+/* Task lifecycle uses the same quiet action hierarchy in Flow and Standard. */
+.note-actions { padding: 0 1.25rem 1rem; }
+.task-actions { position: relative; display: flex; align-items: center; gap: .65rem; flex-wrap: wrap; font-size: .8rem; }
+.task-state { color: var(--muted); }
+.task-actions > .quiet-button { color: var(--accent); font-size: .8rem; padding: .35rem .5rem; }
+.task-actions button:disabled { opacity: .45; cursor: not-allowed; }
+.task-confirm { width: min(300px, calc(100vw - 40px)); padding: 1rem; font-size: .85rem; }
+.task-confirm p { line-height: 1.5; margin: .6rem 0 1rem; color: var(--muted); }
+.task-confirm-actions { display: flex; justify-content: flex-end; gap: .5rem; }
+.task-confirm-actions .solid-button { font-size: .8rem; padding: .55rem .8rem; }
+.archive-enabled { display: flex; align-items: center; gap: .6rem; }
+.archive-period { display: flex; align-items: center; gap: 1.25rem; margin: 1rem 0; }
+.archive-period input[type=range] { flex: 1; min-width: 80px; accent-color: var(--accent); }
+.archive-period input[type=number] { width: 5rem; }
+@media (max-width: 760px) { .chat-title { min-width: 0; } .task-actions { gap: .25rem; } }
+
+.row-lifecycle { padding: .5rem .65rem; }

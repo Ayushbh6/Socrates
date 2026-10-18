@@ -47,7 +47,7 @@ export interface World {
   socrates(
     router: ScriptedStep[],
     agent: ScriptedStep[],
-    options?: { limits?: Partial<AgentLimits>; approve?: boolean; now?: () => number; resolveWorkspace?: SocratesOptions["resolveWorkspace"]; budgets?: Partial<ContextBudgets>; compactor?: ScriptedStep[]; catalog?: CapabilityCatalog; shelf?: ShelfOptions; semantic?: SemanticIndex; access?: () => AccessPolicy | null; profile?: () => { name: string | null }; attachments?: string; memory?: SocratesOptions["memory"]; gate?: SocratesOptions["gate"]; workMemoryDir?: string },
+    options?: { hasQueuedTask?: SocratesOptions["hasQueuedTask"]; limits?: Partial<AgentLimits>; approve?: boolean; now?: () => number; resolveWorkspace?: SocratesOptions["resolveWorkspace"]; budgets?: Partial<ContextBudgets>; compactor?: ScriptedStep[]; catalog?: CapabilityCatalog; shelf?: ShelfOptions; semantic?: SemanticIndex; access?: () => AccessPolicy | null; profile?: () => { name: string | null }; attachments?: string; memory?: SocratesOptions["memory"]; gate?: SocratesOptions["gate"]; workMemoryDir?: string },
   ): { socrates: Socrates; routerModel: ScriptedModel; model: ScriptedModel; compactor: ScriptedModel };
 }
 
@@ -87,6 +87,7 @@ export async function world(options: { files?: Record<string, string | Buffer>; 
           return o.approve ?? true;
         },
         retryDelaysMs: [0, 0],
+        ...(o.hasQueuedTask ? { hasQueuedTask: o.hasQueuedTask } : {}),
         ...(o.limits ? { limits: o.limits } : {}),
         ...(o.now ? { now: o.now } : {}),
         ...(o.resolveWorkspace ? { resolveWorkspace: o.resolveWorkspace } : {}),

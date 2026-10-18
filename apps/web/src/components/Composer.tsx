@@ -1,3 +1,4 @@
+import { taskStatusRequest } from "../../../../packages/contracts/src/task-status";
 import { AlertTriangle, ArrowUp, Check, ChevronDown, Hand, ImagePlus, ListPlus, LoaderCircle, Pin, Square, Split, X, Zap } from "lucide-react";
 import { type ClipboardEvent, type DragEvent, type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { IMAGES_MAX, IMAGE_TYPES } from "../lib/images";
@@ -8,7 +9,7 @@ import { EffortMenu, ModelMenu } from "./ModelPicker";
 import { Popover } from "./Popover";
 
 /** The message box: Send, Queue while main (or, in standard mode, the chat) works, or Send in a new lane (architecture/web.md, "Composer"). */
-export function Composer({ app, conversation, laneNumber, onNewLane, onModel, onSent, chat, keep, onUnkeep, placeholder, variant = "float", compact = false, autoFocus = true }: {
+export function Composer({ app, conversation, laneNumber, onNewLane, onModel, onSent, chat, keep, onUnkeep, statusTarget, placeholder, variant = "float", compact = false, autoFocus = true }: {
   app: AppState;
   conversation: string;
   laneNumber: number | null;
@@ -21,6 +22,7 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, on
   chat?: ChatChoice;
   /** Flow mode: the task the next message is kept in, unrouted, and how to let go of it. */
   keep?: { choice: KeepChoice; title: string };
+  statusTarget?: KeepChoice;
   onUnkeep?: () => void;
   placeholder?: string;
   /** Floating over the flow canvas, or inside a standard-mode panel. */
@@ -81,7 +83,7 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, on
 
   const submit = (how: "send" | "queue" | "lane" = target) => {
     if (empty || unavailable || (how === "lane" && runningLanes >= MAX_RUNNING_LANES)) return;
-    const kept = keep?.choice;
+    const kept = keep?.choice ?? (!chat && taskStatusRequest(text) ? statusTarget : undefined);
     const sent = how === "lane" ? onNewLane(text, attachments) : how === "queue" ? store.queue(text, attachments, chat, kept) : store.send(text, conversation, attachments, chat, kept);
     if (!sent) return;
     onSent?.(sent);

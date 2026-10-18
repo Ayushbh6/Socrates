@@ -1,3 +1,4 @@
+import { taskStatusRequest, requestsTaskWork } from "@socrates/contracts";
 import { createHash } from "node:crypto";
 import { generalHistoryParts, taskHistory, historyParts, userSection } from "./history";
 import type { Attachment, Effort, EventRefs, FinalAnswer, ModelClient, TurnStop } from "@socrates/contracts";
@@ -9,7 +10,7 @@ import { foregroundTurns, selectContextHistory, contextSection, contextTime, cur
 import type { SemanticHit, SemanticIndex } from "@socrates/retrieval";
 import { type AccessGrant, type AccessPolicy, type Approve, type CapabilityCatalog, RunState, type ShelfOptions, type SupervisorOptions, ToolRunner, WorkspaceRoot, canReadAutomatically, capabilityCandidates, skillShelf } from "@socrates/tools";
 import { attachmentImages, requestAttachments, decisionImages } from "./attachments";
-import { CHAT_ROUTES, assembleContext, projectQuery } from "./context";
+import { assembleContext, projectQuery } from "./context";
 import { type LaneView, laneNotice, lanesBlock } from "./lanes";
 import { RELATED_MAX_SECTIONS } from "./project-context";
 import { fallbackAnswer, mechanicalNote } from "./final";
@@ -79,6 +80,8 @@ export interface SocratesOptions {
    * state something to save. Null, or without it, turns go on without.
    */
   gate?: () => MemoryGate | null;
+  /** External queues must finish before a task can be completed. */
+  hasQueuedTask?: (taskId: string) => boolean;
   maxOutputTokens?: number;
   retryDelaysMs?: number[];
   /** Wall clock in milliseconds, for the per-turn time limit. */
@@ -377,6 +380,13 @@ export class Socrates {
       const problem = !options.target ? "A redo needs the task to ask it in." : this.redoProblem(options.redoOf, "taskId" in options.target ? options.target.taskId : null);
       if (problem) return Promise.reject(new RedoError(problem));
     }
+    // Capture the destination before routing can change it. The browser supplies a
+    // viewed-task target; non-UI callers use the binding at acceptance time.
+    const lifecycle = taskStatusRequest(message);
+    if (lifecycle && options.lane !== "new" && !options.target && !options.replyTo && !options.redoOf) {
+      const current = this.store.currentBinding(options.lane && options.lane !== "new" ? options.lane : null);
+      if (current && !current.task.general && !current.task.archivedAt) options = { ...options, target: { taskId: current.task.id }, pinned: true };
+    }
     let laneId: string | null;
     const alongside = options.alongside === true && !!options.target && !options.lane && !options.replyTo;
     try {
@@ -646,8 +656,8 @@ export class Socrates {
       if (goal.general && created) throw new Error("A standard-mode chat cannot be started in the general conversation.");
       if (task.archivedAt || goal.archivedAt) throw new Error("That chat is archived; restore it first.");
       // A chosen task that was closed is taken up again, by the user's choice.
-      if (task.status !== "open") this.store.setTaskStatus(task.id, "open");
       const userEvent = userEventId ? this.store.getEvent(userEventId)! : this.store.recordUserMessage(message, laneId);
+      if (task.status !== "open" && requestsTaskWork(message)) this.store.setTaskStatus(task.id, "open", { source: "message", request_id: userEvent.id, reason: message });
       const redoOf = (userEvent.payload as { redo_of?: string }).redo_of ?? null;
       // Checked again where it is bound: the turn may have changed since the message was sent.
       const problem = redoOf ? this.redoProblem(redoOf, task.id) : null;
@@ -1027,17 +1037,29 @@ export class Socrates {
 
     const { answer } = outcome;
     const anchors = applyAnchors({ store, goal, workspace: store.requireGoal(goal.id).workspaceId ? workspace : null, turn, proposals: answer.anchors, decisions: anchorDecisions, refs, access: this.options.access?.() ?? null });
-    const visible = [answer.full_answer, anchors.question].filter(Boolean).join("\n\n");
+    const requested = taskStatusRequest(part.request);
+    const failures = store.evidenceForTurn(turn.id).some(e => {
+      const output = e.result?.result as { exit_code?: number; status?: string } | null | undefined;
+      return e.status === "error" || (typeof output?.exit_code === "number" && output.exit_code !== 0) || output?.status === "running";
+    });
+    const maySetStatus = !task.general && requested && (!part.created.task || requested.conditional) && outcome.stop === "final" && !outcome.notes.some(n => n.outcome === "failed") &&
+      (!requested.conditional || (!!answer.task_complete && !failures)) && !this.options.hasQueuedTask?.(task.id);
+    const statusNotice = requested?.status === "completed" && !maySetStatus && !task.general
+      ? "Task status was not changed: work is queued, unfinished, or could not be fully saved. You can mark it complete after it settles." : null;
+    const visible = [answer.full_answer, anchors.question, statusNotice].filter(Boolean).join("\n\n");
     const response = store.recordResponse(visible, refs);
     store.completeTurn(turn.id, {
       responseEventId: response.id,
       continuationNote: outcome.notes.some(n => n.field === "continuation_note" && n.outcome === "failed") ? null : answer.continuation_note,
       // The general conversation has no durable goal state and no completion.
       goalNote: goal.general || outcome.notes.some(n => n.field === "goal_note" && n.outcome === "failed") ? null : answer.goal_note,
-      // A standard-mode chat is never marked complete (architecture/agent-harness.md, "Task status").
-      ...(!task.general && answer.task_complete && !CHAT_ROUTES.has(store.turnRoute(turn.id) ?? "") ? { taskComplete: true, taskCompleteReason: answer.task_complete.reason } : {}),
       stop: outcome.stop,
     });
+    // A model's completion claim is never authority. Persist the user's action
+    // after the answer and notes in this same transaction.
+    if (maySetStatus && task.status !== requested.status) {
+      store.setTaskStatus(task.id, requested.status, { source: "message", request_id: turn.userEventId, reason: part.request });
+    }
     for (const note of outcome.notes) {
       store.appendEvent("note_outcome", { ...note, source_turn: turn.id }, refs);
       if (note.outcome === "failed") store.recordWarning(refs, { kind: "note_failed", detail: `${note.field}: ${note.reason}. Previous note is outdated for this turn; exact answer and evidence are preserved.` });

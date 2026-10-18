@@ -31,12 +31,13 @@ describe("the agent loop", () => {
     expect(model.requests[1]!.messages.at(-1)).toMatchObject({ role: "tool", toolName: "read" });
 
     const task = w.store.requireTask(w.taskId);
-    expect(task).toMatchObject({ status: "completed", continuationNote: "Port set to 3000; verified." });
+    expect(task).toMatchObject({ status: "open", continuationNote: "Port set to 3000; verified." });
     expect(w.store.requireGoal(w.goalId).note).toBe("Server works again.");
     const turn = result.kind === "answered" ? result.parts[0]!.turn : null;
     expect(turn).toMatchObject({ status: "completed" });
     const completed = w.store.listEvents({ turnId: turn!.id, type: "turn_completed" })[0]!.payload as EventPayloads["turn_completed"];
-    expect(completed).toMatchObject({ stop: "final", task_complete_reason: "Server starts." });
+    expect(completed).toMatchObject({ stop: "final" });
+    expect(completed.task_complete_reason).toBeUndefined();
     expect(w.store.evidenceForTurn(turn!.id).map((e) => e.tool)).toEqual(["read", "edit", "terminal"]);
   });
 

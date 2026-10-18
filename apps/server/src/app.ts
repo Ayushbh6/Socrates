@@ -1,3 +1,4 @@
+import { archiveInactiveTasks } from "./task-archive";
 import { TerminalPanelError } from "./terminals";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -74,7 +75,15 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
 
   // The live connection: one hub per server, closed (cancelling its runs) before the server stops.
   const hub = new LiveHub(runtime, replayMax ? { replayMax } : {});
-  app.addHook("preClose", () => hub.close());
+  const sweepTasks = () => {
+    try { if (runtime.acceptingMessages) archiveInactiveTasks(runtime.store, runtime.settings.inactiveTaskMonths, id => hub.taskBusy(id)); }
+    catch (error) { runtime.log(`Inactive task archival failed: ${String(error)}`); }
+  };
+  const archiveTimer = setInterval(sweepTasks, 60 * 60 * 1000);
+  archiveTimer.unref();
+  const stopArchiveSettings = runtime.onChange(sweepTasks);
+  app.addHook("onReady", async () => sweepTasks());
+  app.addHook("preClose", () => { clearInterval(archiveTimer); stopArchiveSettings(); return hub.close(); });
   app.addHook("onClose", () => hub.close());
   const socketOptions = { maxPayload: 1024 * 1024, closeTimeout: 1_000 };
   await app.register(websocket, { options: socketOptions });
@@ -199,7 +208,7 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
   };
   const busyWith = (found: NonNullable<ReturnType<typeof lookup>>) => {
     const tasks = found.task ? [found.task] : runtime.store.listTasks(found.goal.id, { includeArchived: true });
-    return tasks.some((t) => runtime.socrates?.taskBusy(t.id));
+    return tasks.some((t) => hub.taskBusy(t.id));
   };
   const missing = (reply: { code(n: number): { send(b: unknown): unknown } }) => reply.code(404).send(problem("not_found", "That goal or chat no longer exists."));
   app.patch("/api/goals/:goal", async (request, reply) => {
@@ -240,13 +249,18 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
   app.post("/api/goals/:goal/status", async (request, reply) => {
     const found = lookup(request.params);
     if (!found) return missing(reply);
+    if (busyWith(found)) return reply.code(409).send(problem("busy", "Wait for this goal’s work to finish before changing its status."));
     runtime.store.setGoalStatus(found.goal.id, Status.parse(request.body).status);
     return { ok: true };
   });
   app.post("/api/goals/:goal/tasks/:task/status", async (request, reply) => {
     const found = lookup(request.params);
     if (!found?.task) return missing(reply);
-    runtime.store.setTaskStatus(found.task.id, Status.parse(request.body).status);
+    if (runtime.store.isArchived({ taskId: found.task.id })) return reply.code(409).send(problem("archived", "Restore this task before changing its status."));
+    const change = Status.extend({ revision: z.number().int().positive().optional() }).parse(request.body);
+    if (busyWith(found)) return reply.code(409).send(problem("busy", "Available after this task’s response and queued work finish."));
+    if (change.revision !== undefined && change.revision !== found.task.revision) return reply.code(409).send(problem("stale", "This task changed. Review its latest status and try again."));
+    runtime.store.setTaskStatus(found.task.id, change.status);
     return { ok: true };
   });
   app.get("/api/archived", async () => archivedView(runtime.store));

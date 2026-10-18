@@ -57,11 +57,11 @@ export interface EventPayloads {
   /** The user set a goal's status: open, completed, or superseded (nothing else changes a goal's status). */
   goal_status_set: { status: "open" | "completed" | "superseded" };
   /** The user set a task's status, after its `task_revised` that carries it; marks the status as the user's choice. */
-  task_status_set: { status: "open" | "completed" | "superseded" };
+  task_status_set: { status: "open" | "completed" | "superseded"; source?: "ui" | "message"; request_id?: string; reason?: string };
   /** Archived goals and tasks are hidden everywhere but the archive; restoring brings them back. Nothing is erased. */
   goal_archived: Record<string, never>;
   goal_restored: Record<string, never>;
-  task_archived: Record<string, never>;
+  task_archived: { source?: "inactivity"; months?: number; last_activity_at?: string };
   task_restored: Record<string, never>;
   chat_opened: { ordinal: number; continuation_of: string | null; handover_ref: string | null };
   clarification_bound: { project_turn: number; user_event_id: string };

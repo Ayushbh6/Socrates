@@ -54,7 +54,7 @@ export const api = {
   archiveChat: (goal: number, task: number) => call<{ ok: true }>("POST", `/api/goals/${goal}/tasks/${task}/archive`),
   restoreChat: (goal: number, task: number) => call<{ ok: true }>("POST", `/api/goals/${goal}/tasks/${task}/restore`),
   setGoalStatus: (goal: number, status: LedgerStatus) => call<{ ok: true }>("POST", `/api/goals/${goal}/status`, { status }),
-  setTaskStatus: (goal: number, task: number, status: LedgerStatus) => call<{ ok: true }>("POST", `/api/goals/${goal}/tasks/${task}/status`, { status }),
+  setTaskStatus: (goal: number, task: number, status: LedgerStatus, revision?: number) => call<{ ok: true }>("POST", `/api/goals/${goal}/tasks/${task}/status`, { status, revision }),
   archived: () => call<ArchivedView>("GET", "/api/archived"),
   history: (conversation: string, before?: number) => call<History>("GET", `/api/history?conversation=${encodeURIComponent(conversation)}${before ? `&before=${before}` : ""}`),
   folders: (path?: string) => call<Folders>("GET", `/api/folders${path ? `?path=${encodeURIComponent(path)}` : ""}`),

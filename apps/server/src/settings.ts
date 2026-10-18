@@ -102,6 +102,7 @@ export const Settings = z.object({
       return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash;
     }, "Use an HTTP or HTTPS base URL without credentials, query parameters or a fragment.").nullable(),
   }).strict().default({ provider: "ollama", model: null, url: null }),
+  inactiveTaskMonths: z.number().int().min(1).max(24).nullable().default(12),
   timeZone: TimeZone.nullable().default(null),
   workingFolder: z.string().min(1).nullable().default(null),
   access: Access.default({ scope: "folders", folders: [], approvals: "ask" }),

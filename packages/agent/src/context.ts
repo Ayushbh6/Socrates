@@ -187,22 +187,15 @@ function laneOf(store: LedgerStore, turn: Turn): { number: number; handedOff: bo
   return { number: store.requireLane(turn.laneId).number, handedOff: store.listEvents({ turnId: turn.id, type: "turn_moved_to_lane" }).length > 0 };
 }
 
-/** Standard mode's routes: the user chose the chat, and a chat is never complete. */
+/** Standard mode routes bind work to the chat selected by the user. */
 export const CHAT_ROUTES = new Set(["standard", "standard_new"]);
 
-/**
- * The task's status line (agent-harness.md, "Task status"): a standard-mode
- * chat is never complete; a task the user reopened stays open until the work
- * they reopened it for is finished; the user may have kept this message here.
- */
+/** Current task status and its recorded human or historical model provenance. */
 function taskStatus(store: LedgerStore, task: Task, turn: Turn): string[] {
   const route = store.turnRoute(turn.id);
-  if (route && CHAT_ROUTES.has(route)) return ["status: active — a chat in standard mode, which is never marked complete: always set task_complete to null."];
   const source = store.statusSource(task.id);
-  const lines = [`status: ${task.status === "open" ? "active" : task.status}`];
-  if (task.status === "open" && source?.by === "user" && source.status === "open") {
-    lines[0] += ` — the user reopened this task on ${source.at.slice(0, 10)}. Keep it open unless this turn finishes the work they reopened it for; then task_complete.reason says what was finished.`;
-  }
+  const lines = [`status: ${task.status}`, "Task status belongs to the user. Open does not imply unfinished work. A past-work question preserves completion; explicit reopening continues the same task."];
+  if (source) lines.push(`status_source: ${source.by}; set_at: ${source.at}${source.reason ? `; instruction: ${source.reason}` : ""}`);
   if (route === "pinned") lines.push("kept_here: the user chose to keep this message in this task, without routing.");
   return lines;
 }

@@ -1273,12 +1273,12 @@ export class LedgerStore {
    * "Task status"). It is recorded as the user's, so the agent is told when
    * the user reopened a task, and the page can say who closed one.
    */
-  setTaskStatus(taskId: string, status: LedgerStatus): Task {
+  setTaskStatus(taskId: string, status: LedgerStatus, authority: { source?: "ui" | "message"; request_id?: string; reason?: string } = { source: "ui" }): Task {
     return this.transaction(() => {
       const task = this.requireTask(taskId);
       if (task.general) throw new StoreError("The general conversation has no status.");
       if (task.status !== status) this.reviseTask(taskId, { status });
-      this.appendEvent("task_status_set", { status }, { goal_id: task.goalId, task_id: taskId });
+      this.appendEvent("task_status_set", { status, ...authority }, { goal_id: task.goalId, task_id: taskId });
       return this.requireTask(taskId);
     });
   }
@@ -1294,9 +1294,9 @@ export class LedgerStore {
       taskId,
     );
     if (!row) return null;
-    const payload = JSON.parse(str(row.payload)) as { status?: LedgerStatus; task_complete_reason?: string };
+    const payload = JSON.parse(str(row.payload)) as { status?: LedgerStatus; task_complete_reason?: string; reason?: string };
     return str(row.type) === "task_status_set"
-      ? { by: "user", status: payload.status!, reason: null, at: str(row.at) }
+      ? { by: "user", status: payload.status!, reason: payload.reason ?? null, at: str(row.at) }
       : { by: "socrates", status: "completed", reason: payload.task_complete_reason ?? null, at: str(row.at) };
   }
 
@@ -1337,16 +1337,22 @@ export class LedgerStore {
   }
 
   /** Hide a task (a standard-mode chat) everywhere but the archive. */
-  archiveTask(taskId: string): Task {
+  archiveTask(taskId: string, metadata: { source?: "inactivity"; months?: number; last_activity_at?: string } = {}): Task {
     return this.transaction(() => {
       const task = this.requireTask(taskId);
       if (task.general) throw new StoreError("The general conversation cannot be archived.");
       if (task.archivedAt) return task;
-      const event = this.appendEvent("task_archived", {}, { goal_id: task.goalId, task_id: taskId });
+      const event = this.appendEvent("task_archived", metadata, { goal_id: task.goalId, task_id: taskId });
       this.run("UPDATE tasks SET archived_at = ? WHERE id = ?", event.at, taskId);
       this.run("DELETE FROM ledger_fts WHERE entity = 'task' AND entity_id = ?", taskId);
       return this.requireTask(taskId);
     });
+  }
+
+  /** User-visible activity only: background notes and automatic archival do not reset inactivity. */
+  taskLastActivity(taskId: string): string {
+    const row = this.get("SELECT MAX(at) AS at FROM events WHERE task_id = ? AND type IN ('task_created', 'turn_bound', 'turn_completed', 'turn_interrupted', 'task_status_set', 'task_restored', 'task_renamed')", taskId);
+    return row?.at ? str(row.at) : this.requireTask(taskId).startedAt;
   }
 
   restoreTask(taskId: string): Task {

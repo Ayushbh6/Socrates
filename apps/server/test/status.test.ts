@@ -21,8 +21,10 @@ describe("goal and task status, set by the user", () => {
     const p = await page();
     p.send({ type: "send", id: "m1", text: "Fix the checkout.", to: "main" });
     await p.next(isResult("m1"));
-    // Socrates closed it, with its reason.
-    expect((await goals())[0]!.tasks[0]).toMatchObject({ status: "completed", closed: { by: "socrates", reason: "The checkout test passes." } });
+    // The model cannot close work on its own; the human can.
+    expect((await goals())[0]!.tasks[0]).toMatchObject({ status: "open", closed: null });
+    await status("/api/goals/1/tasks/1/status", "completed");
+    expect((await goals())[0]!.tasks[0]).toMatchObject({ status: "completed", closed: { by: "user", reason: null } });
 
     expect((await status("/api/goals/1/tasks/1/status", "open")).statusCode).toBe(200);
     expect((await goals())[0]!.tasks[0]).toMatchObject({ status: "open", closed: null });
@@ -45,7 +47,7 @@ describe("goal and task status, set by the user", () => {
     expect(told).toContain("status: completed (set by the user)");
   });
 
-  it("tells the agent the user reopened a task, so it stays open unless the reopened work is finished", async () => {
+  it("tells the agent the user reopened a task, and keeps it open after work finishes", async () => {
     const router = new Responder("r", () => createGoal("Shop", "Fix checkout"));
     const agent = new Responder("a", () => final({ full_answer: "Fixed.", task_complete: { reason: "Tests pass." } }));
     const { page, rt } = await liveServer(router, agent);
@@ -61,7 +63,8 @@ describe("goal and task status, set by the user", () => {
     await p.next(isResult("m2"));
     expect(router.requests.length).toBe(asked);
     const context = shown(agent.requests.at(-1)!);
-    expect(context).toContain("the user reopened this task on");
+    expect(context).toContain("status_source: user");
+    expect(rt.store.requireTask(task.id).status).toBe("open");
     expect(context).toContain("kept_here: the user chose to keep this message in this task");
     expect(rt.store.turnRoute(rt.store.listEvents({ type: "turn_bound" }).at(-1)!.turn_id!)).toBe("pinned");
   });
@@ -74,15 +77,17 @@ describe("goal and task status, set by the user", () => {
     p.send({ type: "send", id: "m1", text: "Fix the checkout.", to: "main" });
     await p.next(isResult("m1"));
     const task = rt.store.listTasks(rt.store.getGoalByNumber(1)!.id)[0]!;
+    rt.store.setTaskStatus(task.id, "completed");
     expect(rt.store.requireTask(task.id).status).toBe("completed");
 
     const asked = router.requests.length;
-    p.send({ type: "send", id: "m2", text: "Actually, also the coupon field.", to: "main", keep: { goal: 1, task: 1 } });
+    p.send({ type: "send", id: "m2", text: "Update the coupon field.", to: "main", keep: { goal: 1, task: 1 } });
     await p.next(isResult("m2"));
     expect(router.requests.length).toBe(asked);
-    expect(rt.store.listEvents({ type: "task_status_set" }).map((e) => e.payload)).toEqual([{ status: "open" }]);
-    // Flow turns may still close it with a reason; the next message is routed again.
-    expect(rt.store.statusSource(task.id)).toMatchObject({ by: "socrates", reason: "Tests pass." });
+    expect(rt.store.listEvents({ type: "task_status_set" }).at(-1)!.payload).toMatchObject({ status: "open", source: "message", reason: "Update the coupon field." });
+    // Work remains open until the human closes it; the next message routes again.
+    expect(rt.store.requireTask(task.id).status).toBe("open");
+    expect(rt.store.statusSource(task.id)).toMatchObject({ by: "user" });
     p.send({ type: "send", id: "m3", text: "And the footer.", to: "main" });
     await p.next(isResult("m3"));
     expect(router.requests.length).toBeGreaterThan(asked);
@@ -106,6 +111,6 @@ describe("goal and task status, set by the user", () => {
     const [task] = rt.store.listTasks(rt.chatsGoal().id);
     expect(task!.status).toBe("open");
     expect(rt.store.statusSource(task!.id)).toBeNull();
-    expect(shown(agent.requests[0]!)).toContain("a chat in standard mode, which is never marked complete");
+    expect(shown(agent.requests[0]!)).toContain("Task status belongs to the user");
   });
 });

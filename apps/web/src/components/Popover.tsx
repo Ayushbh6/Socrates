@@ -6,7 +6,7 @@ import { createPortal } from "react-dom";
  * `anchor`, it is drawn in the page body (at `style`'s place) so a scrolling
  * or transformed parent cannot clip it; a click on the anchor is not "elsewhere".
  */
-export function Popover({ children, onClose, className, align, above, style, anchor }: { children: ReactNode; onClose: () => void; className?: string; align: "left" | "right"; above?: boolean; style?: CSSProperties; anchor?: HTMLElement | null }) {
+export function Popover({ children, onClose, className, align, above, style, anchor, role = "menu", label }: { role?: "menu" | "dialog"; label?: string; children: ReactNode; onClose: () => void; className?: string; align: "left" | "right"; above?: boolean; style?: CSSProperties; anchor?: HTMLElement | null }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const away = (e: PointerEvent) => {
@@ -23,7 +23,7 @@ export function Popover({ children, onClose, className, align, above, style, anc
     };
   }, [onClose, anchor]);
   const menu = (
-    <div ref={ref} className={`popover ${className ?? ""}`} data-align={align} data-above={above ?? false} role="menu" style={style}>
+    <div ref={ref} className={`popover ${className ?? ""}`} data-align={align} data-above={above ?? false} role={role} aria-label={label} style={style}>
       {children}
     </div>
   );

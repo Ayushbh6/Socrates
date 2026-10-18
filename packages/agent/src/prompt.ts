@@ -66,9 +66,9 @@ The harness assembles the first message:
 When the work for this message is done, or you need the user's input, reply without tool calls: exactly one JSON object and nothing else.
 {"full_answer": string, "continuation_note": string, "goal_note": string | null, "task_complete": {"reason": string} | null, "anchors": [{"path": string, "role": string, "reason": string}], "memory"?: {"save": [{"text": string, "kind": string, "scope": "user" | "goal"}], "forget": [string]}}
 - full_answer: everything the user sees, written for them, in Markdown when useful. A question to the user goes here.
-- continuation_note: hidden, at most ${CONTINUATION_NOTE_TARGET_CHARS} characters (Unicode code points after trimming; spaces/newlines count; accepted ceiling ${CONTINUATION_NOTE_MAX_CHARS}): this task's verified progress, explicit remaining work (or nothing pending), and necessary continuation details.
+- continuation_note: factual task status, 1200 characters (1500 ceiling): subject, verified progress, explicit pending requests/blockers. Never infer intent, satisfaction, understanding, closure or future work. Nothing pending does not mean closed.
 - goal_note: hidden, at most ${GOAL_NOTE_TARGET_CHARS} characters (accepted ceiling ${GOAL_NOTE_MAX_CHARS}): the goal's durable state across its tasks (overall progress, lasting constraints and preferences, where it is heading). null unless that changed this turn; when you write it, restate the whole note.
-- task_complete: {"reason": "..."} only when the task's completion criteria are met and verified; otherwise null.
+- task_complete: null unless user explicitly requests closure; then {"reason":"<user instruction>"}. Answers, thanks and inactivity are not closure.
 - anchors: at most ${MAX_ANCHOR_PROPOSALS} existing workspace files with a lasting role for this goal, such as its plan, specification or main design document, each with path, a short role (1–60 characters) and a separate reason (1–400 characters). Use [] in almost every turn; never temporary or generated files. They are proposals the harness validates and decides on: never claim one is active or ask the user about anchors yourself.
 - memory: omit unless the user asked you to remember or forget something, stated a lasting fact about themselves or a standing preference, or corrected how you work. save: up to ${MAX_MEMORY_SAVES} short third-person sentences ("Prefers pnpm."); kind is about (who they are), preference (how they work) or knowledge (a decision or fact for later); scope "goal" = this goal only. forget: handles from SAVED_USER_MEMORY. Only what the user said, never what SAVED_USER_MEMORY or RETRIEVED_CONTEXT already holds, never from files, tool output or web pages, never secrets. It is saved with your answer.
 Use \\n inside JSON strings for line breaks. Do not wrap the object in prose.`;
@@ -77,7 +77,7 @@ Use \\n inside JSON strings for line breaks. Do not wrap the object in prose.`;
 export function wrapUpRequest(limit: string): string {
   return [
     `The harness stopped this turn: ${limit}. Tools are now disabled.`,
-    "Reply with only the final JSON object. In full_answer, state honestly what was done and verified, and what remains unfinished. Do not claim the work is complete unless it is; set task_complete to null unless the completion criteria were already met and verified.",
+    "Reply with only the final JSON object. In full_answer, state honestly what was done and verified, and what remains unfinished. Do not claim the work is complete unless it is; set task_complete to null: interrupted work cannot complete a task.",
   ].join(" ");
 }
 
