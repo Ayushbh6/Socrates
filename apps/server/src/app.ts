@@ -283,6 +283,13 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
   const noMemory = (reply: { code(n: number): { send(b: unknown): unknown } }) => reply.code(404).send(problem("not_found", "That memory no longer exists."));
   app.get("/api/memories", async () => memoriesView(runtime.store));
   app.get("/api/work-memory", async () => workMemoryView(runtime.store));
+  app.delete("/api/work-memory/:goal/:part/:name", async (request, reply) => {
+    const params = z.object({ goal: z.coerce.number().int().positive(), part: z.union([z.literal("goal"), z.coerce.number().int().positive()]), name: z.string().min(1) }).parse(request.params);
+    const goal = runtime.store.getGoalByNumber(params.goal);
+    const task = goal && params.part !== "goal" ? runtime.store.getTaskByNumber(goal.id, params.part) : null;
+    const removed = goal && (params.part === "goal" || task) && runtime.store.removeWorkTopic({ goalId: goal.id, taskId: task?.id ?? null, name: params.name });
+    return removed ? reply.code(204).send() : reply.code(404).send(problem("not_found", "That note no longer exists."));
+  });
   app.post("/api/memories", async (request, reply) => {
     const body = z.object({ text: z.string().max(2000), kind: z.enum(MEMORY_KINDS), goal: z.number().int().positive().nullable().default(null) }).strict().parse(request.body);
     const goal = body.goal === null ? null : runtime.store.getGoalByNumber(body.goal);

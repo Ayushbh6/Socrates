@@ -42,4 +42,4 @@
 
 1. **Split and files** (done, entry 79): store per goal and task, the folder layout above with `you.md`, show the goal's and task's index while working, the writer chooses task or goal and can move a topic up, a queue per goal, redo removes, retire the per-folder version. Eligibility stays "a change or command succeeded", now in any goal.
 2. **Save more often:** ask the decider after every finished turn (its question and labelled examples re-tested so it does not save noise). **Done (entry 80):** every finished turn is asked; the question names decisions and lessons from conversation too; threshold 0.4.
-3. **See it in the app:** Settings > Memory lists memory by goal, then by task. **Done (entry 83):** read only, each goal's and task's index and topics with its folder (`GET /api/work-memory`).
+3. **See it in the app:** Settings > Memory lists memory by goal, then by task. **Done (entry 83):** each goal's and task's index and topics with its folder (`GET /api/work-memory`). Entry 84 adds **Remove** for a topic; editing is not built.

@@ -81,6 +81,8 @@ export const api = {
   editMemory: (number: number, change: { text?: string; kind?: MemoryKind }) => call<MemoryView>("PATCH", `/api/memories/${number}`, change),
   forgetMemory: (number: number) => call<null>("DELETE", `/api/memories/${number}`),
   workMemory: () => call<WorkMemoryGoalView[]>("GET", "/api/work-memory"),
+  /** `part`: "goal" for the goal's own notes, or the task's number. */
+  removeWorkTopic: (goal: number, part: "goal" | number, name: string) => call<null>("DELETE", `/api/work-memory/${goal}/${part}/${encodeURIComponent(name)}`),
   evidence: (task: string, handle: string) => call<Evidence>("GET", `/api/evidence?task=${encodeURIComponent(task)}&handle=${encodeURIComponent(handle)}`),
 };
 

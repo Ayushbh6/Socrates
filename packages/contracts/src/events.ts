@@ -181,7 +181,7 @@ export interface EventPayloads {
    * `project_id` and `root` (a folder's memory) and no `level`; they are
    * kept in the log and no longer projected.
    */
-  work_memory_written: { level?: "goal" | "task"; goal_id?: string; task_id?: string | null; target: "index" | "topic"; name: string | null; text: string | null; project_id?: string; root?: string };
+  work_memory_written: { level?: "goal" | "task"; goal_id?: string; task_id?: string | null; target: "index" | "topic"; name: string | null; text: string | null; project_id?: string; root?: string; by?: MemoryAuthor };
   /** The step after a turn that may record what it established: queued, then how it ended. `project_id` only on steps of a folder's memory. */
   work_memory_step: { project_id?: string; outcome: "pending" | "written" | "nothing" | "not_worth" | "skipped" | "failed"; detail: string | null; writes: number; decision?: { budget: number; estimatedTokens: number; images: number; omittedCalls: number; fallback: string | null } };
   /** The goal's Skill shelf, resolved once and frozen so ordinary turns stay cache-stable. */

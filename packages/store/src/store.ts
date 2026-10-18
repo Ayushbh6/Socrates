@@ -1015,12 +1015,34 @@ export class LedgerStore {
    * Write a goal's or one task's index or one topic, whole, or remove a topic
    * (`text` null) (agent-harness.md, "Work memory"). Returns what it now holds.
    */
-  recordWorkMemoryWrite(refs: EventRefs, payload: { level: "goal" | "task"; goal_id: string; task_id: string | null; target: "index" | "topic"; name: string | null; text: string | null }): WorkMemoryEntry | null {
+  recordWorkMemoryWrite(refs: EventRefs, payload: { level: "goal" | "task"; goal_id: string; task_id: string | null; target: "index" | "topic"; name: string | null; text: string | null; by?: MemoryAuthor }): WorkMemoryEntry | null {
     if ((payload.level === "task") !== !!payload.task_id) throw new StoreError("A task's memory names its task; a goal's names none.");
     return this.transaction(() => {
       this.projectWorkMemory(this.appendEvent("work_memory_written", payload, refs));
       const taskId = payload.level === "task" ? payload.task_id : null;
       return payload.target === "index" ? this.workMemoryIndex(payload.goal_id, taskId) : this.workTopic(payload.goal_id, taskId, payload.name!);
+    });
+  }
+
+  /**
+   * The user removes one topic in Settings > Memory: first its lines from
+   * that level's index ("→ topic <name>"; an index left empty goes too),
+   * then the topic. False when there is no such topic.
+   */
+  removeWorkTopic(input: { goalId: string; taskId: string | null; name: string }): boolean {
+    const { goalId, taskId, name } = input;
+    if (!this.workTopic(goalId, taskId, name)) return false;
+    const refs: EventRefs = { goal_id: goalId, ...(taskId ? { task_id: taskId } : {}) };
+    const level = taskId ? "task" : "goal";
+    return this.transaction(() => {
+      const index = this.workMemoryIndex(goalId, taskId)?.text;
+      const names = (line: string) => [...line.matchAll(/→ topic ([a-z0-9][a-z0-9-]*)/g)].some((m) => m[1] === name);
+      if (index !== undefined && index.split("\n").some(names)) {
+        const kept = index.split("\n").filter((line) => !names(line)).join("\n").trim();
+        this.recordWorkMemoryWrite(refs, { level, goal_id: goalId, task_id: taskId, target: "index", name: null, text: kept || null, by: "user" });
+      }
+      this.recordWorkMemoryWrite(refs, { level, goal_id: goalId, task_id: taskId, target: "topic", name, text: null, by: "user" });
+      return true;
     });
   }
 

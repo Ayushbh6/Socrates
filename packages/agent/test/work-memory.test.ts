@@ -532,6 +532,48 @@ describe("a redo", () => {
   });
 });
 
+describe("a topic the user removes", () => {
+  it("leaves with its index line, in the ledger and the files, and a later redo does not bring it back", async () => {
+    const w = await world();
+    const dir = path.join(tempDir(), "memory");
+    const other = w.store.createTask(w.goalId, { title: "Port settings" });
+    const { decider } = workDecider(() => 0.9);
+    const { socrates } = w.socrates([continueTask()], [...work,
+      { toolCalls: [call("work_memory", { action: "write_topic", level: "task", topic: "port", text: "Port\n1. Use 3000." })] },
+      { toolCalls: [call("work_memory", { action: "write_topic", level: "task", topic: "host", text: "Host\n1. Use localhost." })] },
+      { toolCalls: [call("work_memory", { action: "write_index", level: "task", text: "- Ports → topic port · turn 1\n- Hosts → topic host · turn 1" })] },
+      { text: "Wrote port and host." },
+      final({ full_answer: "Answered where it belongs." }),
+    ], { gate: () => new MemoryGate({ decider }), memory: () => ({ save: true, use: true }), access: () => policy(w.root), memoryDir: dir });
+    const first = await socrates.handle("Fix the port.");
+    if (first.kind !== "answered") throw new Error("expected an answer");
+    await socrates.workMemoryIdle();
+    const t = path.join(dir, "goals", `g${w.store.requireGoal(w.goalId).number}-project-work`, "tasks", `t${w.store.requireTask(w.taskId).number}-fix-the-server`);
+    expect(existsSync(path.join(t, "topics", "port.md"))).toBe(true);
+
+    expect(w.store.removeWorkTopic({ goalId: w.goalId, taskId: w.taskId, name: "port" })).toBe(true);
+    expect(w.store.workTopic(w.goalId, w.taskId, "port")).toBeNull();
+    expect(w.store.workMemoryIndex(w.goalId, w.taskId)!.text).toBe("- Hosts → topic host · turn 1");
+    expect(w.store.listEvents({ type: "work_memory_written" }).slice(-2).map((e) => (e.payload as EventPayloads["work_memory_written"]).by)).toEqual(["user", "user"]);
+    expect(existsSync(path.join(t, "topics", "port.md"))).toBe(false);
+    expect(readFileSync(path.join(t, "MEMORY.md"), "utf8")).not.toContain("port");
+    expect(w.store.removeWorkTopic({ goalId: w.goalId, taskId: w.taskId, name: "port" })).toBe(false);
+
+    // The last topic takes the index with it.
+    w.store.removeWorkTopic({ goalId: w.goalId, taskId: w.taskId, name: "host" });
+    expect(w.store.workMemoryIndex(w.goalId, w.taskId)).toBeNull();
+
+    // Redoing the turn that wrote them takes back its own writes; the user's removals stay.
+    await socrates.handle("Fix the port.", { target: { taskId: other.id }, pinned: true, redoOf: first.parts[0]!.turn.id });
+    await socrates.workMemoryIdle();
+    expect(w.store.listWorkMemory(w.goalId).filter((e) => e.taskId === w.taskId)).toEqual([]);
+    const copy = LedgerStore.open({ path: ":memory:" });
+    copy.restoreEvents(w.store.listEvents());
+    expect(copy.listWorkMemory(w.goalId).filter((e) => e.taskId === w.taskId)).toEqual([]);
+    copy.close();
+  });
+});
+
 describe("a folder's memory, from before", () => {
   it("is kept in the log and not projected", () => {
     const store = LedgerStore.open({ path: ":memory:" });

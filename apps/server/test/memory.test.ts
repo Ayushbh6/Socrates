@@ -110,7 +110,7 @@ describe("memory", () => {
     expect(JSON.parse(response.body).decider).toBe("no_key");
   });
 
-  it("lists work memory by goal, then by task, with each part's folder", async () => {
+  it("lists work memory by goal, then by task, with each part's folder, and removes a topic", async () => {
     const live = await liveServer(new Responder("r", () => ({ text: "" })), new Responder("a", () => ({ text: "" })));
     const store = live.rt.store;
     const get = async () => JSON.parse((await live.app.inject({ method: "GET", url: "/api/work-memory", headers: { authorization: `Bearer ${live.token}`, host: `127.0.0.1:${live.port}` } })).body);
@@ -131,5 +131,15 @@ describe("memory", () => {
       tasks: [{ task: { number: task.number, title: "Routing review" }, folder: `goals/g${goal.number}-socrates-development/tasks/t${task.number}-routing-review`, index: "- resume → topic resume-flag", topics: [{ name: "resume-flag" }] }],
     });
     expect(listed.own.topics).toHaveLength(1);
+
+    // Remove takes the topic and its index line; an emptied index goes too, and the task leaves the list.
+    const remove = (url: string) => live.app.inject({ method: "DELETE", url, headers: { authorization: `Bearer ${live.token}`, host: `127.0.0.1:${live.port}` } });
+    expect((await remove(`/api/work-memory/${goal.number}/${task.number}/resume-flag`)).statusCode).toBe(204);
+    expect(store.workMemoryIndex(goal.id, task.id)).toBeNull();
+    expect((await get())[0].tasks).toEqual([]);
+    expect((await remove(`/api/work-memory/${goal.number}/${task.number}/resume-flag`)).statusCode).toBe(404);
+    expect((await remove(`/api/work-memory/${goal.number}/99/release-steps`)).statusCode).toBe(404);
+    expect((await remove(`/api/work-memory/${goal.number}/goal/release-steps`)).statusCode).toBe(204);
+    expect(await get()).toEqual([]);
   });
 });

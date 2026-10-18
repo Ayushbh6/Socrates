@@ -335,36 +335,40 @@ const notes = (n: number) => (n === 1 ? "1 note" : `${n} notes`);
 
 /**
  * Work memory, by goal and then by task (architecture/web.md, "Memory"):
- * what Socrates wrote in the background, each index with its topics. Read
- * only; the files in the data folder are a copy it rewrites.
+ * what Socrates wrote in the background, each index with its topics, and
+ * Remove for a topic (with its index line). The files in the data folder
+ * are a copy it rewrites.
  */
 function WorkMemoryList() {
   const [goals, setGoals] = useState<WorkMemoryGoalView[] | null>(null);
+  const { busy, save, feedback } = useSave();
   useEffect(() => {
     api.workMemory().then(setGoals, () => setGoals([]));
   }, []);
+  const remove = (goal: number, part: "goal" | number) => (name: string) => void save(async () => { await api.removeWorkTopic(goal, part, name); setGoals(await api.workMemory()); });
   if (!goals) return null;
   return (
     <div className="memory-group work-memory">
       <p className="memory-group-title">Notes on your work, by goal and task</p>
       <p className="settings-hint">{goals.length
-        ? "Lessons and decisions Socrates wrote after its answers. Each is also a plain file under memory/ in Socrates' data folder: a copy Socrates rewrites, so editing a file does not change what it uses."
+        ? "Lessons and decisions Socrates wrote after its answers. Remove one that is wrong and Socrates stops using it. Each is also a plain file under memory/ in Socrates' data folder: a copy Socrates rewrites, so editing a file does not change what it uses."
         : "None yet. After an answer that settles a decision or teaches a lesson, Socrates writes it here in the background."}</p>
       {goals.map((g) => {
         const count = (g.own?.topics.length ?? 0) + g.tasks.reduce((n, t) => n + t.topics.length, 0);
         return (
           <details key={g.goal.number} className="work-memory-goal">
             <summary><span>{g.goal.general ? "General" : g.goal.title}</span><span className="memory-meta">{notes(count)} · {day(g.updatedAt)}</span></summary>
-            {g.own && <WorkMemoryBlock title="Whole goal" part={g.own} />}
-            {g.tasks.map((t) => <WorkMemoryBlock key={t.task.number} title={t.task.title} part={t} />)}
+            {g.own && <WorkMemoryBlock title="Whole goal" part={g.own} busy={busy} onRemove={remove(g.goal.number, "goal")} />}
+            {g.tasks.map((t) => <WorkMemoryBlock key={t.task.number} title={t.task.title} part={t} busy={busy} onRemove={remove(g.goal.number, t.task.number)} />)}
           </details>
         );
       })}
+      {feedback}
     </div>
   );
 }
 
-function WorkMemoryBlock({ title, part }: { title: string; part: WorkMemoryPart }) {
+function WorkMemoryBlock({ title, part, busy, onRemove }: { title: string; part: WorkMemoryPart; busy: boolean; onRemove: (name: string) => void }) {
   return (
     <div className="work-memory-part">
       <p className="work-memory-title">{title} <span className="memory-meta">memory/{part.folder}</span></p>
@@ -373,6 +377,7 @@ function WorkMemoryBlock({ title, part }: { title: string; part: WorkMemoryPart 
         <details key={t.name} className="work-memory-topic">
           <summary><span>{t.name}</span><span className="memory-meta">{day(t.updatedAt)}</span></summary>
           <pre className="work-memory-text">{t.text}</pre>
+          <button type="button" className="quiet-button work-memory-remove" disabled={busy} onClick={() => onRemove(t.name)}>Remove</button>
         </details>
       ))}
     </div>
