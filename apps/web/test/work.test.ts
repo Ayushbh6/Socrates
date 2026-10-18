@@ -34,6 +34,21 @@ describe("the work behind an answer", () => {
     expect(shape(e)).toEqual(["thought", "narration", "e1+e2+e3+thought+e4", "narration", "meta"]);
   });
 
+  it("folds an approval into the call that asked, by its handle or else the call still running, so it never splits the group", () => {
+    const decided = (granted: boolean, detail: string, handle?: string) => act({ kind: "approval_decided", turnId: "t1", granted, detail, ...(handle ? { handle } : {}) });
+    const e = exchange(
+      act(tool("e1", "read")), act(tool("e2", "read2")), act(done("e2")),
+      // Recorded before handles: e1 is the call still running.
+      decided(true, "Read ~/.codex, outside your folders"), act(done("e1")),
+      act(tool("e3", "test")), act(tool("e4", "edit")), decided(false, "Run npm test", "e3"), act(done("e3")), act(done("e4")),
+      // Nothing running to belong to: it stands on its own.
+      decided(true, "Something else"),
+    );
+    expect(shape(e)).toEqual(["e1+e2+e3+e4", "meta"]);
+    const steps = workSegments(e).flatMap((s) => (s.kind === "group" ? s.items : [])).map((i) => (i.kind === "tool" ? i.step.approval ?? null : null));
+    expect(steps).toEqual([{ granted: true, detail: "Read ~/.codex, outside your folders" }, null, { granted: false, detail: "Run npm test" }, null]);
+  });
+
   it("labels a group by what its calls did, and a group that only thought by how long", () => {
     const ok = (c: CallView) => ({ call: c, status: "ok" as const });
     expect(callCounts([CALLS.read!, CALLS.read!, CALLS.read2!, CALLS.test!, CALLS.enter!, CALLS.edit!].map(ok))).toEqual(["Read 2 files", "Ran 1 command", "Edited 1 file"]);

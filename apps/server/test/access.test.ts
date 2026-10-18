@@ -113,7 +113,7 @@ describe("access settings", () => {
     if (second.kind !== "answered") throw new Error("expected an answer");
     expect(rt.store.evidenceForTurn(second.parts[0]!.turn.id)[0]!.result?.error?.code).toBe("approval_denied");
     expect(rt.store.listEvents({ type: "approval_decided" }).map((e) => e.payload)).toEqual([
-      { kind: "outside_folder", granted: false, detail: `Read ${outside}/notes.md, outside your folders` },
+      { kind: "outside_folder", granted: false, detail: `Read ${outside}/notes.md, outside your folders`, handle: "e1" },
     ]);
   });
 

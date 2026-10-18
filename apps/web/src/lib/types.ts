@@ -229,6 +229,11 @@ export interface CallView {
   active: string;
   target: string;
   detail: string | null;
+  /** A command's whole text (home as ~, a leading `cd` moved to `folder`); older servers leave these out. */
+  command?: string;
+  /** The folder a command ran in, or null for the working folder. */
+  folder?: string | null;
+  lines?: number;
 }
 
 /** What a tool call returned, in a form to read. */
@@ -241,6 +246,9 @@ export interface ResultView {
   ms: number | null;
   /** Whether the call, or the command it ran, failed; older servers leave it out. */
   failed?: boolean;
+  /** A command's output: how many lines it printed, and whether all of it is saved apart. */
+  lines?: number | null;
+  saved?: boolean;
 }
 
 /** A chat as the page names it: its goal, its task, and which chat of the task. */
@@ -266,7 +274,7 @@ export type ActivityBody =
   | { kind: "finished"; turnId: string; status: "completed" | "interrupted"; reason: string | null; partial?: string | null; stop?: string | null }
   | { kind: "handed_off"; turnId: string; lane: number; laneId?: string; goal?: { number: number; title: string }; task?: { number: number; title: string } }
   | { kind: "lane"; laneId: string; number: number; state: "opened" | "closed" }
-  | { kind: "approval_decided"; turnId: string | null; granted: boolean; detail: string }
+  | { kind: "approval_decided"; turnId: string | null; granted: boolean; detail: string; handle?: string | null }
   | { kind: "warning"; turnId: string | null; detail: string }
   | { kind: "ledger" };
 

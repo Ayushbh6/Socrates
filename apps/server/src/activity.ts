@@ -29,7 +29,7 @@ export type ActivityBody =
   | { kind: "finished"; turnId: string; status: "completed" | "interrupted"; reason: EventPayloads["turn_interrupted"]["reason"] | null; partial?: string | null; /** Why a completed turn ended (a limit means it can be continued). */ stop?: TurnStop | null }
   | { kind: "handed_off"; turnId: string; lane: number; laneId: string; goal: { number: number; title: string }; task: { number: number; title: string } }
   | { kind: "lane"; laneId: string; number: number; state: "opened" | "closed" }
-  | { kind: "approval_decided"; turnId: string | null; granted: boolean; detail: string }
+  | { kind: "approval_decided"; turnId: string | null; granted: boolean; detail: string; handle: string | null }
   | { kind: "warning"; turnId: string | null; detail: string }
   | { kind: "ledger" };
 
@@ -115,7 +115,11 @@ export function activityOf(store: LedgerStore, event: StoredEvent): Activity | n
     case "tool_called": {
       const p = event.payload as EventPayloads["tool_called"];
       if (!turn) return null;
-      return { ...base, kind: "tool_started", turnId: turn.id, task: selector(), handle: p.handle, line: callLine(p.tool, p.input), call: describeCall(p.tool, p.input) };
+      const commandOf = (outputId: string) => {
+        const started = turn.taskId && store.listEvents({ taskId: turn.taskId, type: "terminal_started" }).find((e) => (e.payload as EventPayloads["terminal_started"]).output_id === outputId);
+        return started ? (started.payload as EventPayloads["terminal_started"]).command : null;
+      };
+      return { ...base, kind: "tool_started", turnId: turn.id, task: selector(), handle: p.handle, line: callLine(p.tool, p.input), call: describeCall(p.tool, p.input, commandOf) };
     }
     case "tool_completed": {
       const p = event.payload as EventPayloads["tool_completed"];
@@ -150,7 +154,7 @@ export function activityOf(store: LedgerStore, event: StoredEvent): Activity | n
     }
     case "approval_decided": {
       const p = event.payload as EventPayloads["approval_decided"];
-      return { ...base, kind: "approval_decided", turnId: turn?.id ?? null, granted: p.granted, detail: p.detail };
+      return { ...base, kind: "approval_decided", turnId: turn?.id ?? null, granted: p.granted, detail: p.detail, handle: p.handle ?? null };
     }
     case "agent_warning":
       return { ...base, kind: "warning", turnId: turn?.id ?? null, detail: (event.payload as EventPayloads["agent_warning"]).detail };

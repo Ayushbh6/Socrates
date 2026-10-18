@@ -1,4 +1,4 @@
-import { AlertTriangle, Brain, Check, ChevronRight, CornerDownRight, FilePen, FileText, History, LoaderCircle, Puzzle, Search, SquareTerminal, Wrench, X } from "lucide-react";
+import { AlertTriangle, Brain, Check, ChevronRight, CornerDownRight, FilePen, FileText, History, LoaderCircle, Puzzle, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -208,7 +208,24 @@ function Thinking({ item }: { item: Extract<WorkItem, { kind: "thinking" }> }) {
 /** Lines of a running command's output shown under it. */
 const LIVE_LINES = 6;
 
-/** One call: "Ran `npm test`", what it came to, and on a click its output or diff. */
+/** A long folder by its first and last parts: "~/.codex/…/10/16". */
+export function shortFolder(folder: string): string {
+  const parts = folder.split("/");
+  return folder.length <= 28 || parts.length <= 4 ? folder : [...parts.slice(0, 2), "…", ...parts.slice(-2)].join("/");
+}
+
+/** A path as its file name, with the folder it is in apart. */
+function splitPath(path: string): { name: string; dir: string } {
+  const at = path.replace(/\/+$/, "").lastIndexOf("/");
+  return at < 0 ? { name: path, dir: "" } : { name: path.slice(at + 1), dir: path.slice(0, at) };
+}
+
+/**
+ * One call (architecture/web.md, "Work and answer"). A command reads as its
+ * first line in mono, with its folder, extra lines, approval and exit beside
+ * it, and opens to a card: the whole command, its output, and a footer. A
+ * file reads by its name, with its folder faint; anything else in words.
+ */
 function ToolRow({ step, output, now }: { step: ToolStep; output: string | null; now: number }) {
   const [open, setOpen] = useState(false);
   const [viewing, setViewing] = useState(false);
@@ -217,28 +234,52 @@ function ToolRow({ step, output, now }: { step: ToolStep; output: string | null;
   const Icon = ICONS[step.call.kind];
   const result = step.result;
   const took = running ? now - Date.parse(step.at) : result?.ms ?? null;
+  const time = took !== null && took >= 1000 ? elapsed(took) : null;
   const live = running && output ? output.replace(/\n+$/, "").split("\n").slice(-LIVE_LINES).join("\n") : "";
+  const command = step.call.kind === "terminal" && step.call.command !== undefined ? step.call : null;
+  const file = (step.call.kind === "read" || step.call.kind === "edit") && step.call.target ? splitPath(step.call.target) : null;
+  const more = command?.lines && command.lines > 1 ? command.lines - 1 : 0;
   return (
-    <div className="tool" data-status={failed ? "error" : step.status} data-open={open}>
+    <div className="tool" data-kind={step.call.kind} data-status={failed ? "error" : step.status} data-open={open}>
       <button type="button" className="row-line" onClick={() => setOpen(!open)} aria-expanded={open}>
         <Icon aria-hidden className="row-icon" />
-        <span className="row-text">
-          <span className={running ? "shimmer" : undefined}>{callVerb(step)}</span>
-          {step.call.target && <code>{step.call.target}</code>}
-          {step.call.detail && <span className="row-detail">{step.call.detail}</span>}
+        {command ? (
+          <span className="row-text row-command">
+            <span className={running ? "shimmer" : undefined}>{command.target}</span>
+          </span>
+        ) : (
+          <span className="row-text">
+            <span className={running ? "shimmer" : undefined}>{callVerb(step)}</span>
+            {file ? <><code>{file.name}</code>{file.dir && <span className="row-detail">{file.dir}</span>}</> : step.call.target && <code>{step.call.target}</code>}
+            {step.call.detail && <span className="row-detail">{step.call.detail}</span>}
+          </span>
+        )}
+        {command?.detail && <span className="row-chip">{command.detail.replace(/^in the /, "")}</span>}
+        {more > 0 && <span className="row-chip">+{more} {more === 1 ? "line" : "lines"}</span>}
+        {command?.folder && <span className="row-chip row-folder" title={command.folder}>{shortFolder(command.folder)}</span>}
+        <span className="row-end">
+          {step.approval && <Approval approval={step.approval} />}
+          {result?.summary && <Summary text={result.summary} failed={failed} />}
+          {time && <span className="row-time">{time}</span>}
+          {running ? <LoaderCircle aria-label="Running" className="row-state spin" /> : failed ? <X aria-label="Failed" className="row-state" /> : null}
+          <ChevronRight aria-hidden className="row-chevron" />
         </span>
-        {result?.summary && <Summary text={result.summary} failed={failed} />}
-        {took !== null && took >= 1000 && <span className="row-time">{elapsed(took)}</span>}
-        {running ? <LoaderCircle aria-label="Running" className="row-state spin" /> : failed ? <X aria-label="Failed" className="row-state" /> : null}
-        <ChevronRight aria-hidden className="row-chevron" />
       </button>
       {live && <pre className="tool-live" aria-live="off">{live}</pre>}
       {open && (
-        <div className="tool-output">
-          {result?.diff ? <Diff text={result.diff} /> : result?.preview ? <pre>{result.preview}{result.truncated ? "\n…" : ""}</pre> : null}
-          {running ? <p className="tool-running">Running…</p> : (
-            <button type="button" className="quiet-button" onClick={() => setViewing(true)}>Open the full output</button>
-          )}
+        <div className="tool-card">
+          {command && <pre className="tool-card-command"><span aria-hidden className="tool-prompt">$ </span>{command.command}</pre>}
+          {result?.diff ? <Diff text={result.diff} /> : result?.preview ? (
+            // A command's preview is the end of its output; anything else's, the start.
+            <pre className="tool-card-output">{command && result.truncated ? "…\n" : ""}{result.preview}{!command && result.truncated ? "\n…" : ""}</pre>
+          ) : !running && command ? <p className="tool-card-empty">No output</p> : null}
+          <div className="tool-card-foot">
+            <span>{[command?.folder ? shortFolder(command.folder) : null, result?.summary && !/^\+\d+ −\d+$/.test(result.summary) ? result.summary : null, time].filter(Boolean).join(" · ") || (running ? "Running…" : "")}</span>
+            <span className="tool-card-actions">
+              {command && typeof result?.lines === "number" && <span>{result.lines} {result.lines === 1 ? "line" : "lines"}{result.saved && result.truncated ? ", all saved" : ""}</span>}
+              {!running && <button type="button" className="quiet-button" onClick={() => setViewing(true)}>Open the full output</button>}
+            </span>
+          </div>
         </div>
       )}
       {viewing && <EvidenceViewer task={step.task} handle={step.handle} onClose={() => setViewing(false)} />}
@@ -246,11 +287,18 @@ function ToolRow({ step, output, now }: { step: ToolStep; output: string | null;
   );
 }
 
+/** The approval a call asked for, as a mark on its row: what was asked on hover. */
+function Approval({ approval }: { approval: { granted: boolean; detail: string } }) {
+  const label = `${approval.granted ? "Approved" : "Refused"}: ${approval.detail}`;
+  const Mark = approval.granted ? ShieldCheck : ShieldX;
+  return <span className="row-approval" data-granted={approval.granted} title={label} aria-label={label} role="img"><Mark aria-hidden /></span>;
+}
+
 /** "+5 −2" in colour; anything else as quiet words. */
 function Summary({ text, failed }: { text: string; failed: boolean }) {
   const counts = /^\+(\d+) −(\d+)$/.exec(text);
   if (counts) return <span className="row-summary"><span className="added">+{counts[1]}</span> <span className="removed">−{counts[2]}</span></span>;
-  return <span className="row-summary" data-failed={failed}>{text}</span>;
+  return <span className={/^exit -?\d+$/.test(text) ? "row-summary exit" : "row-summary"} data-failed={failed}>{text}</span>;
 }
 
 /** An edit's change: added and removed lines in colour, under each file's name. */

@@ -5,6 +5,8 @@
  * diff. The model-facing records are untouched; this is only how they read.
  */
 
+import { homedir } from "node:os";
+
 export type CallKind = "read" | "search" | "edit" | "terminal" | "memory" | "capability" | "other";
 
 /** One call: `${verb} ${target} ${detail}` once done, `${active} …` while it runs. */
@@ -15,6 +17,12 @@ export interface CallView {
   /** The file, pattern, command or terminal, shown as code; "" when there is none. */
   target: string;
   detail: string | null;
+  /** A command's whole text (the home folder as ~, a leading `cd <folder> &&` moved to `folder`), for its card. */
+  command?: string;
+  /** The folder a command ran in: its leading `cd`, or its cwd; null for the working folder. */
+  folder?: string | null;
+  /** How many lines the command has. */
+  lines?: number;
 }
 
 /** One result: what to show when the call is opened, and a few words beside it. */
@@ -35,9 +43,14 @@ export interface ResultView {
    * (a non-zero exit, a timeout, a crash). Every failure looks the same.
    */
   failed: boolean;
+  /** A command's output: how many lines it printed, and whether all of it is saved apart (a saved output id). */
+  lines?: number | null;
+  saved?: boolean;
 }
 
 const TARGET_CHARS = 200;
+/** A command's card shows up to this much of its text. */
+const COMMAND_CHARS = 4_000;
 const TYPED_CHARS = 60;
 /** A result is previewed up to this many characters; the evidence route returns the rest. */
 export const OUTPUT_PREVIEW_CHARS = 2_000;
@@ -48,6 +61,16 @@ const firstLine = (s: string) => {
   const lines = s.trim().split("\n");
   return lines.length > 1 ? `${lines[0]} …` : lines[0] ?? "";
 };
+/** The home folder as ~, so a path says where it is without filling the line. */
+const home = (s: string) => {
+  const h = homedir();
+  return h.length > 1 ? s.split(h).join("~") : s;
+};
+/** A leading `cd <folder> &&` apart from the rest of the command. */
+function splitCd(command: string): { folder: string | null; rest: string } {
+  const m = /^\s*cd\s+("[^"]+"|'[^']+'|[^\s;&|]+)\s*&&\s*/.exec(command);
+  return m ? { folder: m[1]!.replace(/^["']|["']$/g, ""), rest: command.slice(m[0].length) } : { folder: null, rest: command };
+}
 const view = (kind: CallKind, verb: string, active: string, target: string, detail: string | null = null): CallView => ({ kind, verb, active, target, detail });
 /** "in src"; an absolute folder by its name alone, since the whole path says little and fills the line. */
 const inPath = (p: unknown) => {
@@ -73,12 +96,16 @@ function keyList(keys: string[]): string {
 
 const WAIT_FOR: Record<string, string> = { exit: "to finish", ready: "to be ready", output: "to print more", input_required: "to ask for input", idle: "to go quiet" };
 
-export function describeCall(tool: string, input: unknown): CallView {
+/**
+ * `commandOf` names the command a saved output came from, when it is known,
+ * so reading it back says which command it was.
+ */
+export function describeCall(tool: string, input: unknown, commandOf: (outputId: string) => string | null = () => null): CallView {
   const i = (typeof input === "object" && input !== null ? input : {}) as Record<string, unknown>;
   switch (tool) {
     case "read": {
       const from = typeof i.offset === "number" ? i.offset : null;
-      return view("read", "Read", "Reading", str(i.path), from && from > 1 ? `from line ${from}` : null);
+      return view("read", "Read", "Reading", home(str(i.path)), from && from > 1 ? `from line ${from}` : null);
     }
     case "glob":
       return view("search", "Listed files matching", "Listing files matching", str(i.pattern), inPath(i.path));
@@ -86,7 +113,7 @@ export function describeCall(tool: string, input: unknown): CallView {
       return view("search", "Searched for", "Searching for", cut(str(i.pattern), TARGET_CHARS), [inPath(i.path), str(i.glob) ? `in ${str(i.glob)}` : null, str(i.type) ? `in ${str(i.type)} files` : null].filter(Boolean).join(" ") || null);
     case "edit": {
       const edits = Array.isArray(i.edits) ? i.edits.length : 1;
-      return view("edit", "Edited", "Editing", str(i.path), edits > 1 ? `${edits} changes` : null);
+      return view("edit", "Edited", "Editing", home(str(i.path)), edits > 1 ? `${edits} changes` : null);
     }
     case "apply_patch": {
       const ops = [...str(i.patch).matchAll(/^\*\*\* (Add|Update|Delete) File: (.+)$/gm)];
@@ -96,8 +123,16 @@ export function describeCall(tool: string, input: unknown): CallView {
       return view("edit", verb[0]!, verb[1]!, files[0] ?? "", files.length > 1 ? `and ${files.length - 1} more file${files.length === 2 ? "" : "s"}` : null);
     }
     case "terminal": {
-      const where = [i.background ? (str(i.name) ? `in the background as ${str(i.name)}` : "in the background") : str(i.name) ? `as ${str(i.name)}` : null, inPath(i.cwd)].filter(Boolean).join(" ");
-      return view("terminal", i.background ? "Started" : "Ran", i.background ? "Starting" : "Running", cut(firstLine(str(i.command)), TARGET_CHARS), where || null);
+      const where = i.background ? (str(i.name) ? `in the background as ${str(i.name)}` : "in the background") : str(i.name) ? `as ${str(i.name)}` : null;
+      const { folder, rest } = splitCd(str(i.command));
+      const command = home(rest.trim());
+      const cwd = str(i.cwd).replace(/[\\/]+$/, "");
+      return {
+        ...view("terminal", i.background ? "Started" : "Ran", i.background ? "Starting" : "Running", cut(command.split("\n")[0] ?? "", TARGET_CHARS), where),
+        command: cut(command, COMMAND_CHARS),
+        folder: folder ? home(folder) : cwd && cwd !== "." ? home(cwd) : null,
+        lines: command.split("\n").length,
+      };
     }
     case "terminal_control": {
       const t = str(i.terminal) || (Array.isArray(i.terminals) ? i.terminals.map(String).join(", ") : "");
@@ -112,8 +147,13 @@ export function describeCall(tool: string, input: unknown): CallView {
           return view("terminal", "Waited for", "Waiting for", t, i.event === "pattern" ? `to print ${JSON.stringify(str(i.pattern))}` : i.event === "port_open" ? `to open port ${String(i.port)}` : i.event === "port_closed" ? `to close port ${String(i.port)}` : WAIT_FOR[str(i.event)] ?? null);
         case "screen":
           return view("terminal", "Looked at the screen of", "Looking at the screen of", t);
-        case "read":
-          return view("terminal", "Read the output of", "Reading the output of", t, str(i.filter) ? `lines matching ${JSON.stringify(str(i.filter))}` : null);
+        case "read": {
+          const search = str(i.search) || str(i.filter);
+          const which = [search ? `lines matching ${JSON.stringify(search)}` : null, typeof i.from_line === "number" && i.from_line > 1 ? `from line ${i.from_line}` : null].filter(Boolean).join(" ") || null;
+          if (!str(i.output)) return view("terminal", "Read the output of", "Reading the output of", t, which);
+          const command = commandOf(str(i.output));
+          return view("terminal", "Read the saved output of", "Reading the saved output of", command ? cut(home(splitCd(command).rest.trim()).split("\n")[0] ?? "", TARGET_CHARS) : str(i.output), which);
+        }
         case "list":
           return view("terminal", "Listed the terminals", "Listing the terminals", "");
         case "signal":
@@ -243,7 +283,8 @@ export function describeResult(
       const screen = typeof r.screen === "object" && r.screen !== null ? str((r.screen as { text?: unknown }).text) : "";
       const output = screen || str(r.output);
       const summary = r.event === "timeout" ? "timed out" : typeof r.event === "string" && r.action === "wait" && r.event !== "exit" ? String(r.event).replace(/_/g, " ") : r.status === "running" && r.action === undefined ? (r.ready === true ? "running, ready" : "still running") : exitSummary(r) ?? (r.input_required === true ? "waiting for input" : null);
-      return { ...base, summary, ...tail(output), failed: commandFailed(tool, r) };
+      const lines = typeof r.output_lines === "number" ? r.output_lines : null;
+      return { ...base, summary, ...tail(output), failed: commandFailed(tool, r), ...(tool === "terminal" ? { lines, saved: typeof r.output_id === "string" } : {}) };
     }
     case "context_retrieve": {
       if (r.action !== "memory" || !Array.isArray(r.memories)) return { ...base, ...head(p.content) };

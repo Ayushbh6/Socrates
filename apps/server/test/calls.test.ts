@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { describeCall, describeResult, diffCounts } from "../src/calls";
 
@@ -18,8 +19,16 @@ describe("tool calls in plain words", () => {
     expect(words("apply_patch", { patch: "*** Update File: a.ts\n*** Update File: b.ts\n*** Delete File: c.ts" })).toBe("Edited a.ts and 2 more files");
     expect(words("terminal", { command: "npm test" })).toBe("Ran npm test");
     expect(words("terminal", { command: "npm run dev", background: true, name: "web" })).toBe("Started npm run dev in the background as web");
-    expect(words("terminal", { command: "cat <<EOF\nlong\nEOF", cwd: "app" })).toBe("Ran cat <<EOF … in app");
-    expect(words("terminal", { command: "npm test", cwd: "/Users/me/work/shop/" })).toBe("Ran npm test in shop");
+    // A command's first line, with its folder (a leading cd, or its cwd), its whole text and its line count beside it for the card.
+    expect(describeCall("terminal", { command: "cat <<EOF\nlong\nEOF", cwd: "app" })).toMatchObject({ target: "cat <<EOF", command: "cat <<EOF\nlong\nEOF", folder: "app", lines: 3, detail: null });
+    expect(describeCall("terminal", { command: "npm test", cwd: "/Users/me/work/shop/" })).toMatchObject({ target: "npm test", folder: "/Users/me/work/shop" });
+    expect(describeCall("terminal", { command: `cd ${homedir()}/.codex/sessions && head -c 2000 'a b.jsonl'` })).toMatchObject({ target: "head -c 2000 'a b.jsonl'", folder: "~/.codex/sessions", lines: 1 });
+    expect(describeCall("terminal", { command: `cd "${homedir()}/My Work" && wc -l ${homedir()}/notes.md` })).toMatchObject({ target: "wc -l ~/notes.md", folder: "~/My Work" });
+    expect(describeCall("terminal", { command: "npm test", cwd: "." }).folder).toBeNull();
+    // Reading a saved output back names the command it came from, when it is known.
+    expect(words("terminal_control", { action: "read", output: "out_1", search: "FAIL" })).toBe('Read the saved output of out_1 lines matching "FAIL"');
+    expect(describeCall("terminal_control", { action: "read", output: "out_1" }, (id) => (id === "out_1" ? `cd ${homedir()}/x && npm test\n# again` : null)).target).toBe("npm test");
+    expect(describeCall("read", { path: `${homedir()}/notes.md` }).target).toBe("~/notes.md");
     expect(describeCall("terminal", { command: "npm test" }).active).toBe("Running");
   });
 
@@ -56,6 +65,9 @@ describe("tool results in plain words", () => {
     const long = `${"x".repeat(3000)}\nlast line\n`;
     expect(describeResult("terminal", ok({ status: "completed", exit_code: 0, output: long }))).toMatchObject({ preview: expect.stringMatching(/^x+\nlast line\n$/), truncated: true });
     expect(describeResult("terminal", ok({ status: "running", terminal: "web", ready: true, output: "" })).summary).toBe("running, ready");
+    // How many lines it printed, and whether all of it is saved apart.
+    expect(describeResult("terminal", ok({ status: "completed", exit_code: 0, output: "a\n", output_lines: 171, output_id: "out_1", truncated: true }))).toMatchObject({ lines: 171, saved: true });
+    expect(describeResult("terminal", ok({ status: "completed", exit_code: 0, output: "" }))).toMatchObject({ lines: null, saved: false });
     expect(describeResult("terminal_control", ok({ action: "wait", status: "running", input_required: true, output: "Port? " }))).toMatchObject({ summary: "waiting for input", preview: "Port? " });
   });
 

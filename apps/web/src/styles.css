@@ -229,12 +229,23 @@ button.row-line:hover { background: var(--hover); color: var(--text); }
 .row-summary .added { color: #1d7a55; }
 .row-summary .removed { color: #b04848; }
 .row-time { flex: none; color: var(--faint); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+/* A command row: its first line in mono, chips for its folder and extra lines, and its outcome at the right. */
+.row-command { color: var(--text); font-family: var(--mono); font-size: 0.79rem; }
+.row-chip { flex: none; max-width: 12rem; padding: 0.02rem 0.45rem; overflow: hidden; border-radius: 999px; background: rgba(17, 40, 32, 0.05); color: var(--muted); font-size: 0.7rem; line-height: 1.55; text-overflow: ellipsis; white-space: nowrap; }
+.row-folder { font-family: var(--mono); font-size: 0.68rem; }
+.row-end { display: flex; flex: none; align-items: center; gap: 0.45rem; margin-left: auto; padding-left: 0.3rem; }
+.row-approval { display: inline-flex; color: var(--accent); }
+.row-approval[data-granted="false"] { color: var(--danger); }
+.row-approval svg { width: 0.85rem; height: 0.85rem; }
+.row-summary.exit { padding: 0.02rem 0.4rem; border-radius: 0.35rem; background: rgba(17, 40, 32, 0.05); font-family: var(--mono); font-size: 0.68rem; }
+.row-summary.exit[data-failed="true"] { background: rgba(184, 85, 85, 0.1); }
 .row-state { flex: none; width: 0.85rem; height: 0.85rem; }
 .tool[data-status="error"] .row-state { color: var(--danger); }
 .row-chevron { flex: none; width: 0.8rem; height: 0.8rem; opacity: 0; transition: transform 160ms, opacity 120ms; }
 button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, [data-open="true"] > .row-line .row-chevron { opacity: 0.7; }
 [data-open="true"] > .row-line .row-chevron { transform: rotate(90deg); }
-.group-items { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.05rem; min-width: 0; margin: 0 0 0.2rem 1rem; }
+/* A group's calls hang from a thin rail under its line. */
+.group-items { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.05rem; min-width: 0; margin: 0.05rem 0 0.35rem 0.9rem; padding-left: 0.45rem; border-left: 1px solid rgba(17, 40, 32, 0.1); }
 /* Text that is happening now shimmers, as in Claude and Codex. */
 .shimmer { background: linear-gradient(90deg, var(--muted) 35%, var(--text) 50%, var(--muted) 65%); background-size: 250% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 2.2s linear infinite; }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0% 0; } }
@@ -252,10 +263,19 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .step-meta svg { flex: none; width: 0.9rem; height: 0.9rem; }
 .step-meta.warn { color: var(--warm); }
 /* What a running command prints, newest lines only. */
-.tool-live { max-height: 9.5em; margin: 0.05rem 0 0.35rem 1.95rem; padding: 0.45rem 0.7rem; overflow: hidden; border-radius: 0.55rem; background: rgba(17, 40, 32, 0.04); color: var(--muted); font-family: var(--mono); font-size: 0.72rem; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
-.tool-output { min-width: 0; margin: 0.15rem 0 0.5rem 1.95rem; }
-.tool-output pre { max-height: 18rem; margin: 0 0 0.3rem; padding: 0.7rem 0.85rem; overflow: auto; border-radius: 0.6rem; background: rgba(45, 55, 72, 0.045); font-family: var(--mono); font-size: 0.75rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
-.tool-output .tool-diff { padding: 0.5rem 0; white-space: pre; overflow-wrap: normal; }
+.tool-live { max-height: 9.5em; margin: 0.05rem 0 0.35rem 1.95rem; padding: 0.5rem 0.8rem; overflow: hidden; border: 1px solid rgba(17, 40, 32, 0.07); border-radius: 0.6rem; background: #fbfaf7; color: var(--muted); font-family: var(--mono); font-size: 0.72rem; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* An opened call: a card with the whole command, its output or diff, and a footer. */
+.tool-card { min-width: 0; margin: 0.15rem 0 0.55rem 1.95rem; overflow: hidden; border: 1px solid rgba(17, 40, 32, 0.08); border-radius: 0.65rem; background: #fbfaf7; }
+.tool-card pre { margin: 0; font-family: var(--mono); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-card-command { max-height: 12rem; padding: 0.6rem 0.85rem; overflow: auto; border-bottom: 1px solid rgba(17, 40, 32, 0.07); background: rgba(17, 40, 32, 0.03); color: var(--text); font-size: 0.76rem; }
+.tool-prompt { color: var(--accent); user-select: none; }
+.tool-card-output { max-height: 18rem; padding: 0.6rem 0.85rem; overflow: auto; color: #4a5568; font-size: 0.74rem; }
+.tool-card .tool-diff { max-height: 18rem; padding: 0.5rem 0; overflow: auto; white-space: pre; overflow-wrap: normal; }
+.tool-card-empty { margin: 0; padding: 0.55rem 0.85rem; color: var(--faint); font-size: 0.76rem; }
+.tool-card-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.2rem 0.6rem; min-height: 1.9rem; padding: 0.2rem 0.4rem 0.2rem 0.85rem; border-top: 1px solid rgba(17, 40, 32, 0.07); color: var(--faint); font-size: 0.72rem; font-variant-numeric: tabular-nums; }
+.tool-card-actions { display: flex; flex: none; align-items: center; gap: 0.5rem; }
+.tool-card-foot .quiet-button { padding: 0.15rem 0.5rem; font-size: 0.74rem; }
+@media (max-width: 560px) { .row-folder { display: none; } .tool-card, .tool-live { margin-left: 0.4rem; } }
 .tool-diff .diff-line { display: block; padding: 0 0.85rem; }
 .spin { animation: spin 1s linear infinite; color: var(--accent); }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -483,7 +503,6 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .menu-note svg { width: 0.8rem; height: 0.8rem; }
 .model-settings { width: 100%; margin-top: 0.3rem; font-size: 0.78rem; }
 .effort-menu { min-width: 12rem; }
-.tool-running { margin: 0; color: var(--faint); font-size: 0.78rem; }
 
 /* Standard mode: the layout of any chat app, goals as folders with their chats beneath */
 

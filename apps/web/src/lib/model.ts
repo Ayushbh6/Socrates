@@ -14,7 +14,7 @@ export type Step =
    */
   | { kind: "thinking"; text: string; truncated: boolean; seq: number; ms: number | null }
   /** A tool call in plain words, and once it finished, what it returned. */
-  | { kind: "tool"; handle: string; task: string; turnId: string; call: CallView; status: "running" | "ok" | "error"; result: ResultView | null; at: string }
+  | { kind: "tool"; handle: string; task: string; turnId: string; call: CallView; status: "running" | "ok" | "error"; result: ResultView | null; at: string; approval?: { granted: boolean; detail: string } }
   | { kind: "handed_off"; lane: number }
   | { kind: "warning"; detail: string }
   | { kind: "decision"; granted: boolean; detail: string };
@@ -375,8 +375,13 @@ function applyOne(e: Exchange, a: Activity | DraftArrived): Exchange {
     }
     case "warning":
       return { ...x, steps: [...x.steps, { kind: "warning", detail: a.detail }] };
-    case "approval_decided":
+    case "approval_decided": {
+      // An approval belongs to the call that asked: by its handle, or, recorded before handles, the turn's call still running.
+      const approval = { granted: a.granted, detail: a.detail };
+      const asked = x.steps.findLastIndex((s) => s.kind === "tool" && s.turnId === a.turnId && (a.handle ? s.handle === a.handle : s.status === "running"));
+      if (asked >= 0) return { ...x, steps: x.steps.map((s, i) => (i === asked ? { ...s, approval } : s)) as Step[] };
       return { ...x, steps: [...x.steps, { kind: "decision", granted: a.granted, detail: a.detail }] };
+    }
     case "finished": {
       const open = x.open.filter((t) => t !== a.turnId);
       const outputs = Object.fromEntries(Object.entries(x.outputs).filter(([key]) => !key.startsWith(`${a.turnId}:`)));
