@@ -177,13 +177,15 @@ export const ContextRetrieveInput = z.discriminatedUnion("action", [
 
 /**
  * The memory-only tool of the work-memory step (agent-harness.md, "Work
- * memory"): it reads and writes the project's notes in Socrates' data
- * folder, and nothing else. It is offered only in that step.
+ * memory"): it reads and writes this task's and its goal's notes in
+ * Socrates' data folder, and nothing else. It is offered only in that step.
  */
+const WorkMemoryLevel = z.enum(["task", "goal"]).describe("task: this task's memory; goal: the goal's, shared by all its tasks. General has only goal.");
 export const WorkMemoryInput = z.discriminatedUnion("action", [
-  z.strictObject({ action: z.literal("read"), topic: z.string().min(1).max(64).optional().describe("A topic's name; omitted: the index and every topic's name.") }),
-  z.strictObject({ action: z.literal("write_topic"), topic: z.string().min(1).max(64), text: z.string().min(1).max(20_000) }),
-  z.strictObject({ action: z.literal("write_index"), text: z.string().min(1).max(20_000) }),
+  z.strictObject({ action: z.literal("read"), level: WorkMemoryLevel.optional(), topic: z.string().min(1).max(64).optional().describe("A topic's name; omitted: the index and every topic's name, of both levels and the goal's other tasks unless level is given.") }),
+  z.strictObject({ action: z.literal("write_topic"), level: WorkMemoryLevel, topic: z.string().min(1).max(64), text: z.string().min(1).max(20_000) }),
+  z.strictObject({ action: z.literal("write_index"), level: WorkMemoryLevel, text: z.string().max(20_000).describe("The whole index; empty removes it, once its level holds no topics it should name.") }),
+  z.strictObject({ action: z.literal("remove_topic"), level: WorkMemoryLevel, topic: z.string().min(1).max(64) }),
 ]);
 export type WorkMemoryInput = z.infer<typeof WorkMemoryInput>;
 

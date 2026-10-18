@@ -101,14 +101,16 @@ export class RunState {
 }
 
 /**
- * The project's work memory, for a turn in a project (agent-harness.md, "Work
- * memory"): `context_retrieve` opens and searches its topics. Only the
+ * The turn's work memory, its goal's and its task's (agent-harness.md, "Work
+ * memory"): `context_retrieve` opens and searches their topics. Only the
  * work-memory step has `write`, which the `work_memory` tool needs.
  */
 export interface WorkMemoryScope {
-  projectId: string;
-  /** Write the index or one topic, whole: recorded in the ledger, then in Socrates' data folder. */
-  write?: (target: "index" | "topic", name: string | null, text: string) => void;
+  goalId: string;
+  /** Null in General, which keeps one memory for every day. */
+  taskId: string | null;
+  /** Write a level's index or one topic, whole, or remove a topic (null): recorded in the ledger, then in Socrates' data folder. */
+  write?: (level: "task" | "goal", target: "index" | "topic", name: string | null, text: string | null) => void;
 }
 
 /** Everything a tool handler may use for one call. */
@@ -143,7 +145,7 @@ export interface HandlerContext {
   terminals: TerminalSupervisor | null;
   /** Saved terminal output, by output id, for evidence of earlier calls. */
   outputs?: OutputArchive | null;
-  /** The project's work memory, when the turn is in a project. */
+  /** The turn's work memory: its goal's and its task's. */
   workMemory?: WorkMemoryScope;
   /** Whether the working model can see images; `read` shows it an image only then. */
   vision: boolean;

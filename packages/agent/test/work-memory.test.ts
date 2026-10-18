@@ -1,19 +1,19 @@
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { type DeciderClient, type DecisionRequest, type DecisionResponse, type EventPayloads, userText } from "@socrates/contracts";
 import { HashEmbedder } from "@socrates/providers";
 import { Retrieval } from "@socrates/retrieval";
 import { LedgerStore } from "@socrates/store";
 import { describe, expect, it } from "vitest";
-import { continueTask } from "../../router/test/helpers";
-import { MemoryGate, WORK_MEMORY_INDEX_MAX_TOKENS, WORK_QUESTION, WorkMemoryFiles, didRealWork, resolveWorkProject, workMemoryBlock, workMemoryProject, workMemorySkill, workState } from "../src";
-import { call, contextParts, final, tempDir, world, writeFiles } from "./helpers";
+import { continueTask, general } from "../../router/test/helpers";
+import { MemoryGate, WORK_MEMORY_INDEX_MAX_TOKENS, WORK_QUESTION, WorkMemoryFiles, didRealWork, workMemoryBlock, workMemoryScope, workMemorySkill, workState } from "../src";
+import { call, contextParts, final, tempDir, world } from "./helpers";
 
 /**
- * Work memory, kept by Socrates (agent-harness.md, "Work memory"; plan M4a in
- * docs/terminal-output-and-memory.md): the same index and topics as before,
- * in the ledger and Socrates' data folder, never in the user's repository.
+ * Work memory, kept by Socrates (agent-harness.md, "Work memory"; plan in
+ * docs/goal-task-memory-plan.md): each goal's and each task's index and
+ * topics, in the ledger and Socrates' data folder, never in the user's
+ * folders.
  */
 
 /** A decider that answers the work question from a script and remembers what it was asked. */
@@ -37,80 +37,91 @@ function steps(store: LedgerStore, turnId?: string) {
   return store.listEvents({ type: "work_memory_step" }).filter((e) => !turnId || e.turn_id === turnId).map((e) => (e.payload as EventPayloads["work_memory_step"]).outcome);
 }
 
-/** Write a project's notes straight into the ledger, as a step would. */
-function seed(store: LedgerStore, root: string, entries: { name: string | null; text: string }[]) {
-  const project = resolveWorkProject(root)!;
-  for (const e of entries) store.recordWorkMemoryWrite({}, { project_id: project.id, root: project.root, target: e.name === null ? "index" : "topic", name: e.name, text: e.text });
-  return project;
+/** Write a goal's (taskId null) or a task's notes straight into the ledger, as a step would. */
+function seed(store: LedgerStore, goalId: string, taskId: string | null, entries: { name: string | null; text: string }[], turnId: string | null = null) {
+  for (const e of entries) store.recordWorkMemoryWrite({ goal_id: goalId, task_id: taskId, turn_id: turnId }, { level: taskId ? "task" : "goal", goal_id: goalId, task_id: taskId, target: e.name === null ? "index" : "topic", name: e.name, text: e.text });
 }
 
-describe("the project's index", () => {
-  it("is shown as PROJECT_MEMORY from Socrates' own record, never from a file in the repository", async () => {
+const scopeOf = (store: LedgerStore, goalId: string, taskId: string | null) => workMemoryScope(store.requireGoal(goalId), taskId ? store.requireTask(taskId) : null);
+
+describe("the task's and goal's indexes", () => {
+  it("are shown as WORK_MEMORY from Socrates' own record, never from a file in the repository", async () => {
     // The live v0.1.20 keeps its own project memory at this path; v2 must neither show nor change it.
     const w = await world({ files: { ".socrates/MEMORY.md": LEGACY } });
-    seed(w.store, w.root, [{ name: "store-schema", text: "Store schema\nSteps\n1. Bump the version." }, { name: "flaky-tests", text: "Flaky tests\nSteps\n1. Rerun alone." }, { name: null, text: INDEX }]);
+    seed(w.store, w.goalId, w.taskId, [{ name: "store-schema", text: "Store schema\nSteps\n1. Bump the version." }, { name: null, text: "- Change the store schema → topic store-schema · turns 4, 9" }]);
+    seed(w.store, w.goalId, null, [{ name: "flaky-tests", text: "Flaky tests\nSteps\n1. Rerun alone." }, { name: null, text: "- Fix a flaky test → topic flaky-tests · turn 12" }]);
     const { socrates, model } = w.socrates([continueTask(), continueTask()], [final(), final()]);
     await socrates.handle("Change the schema.");
     const first = contextParts(model.requests[0]!)[0]!.text;
-    expect(first).toContain("# PROJECT_MEMORY");
-    expect(first).toContain("topic_ref: topic:store-schema");
-    expect(first).toContain("Fix a flaky test");
+    const t = w.store.requireTask(w.taskId).number;
+    expect(first).toContain("# WORK_MEMORY");
+    expect(first).toContain(`# THIS_TASK (t${t})`);
+    expect(first).toContain(`topic_ref: topic:t${t}/store-schema`);
+    expect(first).toContain("# THIS_GOAL");
+    expect(first).toContain("topic_ref: topic:goal/flaky-tests");
+    // The task's own lines come first.
+    expect(first.indexOf("THIS_TASK")).toBeLessThan(first.indexOf("THIS_GOAL"));
     expect(first).not.toContain("socrates_doc");
-    expect(first.indexOf("# PROJECT_MEMORY")).toBeLessThan(first.indexOf("# GOAL"));
+    expect(first.indexOf("# WORK_MEMORY")).toBeLessThan(first.indexOf("# GOAL"));
     expect(readFileSync(path.join(w.root, ".socrates/MEMORY.md"), "utf8")).toBe(LEGACY);
 
     // A new index is shown from the next turn.
-    seed(w.store, w.root, [{ name: "release", text: "Release\n1. Tag." }, { name: null, text: "- Release → topic release · turn 20" }]);
+    seed(w.store, w.goalId, null, [{ name: "release", text: "Release\n1. Tag." }, { name: null, text: "- Release → topic release · turn 20" }]);
     await socrates.handle("Release it.");
-    expect(contextParts(model.requests.at(-1)!)[0]!.text).toContain("topic_ref: topic:release");
+    expect(contextParts(model.requests.at(-1)!)[0]!.text).toContain("topic_ref: topic:goal/release");
   });
 
-  it("is left out without a project, when empty or when memories are not used, and is held to its budget", () => {
+  it("belong to one goal and one task: another goal on the same folder, and another task, see none of them", () => {
     const store = LedgerStore.open({ path: ":memory:" });
-    const dir = tempDir();
-    const project = resolveWorkProject(dir)!;
-    expect(workMemoryBlock(store, null, null)).toBeNull();
-    expect(workMemoryBlock(store, project, null)).toBeNull();
-    seed(store, dir, [{ name: "store-schema", text: "x" }, { name: "flaky-tests", text: "y" }, { name: null, text: INDEX }]);
-    expect(workMemoryBlock(store, project, { save: true, use: false })).toBeNull();
-    expect(workMemoryBlock(store, project, { save: true, use: true })).toContain("Fix a flaky test");
+    const workspace = store.createWorkspace("work", tempDir());
+    const a = store.createGoal({ title: "Socrates development", workspaceId: workspace.id });
+    const b = store.createGoal({ title: "Career profile", workspaceId: workspace.id });
+    const a1 = store.createTask(a.id, { title: "Routing review" });
+    const a2 = store.createTask(a.id, { title: "Memory split" });
+    seed(store, a.id, a1.id, [{ name: "router", text: "x" }, { name: null, text: "- Router → topic router · turn 1" }]);
+    expect(workMemoryBlock(store, scopeOf(store, a.id, a1.id), null)).toContain("topic:t1/router");
+    expect(workMemoryBlock(store, scopeOf(store, a.id, a2.id), null)).toBeNull();
+    expect(workMemoryBlock(store, scopeOf(store, b.id, null), null)).toBeNull();
+    seed(store, a.id, null, [{ name: "release", text: "y" }, { name: null, text: "- Release → topic release · turn 2" }]);
+    expect(workMemoryBlock(store, scopeOf(store, a.id, a2.id), null)).toContain("topic:goal/release");
+    expect(workMemoryBlock(store, scopeOf(store, b.id, null), null)).toBeNull();
+    store.close();
+  });
 
-    const lines = Array.from({ length: 200 }, (_, i) => `- Topic number ${i} with some words to cost tokens → topic t${i} · turns ${i}`);
-    store.recordWorkMemoryWrite({}, { project_id: project.id, root: dir, target: "index", name: null, text: lines.join("\n") });
-    const block = workMemoryBlock(store, project, null)!;
-    expect(block).toContain("Topic number 0 ");
-    expect(block).not.toContain("Topic number 199 ");
-    expect(block).toMatch(/\(\d+ older lines not shown: the index is over its budget of 1500 tokens; merge related lines or drop the stalest/);
+  it("are left out without a scope, when empty or when memories are not used, and are held to their budget", () => {
+    const store = LedgerStore.open({ path: ":memory:" });
+    const goal = store.createGoal({ title: "g" });
+    const task = store.createTask(goal.id, { title: "t" });
+    const scope = scopeOf(store, goal.id, task.id);
+    expect(workMemoryBlock(store, null, null)).toBeNull();
+    expect(workMemoryBlock(store, scope, null)).toBeNull();
+    seed(store, goal.id, null, [{ name: "store-schema", text: "x" }, { name: "flaky-tests", text: "y" }, { name: null, text: INDEX }]);
+    expect(workMemoryBlock(store, scope, { save: true, use: false })).toBeNull();
+    expect(workMemoryBlock(store, scope, { save: true, use: true })).toContain("Fix a flaky test");
+
+    const lines = (word: string) => Array.from({ length: 200 }, (_, i) => `- ${word} number ${i} with some words to cost tokens → topic t${i} · turns ${i}`).join("\n");
+    seed(store, goal.id, null, [{ name: null, text: lines("Goal") }]);
+    seed(store, goal.id, task.id, [{ name: null, text: lines("Task") }]);
+    const block = workMemoryBlock(store, scope, null)!;
+    expect(block).toContain("Task number 0 ");
+    expect(block).not.toContain("Task number 199 ");
+    // The task's lines take their share, the goal's still show.
+    expect(block).toContain("Goal number 0 ");
+    expect(block.match(/older lines not shown: this index is over its share/g)).toHaveLength(2);
     expect(WORK_MEMORY_INDEX_MAX_TOKENS).toBe(1_500);
     store.close();
   });
-});
 
-describe("which project a turn's notes belong to", () => {
-  const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, stdio: "pipe", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
-
-  it("is the repository for every worktree of it, a folder on its own otherwise, and never General's", async () => {
-    const repo = tempDir();
-    writeFiles(repo, { "a.txt": "a\n", "sub/b.txt": "b\n" });
-    git(repo, "init", "-q");
-    git(repo, "add", ".");
-    git(repo, "commit", "-qm", "init");
-    const tree = path.join(tempDir(), "tree");
-    git(repo, "worktree", "add", "-q", tree);
-    const main = resolveWorkProject(repo)!;
-    expect(main.kind).toBe("git");
-    expect(resolveWorkProject(tree)!.id).toBe(main.id);
-    // A folder inside a repository is a project of its own; a plain folder too.
-    expect(resolveWorkProject(path.join(repo, "sub"))).toMatchObject({ kind: "folder" });
-    expect(resolveWorkProject(path.join(repo, "sub"))!.id).not.toBe(main.id);
-    expect(resolveWorkProject(tempDir())!.kind).toBe("folder");
-    expect(main.id).toMatch(/^[a-z0-9-]+-[0-9a-f]{10}$/);
-
-    const w = await world();
-    const goal = w.store.requireGoal(w.goalId);
-    expect(workMemoryProject(goal, null)).toBeNull();
-    expect(workMemoryProject({ ...goal, general: true }, { root: w.root } as never)).toBeNull();
-    expect(workMemoryProject({ ...goal, workspaceId: null }, { root: w.root } as never)).toBeNull();
+  it("is one memory for every day in General, with no task memory", () => {
+    const store = LedgerStore.open({ path: ":memory:" });
+    const goal = store.createGoal({ title: "General conversation", general: true });
+    const day = store.createTask(goal.id, { title: "General · Fri 9 Oct", general: true });
+    expect(workMemoryScope(goal, day)).toMatchObject({ goalId: goal.id, taskId: null, general: true });
+    seed(store, goal.id, null, [{ name: "devices", text: "Laptop" }, { name: null, text: "- Laptop setup → topic devices · turn 1" }]);
+    const block = workMemoryBlock(store, workMemoryScope(goal, day), null)!;
+    expect(block).toContain("# GENERAL");
+    expect(block).not.toContain("THIS_TASK");
+    store.close();
   });
 });
 
@@ -136,23 +147,24 @@ describe("which turns are asked about", () => {
   });
 });
 
-describe("recording what a turn established", () => {
-  const work = [
-    { toolCalls: [call("edit", { path: "src/a.ts", old_text: "", new_text: "export const a = 1;\n" })] },
-    final({ full_answer: "Added a; the checks pass." }),
-  ];
-  const memory = [
-    { toolCalls: [call("work_memory", { action: "write_topic", topic: "new-module", text: "New module\nSteps\n1. Add the file.\nEvidence: turns 2" })] },
-    { toolCalls: [call("work_memory", { action: "write_index", text: "- Add a module → topic new-module · turn 2" })] },
-    { text: "Wrote new-module." },
-  ];
-  const policy = (root: string) => ({ folders: [root], approvals: "ask" as const, protected: [] });
+const work = [
+  { toolCalls: [call("edit", { path: "src/a.ts", old_text: "", new_text: "export const a = 1;\n" })] },
+  final({ full_answer: "Added a; the checks pass." }),
+];
+const memory = [
+  { toolCalls: [call("work_memory", { action: "write_topic", level: "task", topic: "new-module", text: "New module\nSteps\n1. Add the file.\nEvidence: turns 2" })] },
+  { toolCalls: [call("work_memory", { action: "write_index", level: "task", text: "- Add a module → topic new-module · turn 2" })] },
+  { text: "Wrote new-module." },
+];
+const policy = (root: string) => ({ folders: [root], approvals: "ask" as const, protected: [] });
 
-  it("writes the notes after the answer is saved, outside the repository, without asking", async () => {
+describe("recording what a turn established", () => {
+
+  it("writes the task's notes after the answer is saved, in Socrates' data folder, without asking", async () => {
     const w = await world();
-    const dir = path.join(tempDir(), "memory", "projects");
+    const dir = path.join(tempDir(), "memory");
     const { decider, asked } = workDecider(() => 0.9);
-    const { socrates, model } = w.socrates([continueTask()], [...work, ...memory], { gate: () => new MemoryGate({ decider }), memory: () => ({ save: true, use: true }), access: () => policy(w.root), workMemoryDir: dir });
+    const { socrates, model } = w.socrates([continueTask()], [...work, ...memory], { gate: () => new MemoryGate({ decider }), memory: () => ({ save: true, use: true }), access: () => policy(w.root), memoryDir: dir });
     const result = await socrates.handle("Add the module a.");
     expect(result.kind === "answered" && result.text).toBe("Added a; the checks pass.");
     const turn = w.store.turnsForTask(w.taskId).at(-1)!;
@@ -169,26 +181,81 @@ describe("recording what a turn established", () => {
     expect(step.tools?.map((t) => t.name)).toEqual(["work_memory", "context_retrieve"]);
     expect(step.messages.at(-2)!.role).toBe("assistant");
 
-    const project = resolveWorkProject(w.root)!;
-    expect(w.store.workMemoryIndex(project.id)!.text).toBe("- Add a module → topic new-module · turn 2");
-    expect(w.store.workTopic(project.id, "new-module")!.text).toContain("1. Add the file.");
-    expect(readFileSync(path.join(dir, project.id, "MEMORY.md"), "utf8")).toBe("- Add a module → topic new-module · turn 2\n");
-    expect(readFileSync(path.join(dir, project.id, "topics", "new-module.md"), "utf8")).toContain("Evidence: turns 2");
-    expect(JSON.parse(readFileSync(path.join(dir, project.id, "project.json"), "utf8"))).toMatchObject({ id: project.id, root: project.root, kind: "folder" });
+    expect(w.store.workMemoryIndex(w.goalId, w.taskId)!.text).toBe("- Add a module → topic new-module · turn 2");
+    expect(w.store.workTopic(w.goalId, w.taskId, "new-module")!.text).toContain("1. Add the file.");
+    expect(w.store.workMemoryIndex(w.goalId, null)).toBeNull();
+    const goal = w.store.requireGoal(w.goalId);
+    const task = w.store.requireTask(w.taskId);
+    const folder = path.join(dir, "goals", `g${goal.number}-project-work`, "tasks", `t${task.number}-fix-the-server`);
+    expect(readFileSync(path.join(folder, "MEMORY.md"), "utf8")).toBe("- Add a module → topic new-module · turn 2\n");
+    expect(readFileSync(path.join(folder, "topics", "new-module.md"), "utf8")).toContain("Evidence: turns 2");
     // Nothing in the repository; only the project's own edit asked.
     expect(existsSync(path.join(w.root, ".socrates"))).toBe(false);
     expect(w.approvals.map((a) => a.detail)).toEqual(["Create src/a.ts"]);
     expect(steps(w.store, turn.id)).toEqual(["pending", "written"]);
   });
 
-  it("is queued on a goal's first turn too, when its folder is bound during that turn", async () => {
+  it("is queued in a goal without a folder too", async () => {
     const w = await world({ workspace: false });
     const { decider } = workDecider(() => 0.9);
-    const { socrates } = w.socrates([continueTask()], [...work, ...memory], { gate: () => new MemoryGate({ decider }), memory: () => ({ save: true, use: true }), resolveWorkspace: () => ({ name: "project", rootPath: w.root }) });
+    const { socrates } = w.socrates([continueTask()], [{ toolCalls: [call("terminal", { command: "echo checked" })] }, final(), ...memory], { gate: () => new MemoryGate({ decider }), memory: () => ({ save: true, use: true }), access: () => policy(w.root) });
+    await socrates.handle("Check it.");
+    await socrates.workMemoryIdle();
+    expect(w.store.requireGoal(w.goalId).workspaceId).toBeNull();
+    expect(steps(w.store)).toEqual(["pending", "written"]);
+    expect(w.store.workMemoryIndex(w.goalId, w.taskId)).not.toBeNull();
+  });
+
+  it("moves a lesson up to the goal: written there, then removed from the task once its index lets go", async () => {
+    const w = await world();
+    const dir = path.join(tempDir(), "memory");
+    seed(w.store, w.goalId, w.taskId, [{ name: "new-module", text: "New module\n1. Add the file." }, { name: null, text: "- Add a module → topic new-module · turn 1" }]);
+    const { decider } = workDecider(() => 0.9);
+    const move = [
+      { toolCalls: [call("work_memory", { action: "read" })] },
+      { toolCalls: [call("work_memory", { action: "remove_topic", level: "task", topic: "new-module" })] },
+      { toolCalls: [call("work_memory", { action: "write_topic", level: "goal", topic: "new-module", text: "New module\n1. Add the file.\n2. Export it." })] },
+      { toolCalls: [call("work_memory", { action: "write_index", level: "goal", text: "- Add a module → topic new-module · turns 1, 2" })] },
+      { toolCalls: [call("work_memory", { action: "write_index", level: "task", text: "" })] },
+      { toolCalls: [call("work_memory", { action: "remove_topic", level: "task", topic: "new-module" })] },
+      { text: "Moved new-module to the goal." },
+    ];
+    const { socrates } = w.socrates([continueTask()], [...work, ...move], { gate: () => new MemoryGate({ decider }), memory: () => ({ save: true, use: true }), access: () => policy(w.root), memoryDir: dir });
     await socrates.handle("Add the module a.");
     await socrates.workMemoryIdle();
-    expect(w.store.requireGoal(w.goalId).workspaceId).not.toBeNull();
-    expect(steps(w.store)).toEqual(["pending", "written"]);
+    const results = w.store.listEvents({ type: "tool_completed" }).slice(-6).map((e) => e.payload as EventPayloads["tool_completed"]);
+    expect(JSON.parse(results[0]!.content)).toMatchObject({ task: { topics: ["new-module"] }, goal: { topics: [] } });
+    // Refused while the task's index still names it.
+    expect(results[1]!.error?.code).toBe("topic_in_index");
+    expect(results.slice(2).map((r) => r.error ?? null)).toEqual([null, null, null, null]);
+    expect(w.store.workTopic(w.goalId, w.taskId, "new-module")).toBeNull();
+    expect(w.store.workMemoryIndex(w.goalId, w.taskId)).toBeNull();
+    expect(w.store.workTopic(w.goalId, null, "new-module")!.text).toContain("2. Export it.");
+    const goal = path.join(dir, "goals", `g${w.store.requireGoal(w.goalId).number}-project-work`);
+    expect(readFileSync(path.join(goal, "topics", "new-module.md"), "utf8")).toContain("2. Export it.");
+    // The task's folder held only that note, so it is gone.
+    expect(existsSync(path.join(goal, "tasks"))).toBe(false);
+  });
+
+  it("writes General's notes at the goal only, in one folder for every day", async () => {
+    const w = await world();
+    const dir = path.join(tempDir(), "memory");
+    const { decider } = workDecider(() => 0.9);
+    const notes = [
+      { toolCalls: [call("work_memory", { action: "write_topic", level: "task", topic: "devices", text: "Laptop" })] },
+      { toolCalls: [call("work_memory", { action: "write_topic", level: "goal", topic: "devices", text: "Laptop setup\n1. Use the dock." })] },
+      { toolCalls: [call("work_memory", { action: "write_index", level: "goal", text: "- Laptop setup → topic devices · turn 2" })] },
+      { text: "Wrote devices." },
+    ];
+    const { socrates, model } = w.socrates([general()], [{ toolCalls: [call("terminal", { command: "echo docked" })] }, final(), ...notes], { gate: () => new MemoryGate({ decider }), memory: () => ({ save: true, use: true }), access: () => policy(w.root), memoryDir: dir });
+    await socrates.handle("Check my laptop dock.");
+    await socrates.workMemoryIdle();
+    const guide = model.requests[2]!.messages.at(-1)!;
+    expect(guide.role === "user" ? userText(guide.content) : "").toContain("General conversation: it keeps one memory for every day");
+    const codes = w.store.listEvents({ type: "tool_completed" }).slice(-3).map((e) => (e.payload as EventPayloads["tool_completed"]).error?.code ?? null);
+    expect(codes).toEqual(["no_task_memory", null, null]);
+    expect(readFileSync(path.join(dir, "goals", "general", "topics", "devices.md"), "utf8")).toContain("Use the dock.");
+    expect(readdirSync(path.join(dir, "goals", "general")).sort()).toEqual(["MEMORY.md", "topics"]);
   });
 
   it("does not hold the chat: the next message runs while the step is still waiting", async () => {
@@ -229,10 +296,10 @@ describe("recording what a turn established", () => {
     const { decider } = workDecider(() => 0.9);
     const bad = [
       { toolCalls: [
-        call("work_memory", { action: "write_topic", topic: "Bad Name", text: "x" }),
-        call("work_memory", { action: "write_topic", topic: "long", text: "x".repeat(3_001) }),
-        call("work_memory", { action: "write_index", text: "- Missing → topic nowhere · turn 1" }),
-        call("work_memory", { action: "write_index", text: Array.from({ length: 61 }, (_, i) => `- line ${i}`).join("\n") }),
+        call("work_memory", { action: "write_topic", level: "task", topic: "Bad Name", text: "x" }),
+        call("work_memory", { action: "write_topic", level: "task", topic: "long", text: "x".repeat(3_001) }),
+        call("work_memory", { action: "write_index", level: "goal", text: "- Missing → topic nowhere · turn 1" }),
+        call("work_memory", { action: "write_index", level: "task", text: Array.from({ length: 61 }, (_, i) => `- line ${i}`).join("\n") }),
         call("work_memory", { action: "read", topic: "nowhere" }),
       ] },
       { text: "Nothing to record." },
@@ -245,7 +312,7 @@ describe("recording what a turn established", () => {
     expect(steps(w.store)).toEqual(["pending", "nothing"]);
   });
 
-  it("is not asked when the decider says no, nothing was verified, saving is off, or in General; it is skipped when Socrates stops", async () => {
+  it("is not asked when the decider says no, nothing was verified or saving is off; it is skipped when Socrates stops", async () => {
     for (const setup of [
       { work: 0.1, steps: work, memory: { save: true, use: true }, expected: ["pending", "not_worth"] },
       { work: 0.9, steps: [{ toolCalls: [call("read", { path: "nothing" })] }, final()], memory: { save: true, use: true }, expected: [] },
@@ -291,7 +358,7 @@ describe("recording what a turn established", () => {
     const { decider } = workDecider(() => 0.9);
     const { socrates } = w.socrates([continueTask()], [...work, memory[0]!, () => {
       save = false;
-      return { toolCalls: [call("work_memory", { action: "write_topic", topic: "new-module", text: "Should not replace the good note" })] };
+      return { toolCalls: [call("work_memory", { action: "write_topic", level: "task", topic: "new-module", text: "Should not replace the good note" })] };
     }], { gate: () => new MemoryGate({ decider }), memory: () => ({ save, use: true }) });
     await socrates.handle("Add a module");
     await socrates.workMemoryIdle();
@@ -309,14 +376,14 @@ describe("recording what a turn established", () => {
       let release!: (p: number) => void;
       const { decider } = workDecider(() => new Promise<number>((resolve) => { release = resolve; }));
       const { socrates } = w.socrates([continueTask()], [...work,
-        { toolCalls: [call("work_memory", { action: "write_topic", topic: "transport", text: "automobile repair" })] },
+        { toolCalls: [call("work_memory", { action: "write_topic", level: "task", topic: "transport", text: "automobile repair" })] },
         () => { throw new Error("provider failed after the durable write"); },
       ], { gate: () => new MemoryGate({ decider, timeoutMs: 60_000 }), memory: () => ({ save: true, use: true }), semantic: retrieval });
       await socrates.handle("Add a module"); await retrieval.idle();
       expect(await retrieval.search("car maintenance", { kinds: ["work_topic"], limit: 20 })).toEqual([]);
       release(0.9); await socrates.workMemoryIdle(); await retrieval.idle();
       expect(steps(w.store)).toEqual(["pending", "failed"]);
-      expect((await retrieval.search("car maintenance", { kinds: ["work_topic"], limit: 20 })).map((h) => h.sourceId)).toContain(`${resolveWorkProject(w.root)!.id}/transport`);
+      expect((await retrieval.search("car maintenance", { kinds: ["work_topic"], limit: 20 })).map((h) => h.sourceId)).toContain(`${w.goalId}/${w.taskId}/transport`);
     } finally { await retrieval.close(); }
   });
 
@@ -328,64 +395,161 @@ describe("recording what a turn established", () => {
     expect(guide).toContain("about 40 lines");
     expect(guide).toContain("Nothing to record.");
     expect(guide).not.toContain(".socrates");
+    expect(guide).toContain("Write at level task first");
+    expect(guide).toContain("remove_topic");
+    expect(workMemorySkill(41, true)).toContain("write at level goal and name topics by subject");
   });
 });
 
 describe("reading topics in a turn", () => {
-  it("opens a topic by ref and finds topics no longer in the index", async () => {
+  it("opens a topic by ref, and finds the goal's, this task's and its other tasks' topics, also those no longer in an index", async () => {
     const w = await world();
-    seed(w.store, w.root, [
-      { name: "store-schema", text: "Store schema\nSteps\n1. Bump SCHEMA_VERSION.\n2. Add a migration." },
-      { name: "release", text: "Release\nSteps\n1. Tag and push." },
-      { name: null, text: "- Release → topic release · turn 3" },
-    ]);
+    const other = w.store.createTask(w.goalId, { title: "Release work" });
+    seed(w.store, w.goalId, w.taskId, [{ name: "store-schema", text: "Store schema\nSteps\n1. Bump SCHEMA_VERSION.\n2. Add a migration." }]);
+    seed(w.store, w.goalId, null, [{ name: "release", text: "Release\nSteps\n1. Tag and push." }, { name: null, text: "- Release → topic release · turn 3" }]);
+    seed(w.store, w.goalId, other.id, [{ name: "schema-backfill", text: "Schema backfill\n1. Rebuild the migration index." }]);
+    const t = w.store.requireTask(w.taskId).number;
     const { socrates } = w.socrates([continueTask()], [
       { toolCalls: [
-        call("context_retrieve", { action: "inspect", ref: "topic:store-schema" }),
+        call("context_retrieve", { action: "inspect", ref: `topic:t${t}/store-schema` }),
         call("context_retrieve", { action: "memory", query: "migration schema version" }),
         call("context_retrieve", { action: "inspect", ref: "topic:nowhere" }),
+        call("context_retrieve", { action: "inspect", ref: "topic:release" }),
       ] },
       final(),
     ]);
     await socrates.handle("Change the schema.");
     // In call order: the calls run in parallel, so they may finish in any order.
     const results = w.store.evidenceForTurn(w.store.turnsForTask(w.taskId).at(-1)!.id).map((e) => e.result!);
-    expect(JSON.parse(results[0]!.content).topic).toMatchObject({ ref: "topic:store-schema", text: expect.stringContaining("Bump SCHEMA_VERSION") });
-    expect(JSON.parse(results[1]!.content).project_topics).toEqual([expect.objectContaining({ ref: "topic:store-schema", title: "Store schema" })]);
+    expect(JSON.parse(results[0]!.content).topic).toMatchObject({ ref: `topic:t${t}/store-schema`, text: expect.stringContaining("Bump SCHEMA_VERSION") });
+    const found = JSON.parse(results[1]!.content).work_topics.map((x: { ref: string }) => x.ref);
+    expect(found).toEqual(expect.arrayContaining([`topic:t${t}/store-schema`, `topic:t${other.number}/schema-backfill`]));
     expect(results[2]!.error?.code).toBe("topic_not_found");
+    // A bare name is looked for in this task, then the goal.
+    expect(JSON.parse(results[3]!.content).topic.ref).toBe("topic:goal/release");
+  });
+});
+
+describe("the files", () => {
+  it("follow the ledger: named from titles and renamed with them, with you.md, and replaced at startup", () => {
+    const store = LedgerStore.open({ path: ":memory:" });
+    const dir = path.join(tempDir(), "memory");
+    const files = new WorkMemoryFiles(dir);
+    const stop = files.follow(store);
+    const goal = store.createGoal({ title: "Socrates development" });
+    const task = store.createTask(goal.id, { title: "Routing review" });
+    seed(store, goal.id, task.id, [{ name: "router", text: "Router\n1. Check labels." }, { name: null, text: "- Router → topic router · turn 1" }]);
+    seed(store, goal.id, null, [{ name: null, text: "- Nothing yet" }]);
+    const g = path.join(dir, "goals", `g${goal.number}-socrates-development`);
+    expect(readFileSync(path.join(g, "tasks", `t${task.number}-routing-review`, "topics", "router.md"), "utf8")).toBe("Router\n1. Check labels.\n");
+    expect(readFileSync(path.join(g, "MEMORY.md"), "utf8")).toBe("- Nothing yet\n");
+
+    store.renameGoal(goal.id, "Socrates v2");
+    const renamed = path.join(dir, "goals", `g${goal.number}-socrates-v2`);
+    expect(existsSync(g)).toBe(false);
+    expect(existsSync(path.join(renamed, "tasks", `t${task.number}-routing-review`, "MEMORY.md"))).toBe(true);
+
+    store.saveMemory({ kind: "preference", text: "Prefers short answers.", goalId: null, by: "user" }, {});
+    store.saveMemory({ kind: "knowledge", text: "Ships on Fridays.", goalId: goal.id, by: "user" }, {});
+    const you = readFileSync(path.join(dir, "you.md"), "utf8");
+    expect(you).toContain("## Everywhere\n- m1 · preference · Prefers short answers.");
+    expect(you).toContain(`## Goal g${goal.number} · Socrates v2\n- m2 · knowledge · Ships on Fridays.`);
+    stop();
+
+    // An edit by hand is replaced at the next start; a note the ledger no longer holds goes.
+    writeFileSync(path.join(renamed, "MEMORY.md"), "edited by hand\n");
+    writeFileSync(path.join(renamed, "topics-stray.md"), "kept: not a note\n");
+    mkdirSync(path.join(renamed, "topics"), { recursive: true });
+    writeFileSync(path.join(renamed, "topics", "gone.md"), "old\n");
+    expect(files.syncAll(store)).toBe(2);
+    expect(readFileSync(path.join(renamed, "MEMORY.md"), "utf8")).toBe("- Nothing yet\n");
+    expect(existsSync(path.join(renamed, "topics"))).toBe(false);
+    expect(existsSync(path.join(renamed, "topics-stray.md"))).toBe(true);
+    expect(files.syncAll(store)).toBe(0);
+    store.close();
+  });
+});
+
+describe("a redo", () => {
+  it("takes back what the first attempt wrote, in the ledger and the files", async () => {
+    const w = await world();
+    const dir = path.join(tempDir(), "memory");
+    seed(w.store, w.goalId, w.taskId, [{ name: "port", text: "Port\n1. Use 3000." }, { name: null, text: "- Ports → topic port · turn 1" }]);
+    const other = w.store.createTask(w.goalId, { title: "Port settings" });
+    const { decider } = workDecider(() => 0.9);
+    const { socrates } = w.socrates([continueTask()], [...work,
+      { toolCalls: [call("work_memory", { action: "write_topic", level: "task", topic: "port", text: "Port\n1. Use 30 (wrong)." })] },
+      { toolCalls: [call("work_memory", { action: "write_topic", level: "goal", topic: "ports", text: "Ports\n1. Wrong task." })] },
+      { toolCalls: [call("work_memory", { action: "write_index", level: "goal", text: "- Ports → topic ports · turn 2" })] },
+      { text: "Wrote port." },
+      final({ full_answer: "Answered where it belongs." }),
+    ], { gate: () => new MemoryGate({ decider }), memory: () => ({ save: true, use: true }), access: () => policy(w.root), memoryDir: dir });
+    const first = await socrates.handle("Fix the port.");
+    if (first.kind !== "answered") throw new Error("expected an answer");
+    await socrates.workMemoryIdle();
+    expect(w.store.workTopic(w.goalId, w.taskId, "port")!.text).toContain("wrong");
+    await socrates.handle("Fix the port.", { target: { taskId: other.id }, pinned: true, redoOf: first.parts[0]!.turn.id });
+    await socrates.workMemoryIdle();
+    // The task's topic is back to what it was; the goal's notes, written only by that turn, are gone.
+    expect(w.store.workTopic(w.goalId, w.taskId, "port")!.text).toBe("Port\n1. Use 3000.");
+    expect(w.store.workTopic(w.goalId, null, "ports")).toBeNull();
+    expect(w.store.workMemoryIndex(w.goalId, null)).toBeNull();
+    const g = path.join(dir, "goals", `g${w.store.requireGoal(w.goalId).number}-project-work`);
+    expect(readFileSync(path.join(g, "tasks", `t${w.store.requireTask(w.taskId).number}-fix-the-server`, "topics", "port.md"), "utf8")).toBe("Port\n1. Use 3000.\n");
+    expect(existsSync(path.join(g, "MEMORY.md"))).toBe(false);
+    expect(existsSync(path.join(g, "topics"))).toBe(false);
+
+    // Replaying the log gives the same: the redone turn's writes stay out.
+    const copy = LedgerStore.open({ path: ":memory:" });
+    copy.restoreEvents(w.store.listEvents());
+    expect(copy.listWorkMemory(w.goalId).map((e) => [e.taskId, e.name, e.text])).toEqual(w.store.listWorkMemory(w.goalId).map((e) => [e.taskId, e.name, e.text]));
+    copy.close();
+  });
+});
+
+describe("a folder's memory, from before", () => {
+  it("is kept in the log and not projected", () => {
+    const store = LedgerStore.open({ path: ":memory:" });
+    store.appendEvent("work_memory_written", { project_id: "work-5607f12456", root: "/Users/x/Work", target: "topic", name: "old", text: "Old" }, {});
+    const copy = LedgerStore.open({ path: ":memory:" });
+    copy.restoreEvents(store.listEvents());
+    expect(copy.listWorkTopics()).toEqual([]);
+    expect(copy.listEvents({ type: "work_memory_written" })).toHaveLength(1);
+    store.close(); copy.close();
   });
 });
 
 describe("after a restart", () => {
   it("skips steps left unfinished and writes the files from the ledger", () => {
     const store = LedgerStore.open({ path: ":memory:" });
-    const root = tempDir();
     const goal = store.createGoal({ title: "g", objective: "g" });
     const task = store.createTask(goal.id, { title: "t", objective: "t" });
-    const project = seed(store, root, [{ name: "a", text: "A" }, { name: null, text: "- A → topic a · turn 1" }]);
-    store.recordWorkMemoryStep({ goal_id: goal.id, task_id: task.id, turn_id: null }, { project_id: project.id, outcome: "pending", detail: null, writes: 0 });
+    seed(store, goal.id, task.id, [{ name: "a", text: "A" }, { name: null, text: "- A → topic a · turn 1" }]);
+    store.recordWorkMemoryStep({ goal_id: goal.id, task_id: task.id, turn_id: null }, { outcome: "pending", detail: null, writes: 0 });
     expect(store.skipUnfinishedWorkMemorySteps()).toBe(0); // a step needs its turn
-    const dir = path.join(tempDir(), "projects");
-    mkdirSync(dir, { recursive: true });
+    const dir = path.join(tempDir(), "memory");
     const files = new WorkMemoryFiles(dir);
-    expect(files.rebuild(store)).toBe(2);
-    expect(readdirSync(path.join(dir, project.id)).sort()).toEqual(["MEMORY.md", "project.json", "topics"]);
-    expect(files.rebuild(store)).toBe(0);
+    expect(files.syncAll(store)).toBe(2);
+    expect(readdirSync(path.join(dir, "goals", `g${goal.number}-g`, "tasks", `t${task.number}-t`)).sort()).toEqual(["MEMORY.md", "topics"]);
+    expect(files.syncAll(store)).toBe(0);
     store.close();
   });
 });
 
 
-it("scopes semantic topic retrieval before the top-20 limit, with competing projects", async () => {
+it("scopes semantic topic retrieval to the goal before the top-20 limit, with competing goals", async () => {
   const w = await world();
-  seed(w.store, w.root, [{ name: "transport", text: "automobile repair procedure" }]);
-  for (let i = 0; i < 30; i++) w.store.recordWorkMemoryWrite({}, { project_id: `other-${i}`, root: `/other-${i}`, target: "topic", name: "transport", text: "car maintenance" });
+  seed(w.store, w.goalId, w.taskId, [{ name: "transport", text: "automobile repair procedure" }]);
+  for (let i = 0; i < 30; i++) {
+    const other = w.store.createGoal({ title: `Other ${i}` });
+    seed(w.store, other.id, null, [{ name: "transport", text: "car maintenance" }]);
+  }
   const retrieval = await Retrieval.open({ store: w.store, embedder: new HashEmbedder({ concepts: [["automobile", "car"], ["repair", "maintenance"]] }), uri: tempDir(), workspaceFiles: false });
   try {
     await retrieval.idle();
     const { socrates } = w.socrates([continueTask()], [{ toolCalls: [call("context_retrieve", { action: "memory", query: "car maintenance" })] }, final()], { semantic: retrieval });
     await socrates.handle("Find the procedure");
     const result = JSON.parse(w.store.evidenceForTurn(w.store.turnsForTask(w.taskId).at(-1)!.id)[0]!.result!.content);
-    expect(result.project_topics).toEqual([expect.objectContaining({ ref: "topic:transport", title: "automobile repair procedure" })]);
+    expect(result.work_topics).toEqual([expect.objectContaining({ ref: `topic:t${w.store.requireTask(w.taskId).number}/transport`, title: "automobile repair procedure" })]);
   } finally { await retrieval.close(); }
 });

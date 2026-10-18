@@ -185,7 +185,7 @@ export class Runtime {
       // Work-memory steps the last run did not finish are skipped; the notes as files show what the ledger holds.
       const skipped = store.skipUnfinishedWorkMemorySteps();
       if (skipped) log(`skipped ${skipped} work-memory step(s) left unfinished when Socrates last stopped`);
-      try { new WorkMemoryFiles(path.join(config.home, "memory", "projects")).rebuild(store); } catch (error) { log(`work memory files not written: ${message(error)}`); }
+      try { new WorkMemoryFiles(path.join(config.home, "memory")).syncAll(store); } catch (error) { log(`memory files not written: ${message(error)}`); }
       store.dateGeneralTasks(runtime.timeZone);
       repairHistoricalNotes(store);
       await runtime.start();
@@ -600,7 +600,7 @@ export class Runtime {
       ...(this.catalog ? { catalog: this.catalog } : {}),
       ...(this.retrieval ? { semantic: this.retrieval } : {}),
       attachments: this.config.attachmentsDir,
-      workMemoryDir: path.join(this.config.home, "memory", "projects"),
+      memoryDir: path.join(this.config.home, "memory"),
       // Terminal process groups are listed here, so ones a crash leaves running are stopped at the next start.
       terminalManager: this.terminalManager,
       defaultFolder: () => this.terminalFolder().cwd,

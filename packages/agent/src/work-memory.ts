@@ -1,103 +1,91 @@
-import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { DecisionImage } from "@socrates/contracts";
+import type { DecisionImage, StoredEvent } from "@socrates/contracts";
 import { DECIDER_INPUT_TOKENS, decisionTokens, decisionTextTokens } from "@socrates/providers";
 import { collapsedLine } from "./history";
 import { WORK_QUESTION } from "./gates";
 import { countTokens, truncateToTokens, truncateTailToTokens } from "@socrates/shared";
-import { quoteEvidence, type Evidence, type Goal, type LedgerStore, type WorkMemoryEntry } from "@socrates/store";
-import { WORK_MEMORY_INDEX_MAX_TOKENS, WORK_TOPIC_MAX_CHARS, type WorkspaceRoot } from "@socrates/tools";
+import { quoteEvidence, type Evidence, type Goal, type LedgerStore, type Task, type WorkMemoryEntry } from "@socrates/store";
+import { WORK_MEMORY_INDEX_MAX_TOKENS, WORK_TOPIC_MAX_CHARS } from "@socrates/tools";
 import type { MemorySettings } from "./memory";
-export { WORK_MEMORY_INDEX_MAX_TOKENS } from "@socrates/tools";
+export { WORK_MEMORY_INDEX_MAX_TOKENS, resolveTopicRef, topicRef } from "@socrates/tools";
 
 /**
- * Work memory (agent-harness.md, "Work memory"): how things are done in one
- * project. An index, one line per topic with the turns it came from, shown
- * to the agent in every request of the project (`<WORK_MEMORY>`), and short
- * topics, opened with `context_retrieve inspect topic:<name>`. It is kept by
- * Socrates, never in the user's repository: the ledger holds every write
- * (`work_memory_written`), and Socrates' data folder holds the same index and
- * topics as files, `<data>/memory/projects/<project id>/`. After verified work
- * the decider may say it is worth recording; the agent then writes the notes
- * in a step of its own, after the answer is saved, with a memory-only tool.
+ * Work memory (agent-harness.md, "Work memory"): what was learned in a goal
+ * and in each of its tasks. Each has an index, one line per topic with the
+ * turns it came from, shown to the agent in every request of the task
+ * (`<WORK_MEMORY>`), and short topics, opened with `context_retrieve inspect
+ * topic:<level>/<name>`. It is kept by Socrates, never in the user's folders:
+ * the ledger holds every write (`work_memory_written`), and Socrates' data
+ * folder holds the same notes as files, `<data>/memory/goals/<goal>/` with
+ * each task's under `tasks/<task>/`. After verified work the decider may say
+ * it is worth recording; the agent then writes the notes in a step of its
+ * own, after the answer is saved, with a memory-only tool.
  */
 
 /** At or above this chance that a finished turn established something worth writing down, the agent is asked to record it. */
 export const WORK_AT = 0.5;
 /** The step may make this many model requests. */
 export const WORK_FOLLOW_UP_MAX_STEPS = 8;
+/** Of the index budget, the task's own lines may take at most this much; the goal's take the rest. */
+export const WORK_MEMORY_TASK_SHARE_TOKENS = 600;
 
-/** A project, as work memory knows it: an id that stays the same for the same repository or folder. */
-export interface WorkProject {
-  id: string;
-  /** The workspace folder the turn ran in. */
-  root: string;
-  /** What the id is made from: Git's shared folder for a repository, so its worktrees share memory; else the folder itself. */
-  identity: string;
-  kind: "git" | "folder";
+/**
+ * Whose memory a turn reads and writes: its goal's, and its task's. General
+ * keeps one memory for every day, so a General turn has no task memory.
+ */
+export interface WorkScope {
+  goalId: string;
+  /** Null in General. */
+  taskId: string | null;
+  /** The task's number in its goal (`t2`), for refs; null in General. */
+  taskNumber: number | null;
+  general: boolean;
 }
 
-const projects = new Map<string, WorkProject | null>();
-
-/** The project of a workspace folder, or null when the folder cannot be read. Cached per folder. */
-export function resolveWorkProject(root: string): WorkProject | null {
-  if (projects.has(root)) return projects.get(root)!;
-  let project: WorkProject | null = null;
-  try {
-    const real = realpathSync(root);
-    let identity = `folder:${real}`;
-    let kind: WorkProject["kind"] = "folder";
-    let named = real;
-    try {
-      const git = (args: string[]) => execFileSync("git", args, { cwd: real, timeout: 2_000, stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
-      // Only a repository's own top folder is the repository; a folder inside one is a project of its own.
-      if (realpathSync(git(["rev-parse", "--show-toplevel"])) === real) {
-        const common = realpathSync(path.resolve(real, git(["rev-parse", "--git-common-dir"])));
-        identity = `git:${common}`;
-        kind = "git";
-        // Every worktree is named after the main repository's folder, so all of them get one id.
-        named = path.basename(common) === ".git" ? path.dirname(common) : common;
-      }
-    } catch { /* Not a repository, or no git: the folder is the project. */ }
-    const slug = path.basename(named).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 30) || "project";
-    project = { id: `${slug}-${createHash("sha256").update(identity).digest("hex").slice(0, 10)}`, root: real, identity, kind };
-  } catch { /* An unreadable folder has no work memory. */ }
-  projects.set(root, project);
-  return project;
+export function workMemoryScope(goal: Goal, task: Task | null): WorkScope {
+  const own = !goal.general && task ? task : null;
+  return { goalId: goal.id, taskId: own?.id ?? null, taskNumber: own?.number ?? null, general: goal.general };
 }
 
-/** The project a turn's work memory belongs to: a goal's own bound folder. The General conversation and a goal without a folder have none. */
-export function workMemoryProject(goal: Goal, workspace: WorkspaceRoot | null): WorkProject | null {
-  if (goal.general || !goal.workspaceId || !workspace) return null;
-  return resolveWorkProject(workspace.root);
+/** One index as TOPIC records, newest first, within `budget` tokens; the lines left out are counted. */
+function indexRecords(index: WorkMemoryEntry, prefix: string, budget: number): { records: string[]; used: number } {
+  const lines = index.text.trim().split("\n");
+  const records: string[] = [];
+  let used = 0;
+  for (const line of lines) {
+    const name = line.match(/\btopic[: ]+([a-z0-9-]+)/i)?.[1];
+    const record = name ? `## TOPIC\ntopic_ref: topic:${prefix}/${name}\ndescription:\n${quoteEvidence(line)}` : `index_note:\n${quoteEvidence(line)}`;
+    const cost = countTokens(record) + 2;
+    if (used + cost > budget) break;
+    records.push(record); used += cost;
+  }
+  const left = lines.length - records.length;
+  if (left > 0) records.push(`(${left} older line${left === 1 ? "" : "s"} not shown: this index is over its share of the ${WORK_MEMORY_INDEX_MAX_TOKENS}-token budget; merge related lines or drop the stalest when you next update it)`);
+  return { records, used };
 }
 
 /**
- * `<WORK_MEMORY>`: the project's index, in the stable first part of the
- * request, so it changes only when the index does. Held to
- * WORK_MEMORY_INDEX_MAX_TOKENS: past it the oldest lines (the index lists the
- * newest first) are left out and a last line says so, so the agent tidies it.
+ * `<WORK_MEMORY>`: the task's index, then its goal's, in the stable first
+ * part of the request, so it changes only when an index does. Held to
+ * WORK_MEMORY_INDEX_MAX_TOKENS together, the task's lines to at most
+ * WORK_MEMORY_TASK_SHARE_TOKENS of it: past that the oldest lines (each
+ * index lists the newest first) are left out and a last line says so.
  */
-export function workMemoryBlock(store: LedgerStore, project: WorkProject | null, settings: MemorySettings | null | undefined): string | null {
-  if (!project || (settings && !settings.use)) return null;
-  const index = store.workMemoryIndex(project.id)?.text.trim();
-  if (!index) return null;
-  const lines = index.split("\n");
-  const header = `# PROJECT_MEMORY\nproject_ref: ${project.id}`;
-  const shown: string[] = [];
-  let used = countTokens(header) + 60;
-  for (const line of lines) {
-    const name = line.match(/\btopic[: ]+([a-z0-9-]+)/i)?.[1];
-    const record = name ? `## TOPIC\ntopic_ref: topic:${name}\ndescription:\n${quoteEvidence(line)}` : `index_note:\n${quoteEvidence(line)}`;
-    const cost = countTokens(record) + 2;
-    if (used + cost > WORK_MEMORY_INDEX_MAX_TOKENS) break;
-    shown.push(record); used += cost;
+export function workMemoryBlock(store: LedgerStore, scope: WorkScope | null, settings: MemorySettings | null | undefined): string | null {
+  if (!scope || (settings && !settings.use)) return null;
+  const taskIndex = scope.taskId ? store.workMemoryIndex(scope.goalId, scope.taskId) : null;
+  const goalIndex = store.workMemoryIndex(scope.goalId, null);
+  if (!taskIndex?.text.trim() && !goalIndex?.text.trim()) return null;
+  const parts: string[] = ["# WORK_MEMORY"];
+  let left = WORK_MEMORY_INDEX_MAX_TOKENS - 80;
+  if (taskIndex?.text.trim()) {
+    const shown = indexRecords(taskIndex, `t${scope.taskNumber}`, Math.min(WORK_MEMORY_TASK_SHARE_TOKENS, left));
+    parts.push(`# THIS_TASK (t${scope.taskNumber})`, ...shown.records);
+    left -= shown.used;
   }
-  const left = lines.length - shown.length;
-  if (left > 0) shown.push(`(${left} older line${left === 1 ? "" : "s"} not shown: the index is over its budget of ${WORK_MEMORY_INDEX_MAX_TOKENS} tokens; merge related lines or drop the stalest when you next update it)`);
-  return `${header}\n\n${shown.join("\n\n")}`;
+  if (goalIndex?.text.trim()) parts.push(scope.general ? "# GENERAL" : "# THIS_GOAL", ...indexRecords(goalIndex, "goal", left).records);
+  return parts.join("\n\n");
 }
 
 const CHANGES = new Set(["edit", "apply_patch", "terminal"]);
@@ -176,50 +164,162 @@ export function workFallbackState(input: WorkDecisionInput): string {
  * work is worth recording (docs/memory.md, M3b): zero cost on every other
  * turn. The step has only the `work_memory` tool and `context_retrieve`.
  */
-export function workMemorySkill(turnNumber: number): string {
+export function workMemorySkill(turnNumber: number, general = false): string {
+  const where = general
+    ? "This is the General conversation: it keeps one memory for every day, so write at level goal and name topics by subject (devices, travel)."
+    : "Write at level task first: what this task learned. Write at level goal what applies beyond this task, such as a lesson another task of this goal already holds (work_memory read lists their topics); then remove this task's copy with remove_topic.";
   return `<WORK_MEMORY_SKILL>
-Your answer is saved. Assess whether the completed work established a reusable lesson; record only what a later turn should know. A classifier bypass is not a positive decision: retrieve missing evidence before saving; if you cannot verify a lesson, save nothing. Socrates keeps these notes outside the project: use only the work_memory tool, and do not repeat your answer.
+Your answer is saved. Assess whether the completed work established a reusable lesson; record only what a later turn should know. A classifier bypass is not a positive decision: retrieve missing evidence before saving; if you cannot verify a lesson, save nothing. Socrates keeps these notes outside the user's folders: use only the work_memory tool, and do not repeat your answer.
 
-1. Decide. Record only what this work verified (its checks passed): a repeatable procedure (the steps of a kind of change that will come up again here) or a lesson (a surprise or mistake, and the fix). Not a one-off edit, not a guess, not what the code or README already says plainly. If nothing qualifies, reply "Nothing to record." and stop.
-2. Topic: one per procedure or lesson, a short kebab-case name. work_memory read first: if a topic already covers it, read it and rewrite it with write_topic, do not add a second one. Write a title line; "Steps" (numbered, imperative, naming the files and commands); "Pitfalls" (symptom → fix) when there are any; "Evidence: turns N, M" (this turn is turn ${turnNumber}; add the earlier turns it came from). At most about 300 words (${WORK_TOPIC_MAX_CHARS} characters).
-3. Index: write_index with the whole index, one line per topic, newest first: "- <what to do, in a few words> → topic <name> · turns N, M". Keep it under about 40 lines; when it is full, merge related lines or drop the stalest before adding one. No steps in the index.
-4. Finish with one short sentence naming the topics you wrote.
+1. Decide. Record only what this work verified (its checks passed): a repeatable procedure (the steps of a kind of change that will come up again) or a lesson (a surprise or mistake, and the fix). Not a one-off edit, not a guess, not what the code or README already says plainly, not where the work stands (the continuation note holds that). If nothing qualifies, reply "Nothing to record." and stop.
+2. Where. ${where}
+3. Topic: one per procedure or lesson, a short kebab-case name. work_memory read first: if a topic already covers it, read it and rewrite it with write_topic, do not add a second one. Write a title line; "Steps" (numbered, imperative, naming the files and commands); "Pitfalls" (symptom → fix) when there are any; "Evidence: turns N, M" (this turn is turn ${turnNumber}; add the earlier turns it came from). At most about 300 words (${WORK_TOPIC_MAX_CHARS} characters).
+4. Index: write_index with that level's whole index, one line per topic, newest first: "- <what to do, in a few words> → topic <name> · turns N, M". Keep it under about 40 lines; when it is full, merge related lines or drop the stalest before adding one. No steps in the index.
+5. Finish with one short sentence naming the topics you wrote.
 </WORK_MEMORY_SKILL>`;
 }
 
+/** A folder name from a title: lower-case words joined by dashes. */
+function slug(title: string): string {
+  return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "");
+}
+
+const named = (prefix: string, title: string) => (slug(title) ? `${prefix}-${slug(title)}` : prefix);
+const goalFolder = (goal: Goal) => (goal.general ? "general" : named(`g${goal.number}`, goal.title));
+const taskFolder = (task: Task) => named(`t${task.number}`, task.title);
+/** Folders already named for this goal or task, perhaps under an older title. */
+const sameGoal = (goal: Goal) => (name: string) => (goal.general ? name === "general" : new RegExp(`^g${goal.number}(-|$)`).test(name));
+const sameTask = (task: Task) => (name: string) => new RegExp(`^t${task.number}(-|$)`).test(name);
+
+/** The events after which a goal's files, or `you.md`, may need writing. */
+const GOAL_FILE_EVENTS = new Set(["work_memory_written", "turn_redone", "goal_renamed", "task_revised", "task_renamed"]);
+const YOU_FILE_EVENTS = new Set(["memory_saved", "memory_edited", "memory_forgotten", "goal_renamed"]);
+
 /**
- * The project's notes as files in Socrates' data folder: `<dir>/<project
- * id>/MEMORY.md`, `topics/<name>.md` and `project.json`. Written from the
- * ledger after every write and at startup, so they always show what the
- * ledger holds; an edit made to them by hand is replaced on the next write.
+ * The notes as files in Socrates' data folder (`<data>/memory`):
+ * `goals/<goal>/MEMORY.md` and `topics/<name>.md`, each task's under
+ * `tasks/<task>/`, and `you.md`, what is remembered about the user. Folders
+ * are named from titles (`g4-socrates-development`, `t2-routing-review`;
+ * General's is `general`) and follow renames. Written from the ledger after
+ * every change and at startup, so they always show what the ledger holds: an
+ * edit made by hand is replaced, and a note the ledger no longer holds (a
+ * topic removed, or written by a turn that was redone) is deleted.
  */
 export class WorkMemoryFiles {
   constructor(readonly dir: string) {}
 
-  /** Write one entry (and the project's description) after it was recorded. */
-  write(project: { id: string; root: string; identity?: string; kind?: string }, entry: WorkMemoryEntry): void {
-    const folder = path.join(this.dir, project.id);
-    this.save(path.join(folder, "project.json"), `${JSON.stringify({ id: project.id, root: project.root, ...(project.identity ? { identity: project.identity, kind: project.kind } : {}) }, null, 2)}\n`);
-    this.save(entry.name === null ? path.join(folder, "MEMORY.md") : path.join(folder, "topics", `${entry.name}.md`), `${entry.text.trim()}\n`);
+  /** Keep the files in step with the ledger as it changes; returns the unsubscribe. */
+  follow(store: LedgerStore, log?: (line: string) => void): () => void {
+    return store.onEvent((e: StoredEvent) => {
+      try {
+        if (GOAL_FILE_EVENTS.has(e.type)) {
+          const goalId = (e.type === "work_memory_written" ? (e.payload as { goal_id?: string }).goal_id : null) ?? e.goal_id;
+          const goal = goalId ? store.getGoal(goalId) : null;
+          if (goal && (e.type === "work_memory_written" || e.type === "turn_redone" || store.listWorkMemory(goal.id).length || this.goalDir(goal))) this.syncGoal(store, goal.id);
+        }
+        if (YOU_FILE_EVENTS.has(e.type)) this.writeYou(store);
+      } catch (error) {
+        log?.(`memory files not written: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    });
   }
 
-  /** Every project's index and topics, as the ledger holds them; files that already match are left alone. */
-  rebuild(store: LedgerStore): number {
-    let written = 0;
-    for (const { projectId, root } of store.listWorkMemoryProjects()) {
-      const resolved = resolveWorkProject(root);
-      const project = resolved?.id === projectId ? resolved : { id: projectId, root };
-      for (const entry of [store.workMemoryIndex(projectId), ...store.listWorkTopics(projectId)]) {
-        if (!entry) continue;
-        const file = entry.name === null ? path.join(this.dir, projectId, "MEMORY.md") : path.join(this.dir, projectId, "topics", `${entry.name}.md`);
-        let current: string | null = null;
-        try { current = readFileSync(file, "utf8"); } catch {}
-        if (current === `${entry.text.trim()}\n`) continue;
-        this.write(project, entry);
-        written++;
-      }
+  /** Every goal's files and `you.md`, as the ledger holds them (at startup). Returns how many files were written or removed. */
+  syncAll(store: LedgerStore): number {
+    const goals = new Set(store.listWorkMemoryGoals());
+    const all = store.listGoals({ includeArchived: true });
+    for (const name of this.list(path.join(this.dir, "goals"))) {
+      const goal = all.find((g) => sameGoal(g)(name));
+      if (goal) goals.add(goal.id);
     }
-    return written;
+    let changed = 0;
+    for (const goalId of goals) changed += this.syncGoal(store, goalId);
+    return changed + this.writeYou(store);
+  }
+
+  /** One goal's folder: named after its title, its notes written, notes it no longer holds removed. */
+  syncGoal(store: LedgerStore, goalId: string): number {
+    const goal = store.getGoal(goalId);
+    if (!goal) return 0;
+    const folder = path.join(this.dir, "goals", goalFolder(goal));
+    const want = new Map<string, string>();
+    const tasks = new Map<string, Task>();
+    for (const entry of store.listWorkMemory(goalId)) {
+      const task = entry.taskId ? store.getTask(entry.taskId) : null;
+      if (entry.taskId && !task) continue;
+      const base = task ? path.join(folder, "tasks", taskFolder(task)) : folder;
+      if (task) tasks.set(taskFolder(task), task);
+      want.set(entry.name === null ? path.join(base, "MEMORY.md") : path.join(base, "topics", `${entry.name}.md`), `${entry.text.trim()}\n`);
+    }
+    const existing = this.goalDir(goal);
+    if (existing && existing !== folder && !existsSync(folder)) renameSync(existing, folder);
+    const tasksDir = path.join(folder, "tasks");
+    for (const [name, task] of tasks) {
+      const old = this.list(tasksDir).find((n) => n !== name && sameTask(task)(n));
+      if (old && !existsSync(path.join(tasksDir, name))) renameSync(path.join(tasksDir, old), path.join(tasksDir, name));
+    }
+    let changed = 0;
+    for (const file of this.notes(folder)) if (!want.has(file)) { unlinkSync(file); changed++; }
+    for (const [file, text] of want) {
+      let current: string | null = null;
+      try { current = readFileSync(file, "utf8"); } catch {}
+      if (current === text) continue;
+      this.save(file, text);
+      changed++;
+    }
+    this.prune(folder);
+    return changed;
+  }
+
+  /** `you.md`: what Socrates remembers about the user, everywhere and per goal; removed when nothing is. */
+  writeYou(store: LedgerStore): number {
+    const file = path.join(this.dir, "you.md");
+    const memories = store.listMemories();
+    let current: string | null = null;
+    try { current = readFileSync(file, "utf8"); } catch {}
+    if (!memories.length) {
+      if (current === null) return 0;
+      unlinkSync(file);
+      return 1;
+    }
+    const groups = new Map<string, string[]>([["## Everywhere", []]]);
+    for (const m of memories) {
+      const goal = m.goalId ? store.getGoal(m.goalId) : null;
+      const heading = goal ? `## Goal g${goal.number} · ${goal.title}` : "## Everywhere";
+      groups.set(heading, [...(groups.get(heading) ?? []), `- ${m.handle} · ${m.kind} · ${m.text}`]);
+    }
+    const sections = [...groups].filter(([, lines]) => lines.length).map(([heading, lines]) => `${heading}\n${lines.join("\n")}`);
+    const text = `# About you\n\nWhat Socrates remembers about you (Settings > Memory). It keeps this file from its own record; edits here are replaced.\n\n${sections.join("\n\n")}\n`;
+    if (current === text) return 0;
+    this.save(file, text);
+    return 1;
+  }
+
+  private goalDir(goal: Goal): string | null {
+    const goals = path.join(this.dir, "goals");
+    const name = this.list(goals).find(sameGoal(goal));
+    return name ? path.join(goals, name) : null;
+  }
+
+  private list(dir: string): string[] {
+    try { return readdirSync(dir).filter((n) => { try { return statSync(path.join(dir, n)).isDirectory(); } catch { return false; } }); } catch { return []; }
+  }
+
+  /** Every note file in a goal's folder: MEMORY.md and topics, its own and its tasks'. */
+  private notes(folder: string): string[] {
+    const of = (base: string) => [path.join(base, "MEMORY.md"), ...this.markdown(path.join(base, "topics"))].filter((f) => existsSync(f));
+    return [...of(folder), ...this.list(path.join(folder, "tasks")).flatMap((t) => of(path.join(folder, "tasks", t)))];
+  }
+
+  private markdown(dir: string): string[] {
+    try { return readdirSync(dir).filter((n) => n.endsWith(".md")).map((n) => path.join(dir, n)); } catch { return []; }
+  }
+
+  /** Remove the folders left empty, deepest first. */
+  private prune(dir: string): void {
+    if (!existsSync(dir)) return;
+    for (const name of this.list(dir)) this.prune(path.join(dir, name));
+    try { if (!readdirSync(dir).length) rmdirSync(dir); } catch {}
   }
 
   private save(file: string, text: string): void {
@@ -230,22 +330,22 @@ export class WorkMemoryFiles {
 }
 
 /**
- * Work-memory steps run after their turn, one at a time per project, so two
- * turns of a project never write its notes at once; turns of other projects
- * do not wait. `idle` resolves when every step queued so far has ended.
+ * Work-memory steps run after their turn, one at a time per goal, so two
+ * turns of a goal never write its notes at once; turns of other goals do not
+ * wait. `idle` resolves when every step queued so far has ended.
  */
 export class WorkMemorySteps {
   private readonly chains = new Map<string, Promise<void>>();
   private readonly pending = new Set<Promise<void>>();
 
-  schedule(projectId: string, step: () => Promise<void>): void {
-    const previous = this.chains.get(projectId) ?? Promise.resolve();
+  schedule(goalId: string, step: () => Promise<void>): void {
+    const previous = this.chains.get(goalId) ?? Promise.resolve();
     const next = previous.then(step, step).catch(() => {});
-    this.chains.set(projectId, next);
+    this.chains.set(goalId, next);
     this.pending.add(next);
     void next.finally(() => {
       this.pending.delete(next);
-      if (this.chains.get(projectId) === next) this.chains.delete(projectId);
+      if (this.chains.get(goalId) === next) this.chains.delete(goalId);
     });
   }
 

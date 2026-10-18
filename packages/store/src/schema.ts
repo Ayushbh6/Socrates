@@ -27,12 +27,13 @@ import type { DatabaseSync } from "node:sqlite";
  *   row with `forgotten_at` set, and `memory_fts` indexes the active ones'
  *   words. `use_count` and `last_used_at` say how often an entry was offered
  *   to the agent beyond the always-on part (`memory_surfaced`).
- * - `work_memory` holds each project's work memory (agent-harness.md, "Work
- *   memory"): its index (`key` "index") and topics (`key` "topic:<name>"), the
- *   newest text of each, projected from `work_memory_written`; `work_topic_fts`
- *   indexes the topics' words.
+ * - `goal_memory` holds each goal's and each task's work memory
+ *   (agent-harness.md, "Work memory"): `scope` is "goal" or the task's id; its
+ *   index (`key` "index") and topics (`key` "topic:<name>"), the newest text of
+ *   each, projected from `work_memory_written`; `goal_memory_fts` indexes the
+ *   topics' words.
  */
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 /**
  * In-place upgrades from older schema versions, keyed by the version they
@@ -64,6 +65,9 @@ ALTER TABLE task_revisions ADD COLUMN completion_criteria TEXT;
   },
   // Version 9 adds work_memory and work_topic_fts, created by SCHEMA_SQL; no event wrote them before.
   8: "",
+  // Version 10 keeps work memory per goal and task (goal_memory, created by SCHEMA_SQL). A folder's
+  // memory is retired: its events stay in the log, unprojected, and its tables go.
+  9: "DROP TABLE IF EXISTS work_memory; DROP TABLE IF EXISTS work_topic_fts;",
 };
 
 export const SCHEMA_SQL = `
@@ -305,18 +309,19 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
   tokenize = 'porter unicode61'
 );
 
-CREATE TABLE IF NOT EXISTS work_memory (
-  project_id TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS goal_memory (
+  goal_id    TEXT NOT NULL REFERENCES goals(id),
+  scope      TEXT NOT NULL,
   key        TEXT NOT NULL,
-  root       TEXT NOT NULL,
   text       TEXT NOT NULL,
   turn_id    TEXT,
   updated_at TEXT NOT NULL,
-  PRIMARY KEY (project_id, key)
+  PRIMARY KEY (goal_id, scope, key)
 );
 
-CREATE VIRTUAL TABLE IF NOT EXISTS work_topic_fts USING fts5(
-  project_id UNINDEXED,
+CREATE VIRTUAL TABLE IF NOT EXISTS goal_memory_fts USING fts5(
+  goal_id UNINDEXED,
+  scope UNINDEXED,
   name UNINDEXED,
   text,
   tokenize = 'porter unicode61'

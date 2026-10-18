@@ -8,6 +8,7 @@ import type { HandlerContext } from "../context";
 import { ToolError } from "../errors";
 import { type ToolHandler, json } from "../handler";
 import { page } from "../paging";
+import { resolveTopicRef, topicRef } from "./work-memory";
 
 export const LEDGER_DEFAULT_LIMIT = 10;
 export const LEDGER_MAX_LIMIT = 25;
@@ -470,37 +471,41 @@ function memoryItem(ctx: HandlerContext, m: Memory) {
   return { ref: m.handle, kind: m.kind, text: m.text, applies: m.goalId ? "this goal" : "everywhere", date: dateOf(ctx, m.updatedAt), said_in_turn: turn?.projectTurn ?? null };
 }
 
-/** Topics of the project's work memory one memory search returns at most. */
+/** Work-memory topics one memory search returns at most. */
 const TOPIC_SEARCH_LIMIT = 5;
 
 /** One work-memory topic in a list: its ref, its first line and when it changed. */
 function topicItem(ctx: HandlerContext, t: WorkMemoryEntry) {
   const first = t.text.split("\n").find((l) => l.trim())?.replace(/^#+\s*/, "").trim() ?? "";
-  return { ref: `topic:${t.name}`, title: first.length > 160 ? `${first.slice(0, 159)}…` : first, updated: dateOf(ctx, t.updatedAt) };
+  return { ref: topicRef(ctx.store, t), title: first.length > 160 ? `${first.slice(0, 159)}…` : first, updated: dateOf(ctx, t.updatedAt) };
 }
 
 /**
- * This project's work-memory topics that bear on a query (agent-harness.md,
- * "Work memory"): keyword and meaning matches fused; without a query, the
- * newest. Topics no longer in the index are found here too.
+ * This goal's work-memory topics that bear on a query (agent-harness.md,
+ * "Work memory"): its own, this task's and its other tasks', keyword and
+ * meaning matches fused; without a query, the newest, this task's first.
+ * Topics no longer in an index are found here too.
  */
 async function topicSearch(query: string | undefined, ctx: HandlerContext): Promise<WorkMemoryEntry[]> {
-  const projectId = ctx.workMemory?.projectId;
-  if (!projectId) return [];
-  if (!query) return ctx.store.listWorkTopics(projectId).slice(0, TOPIC_SEARCH_LIMIT);
+  const memory = ctx.workMemory;
+  if (!memory) return [];
+  const { goalId, taskId } = memory;
+  const all = ctx.store.listWorkTopics({ goalId });
+  const key = (t: WorkMemoryEntry) => `${goalId}/${t.taskId ?? "goal"}/${t.name}`;
+  if (!query) return [...all.filter((t) => t.taskId === taskId && taskId), ...all.filter((t) => !(t.taskId === taskId && taskId))].slice(0, TOPIC_SEARCH_LIMIT);
   const fts = toFtsQuery(query);
-  const lexical = fts ? ctx.store.searchWorkTopics(fts, projectId, 20) : [];
-  const sourceIds = ctx.store.listWorkTopics(projectId).map((t) => `${projectId}/${t.name}`);
-  const hits = (await ctx.semantic?.search(query, { kinds: ["work_topic"], sourceIds, limit: 20, min: "related" }, ctx.signal)) ?? [];
-  const meaning = hits.filter((h) => h.sourceId.startsWith(`${projectId}/`)).map((h) => ctx.store.workTopic(projectId, h.sourceId.slice(projectId.length + 1))).filter((t): t is WorkMemoryEntry => !!t);
-  return fuse([lexical, meaning], (t) => t.name!, (t) => recencyBoost(t.updatedAt, ctx.store.clock.now())).map(({ item }) => item).slice(0, TOPIC_SEARCH_LIMIT);
+  const lexical = fts ? ctx.store.searchWorkTopics(fts, goalId, 20) : [];
+  const byKey = new Map(all.map((t) => [key(t), t]));
+  const hits = (await ctx.semantic?.search(query, { kinds: ["work_topic"], sourceIds: [...byKey.keys()], limit: 20, min: "related" }, ctx.signal)) ?? [];
+  const meaning = hits.map((h) => byKey.get(h.sourceId)).filter((t): t is WorkMemoryEntry => !!t);
+  return fuse([lexical, meaning], key, (t) => recencyBoost(t.updatedAt, ctx.store.clock.now())).map(({ item }) => item).slice(0, TOPIC_SEARCH_LIMIT);
 }
 
 /**
  * What Socrates remembers about the user that applies here (everywhere, or
  * this goal): with a query, the best keyword and meaning matches; without
  * one, the newest. Entries found are recorded as offered (agent-harness.md,
- * "Memory"). In a project, its work-memory topics come with them.
+ * "Memory"). The goal's and its tasks' work-memory topics come with them.
  */
 async function memorySearch(input: MemorySearch, ctx: HandlerContext) {
   if (ctx.memoryInUse === false) return { action: "memory", memories: [], note: "The user turned off using memories." };
@@ -520,7 +525,7 @@ async function memorySearch(input: MemorySearch, ctx: HandlerContext) {
     action: "memory",
     ...(input.query ? { query: input.query } : {}),
     memories: found.map((m) => memoryItem(ctx, m)),
-    ...(topics.length ? { project_topics: topics, topics_hint: "inspect ref topic:<name> opens a topic" } : {}),
+    ...(topics.length ? { work_topics: topics, topics_hint: "inspect ref topic:<level>/<name> opens a topic (goal, or tN for a task)" } : {}),
     ...(found.length || topics.length ? {} : { note: input.query ? "Nothing remembered matches. Try other words, or search past exchanges with search target all_goals." : "Nothing is remembered yet beyond <MEMORY>." }),
   };
 }
@@ -538,12 +543,12 @@ function inspect(input: Inspect, ctx: HandlerContext) {
     }
     build = (scale) => turnView(turn, null, ctx, scale);
   } else if (/^topic:/i.test(input.ref!.trim())) {
-    const name = input.ref!.trim().slice("topic:".length).toLowerCase();
-    const projectId = ctx.workMemory?.projectId;
-    const topic = projectId && ctx.memoryInUse !== false ? ctx.store.workTopic(projectId, name) : null;
-    if (!topic) throw new ToolError("topic_not_found", `topic:${name} is not a topic of this project's work memory.`, "The index in <WORK_MEMORY> names the topics; context_retrieve memory with a query finds others.");
+    const ref = input.ref!.trim();
+    const memory = ctx.workMemory;
+    const topic = memory && ctx.memoryInUse !== false ? resolveTopicRef(ctx.store, memory, ref) : null;
+    if (!topic) throw new ToolError("topic_not_found", `${ref} is not a topic of this goal's or task's work memory.`, "The indexes in <WORK_MEMORY> name the topics; context_retrieve memory with a query finds others.");
     const turn = topic.turnId ? ctx.store.getTurn(topic.turnId) : null;
-    build = () => ({ action: "inspect", topic: { ref: `topic:${topic.name}`, text: topic.text, updated: dateOf(ctx, topic.updatedAt), written_after_turn: turn?.projectTurn ?? null } });
+    build = () => ({ action: "inspect", topic: { ref: topicRef(ctx.store, topic), text: topic.text, updated: dateOf(ctx, topic.updatedAt), written_after_turn: turn?.projectTurn ?? null } });
   } else if (/^m\d+$/i.test(input.ref!.trim())) {
     const ref = input.ref!.trim().toLowerCase();
     const memory = ctx.store.getMemoryByNumber(Number(ref.slice(1)));
@@ -682,8 +687,8 @@ export const contextRetrieveTool: ToolHandler<ContextRetrieveInput> = {
     "Recall earlier work and memory.",
     "ledger_search: goals and tasks by their metadata; returns selectors such as g7 and g7/t4.",
     "search: exact past questions and answers by query and/or dates, in target: current_task (default), current_goal, all_goals, gN, tN (a task of the current goal) or gN/tN; top_n default 5; returns refs such as r1.",
-    "inspect: one record by ref (gN, tN, gN/tN, rN, eN: a tool call of this task, gN/tN/eN, hc-N, mN: a memory, topic:<name>) or turn_number (any [TURN k]).",
-    "memory: what is remembered beyond <MEMORY>, and project topics; best matches for query, else newest.",
+    "inspect: one record by ref (gN, tN, gN/tN, rN, eN: a tool call of this task, gN/tN/eN, hc-N, mN: a memory, topic:goal/<name> or topic:tN/<name>) or turn_number (any [TURN k]).",
+    "memory: what is remembered beyond <MEMORY>, and this goal's topics; best matches for query, else newest.",
     "Dates are YYYY-MM-DD. Output is bounded; omissions name refs.",
   ].join(" "),
   schema: ContextRetrieveInput,

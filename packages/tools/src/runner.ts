@@ -61,7 +61,7 @@ export interface CallScope {
   vision?: boolean;
   /** Receives a running call's output as it prints, by evidence handle, for the user to watch. */
   onOutput?: (handle: string, output: string) => void;
-  /** The project's work memory; with `write`, this is the work-memory step, and `work_memory` may be called. */
+  /** The turn's work memory (its goal's and task's); with `write`, this is the work-memory step, and `work_memory` may be called. */
   workMemory?: import("./context").WorkMemoryScope;
 }
 
@@ -195,7 +195,7 @@ export class ToolRunner {
       // work_memory exists only in the work-memory step, and that step has nothing else but context_retrieve.
       if (handler === this.handlers.get(workMemoryTool.name) && !scope.workMemory?.write) handler = undefined;
       if (scope.workMemory?.write && call.name !== workMemoryTool.name && call.name !== contextRetrieveTool.name) {
-        throw new ToolError("unknown_tool", `${call.name} is not available while recording work memory.`, "Use work_memory to write the project's notes, or context_retrieve for evidence.");
+        throw new ToolError("unknown_tool", `${call.name} is not available while recording work memory.`, "Use work_memory to write this task's or goal's notes, or context_retrieve for evidence.");
       }
       if (!handler) {
         throw new ToolError("unknown_tool", `There is no tool named ${call.name}.`, `Use one of: ${this.definitions.map((d) => d.name).join(", ")}, or an MCP tool activated with capability_control.`);

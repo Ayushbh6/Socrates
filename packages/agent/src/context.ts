@@ -35,7 +35,7 @@ export interface ContextInput {
   memory?: MemorySettings | null;
   /** This turn's `<MEMORY_CANDIDATES>` block, chosen once per turn, or null. */
   memoryCandidates?: string | null;
-  /** The project's `<WORK_MEMORY>` index, read when the turn started, or null (agent-harness.md, "Work memory"). */
+  /** The task's and goal's `<WORK_MEMORY>` indexes, read when the turn started, or null (agent-harness.md, "Work memory"). */
   workMemory?: string | null;
   /** This turn's `<MEMORY_HINT>` block, from the save gate, or null. */
   memoryHint?: string | null;

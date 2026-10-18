@@ -26,7 +26,8 @@ Everything lives in one folder, `~/.socrates-v2` unless `SOCRATES_HOME` names an
 | `standard.json` | the number of the goal standard mode shows as its plain "Chats", made with the first chat outside a goal |
 | `terminal-tabs.json` | atomically saved terminal metadata, restored as stopped tabs, with the id of each tab's last saved output; no environment variables |
 | `artifacts/terminal/<output id>/` | every terminal run's output as it printed it, with whose run it was (`agent-harness.md`, "Saved output"); cleaned up by age and size |
-| `memory/projects/<project id>/` | each project's work memory as files, `MEMORY.md`, `topics/<name>.md` and `project.json`, written from the ledger (`agent-harness.md`, "Work memory") |
+| `memory/goals/<goal>/` | each goal's work memory as files, `MEMORY.md` and `topics/<name>.md`, each task's under `tasks/<task>/` (folders named from titles; General's is `general`), kept in step with the ledger (`agent-harness.md`, "Work memory") |
+| `memory/you.md` | what is remembered about the user (Settings > Memory), everywhere and per goal, written from the ledger |
 | `terminals.json` | the process groups of running terminal sessions, each with its start time, so that ones a crashed server left running are stopped at the next start (`agent-harness.md`, "terminal") |
 | `.server-lock.db` | the exclusive runtime ownership lock, automatically released when its process stops |
 

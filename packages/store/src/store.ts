@@ -201,11 +201,11 @@ export interface HistoryRecord {
 }
 
 /** One thing Socrates remembers about the user (agent-harness.md, "Memory"). */
-/** One project's index or one topic of its work memory, as it stands now (agent-harness.md, "Work memory"). */
+/** A goal's or one task's index, or one of its topics, as it stands now (agent-harness.md, "Work memory"). */
 export interface WorkMemoryEntry {
-  projectId: string;
-  /** The project's folder when it was written. */
-  root: string;
+  goalId: string;
+  /** Null for the goal's own memory; the task's id for a task's. */
+  taskId: string | null;
   /** Null for the index; the topic's name otherwise. */
   name: string | null;
   text: string;
@@ -245,7 +245,7 @@ type Row = Record<string, unknown>;
 const str = (v: unknown): string => String(v);
 const toWorkMemory = (r: Row): WorkMemoryEntry => {
   const key = String(r.key);
-  return { projectId: String(r.project_id), root: String(r.root), name: key === "index" ? null : key.slice("topic:".length), text: String(r.text), turnId: r.turn_id === null || r.turn_id === undefined ? null : String(r.turn_id), updatedAt: String(r.updated_at) };
+  return { goalId: String(r.goal_id), taskId: r.scope === "goal" ? null : String(r.scope), name: key === "index" ? null : key.slice("topic:".length), text: String(r.text), turnId: r.turn_id === null || r.turn_id === undefined ? null : String(r.turn_id), updatedAt: String(r.updated_at) };
 };
 const strOrNull = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
 /** The turns of one conversation: the main one (null) or a lane, which takes one parameter. */
@@ -741,6 +741,7 @@ export class LedgerStore {
       // A task that held only this question, such as one the router made for it, is archived (restorable).
       if (!task.general && !this.turnsForTask(task.id).some((t) => t.id !== turnId)) this.archiveTask(task.id);
       this.appendEvent("turn_redone", { redo_turn_id: redoTurnId }, { goal_id: turn.goalId, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turnId });
+      this.unprojectWorkMemoryOf(turnId);
     });
   }
 
@@ -931,7 +932,8 @@ export class LedgerStore {
       case "memory_saved": case "memory_edited": case "memory_forgotten": case "memory_surfaced": this.projectMemory(e); break;
       case "work_memory_written": this.projectWorkMemory(e); break;
       case "work_memory_step": break;
-      case "turn_redone": case "file_changed": case "terminal_started": case "approval_decided": case "history_omitted": case "agent_warning": case "agent_message": case "anchor_question": case "anchor_decided":
+      case "turn_redone": if (e.turn_id) this.unprojectWorkMemoryOf(e.turn_id); break;
+      case "file_changed": case "terminal_started": case "approval_decided": case "history_omitted": case "agent_warning": case "agent_message": case "anchor_question": case "anchor_decided":
       case "note_outcome": case "context_diagnostics": case "mcp_tools_listed": case "skill_shelf_frozen": case "clarification_cancelled": case "clarification_reply_failed": case "general_day_set": break;
       default: throw new StoreError(`Unsupported event type: ${e.type}`);
     }
@@ -1009,11 +1011,16 @@ export class LedgerStore {
 
   // ── Work memory ──────────────────────────────────────────────────────────
 
-  /** Write a project's index or one topic, whole (agent-harness.md, "Work memory"). */
-  recordWorkMemoryWrite(refs: EventRefs, payload: EventPayloads["work_memory_written"]): WorkMemoryEntry {
+  /**
+   * Write a goal's or one task's index or one topic, whole, or remove a topic
+   * (`text` null) (agent-harness.md, "Work memory"). Returns what it now holds.
+   */
+  recordWorkMemoryWrite(refs: EventRefs, payload: { level: "goal" | "task"; goal_id: string; task_id: string | null; target: "index" | "topic"; name: string | null; text: string | null }): WorkMemoryEntry | null {
+    if ((payload.level === "task") !== !!payload.task_id) throw new StoreError("A task's memory names its task; a goal's names none.");
     return this.transaction(() => {
       this.projectWorkMemory(this.appendEvent("work_memory_written", payload, refs));
-      return payload.target === "index" ? this.workMemoryIndex(payload.project_id)! : this.workTopic(payload.project_id, payload.name!)!;
+      const taskId = payload.level === "task" ? payload.task_id : null;
+      return payload.target === "index" ? this.workMemoryIndex(payload.goal_id, taskId) : this.workTopic(payload.goal_id, taskId, payload.name!);
     });
   }
 
@@ -1022,40 +1029,84 @@ export class LedgerStore {
     this.appendEvent("work_memory_step", payload, refs);
   }
 
+  /** A folder's memory (no `level`) is retired, and a turn set aside by a redo keeps nothing it wrote. */
   private projectWorkMemory(e: StoredEvent): void {
     const p = e.payload as EventPayloads["work_memory_written"];
+    if (!p.level || !p.goal_id) return;
+    if (e.turn_id && this.get("SELECT 1 FROM events WHERE type = 'turn_redone' AND turn_id = ? LIMIT 1", e.turn_id)) return;
+    this.applyWorkMemory(p, e.turn_id, e.at);
+  }
+
+  private applyWorkMemory(p: EventPayloads["work_memory_written"], turnId: string | null, at: string): void {
+    const scope = p.level === "task" ? p.task_id! : "goal";
     const key = p.target === "index" ? "index" : `topic:${p.name}`;
-    this.run("INSERT INTO work_memory (project_id, key, root, text, turn_id, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (project_id, key) DO UPDATE SET root = excluded.root, text = excluded.text, turn_id = excluded.turn_id, updated_at = excluded.updated_at", p.project_id, key, p.root, p.text, e.turn_id, e.at);
-    if (p.target === "topic") {
-      this.run("DELETE FROM work_topic_fts WHERE project_id = ? AND name = ?", p.project_id, p.name);
-      this.run("INSERT INTO work_topic_fts (project_id, name, text) VALUES (?, ?, ?)", p.project_id, p.name, `${p.name!.replace(/-/g, " ")}\n${p.text}`);
+    const goalId = p.goal_id!;
+    if (p.target === "topic") this.run("DELETE FROM goal_memory_fts WHERE goal_id = ? AND scope = ? AND name = ?", goalId, scope, p.name);
+    if (p.text === null) {
+      this.run("DELETE FROM goal_memory WHERE goal_id = ? AND scope = ? AND key = ?", goalId, scope, key);
+      return;
+    }
+    this.run("INSERT INTO goal_memory (goal_id, scope, key, text, turn_id, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (goal_id, scope, key) DO UPDATE SET text = excluded.text, turn_id = excluded.turn_id, updated_at = excluded.updated_at", goalId, scope, key, p.text, turnId, at);
+    if (p.target === "topic") this.run("INSERT INTO goal_memory_fts (goal_id, scope, name, text) VALUES (?, ?, ?, ?)", goalId, scope, p.name, `${p.name!.replace(/-/g, " ")}\n${p.text}`);
+  }
+
+  /** A turn was set aside by a redo: everything it wrote goes back to what was there before it. */
+  private unprojectWorkMemoryOf(turnId: string): void {
+    const writes = this.listEvents({ type: "work_memory_written" });
+    const keyOf = (p: EventPayloads["work_memory_written"]) => `${p.goal_id}|${p.level === "task" ? p.task_id : "goal"}|${p.target === "index" ? "index" : p.name}`;
+    const touched = new Set(writes.filter((e) => e.turn_id === turnId && (e.payload as EventPayloads["work_memory_written"]).level).map((e) => keyOf(e.payload as EventPayloads["work_memory_written"])));
+    if (!touched.size) return;
+    const redone = this.redoneTurnIds();
+    const last = new Map<string, StoredEvent>();
+    for (const e of writes) {
+      const p = e.payload as EventPayloads["work_memory_written"];
+      if (p.level && touched.has(keyOf(p)) && !(e.turn_id && redone.has(e.turn_id))) last.set(keyOf(p), e);
+    }
+    for (const key of touched) {
+      const [goalId, scope, name] = key.split("|") as [string, string, string];
+      const target = name === "index" ? "index" : "topic";
+      const kept = last.get(key);
+      if (kept) this.applyWorkMemory(kept.payload as EventPayloads["work_memory_written"], kept.turn_id, kept.at);
+      else this.applyWorkMemory({ level: scope === "goal" ? "goal" : "task", goal_id: goalId, task_id: scope === "goal" ? null : scope, target, name: target === "index" ? null : name, text: null }, null, this.now());
     }
   }
 
-  workMemoryIndex(projectId: string): WorkMemoryEntry | null {
-    const r = this.get("SELECT * FROM work_memory WHERE project_id = ? AND key = 'index'", projectId);
+  /** A goal's index (`taskId` null) or one of its tasks' index. */
+  workMemoryIndex(goalId: string, taskId: string | null): WorkMemoryEntry | null {
+    const r = this.get("SELECT * FROM goal_memory WHERE goal_id = ? AND scope = ? AND key = 'index'", goalId, taskId ?? "goal");
     return r ? toWorkMemory(r) : null;
   }
 
-  workTopic(projectId: string, name: string): WorkMemoryEntry | null {
-    const r = this.get("SELECT * FROM work_memory WHERE project_id = ? AND key = ?", projectId, `topic:${name}`);
+  workTopic(goalId: string, taskId: string | null, name: string): WorkMemoryEntry | null {
+    const r = this.get("SELECT * FROM goal_memory WHERE goal_id = ? AND scope = ? AND key = ?", goalId, taskId ?? "goal", `topic:${name}`);
     return r ? toWorkMemory(r) : null;
   }
 
-  /** A project's topics, newest first; every project's when it is undefined. */
-  listWorkTopics(projectId?: string): WorkMemoryEntry[] {
-    const where = projectId === undefined ? "" : " AND project_id = ?";
-    return this.all(`SELECT * FROM work_memory WHERE key LIKE 'topic:%'${where} ORDER BY updated_at DESC, key`, ...(projectId === undefined ? [] : [projectId])).map(toWorkMemory);
+  /**
+   * Topics, newest first: of every goal, of one goal and all its tasks, or,
+   * with `taskId`, of the goal alone (null) or of one task.
+   */
+  listWorkTopics(filter: { goalId?: string; taskId?: string | null } = {}): WorkMemoryEntry[] {
+    const where: string[] = ["key LIKE 'topic:%'"];
+    const args: string[] = [];
+    if (filter.goalId !== undefined) { where.push("goal_id = ?"); args.push(filter.goalId); }
+    if (filter.taskId !== undefined) { where.push("scope = ?"); args.push(filter.taskId ?? "goal"); }
+    return this.all(`SELECT * FROM goal_memory WHERE ${where.join(" AND ")} ORDER BY updated_at DESC, key`, ...args).map(toWorkMemory);
   }
 
-  /** Every project with work memory, and its folder when last written. */
-  listWorkMemoryProjects(): { projectId: string; root: string }[] {
-    return this.all("SELECT project_id, root, MAX(updated_at) AS at FROM work_memory GROUP BY project_id").map((r) => ({ projectId: str(r.project_id), root: str(r.root) }));
+  /** Every index and topic of one goal and its tasks. */
+  listWorkMemory(goalId: string): WorkMemoryEntry[] {
+    return this.all("SELECT * FROM goal_memory WHERE goal_id = ? ORDER BY scope, key", goalId).map(toWorkMemory);
   }
 
-  /** A project's topics whose words match an FTS expression, best first by BM25. */
-  searchWorkTopics(fts: string, projectId: string, limit: number): WorkMemoryEntry[] {
-    return this.all("SELECT w.* FROM work_topic_fts f JOIN work_memory w ON w.project_id = f.project_id AND w.key = 'topic:' || f.name WHERE work_topic_fts MATCH ? AND f.project_id = ? ORDER BY bm25(work_topic_fts) LIMIT ?", fts, projectId, limit).map(toWorkMemory);
+  /** Every goal that holds work memory, its own or a task's. */
+  listWorkMemoryGoals(): string[] {
+    return this.all("SELECT DISTINCT goal_id FROM goal_memory").map((r) => str(r.goal_id));
+  }
+
+  /** One goal's topics (its own and its tasks') whose words match an FTS expression, best first by BM25. */
+  searchWorkTopics(fts: string, goalId: string, limit: number): WorkMemoryEntry[] {
+    return this.all("SELECT w.* FROM goal_memory_fts f JOIN goal_memory w ON w.goal_id = f.goal_id AND w.scope = f.scope AND w.key = 'topic:' || f.name WHERE goal_memory_fts MATCH ? AND f.goal_id = ? ORDER BY bm25(goal_memory_fts) LIMIT ?", fts, goalId, limit).map(toWorkMemory);
   }
 
   /**
@@ -1070,7 +1121,7 @@ export class LedgerStore {
     for (const e of latest.values()) {
       const p = e.payload as EventPayloads["work_memory_step"];
       if (p.outcome !== "pending") continue;
-      this.recordWorkMemoryStep({ goal_id: e.goal_id, task_id: e.task_id, chat_id: e.chat_id, turn_id: e.turn_id }, { project_id: p.project_id, outcome: "skipped", detail: "Socrates stopped before the step ended", writes: 0 });
+      this.recordWorkMemoryStep({ goal_id: e.goal_id, task_id: e.task_id, chat_id: e.chat_id, turn_id: e.turn_id }, { ...(p.project_id ? { project_id: p.project_id } : {}), outcome: "skipped", detail: "Socrates stopped before the step ended", writes: 0 });
       skipped++;
     }
     return skipped;

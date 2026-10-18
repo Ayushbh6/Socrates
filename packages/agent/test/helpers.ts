@@ -47,7 +47,7 @@ export interface World {
   socrates(
     router: ScriptedStep[],
     agent: ScriptedStep[],
-    options?: { hasQueuedTask?: SocratesOptions["hasQueuedTask"]; limits?: Partial<AgentLimits>; approve?: boolean; now?: () => number; resolveWorkspace?: SocratesOptions["resolveWorkspace"]; budgets?: Partial<ContextBudgets>; compactor?: ScriptedStep[]; catalog?: CapabilityCatalog; shelf?: ShelfOptions; semantic?: SemanticIndex; access?: () => AccessPolicy | null; profile?: () => { name: string | null }; attachments?: string; memory?: SocratesOptions["memory"]; gate?: SocratesOptions["gate"]; workMemoryDir?: string },
+    options?: { hasQueuedTask?: SocratesOptions["hasQueuedTask"]; limits?: Partial<AgentLimits>; approve?: boolean; now?: () => number; resolveWorkspace?: SocratesOptions["resolveWorkspace"]; budgets?: Partial<ContextBudgets>; compactor?: ScriptedStep[]; catalog?: CapabilityCatalog; shelf?: ShelfOptions; semantic?: SemanticIndex; access?: () => AccessPolicy | null; profile?: () => { name: string | null }; attachments?: string; memory?: SocratesOptions["memory"]; gate?: SocratesOptions["gate"]; memoryDir?: string },
   ): { socrates: Socrates; routerModel: ScriptedModel; model: ScriptedModel; compactor: ScriptedModel };
 }
 
@@ -100,7 +100,7 @@ export async function world(options: { files?: Record<string, string | Buffer>; 
         ...(o.attachments ? { attachments: o.attachments } : {}),
         ...(o.memory ? { memory: o.memory } : {}),
         ...(o.gate ? { gate: o.gate } : {}),
-        ...(o.workMemoryDir ? { workMemoryDir: o.workMemoryDir } : {}),
+        ...(o.memoryDir ? { memoryDir: o.memoryDir } : {}),
         compactorModel: compactor,
       });
       cleanups.push(() => socrates.close());

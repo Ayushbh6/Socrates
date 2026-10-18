@@ -77,6 +77,8 @@ Without a key or when the call fails (timeout 2 s, then skipped for 30 s like th
 
 ### Work memory (M3b, agreed 2026-10-10)
 
+> **Revised 2026-10-18 (trial log entry 79, `docs/goal-task-memory-plan.md`):** work memory now belongs to each goal and each of its tasks, not to a folder: `~/.socrates-v2/memory/goals/<goal>/` with `tasks/<task>/` inside, General one folder for every day, plus `memory/you.md`. See `architecture/agent-harness.md`, "Work memory".
+>
 > **Revised 2026-10-11, built (M4a):** the same index and topics, kept by Socrates in the ledger and in `~/.socrates-v2/memory/projects/<project-id>/`, never in the repository; written after the answer is saved, in a step of its own with a memory-only tool; read with `context_retrieve inspect topic:<name>`. The section below describes M3b as first built. See `architecture/agent-harness.md`, "Work memory", and `docs/terminal-output-and-memory.md`.
 
 User memory is facts about the user. Work memory is **how things are done in one project**, distilled, so Socrates stays consistent ("last time the schema changed: bump the version, add an upgrade step, rebuild the index in replay, update the restore test") without digging through raw transcripts.

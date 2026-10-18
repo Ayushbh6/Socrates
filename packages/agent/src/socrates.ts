@@ -21,7 +21,7 @@ import { type ContextBudgets, DEFAULT_BUDGETS } from "./budgets";
 import { createCompactor } from "./compaction";
 import { applyAnchors, type AnchorDecision, type AnchorChange } from "./anchors";
 import { type GateReading, type MemoryGate, RECALL_AT } from "./gates";
-import { WORK_AT, WORK_FOLLOW_UP_MAX_STEPS, type WorkProject, WorkMemoryFiles, WorkMemorySteps, didRealWork, workMemoryBlock, workMemoryProject, workMemorySkill, buildWorkDecision, workFallbackState } from "./work-memory";
+import { WORK_AT, WORK_FOLLOW_UP_MAX_STEPS, type WorkScope, WorkMemoryFiles, WorkMemorySteps, didRealWork, workMemoryBlock, workMemoryScope, workMemorySkill, buildWorkDecision, workFallbackState } from "./work-memory";
 import { MEMORY_ON, type MemoryChange, type MemorySettings, applyMemory, memoryCandidates, memoryForRouting, memoryHint } from "./memory";
 export { MAX_GOAL_ANCHORS } from "./anchors";
 
@@ -91,11 +91,11 @@ export interface SocratesOptions {
   /** The folder of the user's attached images, which `read` may always open. */
   attachments?: string;
   /**
-   * Where the projects' work memory is written as files (agent-harness.md,
-   * "Work memory"), `<data>/memory/projects`. Without it, work memory is kept
-   * in the ledger alone.
+   * Where memory is written as files (agent-harness.md, "Work memory"),
+   * `<data>/memory`: each goal's and task's notes and `you.md`, kept in step
+   * with the ledger. Without it, memory is kept in the ledger alone.
    */
-  workMemoryDir?: string;
+  memoryDir?: string;
 }
 
 export interface HandleOptions {
@@ -300,10 +300,11 @@ export class Socrates {
   private closed = false;
   private readonly lifetime = new AbortController();
   private readonly inflight = new Set<Promise<unknown>>();
-  /** Work-memory steps after their turns, one at a time per project. */
+  /** Work-memory steps after their turns, one at a time per goal. */
   private readonly workSteps = new WorkMemorySteps();
   private readonly workControllers = new Set<AbortController>();
-  private readonly workFiles: WorkMemoryFiles | null;
+  /** Stops the memory files following the ledger. */
+  private readonly unfollowFiles: (() => void) | null;
   /** Messages in progress per lane, including ones waiting for a task. */
   private readonly laneRuns = new Map<string, number>();
   /** The newest run queued on each task; its `done` settles after every earlier run on the task. */
@@ -321,7 +322,7 @@ export class Socrates {
     this.store = options.store;
     this.limits = { ...DEFAULT_LIMITS, ...options.limits };
     this.budgets = { ...DEFAULT_BUDGETS, ...options.budgets };
-    this.workFiles = options.workMemoryDir ? new WorkMemoryFiles(options.workMemoryDir) : null;
+    this.unfollowFiles = options.memoryDir ? new WorkMemoryFiles(options.memoryDir).follow(options.store, options.log) : null;
     this.router = new GoalRouter({ ...(options.defaultFolder ? { defaultFolder: options.defaultFolder } : {}), store: options.store, routerModel: options.routerModel ?? options.model, mainModel: options.model, timeZone: options.timeZone, ...(options.semantic ? { semantic: options.semantic } : {}), ...(options.routerEffort ? { effort: options.routerEffort } : {}) });
     this.runner = new ToolRunner({
       store: options.store,
@@ -449,6 +450,7 @@ export class Socrates {
     await Promise.allSettled([...this.inflight]);
     // A step still running sees the stop and is recorded as skipped.
     await this.workSteps.idle();
+    this.unfollowFiles?.();
     await this.runner.close();
     await this.runner.capabilities.catalog.close?.();
     await this.options.semantic?.close();
@@ -826,10 +828,9 @@ export class Socrates {
     const gated = await (options.reading ?? Promise.resolve(null));
     const remembered = memoryCandidates(store, { goal, message: request, semantic: semantic.memories, settings: memorySettings, now: store.clock.now(), timeZone: this.options.timeZone, reading: gated });
     const hint = memoryHint(memorySettings, gated);
-    // The project's notes on how things are done, read once per turn so the first part stays the same.
-    // Read again: a goal's first turn binds its folder after the goal was read.
-    const project = workMemoryProject(store.requireGoal(goal.id), workspace);
-    const workMemory = workMemoryBlock(store, project, memorySettings);
+    // What this task and its goal learned before, read once per turn so the first part stays the same.
+    const memoryScope = workMemoryScope(goal, turn.taskId ? store.getTask(turn.taskId) : null);
+    const workMemory = workMemoryBlock(store, memoryScope, memorySettings);
     store.recordMemoriesSurfaced(remembered.ids, "candidates", { goal_id: goal.id, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id });
     const turnNow = store.clock.now();
     const activitySnapshot = goal.general ? renderActivity(store, turnNow, this.options.timeZone, turn.userEventId) : undefined;
@@ -897,7 +898,7 @@ export class Socrates {
       startedAt,
       context,
       ...(images.length ? { images } : {}),
-      scope: { binding: { goalId: goal.id, taskId: turn.taskId!, chatId: turn.chatId, turnId: turn.id }, workspace, run, signal, vision, ...(project && memorySettings.use ? { workMemory: { projectId: project.id } } : {}) },
+      scope: { binding: { goalId: goal.id, taskId: turn.taskId!, chatId: turn.chatId, turnId: turn.id }, workspace, run, signal, vision, ...(memorySettings.use ? { workMemory: { goalId: memoryScope.goalId, taskId: memoryScope.taskId } } : {}) },
       limits: this.limits,
       budgets: this.budgets,
       compact,
@@ -913,7 +914,7 @@ export class Socrates {
     const stopped = signal.aborted && !(outcome.kind === "answer" && outcome.notes.some(n => n.reason === "cancelled"));
     const result = this.persist(part, goal, workspace, stopped ? { kind: "interrupted", reason: "cancelled", detail: null, toolCalls: outcome.toolCalls, steps: outcome.steps, partial: written } : outcome, options.anchorDecisions ?? []);
     // After verified work the decider may say it is worth recording: the notes are written in a step of their own, once the answer is saved.
-    if (!stopped && outcome.kind === "answer" && outcome.stop === "final" && project) this.queueWorkMemory({ turn, goal, project, workspace, request, transcript: outcome.transcript, answer: outcome.answer.full_answer });
+    if (!stopped && outcome.kind === "answer" && outcome.stop === "final") this.queueWorkMemory({ turn, goal, scope: memoryScope, workspace, request, transcript: outcome.transcript, answer: outcome.answer.full_answer });
     return result;
   }
 
@@ -923,27 +924,27 @@ export class Socrates {
    * is on, the decider is asked whether the work established something worth
    * recording; on yes, the agent continues the turn's conversation with the
    * writing guide and only the memory-only tool and context_retrieve. It runs
-   * in the background, one at a time per project, so the chat moves on. Its
+   * in the background, one at a time per goal, so the chat moves on. Its
    * course is recorded as `work_memory_step`: pending, then written, nothing
    * (the agent found nothing to record), not_worth, skipped or failed.
    */
-  private queueWorkMemory(input: { turn: Turn; goal: Goal; project: WorkProject; workspace: WorkspaceRoot | null; request: string; transcript: import("@socrates/contracts").ModelMessage[]; answer: string }): void {
+  private queueWorkMemory(input: { turn: Turn; goal: Goal; scope: WorkScope; workspace: WorkspaceRoot | null; request: string; transcript: import("@socrates/contracts").ModelMessage[]; answer: string }): void {
     const { store } = this;
-    const { turn, goal, project } = input;
+    const { turn, goal, scope } = input;
     const settings = this.options.memory?.() ?? MEMORY_ON;
     const gate = this.options.gate?.();
     const calls = store.evidenceForTurn(turn.id);
     if (!settings.save || !gate || !didRealWork(calls)) return;
     const refs: EventRefs = { goal_id: goal.id, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id };
-    store.recordWorkMemoryStep(refs, { project_id: project.id, outcome: "pending", detail: null, writes: 0 });
+    store.recordWorkMemoryStep(refs, { outcome: "pending", detail: null, writes: 0 });
     const controller = new AbortController();
     this.workControllers.add(controller);
     const signal = AbortSignal.any([this.lifetime.signal, controller.signal]);
-    this.workSteps.schedule(project.id, async () => {
+    this.workSteps.schedule(goal.id, async () => {
       let writes = 0;
       let decision: import("@socrates/contracts").EventPayloads["work_memory_step"]["decision"];
       const end = (outcome: "written" | "nothing" | "not_worth" | "skipped" | "failed", detail: string | null) => {
-        try { store.recordWorkMemoryStep(refs, { project_id: project.id, outcome, detail, writes, ...(decision ? { decision } : {}) }); } catch { /* The store closed under a step that outlived it. */ }
+        try { store.recordWorkMemoryStep(refs, { outcome, detail, writes, ...(decision ? { decision } : {}) }); } catch { /* The store closed under a step that outlived it. */ }
       };
       try {
         if (signal.aborted) return end("skipped", controller.signal.aborted ? "Saving memories was turned off" : "Socrates stopped before the step ran");
@@ -963,7 +964,7 @@ export class Socrates {
         if (!fallback && work === null) return end("skipped", "The decider could not be asked");
         if (work !== null && work < WORK_AT) return end("not_worth", `The decider said ${work.toFixed(2)}`);
         if (fallback && attachments.length && !this.options.model.vision) return end("skipped", "Image assessment fallback unavailable: the configured agent cannot see images; no memory inferred");
-        const skill = { role: "user" as const, content: workMemorySkill(turn.projectTurn) };
+        const skill = { role: "user" as const, content: workMemorySkill(turn.projectTurn, scope.general) };
         const tools = this.runner.workMemoryDefinitions();
         let messages = [...input.transcript, skill];
         // Always bound the writer too. Native reasoning/tool results in the working
@@ -971,22 +972,22 @@ export class Socrates {
         if (fallback || requestTokens(AGENT_SYSTEM_PROMPT, messages, tools) > 60_000) {
           const images = prepared.unavailable && this.options.model.vision ? await attachmentImages(attachments) : prepared.images;
           if (attachments.length && this.options.model.vision && images.length !== attachments.length) return end("skipped", "Original images unavailable for main-agent fallback; no memory inferred");
-          messages = [{ role: "user", content: `${fallback ? `Classifier bypass: ${fallback}. Assess eligibility; do not assume saving is needed.\n` : ""}${workMemoryBlock(store, project, this.options.memory?.() ?? MEMORY_ON) ?? ""}\n${workFallbackState(packetInput)}`, ...(this.options.model.vision && images.length ? { images } : {}) }, skill];
+          messages = [{ role: "user", content: `${fallback ? `Classifier bypass: ${fallback}. Assess eligibility; do not assume saving is needed.\n` : ""}${workMemoryBlock(store, scope, this.options.memory?.() ?? MEMORY_ON) ?? ""}\n${workFallbackState(packetInput)}`, ...(this.options.model.vision && images.length ? { images } : {}) }, skill];
         }
-        const write = (target: "index" | "topic", name: string | null, text: string) => {
+        const write = (level: "task" | "goal", target: "index" | "topic", name: string | null, text: string | null) => {
           if (!(this.options.memory?.() ?? MEMORY_ON).save) controller.abort(new Error("Saving memories was turned off"));
           signal.throwIfAborted();
-          const entry = store.recordWorkMemoryWrite(refs, { project_id: project.id, root: project.root, target, name, text });
+          // The files follow the ledger (WorkMemoryFiles.follow).
+          store.recordWorkMemoryWrite(refs, { level, goal_id: goal.id, task_id: level === "task" ? scope.taskId : null, target, name, text });
           writes++;
           this.options.semantic?.scheduleSync();
-          try { this.workFiles?.write(project, entry); } catch (error) { this.options.log?.(`work memory file for ${project.id} not written: ${error instanceof Error ? error.message : String(error)}`); }
         };
         const reply = await runFollowUp({
           model: this.options.model,
           runner: this.runner,
           system: AGENT_SYSTEM_PROMPT,
           messages, tools, maxInputTokens: 60_000,
-          scope: { binding: { goalId: goal.id, taskId: turn.taskId!, chatId: turn.chatId, turnId: turn.id }, workspace: input.workspace, run: new RunState(), signal, workMemory: { projectId: project.id, write } },
+          scope: { binding: { goalId: goal.id, taskId: turn.taskId!, chatId: turn.chatId, turnId: turn.id }, workspace: input.workspace, run: new RunState(), signal, workMemory: { goalId: scope.goalId, taskId: scope.taskId, write } },
           maxSteps: WORK_FOLLOW_UP_MAX_STEPS,
           ...(this.options.maxOutputTokens ? { maxOutputTokens: this.options.maxOutputTokens } : {}),
           trace: { userEventId: turn.userEventId, laneId: turn.laneId },

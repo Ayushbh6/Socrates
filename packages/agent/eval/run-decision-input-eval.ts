@@ -89,7 +89,7 @@ async function main() {
       return response;
     }};
     const gate = new MemoryGate({decider,log:m=>console.log(m)});
-    const socrates = new Socrates({store,model,timeZone:settings.timeZone??"Europe/Vienna",gate:()=>gate,memory:()=>({use:true,save:true}),approve:async()=>true,workMemoryDir:path.join(root,"memory")});
+    const socrates = new Socrates({store,model,timeZone:settings.timeZone??"Europe/Vienna",gate:()=>gate,memory:()=>({use:true,save:true}),approve:async()=>true,memoryDir:path.join(root,"memory")});
     const before = requests.length;
     try {
       const result = await socrates.handle("Update note.txt to one-off. This is only a temporary cosmetic change.",{target:{taskId:task.id},...(!overflow?{attachments:[image(file)]}:{})});
@@ -125,16 +125,19 @@ async function main() {
     console.log(JSON.stringify({stage:r.tools?.some(t=>t.name==="work_memory")?"real-memory-writer":"real-foreground",model:response.servedBy??inner.id,input:response.usage.promptTokens,cached:response.usage.cacheReadTokens,tools:response.toolCalls.map(t=>t.name)}));
     return response;
   }};
-  const socrates = new Socrates({store,model,timeZone:settings.timeZone??"Europe/Vienna",gate:()=>new MemoryGate({decider}),memory:()=>({use:true,save:true}),approve:async()=>true,workMemoryDir:path.join(root,"memory")});
+  const socrates = new Socrates({store,model,timeZone:settings.timeZone??"Europe/Vienna",gate:()=>new MemoryGate({decider}),memory:()=>({use:true,save:true}),approve:async()=>true,memoryDir:path.join(root,"memory")});
   try {
     const result = await socrates.handle("Our slug helper repeatedly fails on accented input. Reproduce with node --test slug.test.mjs, fix it and rerun the tests. Retain the verified reusable lesson about normalization order for our future text helpers in project memory; do not document unverified guesses.",{target:{taskId:task.id}});
     assert.equal(result.kind,"answered"); await socrates.workMemoryIdle();
     const step = store.listEvents({type:"work_memory_step"}).at(-1)!.payload as EventPayloads["work_memory_step"];
     assert.equal(step.outcome,"written",JSON.stringify(step)); assert(step.writes>0);
+    console.log(`Saved: ${store.listWorkTopics({goalId:goal.id}).map(t=>`${t.taskId?"task":"goal"}/${t.name}`).join(", ")}`);
     const fresh = store.createTask(goal.id,{title:"Recall verified procedure"});
     const recalled = await socrates.handle("Open our project memory about the accent bug and tell me the verified normalization order. Do not run commands or change files.",{target:{taskId:fresh.id}});
     assert.equal(recalled.kind,"answered");
     const evidence = store.evidenceForTurn(store.turnsForTask(fresh.id).at(-1)!.id);
+    console.log(`Fresh task calls: ${evidence.map(e=>`${e.tool} ${JSON.stringify(e.input)}`).join(" | ")}`);
+    console.log(`Goal index: ${store.workMemoryIndex(goal.id,null)?.text}\nAnswer: ${recalled.kind==="answered"?recalled.text.slice(0,600):""}`);
     assert(evidence.some(e=>e.tool==="context_retrieve" && /topic:/.test(JSON.stringify(e.input))),"Fresh chat must actually retrieve the topic");
     console.log("PASS real DeepSeek foreground, verified lesson saved, fresh-task topic retrieval");
   } finally {await socrates.close(); store.close();}

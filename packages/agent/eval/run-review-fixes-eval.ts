@@ -13,7 +13,7 @@ import { Retrieval } from "@socrates/retrieval";
 import { LedgerStore } from "@socrates/store";
 import { OutputArchive, TerminalManager } from "@socrates/tools";
 import { loadEvaluationEnvironment } from "../../router/eval/environment";
-import { MemoryGate, Socrates, resolveWorkProject } from "../src";
+import { MemoryGate, Socrates } from "../src";
 
 loadEvaluationEnvironment();
 const settings = process.env.SOCRATES_SETTINGS_FILE ? JSON.parse(readFileSync(process.env.SOCRATES_SETTINGS_FILE, "utf8")) : {};
@@ -52,7 +52,7 @@ async function run(kind: "terminal" | "memory") {
   const decider = makeDecider();
   if (kind === "memory") assert(decider, "Real memory decider required");
   const socrates = new Socrates({ store, model: provider, routerModel, semantic: retrieval, terminalManager: terminals,
-    timeZone: settings.timeZone ?? "Europe/Vienna", workMemoryDir: path.join(dir, "memory", "projects"),
+    timeZone: settings.timeZone ?? "Europe/Vienna", memoryDir: path.join(dir, "memory"),
     access: () => ({ folders: [root], approvals: "auto", protected: [] }), approve: async () => false,
     memory: () => ({ use: true, save: kind === "memory" }), gate: () => decider ? new MemoryGate({ decider }) : null,
   });
@@ -82,14 +82,16 @@ async function run(kind: "terminal" | "memory") {
       const first = await socrates.handle("Follow CONTRIBUTING.md to add slugify (lowercase words joined with dashes) and verify it with tests. This same procedure will be needed for more string utilities later.", { target: { taskId: task.id } });
       assert.equal(first.kind, "answered");
       await socrates.workMemoryIdle(); await retrieval!.idle();
-      const project = resolveWorkProject(root)!;
-      const topics = store.listWorkTopics(project.id);
-      assert(topics.length > 0 && store.workMemoryIndex(project.id), "Real decider and writer must create indexed project notes");
+      const topics = store.listWorkTopics({ goalId: goal.id });
+      assert(topics.length > 0 && (store.workMemoryIndex(goal.id, task.id) || store.workMemoryIndex(goal.id, null)), "Real decider and writer must create indexed notes for the task or goal");
       assert(!existsSync(path.join(root, ".socrates")) && !existsSync(path.join(root, "MEMORY.md")), "No repository notes");
-      const sourceIds = topics.map(t => `${project.id}/${t.name}`);
+      const sourceIds = topics.map(t => `${goal.id}/${t.taskId ?? "goal"}/${t.name}`);
       const found = await retrieval!.search(topics[0]!.text, { kinds: ["work_topic"], sourceIds, limit: 20 });
       assert(found.some(h => sourceIds.includes(h.sourceId)), "Background writes must reach semantic index without another foreground turn");
-      for (let i = 0; i < 30; i++) store.recordWorkMemoryWrite({}, { project_id: `other-${i}`, root: `/synthetic-${i}`, target: "topic", name: "decoy", text: "How to introduce reusable string utilities: use the wrong project's library." });
+      for (let i = 0; i < 30; i++) {
+        const decoy = store.createGoal({ title: `Synthetic ${i}` });
+        store.recordWorkMemoryWrite({}, { level: "goal", goal_id: decoy.id, task_id: null, target: "topic", name: "decoy", text: "How to introduce reusable string utilities: use the wrong project's library." });
+      }
       retrieval!.scheduleSync(); await retrieval!.idle();
       const fresh = store.createTask(goal.id, { title: "Recall procedure in a new chat" });
       const second = await socrates.handle("Before doing any work, search project memory for how to introduce reusable string utilities, open the matching topic, and tell me the verified procedure. Do not run commands or change files.", { target: { taskId: fresh.id } });
@@ -97,11 +99,11 @@ async function run(kind: "terminal" | "memory") {
       const evidence = store.evidenceForTurn(store.turnsForTask(fresh.id).at(-1)!.id);
       const search = evidence.find(e => e.tool === "context_retrieve" && (e.input as { action?: string }).action === "memory");
       assert(search, "Fresh chat must search memory");
-      const recalled = JSON.parse(search.result!.content).project_topics as { ref: string }[];
-      assert(recalled?.some(t => topics.some(local => t.ref === `topic:${local.name}`)), "Search must find this project's topic despite 30 competing projects");
+      const recalled = JSON.parse(search.result!.content).work_topics as { ref: string }[];
+      assert(recalled?.some(t => topics.some(local => t.ref.endsWith(`/${local.name}`) && t.ref === `topic:${local.taskId ? `t${store.requireTask(local.taskId).number}` : "goal"}/${local.name}`)), "Search must find this goal's topic despite 30 competing goals");
       assert(evidence.some(e => e.tool === "context_retrieve" && (e.input as { ref?: string }).ref?.startsWith("topic:")), "Fresh chat must open the topic, not just see the index");
       assert(!evidence.some(e => ["terminal", "edit", "apply_patch"].includes(e.tool)));
-      console.log(`PASS memory: ${topics.length} managed topic(s), automatic semantic sync, fresh-chat search and topic inspection with 30 competing projects`);
+      console.log(`PASS memory: ${topics.length} managed topic(s), automatic semantic sync, fresh-chat search and topic inspection with 30 competing goals`);
     }
   } finally {
     await socrates.close(); await terminals.close(); await retrieval?.close(); store.close();

@@ -1,9 +1,9 @@
-/** Live check of work memory kept by Socrates (docs/terminal-output-and-memory.md,
- * M4a): the working agent (DeepSeek Flash, high effort, as configured) and the
+/** Live check of work memory kept by Socrates (docs/goal-task-memory-plan.md):
+ * the working agent (DeepSeek Flash, high effort, as configured) and the
  * real decider work in a disposable Git project. A recurring change is made
  * twice: the first records a topic, the second updates it instead of adding a
- * copy. A fresh chat of the project is then shown the index and opens the
- * topic. Throughout, the repository gets no notes of Socrates' (git status
+ * copy. A fresh task of the goal then finds the topic (its index, or memory
+ * search) and opens it. Throughout, the repository gets no notes of Socrates' (git status
  * shows only the project's own changes) and the notes are in the data folder.
  * Only synthetic fixture content reaches the providers; the folder is deleted. */
 import assert from "node:assert/strict";
@@ -15,7 +15,7 @@ import { type EventPayloads, type ModelClient } from "@socrates/contracts";
 import { makeDecider, makeModel } from "@socrates/providers";
 import { LedgerStore } from "@socrates/store";
 import { loadEvaluationEnvironment } from "../../router/eval/environment";
-import { MemoryGate, Socrates, resolveWorkProject } from "../src";
+import { MemoryGate, Socrates } from "../src";
 
 loadEvaluationEnvironment();
 const decider = makeDecider();
@@ -27,7 +27,7 @@ const base = fileURLToPath(new URL("../../../.socrates/evals/", import.meta.url)
 mkdirSync(base, { recursive: true });
 const dir = realpathSync(mkdtempSync(path.join(base, "work-memory-")));
 const repo = path.join(dir, "helpers");
-const memoryDir = path.join(dir, "data", "memory", "projects");
+const memoryDir = path.join(dir, "data", "memory");
 const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "pipe", env: { ...process.env, GIT_AUTHOR_NAME: "eval", GIT_AUTHOR_EMAIL: "e@e", GIT_COMMITTER_NAME: "eval", GIT_COMMITTER_EMAIL: "e@e" } }).toString();
 
 function fixture() {
@@ -51,12 +51,11 @@ async function main() {
   console.log(`Work memory, live: ${model.id} (high), decider ${decider!.id}\nProject: ${repo}\n`);
   const store = LedgerStore.open({ path: path.join(dir, "ledger.db") });
   const open = () => new Socrates({
-    store, model, routerModel: model, timeZone: "Europe/Vienna", approve: async () => true, workMemoryDir: memoryDir,
+    store, model, routerModel: model, timeZone: "Europe/Vienna", approve: async () => true, memoryDir,
     resolveWorkspace: () => ({ name: "helpers", rootPath: repo }),
     memory: () => ({ save: true, use: true }), gate: () => new MemoryGate({ decider: decider!, timeoutMs: 15_000 }),
     log: (m) => console.error(`[diagnostic] ${m}`),
   });
-  const project = resolveWorkProject(repo)!;
   const steps = () => store.listEvents({ type: "work_memory_step" }).map((e) => e.payload as EventPayloads["work_memory_step"]);
   const notesInRepo = () => git("status", "--porcelain", "--ignored").split("\n").filter((l) => /\.socrates|MEMORY\.md/i.test(l));
   let socrates = open();
@@ -68,16 +67,18 @@ async function main() {
     assert(afterFirst, "no work-memory step was queued after the first change");
     console.log(`  step 1: ${afterFirst.outcome}${afterFirst.detail ? ` (${afterFirst.detail})` : ""}, ${afterFirst.writes} write(s)`);
     assert.equal(afterFirst.outcome, "written", "the first recurring change should be recorded");
-    const topicsAfterFirst = store.listWorkTopics(project.id).map((t) => t.name!);
-    pass("first change recorded a topic outside the repository", `topics: ${topicsAfterFirst.join(", ")}; index: ${JSON.stringify(store.workMemoryIndex(project.id)?.text)}`);
+    const goal = store.listGoals().find((g) => !g.general)!;
+    const taskId = first.kind === "answered" ? first.parts[0]!.task.id : null;
+    const topicsAfterFirst = store.listWorkTopics({ goalId: goal.id }).map((t) => t.name!);
+    pass("first change recorded a topic outside the repository", `topics: ${topicsAfterFirst.join(", ")}; task index: ${JSON.stringify(store.workMemoryIndex(goal.id, taskId)?.text)}; goal index: ${JSON.stringify(store.workMemoryIndex(goal.id, null)?.text)}`);
 
     const second = await socrates.handle("Now add a titleCase helper the same way, and verify it.");
     assert.equal(second.kind, "answered");
     await socrates.workMemoryIdle();
     const afterSecond = steps().at(-1)!;
-    const topicsAfterSecond = store.listWorkTopics(project.id).map((t) => t.name!);
+    const topicsAfterSecond = store.listWorkTopics({ goalId: goal.id }).map((t) => t.name!);
     console.log(`  step 2: ${afterSecond.outcome}${afterSecond.detail ? ` (${afterSecond.detail})` : ""}, ${afterSecond.writes} write(s); topics: ${topicsAfterSecond.join(", ")}`);
-    const updated = topicsAfterFirst.some((name) => store.workTopic(project.id, name)!.turnId === store.listEvents({ type: "work_memory_step" }).at(-1)!.turn_id);
+    const updated = store.listWorkTopics({ goalId: goal.id }).some((t) => topicsAfterFirst.includes(t.name!) && t.turnId === store.listEvents({ type: "work_memory_step" }).at(-1)!.turn_id);
     assert(afterSecond.outcome !== "written" || topicsAfterSecond.length === topicsAfterFirst.length, `the second change added a topic instead of updating: ${topicsAfterSecond.join(", ")}`);
     pass("second change kept one topic", afterSecond.outcome === "written" ? (updated ? "the existing topic was rewritten" : "the index was updated") : `step ${afterSecond.outcome}`);
 
@@ -94,13 +95,15 @@ async function main() {
     const leaked = notesInRepo();
     assert.deepEqual(leaked, [], `notes appeared in the repository: ${leaked.join("; ")}`);
     assert(!existsSync(path.join(repo, ".socrates")));
-    const files = readdirSync(path.join(memoryDir, project.id)).sort();
-    assert.deepEqual(files, ["MEMORY.md", "project.json", "topics"]);
-    pass("repository clean; notes in the data folder", `${readdirSync(path.join(memoryDir, project.id, "topics")).join(", ")}`);
+    const folder = path.join(memoryDir, "goals", readdirSync(path.join(memoryDir, "goals")).find((n) => n.startsWith(`g${goal.number}-`))!);
+    const notes = (base: string): string[] => readdirSync(base, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? notes(path.join(base, e.name)) : [path.relative(folder, path.join(base, e.name))]);
+    const files = notes(folder).sort();
+    assert(files.some((f) => f.endsWith("MEMORY.md")) && files.some((f) => /topics\/[^/]+\.md$/.test(f)), `notes missing: ${files.join(", ")}`);
+    pass("repository clean; notes in the data folder", files.join(", "));
     execFileSync("node", ["--test"], { cwd: repo, stdio: "pipe" });
     pass("the project's own tests pass");
-    console.log(`\nIndex:\n${readFileSync(path.join(memoryDir, project.id, "MEMORY.md"), "utf8")}`);
-    for (const t of store.listWorkTopics(project.id)) console.log(`Topic ${t.name}:\n${t.text}\n`);
+    for (const f of files.filter((f) => f.endsWith("MEMORY.md"))) console.log(`\nIndex ${f}:\n${readFileSync(path.join(folder, f), "utf8")}`);
+    for (const t of store.listWorkTopics({ goalId: goal.id })) console.log(`Topic ${t.taskId ? "task" : "goal"}/${t.name}:\n${t.text}\n`);
     console.log(`Steps: ${steps().map((s) => s.outcome).join(", ")}`);
   } finally {
     await socrates.close();
