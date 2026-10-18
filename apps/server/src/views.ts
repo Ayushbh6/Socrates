@@ -2,8 +2,9 @@ import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import type { EventPayloads, MemoryAuthor, MemoryKind, TurnStop } from "@socrates/contracts";
+import { memoryFolder } from "@socrates/agent";
 import { callLine } from "@socrates/retrieval";
-import type { Clarification, LedgerStore, Task, Turn, Workspace } from "@socrates/store";
+import type { Clarification, LedgerStore, Task, Turn, WorkMemoryEntry, Workspace } from "@socrates/store";
 import { assertSeparateFromClassic } from "./config";
 import { type Activity, type Place, activityOf, placeOf } from "./activity";
 import { type AttachmentView, viewOf } from "./attachments";
@@ -256,4 +257,51 @@ export function memoriesView(store: LedgerStore): MemoryView[] {
       lastUsedAt: m.lastUsedAt,
     };
   });
+}
+
+/** A goal's or one task's work memory: its index and its topics, newest first. */
+export interface WorkMemoryPart {
+  /** Its folder under the memory folder, such as goals/g4-socrates/tasks/t2-routing. */
+  folder: string;
+  index: string | null;
+  topics: { name: string; text: string; updatedAt: string }[];
+  updatedAt: string;
+}
+
+/** One goal's work memory as Settings > Memory shows it (architecture/server.md, "Memory"). */
+export interface WorkMemoryGoalView {
+  goal: { number: number; title: string; general: boolean };
+  /** The goal's own memory, or null when only its tasks hold some. */
+  own: WorkMemoryPart | null;
+  tasks: (WorkMemoryPart & { task: { number: number; title: string } })[];
+  updatedAt: string;
+}
+
+/** Every goal's work memory, then each task's inside it; the goal or task updated last comes first. */
+export function workMemoryView(store: LedgerStore): WorkMemoryGoalView[] {
+  const newest = <T extends { updatedAt: string }>(list: T[]) => list.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const part = (folder: string, entries: WorkMemoryEntry[]): WorkMemoryPart => ({
+    folder,
+    index: entries.find((e) => e.name === null)?.text ?? null,
+    topics: newest(entries.flatMap((e) => (e.name === null ? [] : [{ name: e.name, text: e.text, updatedAt: e.updatedAt }]))),
+    updatedAt: entries.map((e) => e.updatedAt).sort().at(-1)!,
+  });
+  return newest(store.listWorkMemoryGoals().flatMap((goalId) => {
+    const goal = store.getGoal(goalId);
+    if (!goal) return [];
+    const entries = store.listWorkMemory(goalId);
+    const own = entries.filter((e) => e.taskId === null);
+    const tasks = [...new Set(entries.flatMap((e) => (e.taskId ? [e.taskId] : [])))].flatMap((taskId) => {
+      const task = store.getTask(taskId);
+      return task ? [{ ...part(memoryFolder(goal, task), entries.filter((e) => e.taskId === taskId)), task: { number: task.number, title: task.title } }] : [];
+    });
+    const ownPart = own.length ? part(memoryFolder(goal), own) : null;
+    if (!ownPart && !tasks.length) return [];
+    return [{
+      goal: { number: goal.number, title: goal.title, general: goal.general },
+      own: ownPart,
+      tasks: newest(tasks),
+      updatedAt: [ownPart?.updatedAt ?? "", ...tasks.map((t) => t.updatedAt)].sort().at(-1)!,
+    }];
+  }));
 }

@@ -317,12 +317,19 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 
    **Validation:** typecheck and web build passed; **1,083 tests passed, one skipped (120 files)**; the fixed-overhead test holds the prompt at 2,398 of 2,400 tokens. **Live (DeepSeek Flash high, Perplexity V1.2, six disposable homes, deleted):** the resume rules with no name, the same with the name Ayush, and "as a dad of two small kids, I only apply to fully remote roles", each twice: no he/his/she/her in any saved memory, topic or continuation note (**6 of 6**); the dad case was saved as "Is a dad of two small kids" and "Dad of two small kids; …", neutral although a pronoun was allowed.
 
+83. **Memory phase 3: work memory in Settings (2026-10-19).** **Asked:** "Start phase 3 (show memory in Settings by goal and task) pls". **Done:** Settings > Memory has a new block, **Notes on your work, by goal and task**, under what is remembered about the user. It has one row per goal (General by that name) with its note count and last change, newest first. Opened, a goal shows **Whole goal** and then each task with notes. Each part shows its folder under `memory/`, its index, and its topics, which open to their text. It is read only: a line says the files are a copy Socrates rewrites, so editing one changes nothing it uses. The server's new `GET /api/work-memory` returns the same thing (`architecture/server.md`), and the folder names come from the same helper the files use (`memoryFolder`). The Memory section's opening text still said project notes live in "the project's own .socrates/ folder" (true before entry 59). It now says the notes are kept for a task or its whole goal and are listed below.
+   **Validation:** typecheck and web build passed; **1,084 tests passed, one skipped (120 files)**, with a new server test for the listing (goal and task parts, folders, a removed topic left out). Checked in the browser pane on a disposable copy of the live data with six seeded notes (deleted afterwards): the goal, Whole goal, task and topic rows open and close, and at phone width (375 px) nothing runs past the dialog. The live data holds no work memory yet, so the real list is empty for now and shows "None yet".
+
 ## Suggested
 
 From memory phase 2 (entry 80):
 
 - ~~**A decision can be saved twice**~~: fixed in entry 81 (the answer's save wins).
 - ~~**Saved memories can guess pronouns**~~: fixed in entry 82.
+
+From memory phase 3 (entry 83):
+
+- **The work-memory list is read only.** Removing or editing a note from Settings (a `work_memory_written` by the user) would match the user-memory list's Forget and Edit; the M4b item below already names editing.
 
 Deferred by agreement (2026-10-11, `docs/terminal-output-and-memory.md`, "Later"), only if real use asks for them:
 

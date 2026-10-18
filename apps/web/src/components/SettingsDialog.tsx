@@ -5,7 +5,7 @@ import { api } from "../lib/api";
 import { useDialog } from "../lib/dialog";
 import { type AppState, store } from "../lib/store";
 import { EFFORT_LABELS, PROVIDER_LABELS } from "../lib/models";
-import type { Effort, Embeddings, ListedModel, MemoryKind, MemoryView, ModelChoice, ModelInUse, Provider } from "../lib/types";
+import type { Effort, Embeddings, ListedModel, MemoryKind, MemoryView, ModelChoice, ModelInUse, Provider, WorkMemoryGoalView, WorkMemoryPart } from "../lib/types";
 import { AccessControls } from "./AccessMenu";
 
 const EMBEDDERS: Embeddings["provider"][] = ["ollama", "openrouter", "openai", "custom"];
@@ -278,7 +278,7 @@ function MemorySection({ app }: { app: AppState }) {
   ].filter(Boolean).join(" · ");
   return (
     <Section title="Memory">
-      <p className="settings-hint">What Socrates remembers about you, in every goal: who you are and how you like to work, saved when you say it. Undo one under its answer or change it here. Forgetting removes it from what Socrates uses; the conversation it came from stays in your history. After work that went well, Socrates also keeps short notes on how things are done in a project, in the project's own .socrates/ folder (MEMORY.md and memory/); they are plain files you can edit or delete, and the first switch below covers them.</p>
+      <p className="settings-hint">What Socrates remembers about you, in every goal: who you are and how you like to work, saved when you say it. Undo one under its answer or change it here. Forgetting removes it from what Socrates uses; the conversation it came from stays in your history. After an answer, Socrates also keeps short notes on how your work is done, for one task or its whole goal; they are listed below, and the first switch below covers them.</p>
       <label className="memory-switch"><input type="checkbox" checked={switches.save} disabled={busy} onChange={(e) => void toggle("save", e.target.checked)} /> Save new memories from my conversations</label>
       <label className="memory-switch"><input type="checkbox" checked={switches.use} disabled={busy} onChange={(e) => void toggle("use", e.target.checked)} /> Use memories when answering</label>
       <label className="memory-switch"><input type="checkbox" checked={switches.decider} disabled={busy} onChange={(e) => void toggle("decider", e.target.checked)} /> Ask a small model when to recall and save</label>
@@ -324,8 +324,58 @@ function MemorySection({ app }: { app: AppState }) {
         <input value={draft.text} maxLength={280} placeholder="Add a memory, such as: Prefers short answers." onChange={(e) => setDraft({ ...draft, text: e.target.value })} aria-label="New memory" />
         <button type="submit" className="quiet-button" disabled={busy || !draft.text.trim()}>Add</button>
       </form>
+      <WorkMemoryList />
       <div className="settings-actions">{feedback}</div>
     </Section>
+  );
+}
+
+const day = (at: string) => new Date(at).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+const notes = (n: number) => (n === 1 ? "1 note" : `${n} notes`);
+
+/**
+ * Work memory, by goal and then by task (architecture/web.md, "Memory"):
+ * what Socrates wrote in the background, each index with its topics. Read
+ * only; the files in the data folder are a copy it rewrites.
+ */
+function WorkMemoryList() {
+  const [goals, setGoals] = useState<WorkMemoryGoalView[] | null>(null);
+  useEffect(() => {
+    api.workMemory().then(setGoals, () => setGoals([]));
+  }, []);
+  if (!goals) return null;
+  return (
+    <div className="memory-group work-memory">
+      <p className="memory-group-title">Notes on your work, by goal and task</p>
+      <p className="settings-hint">{goals.length
+        ? "Lessons and decisions Socrates wrote after its answers. Each is also a plain file under memory/ in Socrates' data folder: a copy Socrates rewrites, so editing a file does not change what it uses."
+        : "None yet. After an answer that settles a decision or teaches a lesson, Socrates writes it here in the background."}</p>
+      {goals.map((g) => {
+        const count = (g.own?.topics.length ?? 0) + g.tasks.reduce((n, t) => n + t.topics.length, 0);
+        return (
+          <details key={g.goal.number} className="work-memory-goal">
+            <summary><span>{g.goal.general ? "General" : g.goal.title}</span><span className="memory-meta">{notes(count)} · {day(g.updatedAt)}</span></summary>
+            {g.own && <WorkMemoryBlock title="Whole goal" part={g.own} />}
+            {g.tasks.map((t) => <WorkMemoryBlock key={t.task.number} title={t.task.title} part={t} />)}
+          </details>
+        );
+      })}
+    </div>
+  );
+}
+
+function WorkMemoryBlock({ title, part }: { title: string; part: WorkMemoryPart }) {
+  return (
+    <div className="work-memory-part">
+      <p className="work-memory-title">{title} <span className="memory-meta">memory/{part.folder}</span></p>
+      {part.index && <pre className="work-memory-text">{part.index}</pre>}
+      {part.topics.map((t) => (
+        <details key={t.name} className="work-memory-topic">
+          <summary><span>{t.name}</span><span className="memory-meta">{day(t.updatedAt)}</span></summary>
+          <pre className="work-memory-text">{t.text}</pre>
+        </details>
+      ))}
+    </div>
   );
 }
 

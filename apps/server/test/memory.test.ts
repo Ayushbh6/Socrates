@@ -109,4 +109,27 @@ describe("memory", () => {
     const response = await live.app.inject({ method: "GET", url: "/api/status", headers: { authorization: `Bearer ${live.token}`, host: `127.0.0.1:${live.port}` } });
     expect(JSON.parse(response.body).decider).toBe("no_key");
   });
+
+  it("lists work memory by goal, then by task, with each part's folder", async () => {
+    const live = await liveServer(new Responder("r", () => ({ text: "" })), new Responder("a", () => ({ text: "" })));
+    const store = live.rt.store;
+    const get = async () => JSON.parse((await live.app.inject({ method: "GET", url: "/api/work-memory", headers: { authorization: `Bearer ${live.token}`, host: `127.0.0.1:${live.port}` } })).body);
+    expect(await get()).toEqual([]);
+    const goal = store.createGoal({ title: "Socrates development" });
+    const task = store.createTask(goal.id, { title: "Routing review" });
+    const write = (taskId: string | null, target: "index" | "topic", name: string | null, text: string | null) =>
+      store.recordWorkMemoryWrite({ goal_id: goal.id, task_id: taskId }, { level: taskId ? "task" : "goal", goal_id: goal.id, task_id: taskId, target, name, text });
+    write(task.id, "topic", "resume-flag", "Resume with --continue.");
+    write(task.id, "index", "MEMORY", "- resume → topic resume-flag");
+    write(null, "topic", "release-steps", "Typecheck, test, push.");
+    write(null, "topic", "old-lesson", "Gone.");
+    write(null, "topic", "old-lesson", null);
+    const [listed] = await get();
+    expect(listed).toMatchObject({
+      goal: { number: goal.number, title: "Socrates development", general: false },
+      own: { folder: `goals/g${goal.number}-socrates-development`, index: null, topics: [{ name: "release-steps", text: "Typecheck, test, push." }] },
+      tasks: [{ task: { number: task.number, title: "Routing review" }, folder: `goals/g${goal.number}-socrates-development/tasks/t${task.number}-routing-review`, index: "- resume → topic resume-flag", topics: [{ name: "resume-flag" }] }],
+    });
+    expect(listed.own.topics).toHaveLength(1);
+  });
 });

@@ -181,6 +181,8 @@ function slug(title: string): string {
 const named = (prefix: string, title: string) => (slug(title) ? `${prefix}-${slug(title)}` : prefix);
 const goalFolder = (goal: Goal) => (goal.general ? "general" : named(`g${goal.number}`, goal.title));
 const taskFolder = (task: Task) => named(`t${task.number}`, task.title);
+/** Where a goal's or task's memory files live, relative to the memory folder (Settings > Memory shows it). */
+export const memoryFolder = (goal: Goal, task: Task | null = null) => ["goals", goalFolder(goal), ...(task ? ["tasks", taskFolder(task)] : [])].join("/");
 /** Folders already named for this goal or task, perhaps under an older title. */
 const sameGoal = (goal: Goal) => (name: string) => (goal.general ? name === "general" : new RegExp(`^g${goal.number}(-|$)`).test(name));
 const sameTask = (task: Task) => (name: string) => new RegExp(`^t${task.number}(-|$)`).test(name);

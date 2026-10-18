@@ -1,5 +1,5 @@
 import type { CallDetail, CallRow, DataOverview, DbPage, DeciderStats, DbRow, PriceRow, QuestionDetail, QuestionRow, Range, RouterStats, SeriesData, Summary, TerminalOutputStats, Trace } from "./observe";
-import type { Access, ArchivedView, AttachmentView, Evidence, Folders, GoalView, History, HistoryItem, LedgerStatus, ListedModel, MemoryKind, MemoryView, Provider, Settings, Status } from "./types";
+import type { Access, ArchivedView, AttachmentView, Evidence, Folders, GoalView, History, HistoryItem, LedgerStatus, ListedModel, MemoryKind, MemoryView, Provider, Settings, Status, WorkMemoryGoalView } from "./types";
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -80,6 +80,7 @@ export const api = {
   addMemory: (memory: { text: string; kind: MemoryKind; goal: number | null }) => call<MemoryView>("POST", "/api/memories", memory),
   editMemory: (number: number, change: { text?: string; kind?: MemoryKind }) => call<MemoryView>("PATCH", `/api/memories/${number}`, change),
   forgetMemory: (number: number) => call<null>("DELETE", `/api/memories/${number}`),
+  workMemory: () => call<WorkMemoryGoalView[]>("GET", "/api/work-memory"),
   evidence: (task: string, handle: string) => call<Evidence>("GET", `/api/evidence?task=${encodeURIComponent(task)}&handle=${encodeURIComponent(handle)}`),
 };
 

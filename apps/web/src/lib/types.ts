@@ -373,6 +373,24 @@ export const MAX_RUNNING_CHATS = 4;
 /** about: who the user is; preference: how they want work done; knowledge: a decision or fact for later. */
 export type MemoryKind = "about" | "preference" | "knowledge";
 
+/** A goal's or one task's work memory: its index and topics, newest first. */
+export interface WorkMemoryPart {
+  /** Its folder under the memory folder, such as goals/g4-socrates/tasks/t2-routing. */
+  folder: string;
+  index: string | null;
+  topics: { name: string; text: string; updatedAt: string }[];
+  updatedAt: string;
+}
+
+/** One goal's work memory, then each task's inside it, as Settings > Memory shows it. */
+export interface WorkMemoryGoalView {
+  goal: { number: number; title: string; general: boolean };
+  /** The goal's own memory, or null when only its tasks hold some. */
+  own: WorkMemoryPart | null;
+  tasks: (WorkMemoryPart & { task: { number: number; title: string } })[];
+  updatedAt: string;
+}
+
 /** One memory as the Memory page shows it. */
 export interface MemoryView {
   number: number;

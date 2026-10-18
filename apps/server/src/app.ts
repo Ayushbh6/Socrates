@@ -20,7 +20,7 @@ import * as observe from "./observe";
 import { DbError, browse, isDb, overview, row as dbRow } from "./dbview";
 import { guard, problem, sameSecret, sessionCookie } from "./security";
 import { StoreError } from "@socrates/store";
-import { FolderError, archivedView, conversationHistory, requestHistory, goalsView, listFolders, memoriesView, workspaceFolder, workspaceFor } from "./views";
+import { FolderError, archivedView, conversationHistory, requestHistory, goalsView, listFolders, memoriesView, workMemoryView, workspaceFolder, workspaceFor } from "./views";
 
 export interface ServerOptions {
   runtime: Runtime;
@@ -282,6 +282,7 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
   };
   const noMemory = (reply: { code(n: number): { send(b: unknown): unknown } }) => reply.code(404).send(problem("not_found", "That memory no longer exists."));
   app.get("/api/memories", async () => memoriesView(runtime.store));
+  app.get("/api/work-memory", async () => workMemoryView(runtime.store));
   app.post("/api/memories", async (request, reply) => {
     const body = z.object({ text: z.string().max(2000), kind: z.enum(MEMORY_KINDS), goal: z.number().int().positive().nullable().default(null) }).strict().parse(request.body);
     const goal = body.goal === null ? null : runtime.store.getGoalByNumber(body.goal);
