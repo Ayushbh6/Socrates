@@ -67,7 +67,8 @@ function PlaceName({ place, goals }: { place: Place; goals: GoalView[] }) {
 function Answer({ exchange, approvals }: { exchange: Exchange; approvals: PendingApproval[] }) {
   const live = exchange.state === "working";
   const draft = live ? exchange.draft : null;
-  // One list, so the draft and the saved answer that replaces it are the same element and the text carries on.
+  // Structured drafts keep their element; plain candidates carry their
+  // visible prefix into the answer rather than starting its reveal again.
   const prose = [...exchange.answers.map((text) => ({ text, writing: false })), ...(draft?.kind === "answer" ? [{ text: draft.text, writing: true }] : [])];
   return (
     <div className="answer-main" data-set-aside={!!exchange.redoneTo}>
@@ -75,7 +76,7 @@ function Answer({ exchange, approvals }: { exchange: Exchange; approvals: Pendin
       <Work exchange={exchange} />
       {approvals.map((a) => <ApprovalCard key={a.id} approval={a} />)}
       {exchange.question && !exchange.clarification && <Prose text={exchange.question} animate={false} writing={false} />}
-      {prose.map((p, i) => <Prose key={i} text={p.text} animate={live} writing={p.writing} />)}
+      {prose.map((p, i) => <Prose key={i} text={p.text} animate={live} writing={p.writing} initialShown={exchange.answerStarts[i] ?? 0} />)}
       <MemoryNotes notes={exchange.memories} />
       {exchange.state === "failed" && <p className="answer-note failed">{exchange.note ?? "This message could not be sent."}</p>}
       {exchange.state === "stopped" && <p className="answer-note">{exchange.note ?? "Stopped."}</p>}

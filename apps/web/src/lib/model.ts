@@ -50,6 +50,8 @@ export interface Exchange {
   route: { goal: { number: number; title: string }; task: { number: number; title: string }; chat?: number; projectTurn?: number } | null;
   steps: Step[];
   answers: string[];
+  /** Initial reveal position when an indexed answer replaces a plain-text draft. */
+  answerStarts: Record<number, number>;
   draft: Draft | null;
   /** The model's thinking as it arrives, kept beside the reply's draft. */
   thinking: Draft | null;
@@ -223,7 +225,7 @@ function activity(model: Model, a: Activity | DraftArrived): Model {
     const existing = list.findIndex((e) => e.seq === a.seq);
     if (existing >= 0 && a.seq <= list[existing]!.throughSeq) return model;
     // A replayed message is rebuilt from its events.
-    if (existing >= 0) return withConversation(model, a.conversation, list.map((e, i) => (i === existing ? blank({ ...e, steps: [], answers: [], draft: null, thinking: null, workedAt: null, lastAt: null, outputs: {}, draftCalls: {}, question: null, state: "working", note: null, turns: [], open: [] }) : e)));
+    if (existing >= 0) return withConversation(model, a.conversation, list.map((e, i) => (i === existing ? blank({ ...e, steps: [], answers: [], answerStarts: {}, draft: null, thinking: null, workedAt: null, lastAt: null, outputs: {}, draftCalls: {}, question: null, state: "working", note: null, turns: [], open: [] }) : e)));
     const sending = list.findIndex((e) => e.state === "sending" && e.message === a.text);
     const saved = { key: `m${a.seq}`, requestId: a.requestId ?? null, route: a.target ? {...a.target} : null, seq: a.seq, at: a.at, state: "working" as const };
     if (sending >= 0) return withConversation(model, a.conversation, list.map((e, i) => (i === sending ? { ...e, ...saved } : e)));
@@ -349,8 +351,15 @@ function applyOne(e: Exchange, a: Activity | DraftArrived): Exchange {
       const { [`${a.turnId}:${a.handle}`]: _printed, ...outputs } = x.outputs;
       return { ...x, steps: x.steps.map((s) => (s.kind === "tool" && s.handle === a.handle && s.task === a.task ? { ...s, status: a.status, result: a.result } : s)), outputs, workedAt: a.at, lastAt: a.at };
     }
-    case "answer":
-      return { ...x, answers: [...x.answers, a.text] };
+    case "answer": {
+      const visible = x.draft?.turnId === a.turnId && x.draft.kind === "narration" ? x.draft.text : null;
+      // Plain final candidates were already visible in Work. Resume after
+      // that prefix, or replace revised wording whole, without replaying it.
+      const answerStarts = visible === null ? x.answerStarts : {
+        ...x.answerStarts, [x.answers.length]: a.text.startsWith(visible) ? visible.length : a.text.length,
+      };
+      return { ...x, answers: [...x.answers, a.text], answerStarts };
+    }
     case "handed_off": {
       // The lane works on it now; the main conversation's part of it is over.
       const open = x.open.filter((t) => t !== a.turnId);
@@ -411,7 +420,7 @@ export function fromHistory(item: HistoryItem, conversation: string): Exchange {
 }
 
 function blank(e: Partial<Exchange> & Pick<Exchange, "key" | "conversation" | "at" | "message">): Exchange {
-  return { requestId: null, seq: null, attachments: [], route: null, steps: [], answers: [], draft: null, thinking: null, workedAt: null, lastAt: null, outputs: {}, draftCalls: {}, throughSeq: 0, question: null, clarification: null, state: "working", note: null, limit: null, sendId: null, redoneTo: null, redoneFrom: null, memories: [], turns: [], open: [], ...e };
+  return { requestId: null, seq: null, attachments: [], route: null, steps: [], answers: [], answerStarts: {}, draft: null, thinking: null, workedAt: null, lastAt: null, outputs: {}, draftCalls: {}, throughSeq: 0, question: null, clarification: null, state: "working", note: null, limit: null, sendId: null, redoneTo: null, redoneFrom: null, memories: [], turns: [], open: [], ...e };
 }
 
 function bySeq(a: Exchange, b: Exchange): number {

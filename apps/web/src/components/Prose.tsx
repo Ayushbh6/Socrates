@@ -8,13 +8,14 @@ import { FRAME_MS, cut, nextShown } from "../lib/reveal";
  * Markdown text. One that is written while the page watches (`animate` at
  * the time it first appears) is let out evenly rather than in the bursts it
  * arrives in, and keeps going after the saved answer replaces its draft;
- * `writing` says more of it is still coming.
+ * `writing` says more of it is still coming. `initialShown` carries text
+ * already displayed as plain narration into a newly mounted answer.
  */
-export function Prose({ text, animate, writing }: { text: string; animate: boolean; writing: boolean }) {
+export function Prose({ text, animate, writing, initialShown = 0 }: { text: string; animate: boolean; writing: boolean; initialShown?: number }) {
   const still = useReducedMotion();
   const [animated] = useState(animate);
   const smooth = animated && !still;
-  const [shown, setShown] = useState(smooth ? 0 : text.length);
+  const [shown, setShown] = useState(smooth ? Math.min(initialShown, text.length) : text.length);
   const at = useRef(shown);
   useEffect(() => {
     if (!smooth) {

@@ -199,6 +199,39 @@ describe("drafts of a reply that is arriving", () => {
     expect(exchange(m).draft).toMatchObject({ call: 3, text: "Third" });
   });
 
+  it("carries the visible plain-text prefix into the final answer instead of revealing it again", () => {
+    const visible = "The answer is ready.\n\n";
+    const final = `${visible}The remaining details follow.`;
+    const candidate = run(working(), draft("t1", 1, "narration", visible));
+    // Thinking-only activity during finalization leaves the candidate visible.
+    const repairing = run(candidate, act("main", { kind: "step", turnId: "t1", text: "", thinking: "Formatting the answer." }));
+    const saved = run(repairing, act("main", { kind: "answer", turnId: "t1", text: final }));
+    expect(exchange(saved)).toMatchObject({ answers: [final], draft: null, answerStarts: { 0: visible.length } });
+    const done = run(saved, act("main", { kind: "finished", turnId: "t1", status: "completed", reason: null }));
+    expect(exchange(done)).toMatchObject({ answers: [final], answerStarts: { 0: visible.length } });
+  });
+
+  it("shows a rewritten final answer immediately after a plain-text candidate", () => {
+    const candidate = run(working(), draft("t1", 1, "narration", "The initial wording."));
+    const text = "The corrected wording.";
+    const saved = run(candidate, act("main", { kind: "answer", turnId: "t1", text }));
+    expect(exchange(saved)).toMatchObject({ answers: [text], draft: null, answerStarts: { 0: text.length } });
+  });
+
+  it("does not carry saved tool narration or another turn's draft into an answer", () => {
+    const candidate = run(working(), draft("t1", 1, "narration", "Checking the file."));
+    const toolNarration = run(candidate, act("main", { kind: "step", turnId: "t1", text: "Checking the file." }));
+    const saved = run(toolNarration, act("main", { kind: "answer", turnId: "t1", text: "The file is correct." }));
+    expect(exchange(saved).answerStarts).toEqual({});
+    const other = run(candidate, act("main", { kind: "answer", turnId: "t0", text: "Another answer." }));
+    expect(exchange(other).answerStarts).toEqual({});
+    expect(exchange(other).draft?.turnId).toBe("t1");
+    const own = run(other, act("main", { kind: "answer", turnId: "t1", text: "Checking the file. All correct." }));
+    expect(exchange(own).answerStarts).toEqual({ 1: "Checking the file.".length });
+    const replayed = run(own, { type: "activity", seq: exchange(own).seq!, at, conversation: "main", kind: "message", text: "Why does login fail?" });
+    expect(exchange(replayed)).toMatchObject({ answers: [], answerStarts: {} });
+  });
+
   it("is replaced by the saved narration, answer or end of its turn, and only for its own turn", () => {
     const base = run(working(), draft("t1", 1, "narration", "Checking the refresh handler"));
     const saved = run(base, act("main", { kind: "step", turnId: "t1", text: "Checking the refresh handler." }));
