@@ -313,12 +313,16 @@ Three kinds of entry: what was asked, what was changed, and what Socrates sugges
 
    **Validation:** typecheck and web build passed; **1,083 tests passed, one skipped (120 files)**. New test: the guide carries the turn's saves, marks an undone one, and the step records nothing; a guide without saves carries no list. **Live (DeepSeek Flash high, Perplexity V1.2, two disposable runs, deleted):** the resume rules message and a recruiter-portal lesson, each saved once as user memory with the step ending `nothing` in **4 of 4** turns (before: the rules were saved twice). **Seen:** with A, a goal lesson like the portal one also lands in user memory (goal scope), not in the goal's notes; and one saved line read "Wants his resume …", a pronoun the user never gave (suggested below).
 
+82. **No guessed pronouns (2026-10-18).** **Asked:** "fix the guessing, if there is proof of gender then use that or if it can strongly infer then use it otherwise dont" (after a saved line read "Wants his resume…" in a blank test home; the user is a man, so it was right for him, but a guess). **Done:** the worker prompt's grounding line now says pronouns for the user only as they stated or plainly showed, never from a name, else none; a name is deliberately not proof. The memory save rule asks for "short sentences" (it said "third-person sentences"), and the work-memory writing guide and the history summaries say "the user", with the same pronoun rule. Room in the 2,400-token prompt came from dropping "Be accurate, clear, and efficient." and shortening the local-memory sentence (now 2,398).
+
+   **Validation:** typecheck and web build passed; **1,083 tests passed, one skipped (120 files)**; the fixed-overhead test holds the prompt at 2,398 of 2,400 tokens. **Live (DeepSeek Flash high, Perplexity V1.2, six disposable homes, deleted):** the resume rules with no name, the same with the name Ayush, and "as a dad of two small kids, I only apply to fully remote roles", each twice: no he/his/she/her in any saved memory, topic or continuation note (**6 of 6**); the dad case was saved as "Is a dad of two small kids" and "Dad of two small kids; …", neutral although a pronoun was allowed.
+
 ## Suggested
 
 From memory phase 2 (entry 80):
 
 - ~~**A decision can be saved twice**~~: fixed in entry 81 (the answer's save wins).
-- **Saved memories can guess pronouns:** "Wants his resume kept to one page." The save rule asks for third-person sentences; it should say to write them without pronouns ("Wants the resume kept to one page.").
+- ~~**Saved memories can guess pronouns**~~: fixed in entry 82.
 
 Deferred by agreement (2026-10-11, `docs/terminal-output-and-memory.md`, "Later"), only if real use asks for them:
 
