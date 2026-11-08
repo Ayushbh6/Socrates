@@ -7,6 +7,7 @@ import { type AppState, store } from "../lib/store";
 import { EFFORT_LABELS, PROVIDER_LABELS } from "../lib/models";
 import type { Effort, Embeddings, ListedModel, MemoryKind, MemoryView, ModelChoice, ModelInUse, Provider, WorkMemoryGoalView, WorkMemoryPart } from "../lib/types";
 import { AccessControls } from "./AccessMenu";
+import { type ThemeChoice, setThemeChoice, useTheme } from "../lib/theme";
 
 const EMBEDDERS: Embeddings["provider"][] = ["ollama", "openrouter", "openai", "custom"];
 
@@ -26,6 +27,7 @@ export function SettingsDialog({ app, onClose }: { app: AppState; onClose: () =>
           <strong>Settings</strong>
           <button type="button" className="icon-button" onClick={onClose} aria-label="Close"><X aria-hidden /></button>
         </div>
+        <Appearance />
         <Models app={app} providers={providers} />
         <ChatNames app={app} providers={providers} />
         <Keys providers={providers} />
@@ -39,6 +41,20 @@ export function SettingsDialog({ app, onClose }: { app: AppState; onClose: () =>
       </div>
     </div>,
     document.body,
+  );
+}
+
+const THEMES: { id: ThemeChoice; label: string }[] = [{ id: "light", label: "Light" }, { id: "dark", label: "Dark" }, { id: "system", label: "Match system" }];
+
+/** Light, dark or the system's; kept in this browser and applied at once. */
+function Appearance() {
+  const { choice } = useTheme();
+  return (
+    <Section title="Appearance">
+      <div className="segmented" role="radiogroup" aria-label="Theme">
+        {THEMES.map((t) => <button key={t.id} type="button" role="radio" aria-checked={choice === t.id} data-on={choice === t.id} onClick={() => setThemeChoice(t.id)}>{t.label}</button>)}
+      </div>
+    </Section>
   );
 }
 

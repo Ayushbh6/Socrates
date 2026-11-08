@@ -15,6 +15,10 @@ It is built in two changes:
 
 Socrates 0.1's colours and type: cream (`#f9f8f4`), teal (`#159f9f`), the dotted canvas, Geist, and the serif gradient name. The canvas is open and calm: no borders or dividers anywhere. Floating controls sit at the top, the composer is the only footer, and depth comes from soft shadows and blur. Movement respects the system's reduced-motion setting. The tab icon is the Socrates logo (the teal profile, `apps/web/public`), served from `dist` like the rest of the page.
 
+## Theme
+
+Light and dark. The choice is **Light**, **Dark** or **Match system** (the default) in Settings > Appearance, and the sun/moon button beside the settings gear switches between light and dark from whatever shows. It is kept in this browser (`localStorage` `socrates.theme`, `src/lib/theme.ts`) and set as `data-theme` on `<html>`; `public/theme-init.js` sets it before the first paint, so a dark page never flashes light (a separate file, since the page's policy refuses inline scripts). Every colour in `styles.css` is a token on `:root` and `:root[data-theme="dark"]`: the warm paper becomes a deep green-black slate with the same teal, overlays and hairlines are drawn from `--paper`, `--ink` and `--shade` (shadows stay black in the dark), and the orb turns to dark glass lit from inside. Inspect and the terminal panel follow the same theme (Inspect's own toggle switches it too).
+
 ## Welcome and onboarding
 
 Three pages, by the address after `#`: `#/welcome` (also anything unknown), `#/onboarding` and `#/chat`.

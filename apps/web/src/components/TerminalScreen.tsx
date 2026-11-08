@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef } from "react";
 import { store } from "../lib/store";
+import { type Theme, useTheme } from "../lib/theme";
 import type { TerminalView } from "../lib/types";
 
 /** The smallest terminal the panel gives a program, however short the panel is. */
@@ -12,7 +13,7 @@ const MIN_ROWS = 8;
 const RESIZE_SETTLE_MS = 120;
 
 /** Colours for a light terminal, readable on the page's background. */
-const THEME = {
+const LIGHT = {
   background: "#fbfaf7",
   foreground: "#2d3748",
   cursor: "#087f7f",
@@ -36,12 +37,41 @@ const THEME = {
   brightWhite: "#a0aec0",
 };
 
+/** The same terminal on the dark page. */
+const DARK = {
+  background: "#171a19",
+  foreground: "#d6ddd9",
+  cursor: "#5fd0c8",
+  cursorAccent: "#171a19",
+  selectionBackground: "rgba(45, 179, 172, 0.3)",
+  black: "#2a2f2d",
+  red: "#ef7d7d",
+  green: "#9ece6a",
+  yellow: "#e0af68",
+  blue: "#7aa2f7",
+  magenta: "#c792ea",
+  cyan: "#5fd0c8",
+  white: "#c2c9c5",
+  brightBlack: "#6f7a76",
+  brightRed: "#ff9b9b",
+  brightGreen: "#b9e08a",
+  brightYellow: "#f0c88a",
+  brightBlue: "#9cbbff",
+  brightMagenta: "#dbb2f5",
+  brightCyan: "#8be3dc",
+  brightWhite: "#eef2ef",
+};
+const THEMES: Record<Theme, typeof LIGHT> = { light: LIGHT, dark: DARK };
+
 /** One session's terminal: what it already shows, then what it prints, and, while it runs in a terminal, the user's keys. */
 export default function TerminalScreen({ view }: { view: TerminalView }) {
   const box = useRef<HTMLDivElement>(null);
   const term = useRef<Terminal | null>(null);
   // Whether keys and sizes reach the program; it changes when the session ends, without making a new terminal.
   const live = useRef(view.pty && view.status === "running");
+  const { theme } = useTheme();
+  const themeNow = useRef(theme);
+  themeNow.current = theme;
   live.current = view.pty && view.status === "running";
 
   useEffect(() => {
@@ -53,7 +83,7 @@ export default function TerminalScreen({ view }: { view: TerminalView }) {
       cursorBlink: live.current,
       disableStdin: !live.current,
       scrollback: 5000,
-      theme: THEME,
+      theme: THEMES[themeNow.current],
     });
     term.current = terminal;
     const fit = new FitAddon();
@@ -104,6 +134,11 @@ export default function TerminalScreen({ view }: { view: TerminalView }) {
       term.current = null;
     };
   }, [view.id]);
+
+  // The terminal follows the page between light and dark.
+  useEffect(() => {
+    if (term.current) term.current.options.theme = THEMES[theme];
+  }, [theme]);
 
   // A session that ends stops taking keys.
   useEffect(() => {

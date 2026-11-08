@@ -1,5 +1,6 @@
 import "@fontsource-variable/geist";
 import "./styles.css";
+import "./lib/theme";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 

@@ -9,6 +9,7 @@ import { InspectOverview } from "./InspectOverview";
 import { InspectTraces } from "./InspectTraces";
 import { POLL_BUSY_MS, POLL_MS, usePolled, useStored } from "./inspect-kit";
 import "../inspect.css";
+import { toggleTheme, useTheme } from "../lib/theme";
 
 const TABS: { id: Tab; label: string; icon: typeof Database; about: string }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard, about: "Cost, cache, speed and calls" },
@@ -25,7 +26,7 @@ const TABS: { id: Tab; label: string; icon: typeof Database; about: string }[] =
  */
 export function Inspect({ app, target }: { app: AppState; target: Target }) {
   const [range, setRange] = useStored<Range>("socrates.inspect.range", "24h", ["24h", "7d", "30d", "all"]);
-  const [theme, setTheme] = useStored<"dark" | "light">("socrates.inspect.theme", "dark", ["dark", "light"]);
+  const { theme } = useTheme();
   const [call, setCall] = useState<string | null>(null);
   const busy = app.model.live?.busy ?? false;
   const ms = busy ? POLL_BUSY_MS : POLL_MS;
@@ -44,7 +45,7 @@ export function Inspect({ app, target }: { app: AppState; target: Target }) {
           ))}
         </nav>
         <div className="rail-foot">
-          <button type="button" className="quiet-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>{theme === "dark" ? <Sun aria-hidden /> : <Moon aria-hidden />} {theme === "dark" ? "Light" : "Dark"} console</button>
+          <button type="button" className="quiet-button" onClick={toggleTheme}>{theme === "dark" ? <Sun aria-hidden /> : <Moon aria-hidden />} {theme === "dark" ? "Light" : "Dark"} mode</button>
           <a className="quiet-button" href="#/chat"><ArrowLeft aria-hidden /> Back to chat</a>
         </div>
       </aside>
