@@ -23,6 +23,10 @@ This plan makes concurrency a routing outcome. The user types; Socrates decides 
 - **C. The board.** The Flow canvas shows live strands and attaches each message to the strand it joined.
 - **D. Real tests.** A scripted multi-project scenario against the live server with real models on a disposable copy of the data: interleaved messages for two or three projects with steering and status questions, scored on correct dispatch, no cross-talk, and time until each message is placed.
 
+## Status (2026-11-08)
+
+A, B and C shipped (trial log entries 86, 87, 88). Not built from B: stop and pause *words* as controls; Stop stays the button on each strand. D is `pnpm eval:multitask` (entry 89): the scenario runs against the real server on a disposable copy with real models and is scored per run.
+
 ## Budget and models
 
 DeepSeek V4.1 Flash is the worker for every live run; routing is tried on DeepSeek Flash first and GPT-6 Luna otherwise; Kimi K3.1 Pro and GLM 5.3 FlashX only for variance checks. Spend is capped at 2.50 per provider for this round, tracked from `calls.db` and the provider dashboards, and written into each trial-log entry.

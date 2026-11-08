@@ -76,5 +76,5 @@ export class SteerQueue {
 /** The user message the loop appends for steers taken at a step boundary. */
 export function steeringMessage(steers: Steer[], timeZone: string): string {
   const items = steers.map((s) => `- at ${contextTime(s.at, timeZone)}:\n\`\`\`text\n${s.text}\n\`\`\``).join("\n");
-  return `<STEERING>\nThe user sent this while you were working on this task:\n${items}\nIt is part of this turn, not a new task: take it into account now (change course, add to the work, or answer it), and cover it in your final answer.\n</STEERING>`;
+  return `<STEERING>\nThe user sent this while you were working on this task:\n${items}\nIt is part of this turn, not a new task: take it into account now (change course, add to the work, or answer it). The user has seen nothing you wrote in this turn so far, so your final answer must stand on its own and cover the original request and this addition together; never refer to an earlier answer of this turn.\n</STEERING>`;
 }

@@ -28,6 +28,7 @@
     "eval:work-memory": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/agent/eval/run-work-memory-eval.ts",
     "eval:lanes": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/agent/eval/run-lanes-e2e.ts",
     "eval:server": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx apps/server/eval/run-server-e2e.ts",
+    "eval:multitask": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx apps/server/eval/run-multitask-e2e.ts",
     "eval:server-core": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx apps/server/eval/run-server-core-e2e.ts",
     "eval:provider": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/providers/eval/run-provider-smoke.ts",
     "eval:gold": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx apps/server/eval/run-gold-eval.ts",
