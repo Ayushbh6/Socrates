@@ -27,6 +27,8 @@ export interface EventPayloads {
   /** A main-conversation turn whose task was busy in a lane, handed to that lane. */
   /** `reason`: the lane already worked this task (`busy_task`, the default), or the main conversation was busy and the turn was placed beside it (`parallel`). */
   turn_moved_to_lane: { lane_id: string; reason?: "busy_task" | "parallel" };
+  /** A later message for this turn's task was folded into it while it ran (agent-harness.md, "Steering"); `steered_turn_id` is that message's own turn, completed with the running one. */
+  turn_steered: { steered_turn_id: string; user_event_id: string; text: string };
   routing_completed: {
     outcome: "decision" | "clarify";
     decision: unknown;
@@ -91,7 +93,7 @@ export interface EventPayloads {
    * wrap-up after a per-turn limit. `task_complete_reason` is the agent's
    * completion proposal, recorded with the task's completed status.
    */
-  turn_completed: { project_turn: number; response_event_id: string; stop?: TurnStop; task_complete_reason?: string | null };
+  turn_completed: { project_turn: number; response_event_id: string; stop?: TurnStop; task_complete_reason?: string | null; /** This turn was folded into that running turn, whose answer covers it. */ steered_into?: string };
   /**
    * A history checkpoint or handover capsule, stored under its task-scoped
    * handle `hc-N`. `from`/`to` is the project-turn range it covers; 0/0 means
@@ -118,7 +120,7 @@ export interface EventPayloads {
    * user stopped the turn. It is kept as written and never treated as a final
    * answer: the turn stays interrupted, with no response and no ledger changes.
    */
-  turn_interrupted: { project_turn: number; reason: "cancelled" | "failed" | "restarted"; tool_calls: number; continuation_note: string; partial_answer?: string };
+  turn_interrupted: { project_turn: number; reason: "cancelled" | "failed" | "restarted"; tool_calls: number; continuation_note: string; partial_answer?: string; /** This turn was folded into that running turn, which was interrupted. */ steered_into?: string };
   /** An operational warning about one turn, such as a rejected final answer or anchor proposal. */
   context_diagnostics: { contextHash: string; contextParts: number; session?: {chatRef: string; sequence: number; compactions: number; handoverRef: string | null; continuationOf: string | null}; historyScope?: string; activityAsOf: string; timeZone: string; history: { budget: number; used: number; included: number[]; omitted: number; dates: string[] } | null; memory: { recall: number | null; threshold: number; matched: number; explanation: string } };
   note_outcome: import("./agent").NoteOutcome & { source_turn: string; correction?: boolean };

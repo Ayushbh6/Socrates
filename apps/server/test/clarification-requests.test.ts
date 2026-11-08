@@ -103,7 +103,7 @@ describe("routing question lifecycle through live clients and history", () => {
     // The reply is taken at once and routed; its task (General) is the one main holds, so it waits its turn rather than sitting in the queue.
     s.p.send({type: "reply", id: "reply", clarification: s.question.id, text: "Work"});
     await s.p.next(m => m.type === "progress" && m.id === "reply" && m.trail.some((t: any) => t.stage === "waiting"));
-    await s.p.next(m => m.type === "state" && m.queue.length === 0 && m.routingQuestions.every((q: any) => q.turnId !== s.question.turnId || q.state !== "pending"));
+    await s.p.next(m => m.type === "state" && m.queue.length === 0 && m.routingQuestions.every((q: any) => q.turnId !== s.question.id || q.state !== "pending"));
     const day = s.rt.store.ensureGeneral("Europe/Vienna");
     s.p.send({type: "queue", id: "later", text: "A later Standard request", chat: {goal: day.goal.number, task: day.task.number}});
     await s.p.next(m => m.type === "state" && m.queue.some((q: any) => q.id === "later"));

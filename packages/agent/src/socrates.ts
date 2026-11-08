@@ -12,6 +12,7 @@ import { type AccessGrant, type AccessPolicy, type Approve, type CapabilityCatal
 import { attachmentImages, requestAttachments, decisionImages } from "./attachments";
 import { assembleContext, projectQuery } from "./context";
 import { type LaneView, laneNotice, lanesBlock } from "./lanes";
+import { type Steer, SteerQueue } from "./steering";
 import { RELATED_MAX_SECTIONS } from "./project-context";
 import { fallbackAnswer, mechanicalNote } from "./final";
 import type { Draft } from "./draft";
@@ -210,7 +211,7 @@ export type HandleResult =
   | { kind: "answered"; text: string; acknowledgment: string | null; parts: PartResult[]; laneId: string | null; notice: string | null; notices: string[] };
 
 /** What a message is doing before its first model step: the router's stages plus the harness's own. */
-export type ProgressStage = "remembering" | "recalling" | RoutingStage | "waiting" | "slot" | "preparing" | "starting";
+export type ProgressStage = "remembering" | "recalling" | RoutingStage | "waiting" | "steering" | "slot" | "preparing" | "starting";
 
 /**
  * Whether a turn ends with a failure still standing, for "do X, then mark this
@@ -283,6 +284,8 @@ interface TaskLock {
   previous?: TaskLock;
   cancelled?: boolean;
   settled?: boolean;
+  /** While this lock's run works, later messages for the task can be folded into it (agent-harness.md, "Steering"). */
+  steering?: SteerQueue;
 }
 
 /**
@@ -768,10 +771,23 @@ export class Socrates {
         return await this.enqueueLane(destination, () => this.runLocked(part, parts, signal, options, destination, () => {}), signal);
       } finally { this.leaveLane(destination); }
     }
+    // The task's turn is running now, with nothing queued behind it: this message is folded into that turn
+    // between its steps instead of waiting for it, and ends with it. If the turn ends first, it runs on its own.
+    if (held?.steering?.open && !held.settled && !held.cancelled && part.clarification === null) {
+      options.onProgress?.("steering");
+      const steer: Steer = { turnId: part.turn.id, userEventId: part.turn.userEventId, text: part.request, at: this.store.clock.now().toISOString() };
+      const offered = await abortable(held.steering.offer(steer, signal), signal);
+      if (offered === "injected") {
+        const into = await abortable(held.steering.done, signal);
+        return this.persistSteered(part, into);
+      }
+      signal.throwIfAborted();
+    }
     const previous = held?.done ?? Promise.resolve();
     let unlock!: () => void;
     const mine = new Promise<void>((done) => (unlock = done));
-    const entry: TaskLock = { laneId, done: previous.then(() => mine), previous: held };
+    const steering = new SteerQueue();
+    const entry: TaskLock = { laneId, done: previous.then(() => mine), previous: held, steering };
     this.taskLocks.set(taskId, entry);
     void entry.done.then(() => {
       entry.settled = true;
@@ -801,7 +817,9 @@ export class Socrates {
       this.goalRuns.set(goalId, (this.goalRuns.get(goalId) ?? 0) + 1);
       this.approvers.set(part.turn.id, { approve: options.approve ?? this.options.approve, laneId, chat: options.alongside === true });
       try {
-        return await this.runPart({ ...part, turn: this.store.requireTurn(part.turn.id) }, parts, signal, options, fresh);
+        const result = await this.runPart({ ...part, turn: this.store.requireTurn(part.turn.id) }, parts, signal, options, fresh, steering);
+        steering.finish(result);
+        return result;
       } finally {
         this.approvers.delete(part.turn.id);
         this.approvalsWaiting.delete(part.turn.id);
@@ -810,6 +828,9 @@ export class Socrates {
         else this.goalRuns.delete(goalId);
       }
     } finally {
+      // A run that threw never settled its steers: they run on their own, after it.
+      steering.close();
+      if (!steering.settledResult) steering.finish(this.interruptedResult(part));
       releaseSlot();
       unlock();
       if (!acquired) {
@@ -817,6 +838,35 @@ export class Socrates {
         this.pruneTaskLocks(taskId);
       }
     }
+  }
+
+  /** The part's turn as the ledger shows it after a run that threw, for messages folded into it. */
+  private interruptedResult(part: RoutedPart): PartResult {
+    const turn = this.store.requireTurn(part.turn.id);
+    const calls = this.store.evidenceForTurn(turn.id).length;
+    return { order: part.order, turn, task: this.store.requireTask(part.task.id), status: "interrupted", stop: null, answer: "", toolCalls: calls };
+  }
+
+  /**
+   * A message folded into the running turn of its task ends with that turn
+   * (agent-harness.md, "Steering"): completed with a note that the running
+   * turn's answer covers it, or interrupted as that turn was. The task's
+   * continuation note stays the running turn's.
+   */
+  private persistSteered(part: RoutedPart, into: PartResult): PartResult {
+    const { store } = this;
+    const turn = store.requireTurn(part.turn.id);
+    if (turn.status !== "in_progress") return { order: part.order, turn, task: store.requireTask(part.task.id), status: turn.status === "completed" ? "completed" : "interrupted", stop: null, answer: "", toolCalls: 0 };
+    const refs: EventRefs = { goal_id: part.goal.id, task_id: part.task.id, chat_id: turn.chatId, turn_id: turn.id };
+    if (into.status === "completed") {
+      const answer = `Taken into the work in progress on this task (turn ${into.turn.projectTurn}); its answer covers this.`;
+      const response = store.recordResponse(answer, refs);
+      store.completeTurn(turn.id, { responseEventId: response.id, steeredInto: into.turn.id, ...(into.stop ? { stop: into.stop } : {}) });
+      return { order: part.order, turn: store.requireTurn(turn.id), task: store.requireTask(part.task.id), status: "completed", stop: into.stop, answer, toolCalls: 0 };
+    }
+    const reason = store.interruption(into.turn.id)?.reason;
+    store.interruptTurn(turn.id, { reason: reason === "failed" ? "failed" : "cancelled", toolCalls: 0, continuationNote: store.requireTask(part.task.id).continuationNote ?? "", steeredInto: into.turn.id });
+    return { order: part.order, turn: store.requireTurn(turn.id), task: store.requireTask(part.task.id), status: "interrupted", stop: null, answer: `Stopped with the work it was taken into (turn ${into.turn.projectTurn}).`, toolCalls: 0 };
   }
 
   /** A cancelled waiter can expose an owner that already finished; neither should keep the task busy. */
@@ -827,7 +877,7 @@ export class Socrates {
     else this.taskLocks.delete(taskId);
   }
 
-  private async runPart(part: RoutedPart, parts: RoutedPart[], signal: AbortSignal, options: RunOptions, fresh: boolean): Promise<PartResult> {
+  private async runPart(part: RoutedPart, parts: RoutedPart[], signal: AbortSignal, options: RunOptions, fresh: boolean, steering?: SteerQueue): Promise<PartResult> {
     const { store } = this;
     const turn = part.turn;
     const goal = store.requireGoal(turn.goalId!);
@@ -977,6 +1027,7 @@ export class Socrates {
       trace: { userEventId: turn.userEventId, laneId: turn.laneId },
       ...(this.options.retryDelaysMs ? { retryDelaysMs: this.options.retryDelaysMs } : {}),
       ...(this.options.now ? { now: this.options.now } : {}),
+      ...(steering ? { steering, timeZone: this.options.timeZone, onSteered: (steer: Steer) => { store.recordSteer(turn.id, { steeredTurnId: steer.turnId, userEventId: steer.userEventId, text: steer.text }); } } : {}),
     });
     // A stop that lands after the answer was written keeps what was written.
     const written = outcome.kind === "interrupted" ? outcome.partial : outcome.kind === "answer" ? outcome.answer.full_answer : null;

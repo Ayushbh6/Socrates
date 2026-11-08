@@ -15,11 +15,12 @@ export function contextTime(at: string | Date, timeZone: string): string {
   const parts = new Intl.DateTimeFormat('sv-SE', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(date).replace(' ', 'T');
   return `${parts}${offset}`;
 }
-export function currentRequest(input: { id: string; at: string; text: string; turnId?: string; clarification?: { question: string; answer: string } | null; attachments?: { name: string; mediaType?: string; path?: string }[] }, timeZone: string): string {
+export function currentRequest(input: { id: string; at: string; text: string; turnId?: string; clarification?: { question: string; answer: string } | null; attachments?: { name: string; mediaType?: string; path?: string }[]; /** Messages folded into this turn while it ran, so a rebuilt context keeps them. */ added?: { at: string; text: string }[] }, timeZone: string): string {
   return contextSection('CURRENT_REQUEST', [
     `request_ref: ${input.id}`, ...(input.turnId ? [`turn_ref: ${input.turnId}`] : []), `requested_at: ${contextTime(input.at, timeZone)}`,
     `\n## TEXT\n${quoteEvidence(input.text)}`,
     ...(input.clarification ? [`\n## ROUTING_CLARIFICATION\nquestion:\n${quoteEvidence(input.clarification.question)}\nreply:\n${quoteEvidence(input.clarification.answer)}`] : []),
+    ...(input.added?.length ? [`\n## ADDED_WHILE_WORKING\nThe user sent these during this turn; they are part of it:\n${input.added.map(a => `- at ${contextTime(a.at, timeZone)}:\n${quoteEvidence(a.text)}`).join('\n')}`] : []),
     ...(input.attachments?.length ? [`\n## ATTACHMENTS\n${input.attachments.map(a => `- name: ${JSON.stringify(a.name)}\n  media_type: ${a.mediaType ?? 'unknown'}${a.path ? `\n  path: ${JSON.stringify(a.path)}` : ''}`).join('\n')}`] : []),
   ].join('\n'));
 }
@@ -38,7 +39,9 @@ export function renderContextExchange(store: LedgerStore, turn: Turn, options: E
     ? `${interrupted.partial_answer}\n\n(The user stopped this turn after ${count}, while this answer was being written; it is incomplete.)`
     : interrupted.reason === 'restarted' ? `(Socrates stopped while this turn ran, after ${count}; no answer was given.)`
     : `(${interrupted.reason === 'cancelled' ? 'The user stopped this turn' : 'This turn failed'} after ${count}; no answer was given.)`;
-  const answer = turn.responseEventId ? (store.getEvent(turn.responseEventId)!.payload as EventPayloads['assistant_response']).text : stopped;
+  const into = store.steeredInto(turn.id);
+  const answer = into ? `(Sent while turn_number ${into.projectTurn} of this task was working and folded into it; that exchange's answer covers this.)` : turn.responseEventId ? (store.getEvent(turn.responseEventId)!.payload as EventPayloads['assistant_response']).text : stopped;
+  const added = into ? [] : store.steersOf(turn.id);
   const invalid = store.listEvents({ turnId: turn.id, type: 'agent_warning' }).map(e => e.payload as EventPayloads['agent_warning']).filter(e => e.kind === 'final_answer_invalid');
   const calls = options.tools ? store.evidenceForTurn(turn.id) : [];
   let cap = Infinity;
@@ -59,6 +62,7 @@ export function renderContextExchange(store: LedgerStore, turn: Turn, options: E
       ...(!options.decider ? [`completed_at: ${turn.completedAt ? contextTime(turn.completedAt, zone) : 'unknown'}`] : []),
       `\n### USER_REQUEST\n${quoteEvidence(excerpt(request.request))}`,
       ...(request.clarification ? [`\n### ROUTING_CLARIFICATION\nquestion:\n${quoteEvidence(excerpt(request.clarification.question))}\nreply:\n${quoteEvidence(excerpt(request.clarification.answer))}`] : []),
+      ...(added.length ? [`\n### ADDED_WHILE_WORKING\n${added.map(a => `- at ${contextTime(a.at, zone)}:\n${quoteEvidence(excerpt(a.text))}`).join('\n')}`] : []),
       ...(request.attachments.length ? [`attachments: ${JSON.stringify(request.attachments.map(a => ({ name: a.name, media_type: a.media_type, path: a.path })))}`] : []),
       ...(includeCalls ? calls.map(e => renderEvidence(e, goal!.number, task!.number, zone, excerpt, collapsed.get(e.handle))) : []),
       `\n### FINAL_ANSWER\n${quoteEvidence(excerpt(answer))}`,

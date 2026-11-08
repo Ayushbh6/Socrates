@@ -111,7 +111,7 @@ export function assembleContext(input: ContextInput): TextPart[] {
     input.candidates ?? null,
     contextSection("CURRENT_TIME", `at: ${contextTime(input.now, input.timeZone)}\ntimezone: ${input.timeZone}\nfrozen_for_turn: true`),
     !input.vision && message.attachments.length ? "The current model cannot see images: use the attachment path with read when needed." : null,
-    currentRequest({id: root.id, at: root.at, turnId: turn.id, text: message.request, clarification: message.clarification, attachments: message.attachments.map(a => ({name: a.name, mediaType: a.media_type, path: a.path}))}, input.timeZone),
+    currentRequest({id: root.id, at: root.at, turnId: turn.id, text: message.request, clarification: message.clarification, attachments: message.attachments.map(a => ({name: a.name, mediaType: a.media_type, path: a.path})), added: store.steersOf(turn.id).map(s => ({at: s.at, text: s.text}))}, input.timeZone),
   ].filter((b): b is string => b !== null);
   parts.push({text: volatile.join("\n\n")});
   return parts;

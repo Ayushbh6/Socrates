@@ -314,6 +314,8 @@ function Meta({ step }: { step: Extract<Segment, { kind: "meta" }>["step"] }) {
   switch (step.kind) {
     case "handed_off":
       return <p className="step-meta"><CornerDownRight aria-hidden /> Handed to lane {step.lane}, which is working on this task.</p>;
+    case "steer":
+      return <p className="step-meta steer"><CornerDownRight aria-hidden /> <span>You added, mid-work: <q>{step.text}</q></span></p>;
     case "warning":
       return <p className="step-meta warn"><AlertTriangle aria-hidden /> {step.detail}</p>;
     case "decision":

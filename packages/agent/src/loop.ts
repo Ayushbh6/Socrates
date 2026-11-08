@@ -1,4 +1,5 @@
 import { noteLength, type NoteOutcome, type CallTrace, type FinalAnswer, type ImageData, type ModelClient, ModelError, type ModelMessage, type ModelResponse, type TextPart, type ToolCall, type ToolDefinition, type TurnStop } from "@socrates/contracts";
+import { type Steer, SteerQueue, steeringMessage } from "./steering";
 import type { TokenCalibration } from "@socrates/providers";
 import { abortable } from "@socrates/shared";
 import type { ActiveCapabilities, CallScope, ToolRunner } from "@socrates/tools";
@@ -83,6 +84,16 @@ export interface RunInput {
    * and never saved; when given, the turn's requests are streamed.
    */
   onDraft?: (draft: Draft) => void;
+  /**
+   * Later messages for this task, folded into the turn at step boundaries
+   * (agent-harness.md, "Steering"): taken before each work request, and
+   * instead of a final answer written while one waited. Closed when the loop
+   * ends, so what is still pending runs on its own.
+   */
+  steering?: SteerQueue;
+  /** Each message as it is folded in, so the harness records it. */
+  onSteered?: (steer: Steer) => void;
+  timeZone?: string;
 }
 
 export type RunOutcome =
@@ -137,6 +148,14 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
   };
   const interrupted = (reason: "cancelled" | "failed", detail: string | null = null): RunOutcome => ({ kind: "interrupted", reason, detail, toolCalls, steps, partial: reason === "cancelled" ? partial : null });
   const push = (message: ModelMessage) => { messages.push(message); sizes.push(messageTokens(message)); };
+  /** Fold in what the user sent meanwhile, as one user message after the latest results. */
+  const inject = (): boolean => {
+    const steers = input.steering?.take() ?? [];
+    if (!steers.length) return false;
+    push({ role: "user", content: steeringMessage(steers, input.timeZone ?? "UTC") });
+    for (const steer of steers) input.onSteered?.(steer);
+    return true;
+  };
   /**
    * Screenshots add up: past TOOL_IMAGES_KEPT_MAX images in tool results, the
    * oldest are dropped down to TOOL_IMAGES_KEPT, each result keeping its text
@@ -330,6 +349,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
       const size = input.calibration.measure(model.id, baseTokens + sizes.reduce((a, b) => a + b, 0));
       const limit = steps >= limits.maxSteps ? "steps" : timeExpired() ? "time" : spent >= limits.maxTokens ? "tokens" : size >= budgets.trigger && !input.compact ? "context" : null;
       if (limit) return await wrapUp(limit);
+      inject();
       if (size >= budgets.trigger && input.compact && (compactedAt === null || size >= compactedAt + budgets.trigger - budgets.target)) {
         // Compaction is synchronous and mid-turn; the turn continues after it.
         const compacted = await input.compact(messages, measure, workSignal, {
@@ -356,7 +376,15 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
         if (scope.signal.aborted) return interrupted("cancelled");
         return await wrapUp("time");
       }
-      if (response.toolCalls.length === 0) return await finish(response, "final");
+      if (response.toolCalls.length === 0) {
+        // An answer written while the user added something is not final: the addition is folded in and the work goes on.
+        if (input.steering?.pendingCount) {
+          push({ role: "assistant", content: response.text, ...(response.raw ? { raw: response.raw } : {}) });
+          inject();
+          continue;
+        }
+        return await finish(response, "final");
+      }
       await appendResponse(response, workSignal);
       if (input.refreshTools && !workSignal.aborted) {
         // A failed refresh keeps the previous list; dispatch still revalidates every MCP call.
@@ -368,6 +396,7 @@ export async function runAgent(input: RunInput): Promise<RunOutcome> {
       }
     }
   } finally {
+    input.steering?.close();
     clearTimeout(workTimer);
     clearTimeout(finalTimer);
   }

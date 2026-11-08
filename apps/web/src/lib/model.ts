@@ -16,6 +16,8 @@ export type Step =
   /** A tool call in plain words, and once it finished, what it returned. */
   | { kind: "tool"; handle: string; task: string; turnId: string; call: CallView; status: "running" | "ok" | "error"; result: ResultView | null; at: string; approval?: { granted: boolean; detail: string } }
   | { kind: "handed_off"; lane: number }
+  /** What the user added while this turn worked, folded into it. */
+  | { kind: "steer"; text: string; at: string }
   | { kind: "warning"; detail: string }
   | { kind: "decision"; granted: boolean; detail: string };
 
@@ -369,6 +371,8 @@ function applyOne(e: Exchange, a: Activity | DraftArrived): Exchange {
       };
       return { ...x, answers: [...x.answers, a.text], answerStarts };
     }
+    case "steered":
+      return { ...x, steps: [...x.steps, { kind: "steer", text: a.text, at: a.at }] };
     case "handed_off": {
       // The lane works on it now; the main conversation's part of it is over.
       const open = x.open.filter((t) => t !== a.turnId);

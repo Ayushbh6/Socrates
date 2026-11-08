@@ -262,6 +262,8 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .step-meta { display: flex; align-items: center; gap: 0.45rem; margin: 0.2rem 0; padding: 0 0.45rem; color: var(--faint); font-size: 0.8rem; }
 .step-meta svg { flex: none; width: 0.9rem; height: 0.9rem; }
 .step-meta.warn { color: var(--warm); }
+.step-meta.steer { color: var(--ink, inherit); background: var(--surface-2, rgba(127, 127, 127, 0.08)); border-radius: 0.5rem; padding: 0.35rem 0.6rem; margin: 0.35rem 0; align-items: flex-start; }
+.step-meta.steer q { quotes: "“" "”"; font-style: italic; }
 /* What a running command prints, newest lines only. */
 .tool-live { max-height: 9.5em; margin: 0.05rem 0 0.35rem 1.95rem; padding: 0.5rem 0.8rem; overflow: hidden; border: 1px solid rgba(17, 40, 32, 0.07); border-radius: 0.6rem; background: #fbfaf7; color: var(--muted); font-family: var(--mono); font-size: 0.72rem; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
 /* An opened call: a card with the whole command, its output or diff, and a footer. */

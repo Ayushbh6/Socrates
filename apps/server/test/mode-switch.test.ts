@@ -31,7 +31,13 @@ async function setup(options: { slowRouter?: boolean; approval?: boolean } = {})
   await asked("A");
   const task = server.rt.store.listTasks(server.rt.chatsGoal().id)[0]!;
   const chat = { goal: server.rt.chatsGoal().number, task: task.number };
-  const order = () => agent.requests.map(messageOf).filter((m) => m !== "A" || !options.approval);
+  // With steering, a message folded into a running turn gives that turn a further request: consecutive repeats are one.
+  const order = () => agent.requests.map(messageOf).filter((m) => m !== "A" || !options.approval).filter((m, i, all) => m !== all[i - 1]);
+  const folded = (text: string) => server.rt.store.listEvents({ type: "turn_steered" }).map((e) => (e.payload as { text: string }).text).filter((t) => t === text);
+  const foldedInto = (text: string) => {
+    const request = agent.requests.find((r) => JSON.stringify(r.messages).includes("<STEERING>") && JSON.stringify(r.messages).includes(`\\n${text}\\n`));
+    return request ? messageOf(request) : null;
+  };
   const release = (key: string) => gates.get(key)!();
   const queue = async (id: string) => {
     p.send({ type: "queue", id: id.toLowerCase(), text: id, chat });
@@ -42,11 +48,11 @@ async function setup(options: { slowRouter?: boolean; approval?: boolean } = {})
     await p.next((m) => m.type === "accepted" && m.id === id.toLowerCase());
     await expect.poll(() => router.requests.some((r) => !r.system.startsWith("You name a chat"))).toBe(true);
   };
-  return { ...server, p, task, chat, agent, router, release, asked, order, queue, flow };
+  return { ...server, p, task, chat, agent, router, release, asked, order, queue, flow, folded, foldedInto };
 }
 
 describe("messages crossing Standard and Flow", () => {
-  it("runs earlier queued Standard messages before a later routed Flow message, with fresh history", async () => {
+  it("runs earlier queued Standard messages before a later routed Flow message, which joins the last of them", async () => {
     const s = await setup();
     await s.queue("B");
     await s.queue("B2");
@@ -56,9 +62,10 @@ describe("messages crossing Standard and Flow", () => {
     await s.p.next(result("d"));
     s.release("A");
     for (const id of ["a", "b", "b2", "c"]) await s.p.next(result(id));
-    expect(s.order().filter((m) => m !== "D")).toEqual(["A", "B", "B2", "C"]);
-    const history = JSON.stringify(s.agent.requests.find((r) => messageOf(r) === "C")!.messages);
-    expect(history).toContain("Answered B2");
+    // C waited for B and B2 to go first; when B2's turn worked, C was folded into it (agent-harness.md, "Steering").
+    expect(s.order().filter((m) => m !== "D")).toEqual(["A", "B", "B2"]);
+    expect(s.folded("C")).toEqual(["C"]);
+    expect(s.foldedInto("C")).toBe("B2");
     expect(s.rt.store.listEvents({ type: "user_message" })).toHaveLength(5);
   });
 
@@ -71,7 +78,9 @@ describe("messages crossing Standard and Flow", () => {
     s.release("A");
     await s.p.next(result("a"));
     await s.p.next(result("c"));
-    expect(s.order()).toEqual(["A", "C"]);
+    // Nothing ahead of it any more: C joined A's running turn.
+    expect(s.order()).toEqual(["A"]);
+    expect(s.foldedInto("C")).toBe("A");
   });
 
   it("does not let a later Standard message pass an earlier Flow message still routing", async () => {
@@ -85,7 +94,9 @@ describe("messages crossing Standard and Flow", () => {
     s.release("router");
     await s.p.next(result("b"));
     await s.p.next(result("c"));
-    expect(s.order()).toEqual(["A", "B", "C"]);
+    // C waited for B's routing; once B worked, C joined it rather than passing it.
+    expect(s.order()).toEqual(["A", "B"]);
+    expect(s.foldedInto("C")).toBe("B");
   });
 
   it("stops an owner and its Flow waiter without leaving the task busy", async () => {
@@ -113,7 +124,9 @@ describe("messages crossing Standard and Flow", () => {
     await s.queue("C");
     s.release("H");
     for (const id of ["h", "b", "c"]) await s.p.next(result(id));
-    expect(s.order()).toEqual(["A", "H", "B", "C"]);
+    // B went first (queued earlier, destination known only when routed); C then joined B's turn.
+    expect(s.order()).toEqual(["A", "H", "B"]);
+    expect(s.foldedInto("C")).toBe("B");
   });
 
   it("stops only the Flow waiter, keeping the Standard approval and queue alive", async () => {

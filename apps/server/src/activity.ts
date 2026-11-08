@@ -28,6 +28,8 @@ export type ActivityBody =
   | { kind: "answer"; turnId: string; text: string }
   | { kind: "finished"; turnId: string; status: "completed" | "interrupted"; reason: EventPayloads["turn_interrupted"]["reason"] | null; partial?: string | null; /** Why a completed turn ended (a limit means it can be continued). */ stop?: TurnStop | null }
   | { kind: "handed_off"; turnId: string; lane: number; laneId: string; goal: { number: number; title: string }; task: { number: number; title: string } }
+  /** A later message for the turn's task was folded into it while it ran; `steeredTurnId` is that message's own turn. */
+  | { kind: "steered"; turnId: string; steeredTurnId: string; steeredSeq: number | null; text: string }
   | { kind: "lane"; laneId: string; number: number; state: "opened" | "closed" }
   | { kind: "approval_decided"; turnId: string | null; granted: boolean; detail: string; handle: string | null }
   | { kind: "warning"; turnId: string | null; detail: string }
@@ -146,6 +148,12 @@ export function activityOf(store: LedgerStore, event: StoredEvent): Activity | n
       const goal = store.requireGoal(turn!.goalId!);
       const task = store.requireTask(turn!.taskId!);
       return { ...base, conversation: "main", kind: "handed_off", turnId: event.turn_id!, lane: store.requireLane(p.lane_id).number, laneId: p.lane_id, goal: { number: goal.number, title: goal.title }, task: { number: task.number, title: task.title } };
+    }
+    case "turn_steered": {
+      if (!turn) return null;
+      const p = event.payload as EventPayloads["turn_steered"];
+      const steered = store.getEvent(p.user_event_id);
+      return { ...base, kind: "steered", turnId: turn.id, steeredTurnId: p.steered_turn_id, steeredSeq: steered ? store.requestRoot(steered.id).seq : null, text: p.text };
     }
     case "lane_opened":
     case "lane_closed": {

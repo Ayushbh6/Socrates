@@ -5,7 +5,8 @@ import { LedgerStore } from "@socrates/store";
 import type { ApprovalOrigin, ApprovalRequest } from "@socrates/tools";
 import { describe, expect, it } from "vitest";
 import { continueTask, createGoal, createTask, decision, defineTask } from "../../router/test/helpers";
-import { LANES_MAX_TOKENS, lanesBlock, MAX_RUNNING_LANES, Socrates, type SocratesOptions } from "../src";
+import { LANES_MAX_TOKENS, lanesBlock, MAX_RUNNING_LANES, Socrates, type SocratesOptions, SteerQueue } from "../src";
+import { renderContextExchange } from "@socrates/store";
 import { call, contextText, final, world } from "./helpers";
 
 type Out = { text: string } | { toolCalls: { name: string; input: unknown }[] };
@@ -745,33 +746,51 @@ describe("placing a message sent while main works (lane: \"auto\")", () => {
     await s.close();
   });
 
-  it("a message for main's own task waits for main's turn, then runs in main without opening a lane", async () => {
-    const w = await world();
-    const slow = gate();
+  it("a message for main's own task is folded into main's running turn: no lane, no second run", async () => {
+    const w = await world({ files: { "a.txt": "alpha\n" } });
+    const hold = gate();
     const router = new Responder("test:router", () => continueTask());
+    let runSteps = 0;
     const agent = new Responder("test:agent", async (m) => {
-      if (m === "Run the slow suite.") await slow.opened;
+      if (m === "Run the slow suite.") {
+        if (runSteps++ === 0) {
+          await hold.opened;
+          return { toolCalls: [call("read", { path: "a.txt" })] };
+        }
+        return final({ full_answer: `Done: ${m}` });
+      }
       return final({ full_answer: `Done: ${m}` });
     });
-    const s = socrates(w.store, router, agent);
+    const s = socrates(w.store, router, agent, { resolveWorkspace: () => ({ name: "project", rootPath: w.root }) });
     const main = s.handle("Run the slow suite.");
     await new Promise((done) => setTimeout(done, 10));
     const stages: string[] = [];
     const more = s.handle("Also update the README.", { lane: "auto", onProgress: (stage) => stages.push(stage) });
     await new Promise((done) => setTimeout(done, 20));
     expect(await settled(more)).toBe(false);
-    expect(stages).toContain("waiting");
+    expect(stages).toContain("steering");
     expect(w.store.listLanes()).toEqual([]);
 
-    slow.open();
-    await main;
+    hold.open();
+    const first = await main;
     const result = await more;
-    expect(result).toMatchObject({ kind: "answered", text: "Done: Also update the README.", laneId: null, notices: [] });
-    expect(result.kind === "answered" && result.parts[0]!.turn.laneId).toBeNull();
-    expect(w.store.listLanes()).toEqual([]);
+    expect(first).toMatchObject({ kind: "answered", text: "Done: Run the slow suite." });
+    expect(result).toMatchObject({ kind: "answered", text: expect.stringMatching(/^Taken into the work in progress on this task \(turn \d+\); its answer covers this\.$/), laneId: null, notices: [] });
+    const [a, b] = [first.kind === "answered" ? first.parts[0]!.turn : null, result.kind === "answered" ? result.parts[0]!.turn : null];
+    expect(b?.status).toBe("completed");
+    // The addition reached the running turn after its first step, as one user message, and is recorded on that turn.
+    expect(agent.requests.filter((r) => messageOf(r) === "Run the slow suite.")).toHaveLength(2);
+    const second = JSON.stringify(agent.requests.filter((r) => messageOf(r) === "Run the slow suite.")[1]!.messages);
+    expect(second).toContain("<STEERING>");
+    expect(second).toContain("Also update the README.");
+    expect(w.store.steersOf(a!.id)).toEqual([expect.objectContaining({ steeredTurnId: b!.id, text: "Also update the README." })]);
+    expect(w.store.steeredInto(b!.id)?.id).toBe(a!.id);
     expect(w.store.listEvents({ type: "turn_moved_to_lane" })).toHaveLength(0);
-    // It ran after main's turn, with that turn in its history.
-    expect(contextText(agent.requests.find((r) => messageOf(r) === "Also update the README.")!)).toContain("Run the slow suite.");
+    // History: the running turn shows what was added; the folded turn points at it instead of repeating the answer.
+    const rendered = renderContextExchange(w.store, w.store.requireTurn(a!.id), { timeZone: "UTC" });
+    expect(rendered).toContain("### ADDED_WHILE_WORKING\n- at 2026-09-01T10:00:00+00:00:");
+    expect(rendered.slice(rendered.indexOf("### ADDED_WHILE_WORKING"), rendered.indexOf("### FINAL_ANSWER"))).toContain("Also update the README.");
+    expect(renderContextExchange(w.store, w.store.requireTurn(b!.id), { timeZone: "UTC" })).toContain(`(Sent while turn_number ${a!.projectTurn} of this task was working and folded into it; that exchange's answer covers this.)`);
     expect(s.busy).toBe(false);
     await s.close();
   });
@@ -826,5 +845,123 @@ describe("placing a message sent while main works (lane: \"auto\")", () => {
     await Promise.all([main, ...lanes]);
     expect(await extra).toMatchObject({ kind: "answered", text: "Done: One more thing." });
     await s.close();
+  });
+});
+
+describe("steering a running turn", () => {
+  it("an addition that arrives while the final answer is being written is folded in, and the work goes on", async () => {
+    const w = await world();
+    const hold = gate();
+    const router = new Responder("test:router", () => continueTask());
+    let runSteps = 0;
+    const agent = new Responder("test:agent", async (m) => {
+      if (m === "Run the slow suite.") {
+        if (runSteps++ === 0) {
+          await hold.opened;
+          return final({ full_answer: "Done without the README." });
+        }
+        return final({ full_answer: "Done, README included." });
+      }
+      return final({ full_answer: `Done: ${m}` });
+    });
+    const s = socrates(w.store, router, agent);
+    const main = s.handle("Run the slow suite.");
+    await new Promise((done) => setTimeout(done, 10));
+    const more = s.handle("Also update the README.", { lane: "auto" });
+    await new Promise((done) => setTimeout(done, 10));
+    hold.open();
+    expect(await main).toMatchObject({ kind: "answered", text: "Done, README included." });
+    expect(await more).toMatchObject({ kind: "answered", text: expect.stringMatching(/^Taken into the work in progress/) });
+    const requests = agent.requests.filter((r) => messageOf(r) === "Run the slow suite.");
+    expect(requests).toHaveLength(2);
+    const messages = requests[1]!.messages;
+    // The answer written meanwhile stays in the conversation, followed by the addition.
+    expect(messages.at(-2)?.role).toBe("assistant");
+    expect(JSON.stringify(messages.at(-2))).toContain("Done without the README.");
+    expect(messages.at(-1)?.role).toBe("user");
+    expect(JSON.stringify(messages.at(-1))).toContain("Also update the README.");
+    await s.close();
+  });
+
+  it("stopping the added message before it is taken leaves the running turn alone", async () => {
+    const w = await world({ files: { "a.txt": "alpha\n" } });
+    const hold = gate();
+    const router = new Responder("test:router", () => continueTask());
+    let runSteps = 0;
+    const agent = new Responder("test:agent", async (m) => {
+      if (m === "Run the slow suite." && runSteps++ === 0) {
+        await hold.opened;
+        return { toolCalls: [call("read", { path: "a.txt" })] };
+      }
+      return final({ full_answer: `Done: ${m}` });
+    });
+    const s = socrates(w.store, router, agent, { resolveWorkspace: () => ({ name: "project", rootPath: w.root }) });
+    const main = s.handle("Run the slow suite.");
+    await new Promise((done) => setTimeout(done, 10));
+    const stop = new AbortController();
+    const more = s.handle("Also update the README.", { lane: "auto", signal: stop.signal });
+    await new Promise((done) => setTimeout(done, 10));
+    stop.abort();
+    const stopped = await more;
+    expect(stopped.kind === "answered" && stopped.parts[0]!.status).toBe("interrupted");
+    hold.open();
+    expect(await main).toMatchObject({ kind: "answered", text: "Done: Run the slow suite." });
+    expect(w.store.listEvents({ type: "turn_steered" })).toHaveLength(0);
+    expect(JSON.stringify(agent.requests.filter((r) => messageOf(r) === "Run the slow suite.")[1]!.messages)).not.toContain("<STEERING>");
+    await s.close();
+  });
+
+  it("stopping the running turn after an addition was taken stops the addition with it and keeps that turn's note", async () => {
+    const w = await world({ files: { "a.txt": "alpha\n" } });
+    const first = gate();
+    const second = gate();
+    const router = new Responder("test:router", () => continueTask());
+    let runSteps = 0;
+    const agent = new Responder("test:agent", async (m) => {
+      if (m === "Run the slow suite.") {
+        const n = runSteps++;
+        if (n === 0) {
+          await first.opened;
+          return { toolCalls: [call("read", { path: "a.txt" })] };
+        }
+        await second.opened;
+        return final({ full_answer: `Done: ${m}` });
+      }
+      return final({ full_answer: `Done: ${m}` });
+    });
+    const s = socrates(w.store, router, agent, { resolveWorkspace: () => ({ name: "project", rootPath: w.root }) });
+    const stop = new AbortController();
+    const main = s.handle("Run the slow suite.", { signal: stop.signal });
+    await new Promise((done) => setTimeout(done, 10));
+    const more = s.handle("Also update the README.", { lane: "auto" });
+    await new Promise((done) => setTimeout(done, 10));
+    first.open();
+    // The addition is taken at the step boundary; then the user stops the turn.
+    for (let i = 0; i < 100 && !w.store.listEvents({ type: "turn_steered" }).length; i++) await new Promise((done) => setTimeout(done, 5));
+    expect(w.store.listEvents({ type: "turn_steered" })).toHaveLength(1);
+    stop.abort();
+    second.open();
+    const a = await main;
+    const b = await more;
+    expect(a.kind === "answered" && a.parts[0]!.status).toBe("interrupted");
+    expect(b).toMatchObject({ kind: "answered", text: expect.stringMatching(/^Stopped with the work it was taken into/) });
+    expect(b.kind === "answered" && b.parts[0]!.turn.status).toBe("interrupted");
+    expect(w.store.steeredInto(b.kind === "answered" ? b.parts[0]!.turn.id : "")?.id).toBe(a.kind === "answered" ? a.parts[0]!.turn.id : null);
+    expect(w.store.requireTask(w.taskId).continuationNote).toContain("Interrupted by the user");
+    await s.close();
+  });
+
+  it("the steer queue returns what the loop never took", async () => {
+    const q = new SteerQueue();
+    const steer = { turnId: "t", userEventId: "u", text: "x", at: "2026-09-01T10:00:00Z" };
+    const pending = q.offer(steer);
+    expect(q.pendingCount).toBe(1);
+    q.close();
+    expect(await pending).toBe("returned");
+    expect(await q.offer(steer)).toBe("returned");
+    const taken = new SteerQueue();
+    const offered = taken.offer(steer);
+    expect(taken.take()).toEqual([steer]);
+    expect(await offered).toBe("injected");
   });
 });

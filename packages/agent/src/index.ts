@@ -11,6 +11,7 @@ export * from "./summaries";
 export * from "./retrieval";
 export * from "./project-context";
 export * from "./lanes";
+export * from "./steering";
 export * from "./draft";
 export * from "./memory";
 export * from "./gates";

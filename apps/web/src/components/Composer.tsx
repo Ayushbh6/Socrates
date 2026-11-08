@@ -43,7 +43,8 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, on
   const day = (at: Date) => new Intl.DateTimeFormat("en-CA", {timeZone: zone}).format(at);
   const generalRedirect = general?.startedAt && day(new Date(general.startedAt)) !== day(new Date()) ? `General · ${new Intl.DateTimeFormat("en-GB", {weekday: "short", day: "numeric", month: "short", timeZone: zone}).format(new Date())}` : null;
   const busy = chat ? chatBusy(live, chat) : conversationBusy(live, conversation);
-  const target = chat ? (busy || queued.length > 0 ? "queue" : "send") : sendTarget(conversation, live?.busy ?? false);
+  // A message to a working chat is sent: Socrates folds it into the work in progress or runs it next; only behind queued ones does it queue.
+  const target = chat ? (queued.length > 0 ? "queue" : "send") : sendTarget(conversation, live?.busy ?? false);
   const runningLanes = live?.lanes.filter((l) => l.running).length ?? 0;
   const images = app.images[conversation] ?? [];
   const attachments = images.flatMap((i) => (i.status === "ready" && i.attachment ? [i.attachment] : []));
@@ -141,7 +142,7 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, on
           onChange={(e) => setText(e.target.value)}
           onKeyDown={keys}
           onPaste={paste}
-          placeholder={images.length && empty ? "Say what to do with the images…" : laneNumber ? `Message lane ${laneNumber}…` : busy ? (chat ? "Socrates is working in this chat. Your message will wait in the queue…" : "Socrates is working. Something new starts beside it; a follow-up waits its turn…") : placeholder ?? "Ask Socrates…"}
+          placeholder={images.length && empty ? "Say what to do with the images…" : laneNumber ? `Message lane ${laneNumber}…` : busy ? (chat ? (target === "queue" ? "Socrates is working in this chat. Your message will wait in the queue…" : "Socrates is working in this chat. Your message joins the work in progress…") : "Socrates is working. Something new starts beside it; a follow-up joins the work in progress…") : placeholder ?? "Ask Socrates…"}
           aria-label="Message"
         />
         <div className="composer-row">

@@ -18,8 +18,13 @@ function held() {
 async function setup() {
   const gate = held();
   const router = new Responder("r", (_m, request) => (naming(request) ? { text: "A chat" } : { text: "the router must not be asked" }));
+  const seen = new Set<string>();
   const agent = new Responder("a", async (message) => {
-    if (message.startsWith("Slow")) await gate.wait(message);
+    // Held once per message: a turn asked again after a message was folded into it answers at once.
+    if (message.startsWith("Slow") && !seen.has(message)) {
+      seen.add(message);
+      await gate.wait(message);
+    }
     return final({ full_answer: `Answered: ${message}` });
   });
   const server = await liveServer(router, agent);
@@ -66,17 +71,17 @@ describe("standard-mode chats run beside each other, each as its own lane would"
     expect(rt.socrates!.runningChats).toBe(0);
   });
 
-  it("queues a message for a working chat until that chat is free, while other chats go on", async () => {
+  it("queues a message for a working chat only behind its queued messages, while other chats go on", async () => {
     const { p, rt, gate, asked, chatOf } = await setup();
     p.send({ type: "send", id: "m1", text: "Slow A", to: "main", chat: { goal: null, task: null } });
     await asked("Slow A");
     const a = chatOf("Slow A");
 
-    // Sent to the working chat, it is refused so the page queues it there.
-    p.send({ type: "send", id: "m2", text: "Then this in A", to: "main", chat: a });
-    expect(await p.next((m) => m.type === "error" && m.id === "m2")).toMatchObject({ code: "chat_busy" });
+    // An explicitly queued message waits for the chat; one sent after it is refused so the page queues it behind.
     p.send({ type: "queue", id: "m2", text: "Then this in A", chat: a });
     expect((await p.next((m) => m.type === "state" && m.queue.length === 1)).queue[0]).toMatchObject({ id: "m2", chat: a });
+    p.send({ type: "send", id: "m4", text: "And then this", to: "main", chat: a });
+    expect(await p.next((m) => m.type === "error" && m.id === "m4")).toMatchObject({ code: "chat_busy" });
     // Another chat sent meanwhile is not held up by it.
     p.send({ type: "send", id: "m3", text: "Quick C", to: "main", chat: { goal: null, task: null } });
     await p.next(isResult("m3"));
@@ -131,5 +136,25 @@ describe("standard-mode chats run beside each other, each as its own lane would"
     // Back to automatic.
     expect((await app.inject({ method: "PUT", url: "/api/settings", headers, payload: { titler: null } })).statusCode).toBe(200);
     expect(rt.models.titler?.model).not.toBe("some/namer");
+  });
+});
+
+describe("a message to a working chat joins its work", () => {
+  it("is folded into the running turn instead of queueing, and shows up as a step of that turn", async () => {
+    const { p, rt, gate, asked, chatOf } = await setup();
+    p.send({ type: "send", id: "m1", text: "Slow A", to: "main", chat: { goal: null, task: null } });
+    await asked("Slow A");
+    const a = chatOf("Slow A");
+    p.send({ type: "send", id: "m2", text: "And also B", to: "main", chat: a });
+    expect(await p.next((m) => m.type === "progress" && m.id === "m2" && m.trail.some((t: { stage: string }) => t.stage === "steering"))).toBeTruthy();
+    gate.release("Slow A");
+    const steered = await p.next((m) => m.type === "activity" && m.kind === "steered");
+    expect(steered).toMatchObject({ text: "And also B", conversation: "main" });
+    const first = await p.next(isResult("m1"));
+    expect(first.result.parts[0].status).toBe("completed");
+    const second = await p.next(isResult("m2"));
+    expect(second.result.text).toMatch(/^Taken into the work in progress/);
+    expect(rt.store.listEvents({ type: "turn_steered" })).toHaveLength(1);
+    expect(rt.socrates!.runningChats).toBe(0);
   });
 });

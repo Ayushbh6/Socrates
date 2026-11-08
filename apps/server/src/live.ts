@@ -133,6 +133,9 @@ interface Schedule {
   finish: () => void;
   handedOff: Promise<void>;
   handOff: () => void;
+  /** The message's work began (its context is being built or its model is running): later messages for its task reach the harness, which folds them in or queues them. */
+  started: Promise<void>;
+  start: () => void;
 }
 
 /** A message waiting to start: for the main conversation, or for its standard-mode chat. */
@@ -483,8 +486,9 @@ export class LiveHub {
     }
     const refused = redoOf ? socrates.redoProblem(redoOf, target && "taskId" in target ? target.taskId : null) : null;
     if (refused) throw new LiveError("redo_refused", refused);
-    // A chat runs beside the main conversation, one message at a time: while it works, or another chat message waits for it, this one waits in the queue.
-    if (chat && (this.chatWorking(chat, queuedSchedule?.order) || (!fromQueue && chat.task !== null && this.queue.some((q) => q.chat && sameChat(q.chat, chat))))) throw new LiveError("chat_busy", "Socrates is working in this chat; queue this message.");
+    // A chat runs beside the main conversation, one message at a time. A message sent while it works reaches the harness, which folds it
+    // into the running turn or runs it next (agent-harness.md, "Steering"); only one sent while earlier messages for the chat still wait in the queue joins the queue.
+    if (chat && !fromQueue && chat.task !== null && this.queue.some((q) => q.chat && sameChat(q.chat, chat))) throw new LiveError("chat_busy", "Earlier messages for this chat are still waiting; queue this message.");
     if (chat && socrates.runningChats >= MAX_RUNNING_CHATS) throw new LiveError("chat_busy", `${MAX_RUNNING_CHATS} chats are already working; queue this message.`);
     if (to !== "main" && to !== "new_lane") {
       const lane = this.runtime.store.getLane(to);
@@ -601,14 +605,16 @@ export class LiveHub {
   }
 
   private schedule(): Schedule {
-    let bind!: () => void, finish!: () => void, handOff!: () => void;
+    let bind!: () => void, finish!: () => void, handOff!: () => void, start!: () => void;
     return { receivedAt: this.runtime.store.clock.now().toISOString(), order: ++this.nextOrder, tasks: new Set(), bound: new Promise<void>((resolve) => { bind = resolve; }), bind,
       done: new Promise<void>((resolve) => { finish = resolve; }), finish,
-      handedOff: new Promise<void>((resolve) => { handOff = resolve; }), handOff };
+      handedOff: new Promise<void>((resolve) => { handOff = resolve; }), handOff,
+      started: new Promise<void>((resolve) => { start = resolve; }), start };
   }
 
   /** A message's stage before its first model step, live only. Repeats (routing again after a search) are one stage; nothing here may fail the message. */
   private progress(run: Run, stage: ProgressStage): void {
+    if (stage === "preparing" || stage === "starting") run.schedule.start();
     if (run.progress.at(-1)?.stage === stage) return;
     run.progress.push({ stage, at: this.runtime.store.clock.now().toISOString() });
     try { this.broadcast(this.progressOf(run)); } catch (error) { this.runtime.log(`progress broadcast failed: ${String(error)}`); }
@@ -628,9 +634,10 @@ export class LiveHub {
     await abortable(Promise.all(earlier.map(async (s) => {
       await s.bound;
       if (taskIds.some((id) => s.tasks.has(id))) {
-        // The routing line says so: this message continues a task an earlier one is still working.
+        // An earlier message for the same task that has not started yet goes first; once it works, the
+        // harness takes this one (folded into that turn, or queued behind it). The routing line says so.
         this.progress(run, "waiting");
-        await Promise.race([s.done, s.handedOff]);
+        await Promise.race([s.done, s.handedOff, s.started]);
       }
     })), signal);
   }

@@ -1944,7 +1944,7 @@ export class LedgerStore {
    */
   completeTurn(
     turnId: string,
-    input: { responseEventId: string; continuationNote?: string | null; goalNote?: string | null; taskComplete?: boolean; taskCompleteReason?: string | null; stop?: TurnStop },
+    input: { responseEventId: string; continuationNote?: string | null; goalNote?: string | null; taskComplete?: boolean; taskCompleteReason?: string | null; stop?: TurnStop; steeredInto?: string },
   ): Turn {
     return this.transaction(() => {
       const turn = this.requireInProgressTurn(turnId);
@@ -1959,7 +1959,7 @@ export class LedgerStore {
         {
           project_turn: turn.projectTurn,
           response_event_id: input.responseEventId,
-          ...(input.stop ? { stop: input.stop } : {}),
+          ...(input.stop ? { stop: input.stop, ...(input.steeredInto ? { steered_into: input.steeredInto } : {}) } : {}),
           ...(input.taskCompleteReason !== undefined ? { task_complete_reason: input.taskCompleteReason } : {}),
         },
         { goal_id: turn.goalId, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id },
@@ -1975,13 +1975,14 @@ export class LedgerStore {
    * and long-running work"): record why, and keep the task's ledger entry
    * truthful with a mechanical continuation note.
    */
-  interruptTurn(turnId: string, input: { reason: "cancelled" | "failed" | "restarted"; toolCalls: number; continuationNote: string; partialAnswer?: string }): Turn {
+  /** `steeredInto`: the turn was folded into that running turn, which was interrupted; the task's note is that turn's, left as it is. */
+  interruptTurn(turnId: string, input: { reason: "cancelled" | "failed" | "restarted"; toolCalls: number; continuationNote: string; partialAnswer?: string; steeredInto?: string }): Turn {
     return this.transaction(() => {
       const turn = this.requireInProgressTurn(turnId);
-      const task = this.reviseTask(turn.taskId!, { continuationNote: input.continuationNote });
+      const task = input.steeredInto ? this.requireTask(turn.taskId!) : this.reviseTask(turn.taskId!, { continuationNote: input.continuationNote });
       const event = this.appendEvent(
         "turn_interrupted",
-        { project_turn: turn.projectTurn, reason: input.reason, tool_calls: input.toolCalls, continuation_note: task.continuationNote ?? input.continuationNote, ...(input.partialAnswer ? { partial_answer: input.partialAnswer } : {}) },
+        { project_turn: turn.projectTurn, reason: input.reason, tool_calls: input.toolCalls, continuation_note: task.continuationNote ?? input.continuationNote, ...(input.partialAnswer ? { partial_answer: input.partialAnswer } : {}), ...(input.steeredInto ? { steered_into: input.steeredInto } : {}) },
         { goal_id: turn.goalId, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id },
       );
       this.run("UPDATE turns SET status = 'interrupted', completed_at = ? WHERE id = ?", event.at, turnId);
@@ -2133,6 +2134,27 @@ export class LedgerStore {
       ${unfinishedFirst ? "(status = 'in_progress') DESC, CASE WHEN status = 'in_progress' THEN project_turn END ASC," : ""}
       COALESCE(completed_at, created_at) DESC, project_turn DESC LIMIT 1`, laneId);
     return r ? toTurn(r) : null;
+  }
+
+  /** A later message for the task, folded into this running turn (agent-harness.md, "Steering"). */
+  recordSteer(turnId: string, steer: { steeredTurnId: string; userEventId: string; text: string }): StoredEvent<"turn_steered"> {
+    const turn = this.requireInProgressTurn(turnId);
+    return this.appendEvent("turn_steered", { steered_turn_id: steer.steeredTurnId, user_event_id: steer.userEventId, text: steer.text }, { goal_id: turn.goalId, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id });
+  }
+
+  /** The messages folded into this turn while it ran, oldest first. */
+  steersOf(turnId: string): { steeredTurnId: string; userEventId: string; text: string; at: string }[] {
+    return this.listEvents({ turnId, type: "turn_steered" }).map((e) => {
+      const p = e.payload as EventPayloads["turn_steered"];
+      return { steeredTurnId: p.steered_turn_id, userEventId: p.user_event_id, text: p.text, at: e.at };
+    });
+  }
+
+  /** The running turn this turn was folded into, or null. */
+  steeredInto(turnId: string): Turn | null {
+    const ended = this.listEvents({ turnId, type: "turn_completed" })[0] ?? this.listEvents({ turnId, type: "turn_interrupted" })[0];
+    const into = ended ? (ended.payload as { steered_into?: string }).steered_into : undefined;
+    return into ? this.getTurn(into) : null;
   }
 
   /** Hand a main-conversation turn to the lane whose run holds its task. */

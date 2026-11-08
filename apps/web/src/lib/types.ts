@@ -273,6 +273,8 @@ export type ActivityBody =
   | { kind: "answer"; turnId: string; text: string }
   | { kind: "finished"; turnId: string; status: "completed" | "interrupted"; reason: string | null; partial?: string | null; stop?: string | null }
   | { kind: "handed_off"; turnId: string; lane: number; laneId?: string; goal?: { number: number; title: string }; task?: { number: number; title: string } }
+  /** A later message for the turn's task was folded into it while it ran. */
+  | { kind: "steered"; turnId: string; steeredTurnId: string; steeredSeq?: number | null; text: string }
   | { kind: "lane"; laneId: string; number: number; state: "opened" | "closed" }
   | { kind: "approval_decided"; turnId: string | null; granted: boolean; detail: string; handle?: string | null }
   | { kind: "warning"; turnId: string | null; detail: string }
@@ -334,7 +336,7 @@ export interface TerminalView {
 }
 
 /** What a message is doing before its first model step, as the server reports it (live only). */
-export type ProgressStage = "remembering" | "recalling" | "routing" | "searching" | "rechecking" | "escalating" | "waiting" | "slot" | "preparing" | "starting";
+export type ProgressStage = "remembering" | "recalling" | "routing" | "searching" | "rechecking" | "escalating" | "waiting" | "steering" | "slot" | "preparing" | "starting";
 export interface ProgressStep { stage: ProgressStage; at: string }
 
 export type ServerMessage =

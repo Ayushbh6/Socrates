@@ -109,6 +109,16 @@ describe("the conversation model", () => {
     expect(placed.conversations.lane_1![0]).toMatchObject({ message: "Check my calendar", sendId: "c7", state: "working" });
   });
 
+  it("shows what the user added while a turn worked as a step of that turn", () => {
+    let m = run(emptyModel(),
+      act("main", { kind: "message", text: "Fix the hero" }),
+      act("main", { kind: "routed", turnId: "t20", projectTurn: 9, ...route, lane: null }),
+      act("main", { kind: "steered", turnId: "t20", steeredTurnId: "t21", text: "use clamp(), not media queries" }),
+    );
+    expect(m.conversations.main![0]!.steps).toEqual([{ kind: "steer", text: "use clamp(), not media queries", at }]);
+    expect(m.conversations.main![0]!.state).toBe("working");
+  });
+
   it("keeps one exchange when a new lane's message is saved before the send is accepted", () => {
     let m = reduce(emptyModel(), { type: "sent", id: "c5", text: "Create NOTES.md", to: "new_lane", at });
     m = run(m,

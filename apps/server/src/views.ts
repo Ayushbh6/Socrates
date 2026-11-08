@@ -82,7 +82,7 @@ export function requestHistory(store: LedgerStore, requestId: string, laneId: st
     throughSeq: store.latestEventSeq(),
     activities: all.flatMap(turn => store.listEvents({turnId: turn.id})).sort((a,b) => a.seq-b.seq).flatMap(e => {
       const a = activityOf(store, e);
-      return a && ["routed", "redone", "step", "tool_started", "tool_finished", "warning", "approval_decided", "memory"].includes(a.kind) ? [a] : [];
+      return a && ["routed", "redone", "step", "tool_started", "tool_finished", "warning", "approval_decided", "memory", "steered"].includes(a.kind) ? [a] : [];
     }),
     id: event.id, seq: event.seq, pageSeq: store.requestMessages(event.id).at(-1)?.seq ?? event.seq, at: event.at, message: event.payload.text,
     attachments: (event.payload.attachments ?? []).map(viewOf),
