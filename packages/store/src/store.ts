@@ -771,6 +771,24 @@ export class LedgerStore {
     return p?.redo_of ? this.getTurn(p.redo_of) : null;
   }
 
+  /**
+   * The user's message before `beforeSeq` in the same conversation (main, or one lane), for the
+   * router's candidate search: one with words, sent there and routed (not a reply to a routing
+   * question, not a Standard chat's message).
+   */
+  previousUserMessage(beforeSeq: number, laneId: string | null = null): string | null {
+    const rows = this.all(
+      `SELECT payload FROM events WHERE type = 'user_message' AND seq < ? AND coalesce(json_extract(payload, '$.lane_id'), '') = ? ORDER BY seq DESC LIMIT 20`,
+      beforeSeq, laneId ?? "",
+    );
+    for (const row of rows) {
+      const p = JSON.parse(str(row.payload)) as EventPayloads["user_message"];
+      if (p.reply_to || p.chosen_task_id || !p.text.trim()) continue;
+      return p.text;
+    }
+    return null;
+  }
+
   /** The latest unanswered question in this channel, independent of intervening work. */
   pendingClarification(laneId: string | null = null): Turn | null {
     const q = this.clarifications().findLast(q => q.conversation === (laneId ?? "main") && q.state === "pending");

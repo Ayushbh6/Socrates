@@ -143,7 +143,11 @@ export class GoalRouter {
     const laneId = options.laneId ?? null;
     const userEvent = options.userEventId ? this.store.getEvent(options.userEventId) : this.store.recordUserMessage(message, laneId);
     if (!userEvent || userEvent.type !== "user_message" || (userEvent.payload as { text: string }).text !== message || ((userEvent.payload as { lane_id?: string }).lane_id ?? null) !== laneId) throw new Error("The recorded message does not belong to this routing request.");
-    const semantic = this.semantic ? await this.semantic.search(candidateQuery(this.store, message, laneId, options.clarificationTurnId), { kinds: ["goal", "task"], limit: 30 }, signal) : [];
+    // The previous message helps a follow-up find its goal; a reply to a routing question already searches with its original request.
+    const answering = options.clarificationTurnId === undefined ? !!this.store.pendingClarification(laneId) : !!options.clarificationTurnId;
+    const previousText = answering ? null : this.store.previousUserMessage(userEvent.seq, laneId);
+    const search = (text: string) => (this.semantic ? this.semantic.search(text, { kinds: ["goal", "task"], limit: 30 }, signal) : Promise.resolve([]));
+    const [semantic, previousSemantic] = await Promise.all([search(candidateQuery(this.store, message, laneId, options.clarificationTurnId)), previousText ? search(previousText) : Promise.resolve([])]);
     const attachments = ((userEvent.payload as EventPayloads["user_message"]).attachments ?? []).map((a) => a.name);
     const ctx = buildRoutingContext(this.store, message, {
       timeZone: this.timeZone,
@@ -151,6 +155,7 @@ export class GoalRouter {
       ...(this.defaultFolder ? { defaultFolder: this.defaultFolder() } : {}),
       ...(attachments.length ? { attachments } : {}),
       semantic,
+      ...(previousText ? { previous: { message: previousText, semantic: previousSemantic } } : {}),
       laneId,
       ...(options.clarificationTurnId !== undefined ? {clarificationTurnId: options.clarificationTurnId} : {}),
       ...(options.laneActivity ? { laneActivity: options.laneActivity } : {}),

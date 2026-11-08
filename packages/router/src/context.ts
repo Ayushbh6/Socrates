@@ -72,6 +72,8 @@ export interface BuildContextOptions {
   historyBudgetTokens?: number;
   /** Meaning matches of goals and tasks for candidateQuery(), from the semantic index. */
   semantic?: SemanticHit[];
+  /** The user's previous message in this conversation and its meaning matches: a follow-up such as "and for the other one…" finds the goal named there (PREVIOUS_MESSAGE_WEIGHT). */
+  previous?: PreviousMessage;
   /**
    * The lane the message was sent to. A lane answers its own clarifications
    * and continues its own task; until it has one, "current" is the main
@@ -86,6 +88,11 @@ export interface BuildContextOptions {
   /** Saved memories that may bear on the message, one per line, or null (Goal-router.md, "REMEMBERED"). */
   remembered?: string | null;
 }
+
+/** The previous message's matches count this much against the current message's. */
+export const PREVIOUS_MESSAGE_WEIGHT = 0.5;
+
+export interface PreviousMessage { message: string; semantic: SemanticHit[] }
 
 /** An open goal whose scope matched gets this much, in fused-rank units. */
 export const OPEN_GOAL_BOOST = 0.05;
@@ -118,7 +125,7 @@ export function buildRoutingContext(store: LedgerStore, message: string, options
     });
   }
 
-  selectOlderCandidates(store, candidateQuery(store, message, laneId, options.clarificationTurnId), now, current?.goal.id ?? null, options.semantic ?? []).forEach((goal, i) => {
+  selectOlderCandidates(store, candidateQuery(store, message, laneId, options.clarificationTurnId), now, current?.goal.id ?? null, options.semantic ?? [], options.previous).forEach((goal, i) => {
     const label = `older_${i + 1}`;
     goals.set(label, {
       label,
@@ -197,27 +204,33 @@ function olderGoalTasks(store: LedgerStore, goal: Goal): TaskEntry[] {
  * Hybrid candidate retrieval over goal titles, goal notes, task metadata, and
  * anchors: the keyword (BM25) ranking and the meaning ranking of goals are
  * fused, with a small recency boost and a small boost for open goals that
- * matched. Remaining slots are filled with goals active in the last week, so
- * vague temporal references still see them. Retrieval only builds a
+ * matched. The user's previous message in the conversation is searched too,
+ * at PREVIOUS_MESSAGE_WEIGHT, so a short follow-up still finds the goal named
+ * just before. Remaining slots are filled with goals active in the last week,
+ * so vague temporal references still see them. Retrieval only builds a
  * shortlist; the router decides.
  */
-export function selectOlderCandidates(store: LedgerStore, message: string, now: Date, currentGoalId: string | null, semantic: SemanticHit[] = []): Goal[] {
+export function selectOlderCandidates(store: LedgerStore, message: string, now: Date, currentGoalId: string | null, semantic: SemanticHit[] = [], previous?: PreviousMessage): Goal[] {
   const eligible = (goal: Goal | null): goal is Goal => !!goal && !goal.general && goal.id !== currentGoalId;
 
-  const lexical = new Map<string, number>();
-  const fts = toFtsQuery(message);
-  if (fts) {
-    for (const hit of store.searchLedger(fts, 200)) {
-      const score = -hit.bm25;
-      if (score > (lexical.get(hit.goalId) ?? 0)) lexical.set(hit.goalId, score);
-    }
-  }
   const goals = (ids: string[]) => [...new Set(ids)].map((id) => store.getGoal(id)).filter(eligible);
-  const byKeywords = goals([...lexical].sort((a, b) => b[1] - a[1]).map(([id]) => id));
+  const keywords = (text: string) => {
+    const lexical = new Map<string, number>();
+    const fts = toFtsQuery(text);
+    if (fts) {
+      for (const hit of store.searchLedger(fts, 200)) {
+        const score = -hit.bm25;
+        if (score > (lexical.get(hit.goalId) ?? 0)) lexical.set(hit.goalId, score);
+      }
+    }
+    return goals([...lexical].sort((a, b) => b[1] - a[1]).map(([id]) => id));
+  };
   // Hits arrive best first; a goal ranks by its own best match or its best task's.
-  const byMeaning = goals(semantic.flatMap((h) => (h.goalId ? [h.goalId] : [])));
+  const meaning = (hits: SemanticHit[]) => goals(hits.flatMap((h) => (h.goalId ? [h.goalId] : [])));
   const open = (goal: Goal) => (store.listTasks(goal.id, { status: "open" }).length > 0 || goal.status === "open" ? OPEN_GOAL_BOOST : 0);
-  const picked = fuse([byKeywords, byMeaning], (g) => g.id, (g) => recencyBoost(g.updatedAt, now) + open(g))
+  const rankings = [keywords(message), meaning(semantic), ...(previous ? [keywords(previous.message), meaning(previous.semantic)] : [])];
+  const weights = [1, 1, PREVIOUS_MESSAGE_WEIGHT, PREVIOUS_MESSAGE_WEIGHT];
+  const picked = fuse(rankings, (g) => g.id, (g) => recencyBoost(g.updatedAt, now) + open(g), weights)
     .slice(0, MAX_OLDER_CANDIDATES)
     .map((s) => s.item);
 

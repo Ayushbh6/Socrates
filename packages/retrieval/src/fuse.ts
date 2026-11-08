@@ -27,11 +27,13 @@ export function recencyBoost(at: string | Date, now: Date, weight = RECENCY_WEIG
 /**
  * Merge rankings, each ordered best first, into one. An item may appear in
  * any subset of rankings; its scores add up. `boost` adds a per-item term in
- * the same units, once. Ties keep the order of first appearance.
+ * the same units, once. `weights` scales each ranking (default 1). Ties keep
+ * the order of first appearance.
  */
-export function fuse<T>(rankings: T[][], key: (item: T) => string, boost?: (item: T) => number): { item: T; score: number }[] {
+export function fuse<T>(rankings: T[][], key: (item: T) => string, boost?: (item: T) => number, weights?: number[]): { item: T; score: number }[] {
   const merged = new Map<string, { item: T; score: number; order: number }>();
-  for (const ranking of rankings) {
+  for (const [index, ranking] of rankings.entries()) {
+    const weight = weights?.[index] ?? 1;
     const seen = new Set<string>();
     let rank = 0;
     for (const item of ranking) {
@@ -40,7 +42,7 @@ export function fuse<T>(rankings: T[][], key: (item: T) => string, boost?: (item
       seen.add(k);
       rank++;
       const entry = merged.get(k) ?? merged.set(k, { item, score: 0, order: merged.size }).get(k)!;
-      entry.score += rankScore(rank);
+      entry.score += weight * rankScore(rank);
     }
   }
   const out = [...merged.values()];

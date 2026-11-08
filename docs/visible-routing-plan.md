@@ -39,7 +39,7 @@ Both stay usable. Some models never return readable thinking (Luna at low, so fa
 
 ## Status
 
-R1 shipped (trial log entry 91). R2 shipped (entry 92): with Luna there is no thinking to show, since it does no reasoning when tools are attached; DeepSeek with thinking on shows it live.
+R1 shipped (trial log entry 91). R2 shipped (entry 92): with Luna there is no thinking to show, since it does no reasoning when tools are attached; DeepSeek with thinking on shows it live. R3 shipped (entry 93): the previous message's matches count half.
 
 ## Not in this plan
 
