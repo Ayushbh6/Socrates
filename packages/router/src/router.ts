@@ -207,7 +207,8 @@ export class GoalRouter {
         signal?.throwIfAborted();
         const completion = model.complete({
           system: ROUTER_NATIVE_SYSTEM_PROMPT,
-          ...(/^(openrouter|openai):/.test(model.id) ? {toolChoice: "required" as const} : {}),
+          // DeepSeek accepts a required tool only with thinking disabled ("Thinking mode does not support this tool_choice").
+          ...(/^(openrouter|openai):/.test(model.id) || (/^deepseek:/.test(model.id) && this.effort === "off") ? {toolChoice: "required" as const} : {}),
           messages,
           tools,
           maxOutputTokens: 8_000,

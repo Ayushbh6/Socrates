@@ -43,10 +43,11 @@ This file hands the project to whichever agent harness works on it next. Read it
 - **Model outputs are noisy:** judge prompt changes on repeated runs, and report numbers honestly (trial log entries 58–60 show the format).
 - **Live data:** `~/.socrates-v2` is the user's real v2 data. Read it only through a read-only backup, and never touch `~/.socrates` (v0.1.20).
 
-## Where things stand (2026-11-08; release through entry 89)
+## Where things stand (2026-11-08; release through entry 90)
 
 The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `server.md`, `web.md`, `observability.md`). The trial log numbers each change. Recently shipped, newest last:
 
+- **DeepSeek as router (entry 90):** keep its thinking on. With thinking off it routed unrelated asides into the current task (0/3); with thinking on it matched Luna on every routing decision in `pnpm eval:multitask`, at about twice the latency. The router now sends `tool_choice: required` to DeepSeek when thinking is off (its API refuses it in thinking mode).
 - **Multitasking, phase D (entry 89):** `pnpm eval:multitask` scores the four-message scenario live; with Luna routing 3/3 runs placed the unrelated question beside the running task, folded the follow-up into it and answered the status question from `<LANES>` in a lane. Two fixes from it: the `<STEERING>` text says the user saw nothing yet, and the router's status-question rule covers main's own running turn (lane 0).
 - **Multitasking, phase C (entry 88):** the board: when anything works beside main, the Flow header's middle shows one chip per strand (main, then each lane working, waiting or recently finished) with its task and latest step; choosing one opens it; `handed_off.reason` tells a placed question from a handed one (`architecture/web.md`, "Strands").
 - **Multitasking, phase B (entry 87):** a message for a task whose turn is running, with nothing queued ahead of it, is folded into that turn between steps (`<STEERING>` user message; `turn_steered`; the folded turn completes with the running one, `steered_into`), in Flow and in Standard (a working chat takes the message; `chat_busy` only behind queued ones). The hub's acceptance-order wait ends once the earlier message has started working. See `architecture/agent-harness.md`, "Steering".

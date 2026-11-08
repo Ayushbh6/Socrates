@@ -16,7 +16,8 @@
  *
  *   SOCRATES_ENV_FILE=.env pnpm eval:multitask
  *   MULTITASK_RUNS=3            repeat on fresh copies
- *   MULTITASK_ROUTER=deepseek   route with deepseek-flash instead of the saved router
+ *   MULTITASK_ROUTER=deepseek   route with deepseek-flash at Socrates' default thinking (low); deepseek-off: thinking off; luna
+ *   MULTITASK_KEEP=1            keep the copy for inspection (it holds the keys; delete it afterwards)
  *   MULTITASK_SOURCE_HOME=…     copy another data folder (default ~/.socrates-v2)
  */
 import { execFileSync } from "node:child_process";
@@ -80,7 +81,10 @@ function copyHome(): string {
   if (existsSync(path.join(source, "ledger.db.lance"))) cpSync(path.join(source, "ledger.db.lance"), path.join(home, "ledger.db.lance"), { recursive: true });
   if (routerChoice) {
     const settings = JSON.parse(readFileSync(path.join(home, "settings.json"), "utf8"));
-    settings.router = routerChoice === "deepseek" ? { provider: "deepseek", model: "deepseek-flash", effort: "off" } : routerChoice === "luna" ? { provider: "openrouter", model: "openai/gpt-6-luna", effort: "off" } : settings.router;
+    // "deepseek" is Socrates' own default for a DeepSeek router: thinking low. "deepseek-off" disables thinking, which made it a poor router (trial log entry 90).
+    settings.router = routerChoice === "deepseek" ? { provider: "deepseek", model: "deepseek-flash", effort: "low" }
+      : routerChoice === "deepseek-off" ? { provider: "deepseek", model: "deepseek-flash", effort: "off" }
+      : routerChoice === "luna" ? { provider: "openrouter", model: "openai/gpt-6-luna", effort: "off" } : settings.router;
     writeFileSync(path.join(home, "settings.json"), JSON.stringify(settings, null, 2));
   }
   return home;
@@ -186,7 +190,9 @@ async function runOnce(run: number): Promise<RunReport> {
   const since = new Date(started - 5_000).toISOString();
   const row = calls.prepare("select count(*) as n, coalesce(sum(cost_usd), 0) as cost from calls where started_at >= ?").get(since) as { n: number; cost: number };
   calls.close();
-  rmSync(path.dirname(home), { recursive: true, force: true });
+  // MULTITASK_KEEP=1 leaves the copy (it holds the keys: delete it after reading its calls.db).
+  if (process.env.MULTITASK_KEEP) console.log(`  kept: ${path.dirname(home)}`);
+  else rmSync(path.dirname(home), { recursive: true, force: true });
 
   const a = observed.a!, b = observed.b!, c = observed.c!, d = observed.d!;
   const steered = steers.some((t) => t === MESSAGES.c);
