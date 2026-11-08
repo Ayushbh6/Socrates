@@ -73,6 +73,10 @@ const Command = z.discriminatedUnion("type", [
 ]);
 type Command = z.infer<typeof Command>;
 
+/** The router's live thinking is sent at most this often, and only its end (the page shows its newest lines). */
+const ROUTING_THINKING_EVERY_MS = 150;
+const ROUTING_THINKING_TAIL_CHARS = 2_000;
+
 /** A turn's reply, its thinking, and each running call's output are drafts of their own. */
 const draftKey = (turnId: string, draft: Pick<Draft, "kind" | "handle">) =>
   draft.kind === "thinking" ? `${turnId}:thinking` : draft.kind === "output" ? `${turnId}:output:${draft.handle}` : turnId;
@@ -112,9 +116,11 @@ interface Run {
   seq?: number;
   /** The current handed-off part; compound messages retain their main reservation. */
   handedTurnId?: string;
-  /** Its stages before work, newest last (live only; architecture/web.md, "Routing line"). */
-  /** `detail`: what a search looked for. */
+  /** Its stages before work, newest last (live only; architecture/web.md, "Routing line"); `detail`: what a search looked for. */
   progress: { stage: ProgressStage; at: string; detail?: string }[];
+  /** The router's readable thinking so far, while it routes, and the timer that sends it on. */
+  thinking?: string;
+  thinkingTimer?: ReturnType<typeof setTimeout>;
   /** The saved request's sequence number as soon as it is recorded, for other pages' progress. */
   requestSeq?: number;
   controller: AbortController;
@@ -526,6 +532,7 @@ export class LiveHub {
         if (target || replyTo) run.seq = run.requestSeq;
       },
       onProgress: (stage, detail) => this.progress(run, stage, detail),
+      onRoutingThinking: (text) => this.routingThinking(run, text),
       onBound: (turnId, taskId) => {
         run.tasks.add(taskId);
         schedule.bind();
@@ -567,6 +574,7 @@ export class LiveHub {
       })
       .finally(() => {
         this.runs.delete(id);
+        if (run.thinkingTimer) clearTimeout(run.thinkingTimer);
         schedule.bind();
         schedule.finish();
         for (const entry of [...this.drafts.values()]) if (entry.runId === id) this.settleDraft(entry.message.turnId);
@@ -644,8 +652,20 @@ export class LiveHub {
     })), signal);
   }
 
+  /** The router's thinking goes out with the progress message, at most every ROUTING_THINKING_EVERY_MS. */
+  private routingThinking(run: Run, text: string): void {
+    run.thinking = text;
+    if (run.thinkingTimer) return;
+    run.thinkingTimer = setTimeout(() => {
+      run.thinkingTimer = undefined;
+      if (!this.runs.has(run.id)) return;
+      try { this.broadcast(this.progressOf(run)); } catch (error) { this.runtime.log(`progress broadcast failed: ${String(error)}`); }
+    }, ROUTING_THINKING_EVERY_MS);
+  }
+
   private progressOf(run: Run): object {
-    return { type: "progress", id: run.id, conversation: run.conversation, ...(run.requestSeq !== undefined ? { seq: run.requestSeq } : {}), trail: run.progress };
+    const thinking = run.thinking ? { thinking: run.thinking.slice(-ROUTING_THINKING_TAIL_CHARS), thinkingLength: run.thinking.length } : {};
+    return { type: "progress", id: run.id, conversation: run.conversation, ...(run.requestSeq !== undefined ? { seq: run.requestSeq } : {}), trail: run.progress, ...thinking };
   }
 
   /** The tasks with a message working in them now, as goal and task numbers, so a page knows which chats are busy. */

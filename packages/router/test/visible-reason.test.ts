@@ -68,3 +68,30 @@ describe("what a routing search looked for", () => {
     expect(searchLabel(store, { limit: "x" })).toBeNull();
   });
 });
+
+describe("the router's thinking (R2)", () => {
+  it("streams to a listener and is kept on the decision, across a search", async () => {
+    const { store } = setup();
+    const { router, routerModel } = routerWith(store, [
+      { toolCalls: [{ name: "ledger_query", input: { match: "headings" } }], reasoning: "Maybe an earlier task has the headings." },
+      { ...general(), reasoning: "Nothing matched, so this is a quick aside." },
+    ]);
+    const seen: string[] = [];
+    await router.route("How are the headings going?", undefined, { onThinking: (text) => seen.push(text) });
+    const both = "Maybe an earlier task has the headings.\n\nNothing matched, so this is a quick aside.";
+    expect(seen.at(-1)).toBe(both);
+    expect(seen.some((t) => t.length < both.length)).toBe(true);
+    expect((store.listEvents({ type: "routing_completed" }).at(-1)!.payload as EventPayloads["routing_completed"]).thinking).toBe(both);
+    expect(routerModel.requests.length).toBe(2);
+  });
+
+  it("is kept without a listener, and absent when the model gives none", async () => {
+    const { store } = setup();
+    const { router } = routerWith(store, [{ ...general(), reasoning: "A greeting." }]);
+    await router.route("Hello");
+    expect((store.listEvents({ type: "routing_completed" }).at(-1)!.payload as EventPayloads["routing_completed"]).thinking).toBe("A greeting.");
+    const quiet = routerWith(store, [general()]);
+    await quiet.router.route("Hi again");
+    expect(store.listEvents({ type: "routing_completed" }).at(-1)!.payload).not.toHaveProperty("thinking");
+  });
+});

@@ -1,4 +1,6 @@
 import { BookmarkCheck, BookmarkX, ChevronRight, RotateCw } from "lucide-react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { motion } from "motion/react";
 import { useState } from "react";
 import type { Exchange, Limit, MemoryNote } from "../lib/model";
@@ -12,14 +14,17 @@ import { Work } from "./Work";
 /**
  * Everything Socrates did for one question: its work, folded apart from the
  * answer, its approvals, and the answer. Its place comes with the router's
- * reason for it, when it was routed. `redo` offers "Redo in…" (null: why
+ * reason for it, when it was routed, which opens to the router's thinking
+ * when the model gave any. `redo` offers "Redo in…" (null: why
  * not now); an answer set aside by a redo folds to one line that opens it.
  * `onContinue` is given for the newest answer of its conversation: when a
  * safeguard ended its work, it offers to carry on.
  */
 export function AnswerView({ exchange, approvals, redo, onContinue }: { exchange: Exchange; approvals: PendingApproval[]; redo?: { blocked: string | null; onRedone?: (id: string) => void }; onContinue?: () => void }) {
   const [unfolded, setUnfolded] = useState(false);
+  const [why, setWhy] = useState(false);
   const goals = useApp().goals;
+  const thinking = exchange.route ? exchange.routingThinking : null;
   return (
     <div className="answer-body">
       {(exchange.route || redo) && (
@@ -27,9 +32,14 @@ export function AnswerView({ exchange, approvals, redo, onContinue }: { exchange
           {exchange.route && <span className="route-name">{exchange.route.goal.title}<span className="route-sep">/</span>{exchange.route.task.title}</span>}
           {exchange.redoneFrom && <span className="route-from">Redone from <PlaceName place={exchange.redoneFrom} goals={goals} /></span>}
           {redo && <RedoMenu exchange={exchange} blocked={redo.blocked} {...(redo.onRedone ? { onRedone: redo.onRedone } : {})} />}
-          {exchange.route?.reason && <span className="route-why">{exchange.route.reason}</span>}
+          {thinking ? (
+            <button type="button" className="route-why" aria-expanded={why} onClick={() => setWhy(!why)}>
+              {exchange.route?.reason ?? "How I chose this"}<ChevronRight aria-hidden />
+            </button>
+          ) : exchange.route?.reason && <span className="route-why">{exchange.route.reason}</span>}
         </p>
       )}
+      {thinking && why && <div className="thinking route-thinking"><div className="thinking-text"><Markdown remarkPlugins={[remarkGfm]}>{thinking}</Markdown></div></div>}
       {exchange.redoneTo && (
         <button type="button" className="redone-line" aria-expanded={unfolded} onClick={() => setUnfolded(!unfolded)}>
           Redone in <PlaceName place={exchange.redoneTo} goals={goals} />

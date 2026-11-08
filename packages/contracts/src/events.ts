@@ -42,6 +42,8 @@ export interface EventPayloads {
     validation_errors?: string[];
     /** Fields the harness set aside instead of asking for a repair, such as a task label on a general route. */
     normalized?: string[];
+    /** The router's readable thinking across its requests (at most 8,000 characters), when the model gave any; shown under the route line. */
+    thinking?: string;
   };
   clarification_asked: { question: string; candidates: unknown[]; allow_new: boolean; zero_history: boolean; candidate_bindings?: ({ goal_id: string; task_id: string | null } | null)[]; request_day?: string };
   general_day_set: {day: string};

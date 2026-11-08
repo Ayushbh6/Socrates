@@ -117,6 +117,8 @@ export interface HandleOptions {
   onStatus?: (text: string) => void;
   /** Each stage before work starts, as it really begins (live only; architecture/web.md, "Routing line"). */
   onProgress?: (stage: ProgressStage, detail?: string) => void;
+  /** The router's readable thinking so far, while it routes (live only; the decision keeps it). */
+  onRoutingThinking?: (text: string) => void;
   /**
    * Where the message goes: omitted, the main conversation; "new", a new
    * lane; or an open lane's id. The first message of a lane is routed like
@@ -606,7 +608,7 @@ export class Socrates {
       } else {
         reading = this.askGate(message, userEventId, null, signal, options.replyTo, options.onProgress);
         const remembered = await this.rememberedForRouting(gateMessage, await reading, signal, options.onProgress);
-        const routed = await this.router.route(message, signal, { laneId, userEventId, ...(options.replyTo ? {clarificationTurnId: options.replyTo} : options.newRequest ? {clarificationTurnId: null} : {}), laneActivity: this.laneActivity(), mainActivity: this.mainTurnIds(), beforeBind, ...(remembered ? { remembered } : {}), ...(options.onProgress ? { onProgress: options.onProgress } : {}) });
+        const routed = await this.router.route(message, signal, { laneId, userEventId, ...(options.replyTo ? {clarificationTurnId: options.replyTo} : options.newRequest ? {clarificationTurnId: null} : {}), laneActivity: this.laneActivity(), mainActivity: this.mainTurnIds(), beforeBind, ...(remembered ? { remembered } : {}), ...(options.onProgress ? { onProgress: options.onProgress } : {}), ...(options.onRoutingThinking ? { onThinking: options.onRoutingThinking } : {}) });
         if (routed.kind === "clarify") {
           const notice = laneId ? laneNotice(this.store.requireLane(laneId).number, { kind: "clarify", question: routed.text }) : null;
           return { kind: "clarify", text: routed.text, laneId, notice, notices: notice ? [notice] : [] };

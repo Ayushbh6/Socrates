@@ -89,6 +89,12 @@ function ProgressLine({ exchange, now }: { exchange: Exchange; now: number }) {
         {count > 0 && <ChevronRight aria-hidden className="work-chevron" />}
       </button>
       {open && <Trail exchange={exchange} shown={shown} />}
+      {/* While it routes, the router's newest thinking, when the model gives any; once placed, the route line keeps it. */}
+      {exchange.routingThinking && !exchange.route && (
+        <div className="thinking routing-thinking" data-live>
+          <div className="thinking-text"><Markdown remarkPlugins={[remarkGfm]}>{exchange.routingThinking}</Markdown></div>
+        </div>
+      )}
     </div>
   );
 }

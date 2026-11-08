@@ -10,7 +10,7 @@ describe("the routing reason on the page", () => {
     const reason = "You're picking up the checkout work in your shop project.";
     const router = new Responder("r", () => (++routerCalls === 1
       ? { toolCalls: [{ name: "ledger_query", input: { match: "checkout" } }] }
-      : { text: decision({ decision: "create_new", new_goal_title: "Shop", new_goal_objective: "Deliver Shop.", task_decision: "create_task", new_task_title: "Fix checkout", ...defineTask("Fix checkout"), reason }) }));
+      : { text: decision({ decision: "create_new", new_goal_title: "Shop", new_goal_objective: "Deliver Shop.", task_decision: "create_task", new_task_title: "Fix checkout", ...defineTask("Fix checkout"), reason }), reasoning: "No checkout task yet, so a new shop project." }));
     const { page, app, token, port } = await liveServer(router, new Responder("a", () => final({ full_answer: "Checkout fixed." })));
     const p = await page();
     p.send({ type: "hello" });
@@ -23,6 +23,8 @@ describe("the routing reason on the page", () => {
     expect(trails.at(-1)).toContainEqual(expect.objectContaining({ stage: "searching", detail: "checkout" }));
 
     const history = await app.inject({ method: "GET", url: "/api/history", headers: { authorization: `Bearer ${token}`, host: `127.0.0.1:${port}` } });
-    expect(history.json().items.at(-1).parts[0]).toMatchObject({ task: { title: "Fix checkout" }, reason });
+    expect(history.json().items.at(-1).parts[0]).toMatchObject({ task: { title: "Fix checkout" }, reason, routingThinking: "No checkout task yet, so a new shop project." });
+    // R2: the router's thinking reaches the page with the progress message while it is getting started.
+    expect(p.received.some((m) => m.type === "progress" && m.thinking === "No checkout task yet, so a new shop project.")).toBe(true);
   });
 });

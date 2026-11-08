@@ -87,9 +87,16 @@ interface Counters { invalidFinal: number; invalidTools: number; semanticErrors:
 /** Live-only routing stages for the page (architecture/web.md, "Routing line"); never recorded. */
 export type RoutingStage = "routing" | "searching" | "rechecking" | "escalating";
 
+/** Readable router thinking kept on `routing_completed`, at most this many characters. */
+export const ROUTING_THINKING_MAX_CHARS = 8_000;
+
 interface Budget {
   /** `detail`: for a search, what it looked for (`searchLabel`). */
   progress?: (stage: RoutingStage, detail?: string) => void;
+  /** The readable thinking so far, across this decision's requests, as it streams; set only when someone shows it. */
+  thinking?: (text: string) => void;
+  /** The readable thinking of the finished requests, separated by a blank line. */
+  thought: string;
   counters: Counters;
   ledgerQueries: number;
   messages: ModelMessage[];
@@ -131,7 +138,7 @@ export class GoalRouter {
   }
 
   /** Persist the exact message, route it, and bind it. A lane's message is recorded in that lane. */
-  async route(message: string, signal?: AbortSignal, options: { laneId?: string | null; userEventId?: string; clarificationTurnId?: string | null; laneActivity?: ReadonlyMap<string, string | null>; mainActivity?: Iterable<string>; remembered?: string | null; beforeBind?: (taskIds: string[]) => Promise<void>; onProgress?: (stage: RoutingStage, detail?: string) => void } = {}): Promise<RoutingResult> {
+  async route(message: string, signal?: AbortSignal, options: { laneId?: string | null; userEventId?: string; clarificationTurnId?: string | null; laneActivity?: ReadonlyMap<string, string | null>; mainActivity?: Iterable<string>; remembered?: string | null; beforeBind?: (taskIds: string[]) => Promise<void>; onProgress?: (stage: RoutingStage, detail?: string) => void; /** The model's readable thinking so far, while it routes (docs/visible-routing-plan.md, R2). */ onThinking?: (text: string) => void } = {}): Promise<RoutingResult> {
     signal?.throwIfAborted();
     const laneId = options.laneId ?? null;
     const userEvent = options.userEventId ? this.store.getEvent(options.userEventId) : this.store.recordUserMessage(message, laneId);
@@ -155,7 +162,7 @@ export class GoalRouter {
     // Lanes are shown with their selectors, so routing to a lane's task needs no ledger query.
     for (const n of ctx.laneSelectors.goals) seen.goals.add(n);
     for (const t of ctx.laneSelectors.tasks) seen.tasks.add(t);
-    const budget: Budget = { counters: {invalidFinal: 0, invalidTools: 0, semanticErrors: 0, resultTransport: "none"}, ledgerQueries: 0, errors: [], normalized: [], messages: [{ role: "user", content: ctx.input }], trace: { userEventId: userEvent.id, laneId }, requests: 0, ...(options.onProgress ? { progress: options.onProgress } : {}) };
+    const budget: Budget = { counters: {invalidFinal: 0, invalidTools: 0, semanticErrors: 0, resultTransport: "none"}, ledgerQueries: 0, errors: [], normalized: [], messages: [{ role: "user", content: ctx.input }], trace: { userEventId: userEvent.id, laneId }, requests: 0, thought: "", ...(options.onProgress ? { progress: options.onProgress } : {}), ...(options.onThinking ? { thinking: options.onThinking } : {}) };
 
     let attempts = 1;
     let escalated = false;
@@ -182,7 +189,7 @@ export class GoalRouter {
     }
 
     if (final.kind === "decision") budget.normalized.push(...(final.route.normalized ?? []), ...final.route.parts.flatMap((p) => p.normalized ?? []));
-    const meta = { counters: budget.counters, model: modelId, attempts, escalated, fallback, ledgerQueries: budget.ledgerQueries, errors: budget.errors, normalized: budget.normalized };
+    const meta = { counters: budget.counters, model: modelId, attempts, escalated, fallback, ledgerQueries: budget.ledgerQueries, errors: budget.errors, normalized: budget.normalized, thinking: budget.thought.slice(0, ROUTING_THINKING_MAX_CHARS) };
     signal?.throwIfAborted();
     if (final.kind === "clarify") return this.applyClarify(userEvent.id, final.ask, ctx, meta);
     const requestAt = new Date(this.store.requestRoot(ctx.pending?.turn.userEventId ?? userEvent.id).at);
@@ -206,6 +213,10 @@ export class GoalRouter {
 
     for (let step = 0; step < this.maxSteps; step++) {
       let response: ModelResponse;
+      // Thinking streams only when the page shows it; either way the reply's own reasoning is kept.
+      const before = budget.thought ? `${budget.thought}\n\n` : "";
+      let streamed = "";
+      const live = budget.thinking;
       try {
         signal?.throwIfAborted();
         const completion = model.complete({
@@ -217,14 +228,18 @@ export class GoalRouter {
           maxOutputTokens: 8_000,
           temperature: 0,
           ...(this.effort ? { effort: this.effort } : {}),
-          // Ask adapters for readable thinking when the provider exposes it;
-          // the completed reply is recorded even though routing is not streamed.
-          onReasoning: () => {},
+          // Ask adapters for readable thinking when the provider exposes it (Luna, with tools, gives none).
+          ...(live ? { onText: () => {}, onReasoning: (delta: string) => { streamed += delta; live(before + streamed); } } : { onReasoning: () => {} }),
           trace: { role: "router", userEventId: budget.trace.userEventId, laneId: budget.trace.laneId, step: ++budget.requests },
           ...(signal ? { signal } : {}),
         });
         response = signal ? await abortable(completion, signal) : await completion;
         signal?.throwIfAborted();
+        const thought = (response.reasoning ?? streamed).trim();
+        if (thought) {
+          budget.thought = before + thought;
+          live?.(budget.thought);
+        }
       } catch (error) {
         // A cancelled turn stops routing. Any other model failure is treated like an
         // invalid answer, so escalation and the fallback ladder still bind the message.
@@ -436,7 +451,7 @@ export class GoalRouter {
     userEventId: string,
     ask: AskUserInput,
     ctx: RoutingContext,
-    meta: { counters: Counters; model: string; attempts: number; escalated: boolean; fallback: string | null; ledgerQueries: number; errors: string[]; normalized: string[] },
+    meta: { counters: Counters; model: string; attempts: number; escalated: boolean; fallback: string | null; ledgerQueries: number; errors: string[]; normalized: string[]; thinking: string },
   ): RoutingResult {
     const text = renderClarification(ask);
     const turn = this.store.transaction(() => {
@@ -460,6 +475,7 @@ export class GoalRouter {
           reason: ask.question,
           validation_errors: meta.errors,
           ...(meta.normalized.length ? { normalized: meta.normalized } : {}),
+          ...(meta.thinking ? { thinking: meta.thinking } : {}),
         },
         { turn_id: turn.id },
       );
@@ -473,7 +489,7 @@ export class GoalRouter {
     userEventId: string,
     route: ResolvedRoute,
     ctx: RoutingContext,
-    meta: { counters: Counters; model: string; attempts: number; escalated: boolean; fallback: string | null; ledgerQueries: number; errors: string[]; normalized: string[] },
+    meta: { counters: Counters; model: string; attempts: number; escalated: boolean; fallback: string | null; ledgerQueries: number; errors: string[]; normalized: string[]; thinking: string },
   ): RoutingResult {
     const parts = this.store.transaction(() => {
       const bound: RoutedPart[] = [];
@@ -525,6 +541,7 @@ export class GoalRouter {
           reason: route.reason,
           validation_errors: meta.errors,
           ...(meta.normalized.length ? { normalized: meta.normalized } : {}),
+          ...(meta.thinking ? { thinking: meta.thinking } : {}),
         },
         { goal_id: bound[0]!.goal.id, task_id: bound[0]!.task.id, turn_id: bound[0]!.turn.id },
       );

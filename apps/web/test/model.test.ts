@@ -17,6 +17,19 @@ const item = (over: Partial<HistoryItem>): HistoryItem => ({
 });
 
 describe("the conversation model", () => {
+  it("keeps the router's thinking from progress and from history", () => {
+    let m = reduce(emptyModel(), { type: "sent", id: "k1", text: "Where does this go?", to: "main", at });
+    m = run(m, { type: "progress", id: "k1", conversation: "main", trail: [{ stage: "routing", at }], thinking: "Probably the login work." });
+    expect(m.conversations.main![0]!.routingThinking).toBe("Probably the login work.");
+    // Something to read moves the orb aside, as work does.
+    expect(orbDocked(orbState(m.conversations.main![0]!, []))).toBe(true);
+    m = run(m, { type: "progress", id: "k1", conversation: "main", trail: [{ stage: "routing", at }, { stage: "preparing", at }] });
+    expect(m.conversations.main![0]!.routingThinking).toBe("Probably the login work.");
+    const saved = reduce(emptyModel(), { type: "history", conversation: "main", items: [item({ parts: [{ ...item({}).parts[0]!, routingThinking: "It continues the login fix." }] })] });
+    expect(saved.conversations.main![0]!.routingThinking).toBe("It continues the login fix.");
+    expect(reduce(emptyModel(), { type: "history", conversation: "main", items: [item({})] }).conversations.main![0]!.routingThinking).toBeNull();
+  });
+
   it("keeps the router's reason with the place, live and from history", () => {
     const reason = "You're continuing the login fix.";
     let m = reduce(emptyModel(), { type: "sent", id: "r1", text: "Try again", to: "main", at });

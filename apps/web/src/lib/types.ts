@@ -174,6 +174,8 @@ export interface HistoryPart {
   handoffReason?: "busy_task" | "parallel";
   /** The router's reason for this place, written for the user. */
   reason?: string;
+  /** The router's readable thinking for this message (on its first part). */
+  routingThinking?: string;
   answer: string | null;
   interrupted: string | null;
   /** Why a completed part ended: "final", or the limit it reached. */
@@ -353,7 +355,7 @@ export type ServerMessage =
   | { type: "handed_off"; id: string; conversation: string; lane: number; mainReleased: boolean; reason?: "busy_task" | "parallel" }
   | { type: "status"; id: string; conversation: string; text: string }
   /** The stages so far of a message getting started; `seq` is its saved request, once recorded. */
-  | { type: "progress"; id: string; conversation: string; seq?: number; trail: ProgressStep[] }
+  | { type: "progress"; id: string; conversation: string; seq?: number; trail: ProgressStep[]; /** The router's thinking so far (its end), and its whole length. */ thinking?: string; thinkingLength?: number }
   | { type: "result"; id: string; conversation: string; result: { kind: string; text: string; notices: string[] } }
   | { type: "error"; id?: string; conversation?: string; code: string; message: string }
   | { type: "reset"; seq: number }

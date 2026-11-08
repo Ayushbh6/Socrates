@@ -29,6 +29,8 @@ export interface HistoryPart {
   handoffReason?: "busy_task" | "parallel";
   /** The router's reason for this place, written for the user (only for a routed part). */
   reason?: string;
+  /** The router's readable thinking for the message, on the part its decision was recorded with (the first). */
+  routingThinking?: string;
   answer: string | null;
   /** Why an interrupted part ended. */
   interrupted: EventPayloads["turn_interrupted"]["reason"] | null;
@@ -99,9 +101,10 @@ export function requestHistory(store: LedgerStore, requestId: string, laneId: st
 }
 
 /** The router's reason, saved when the turn was bound. */
-function routeReason(store: LedgerStore, turnId: string): { reason?: string } {
+function routeReason(store: LedgerStore, turnId: string): { reason?: string; routingThinking?: string } {
   const reason = (store.listEvents({ turnId, type: "turn_bound" })[0]?.payload as EventPayloads["turn_bound"] | undefined)?.reason;
-  return reason ? { reason } : {};
+  const thinking = (store.listEvents({ turnId, type: "routing_completed" })[0]?.payload as EventPayloads["routing_completed"] | undefined)?.thinking;
+  return { ...(reason ? { reason } : {}), ...(thinking ? { routingThinking: thinking } : {}) };
 }
 
 function part(store: LedgerStore, t: Turn, laneId: string | null): HistoryPart {

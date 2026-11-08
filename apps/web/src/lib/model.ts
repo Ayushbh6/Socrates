@@ -57,6 +57,8 @@ export interface Exchange {
   answerStarts: Record<number, number>;
   /** Its stages before work, as they happened (live only; never in history). */
   progress: ProgressStep[];
+  /** The router's readable thinking: its newest part while it routes, all of it (as saved) from history. */
+  routingThinking: string | null;
   draft: Draft | null;
   /** The model's thinking as it arrives, kept beside the reply's draft. */
   thinking: Draft | null;
@@ -206,7 +208,7 @@ function serverMessage(model: Model, message: ServerMessage): Model {
     case "progress": {
       // The sending page knows it by its id; others by the saved request's seq.
       const mine = (e: Exchange) => e.sendId === message.id || (message.seq !== undefined && e.seq === message.seq);
-      const edit = (list: Exchange[]) => list.map((e) => (mine(e) ? { ...e, progress: message.trail } : e));
+      const edit = (list: Exchange[]) => list.map((e) => (mine(e) ? { ...e, progress: message.trail, ...(message.thinking ? { routingThinking: message.thinking } : {}) } : e));
       return { ...model, pending: edit(model.pending), conversations: Object.fromEntries(Object.entries(model.conversations).map(([k, list]) => [k, edit(list)])) };
     }
     case "error":
@@ -421,6 +423,7 @@ export function fromHistory(item: HistoryItem, conversation: string): Exchange {
     message: item.message,
     attachments: item.attachments ?? [],
     route: first ? { goal: first.goal, task: first.task, chat: first.chat, projectTurn: first.projectTurn, ...(first.reason ? { reason: first.reason } : {}) } : item.target ?? null,
+    routingThinking: first?.routingThinking ?? null,
     steps: item.parts.flatMap((p): Step[] => (p.handedOff && p.lane !== null ? [{ kind: "handed_off" as const, lane: p.lane, ...(p.handoffReason ? { reason: p.handoffReason } : {}) }] : [])),
     answers: item.parts.flatMap((p) => (p.answer ? [p.answer] : [])),
     question: item.question,
@@ -439,7 +442,7 @@ export function fromHistory(item: HistoryItem, conversation: string): Exchange {
 }
 
 function blank(e: Partial<Exchange> & Pick<Exchange, "key" | "conversation" | "at" | "message">): Exchange {
-  return { requestId: null, seq: null, attachments: [], route: null, steps: [], answers: [], answerStarts: {}, progress: [], draft: null, thinking: null, workedAt: null, lastAt: null, outputs: {}, draftCalls: {}, throughSeq: 0, question: null, clarification: null, state: "working", note: null, limit: null, sendId: null, redoneTo: null, redoneFrom: null, memories: [], turns: [], open: [], ...e };
+  return { requestId: null, seq: null, attachments: [], route: null, steps: [], answers: [], answerStarts: {}, progress: [], routingThinking: null, draft: null, thinking: null, workedAt: null, lastAt: null, outputs: {}, draftCalls: {}, throughSeq: 0, question: null, clarification: null, state: "working", note: null, limit: null, sendId: null, redoneTo: null, redoneFrom: null, memories: [], turns: [], open: [], ...e };
 }
 
 function bySeq(a: Exchange, b: Exchange): number {
@@ -498,7 +501,8 @@ export function orbState(exchange: Exchange | null, approvals: PendingApproval[]
   if (exchange.state === "waiting") return "waiting";
   // Its own turn's approval; one without a turn belongs to the conversation.
   if (approvals.some((a) => (a.turnId ? exchange.turns.includes(a.turnId) : a.conversation === exchange.conversation))) return "waiting";
-  return exchange.steps.length || exchange.answers.length || exchange.draft || exchange.thinking ? "working" : "thinking";
+  // The router's thinking is the first thing to read, so it moves the orb aside like work does.
+  return exchange.steps.length || exchange.answers.length || exchange.draft || exchange.thinking || exchange.routingThinking ? "working" : "thinking";
 }
 
 /** The orb sits in the middle until the answer starts, then docks where the answer begins. */

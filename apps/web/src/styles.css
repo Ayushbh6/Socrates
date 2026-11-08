@@ -208,6 +208,14 @@ svg { width: 1rem; height: 1rem; flex: none; }
 .answer-route .route-from { font-style: italic; }
 /* The router's reason, on its own line under the place. */
 .answer-route .route-why { flex-basis: 100%; line-height: 1.45; }
+.answer-route button.route-why { display: inline-flex; align-items: baseline; gap: 0.3rem; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.answer-route button.route-why:hover { color: var(--muted); }
+.answer-route button.route-why svg { flex: none; width: 0.75rem; height: 0.75rem; align-self: center; transition: transform 120ms ease; }
+.answer-route button.route-why[aria-expanded="true"] svg { transform: rotate(90deg); }
+/* The router's thinking: live under the routing line, then opened from the reason. */
+.routing-thinking .thinking-text { margin-left: 1.55rem; }
+.route-thinking { margin: -0.45rem 0 0.8rem; }
+.route-thinking .thinking-text { margin: 0; padding-left: 0.85rem; border-left: 1px solid rgba(21, 159, 159, 0.25); font-size: 0.8rem; }
 .redo { margin-left: auto; }
 .redo-button { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.15rem 0.35rem; border: 0; border-radius: 0.4rem; background: transparent; color: var(--faint); font-size: 0.75rem; }
 .redo-button svg { width: 0.8rem; height: 0.8rem; }
@@ -579,7 +587,7 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .continued-note { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem 1rem; margin: 0.5rem 0 1.4rem; padding: 0.75rem 1rem; border-radius: 0.9rem; background: var(--tint); color: var(--muted); font-size: 0.8rem; line-height: 1.45; }
 .continued-note > span { flex: 1 1 18rem; }
 /* The chat's name and goal are in the bar on top; the answer's own trail would repeat them. */
-.chat-main .answer-route .route-name, .chat-main .answer-route .route-why { display: none; }
+.chat-main .answer-route .route-name, .chat-main .answer-route .route-why, .chat-main .route-thinking { display: none; }
 .chat-composer { width: min(48rem, 100%); margin: 0 auto; padding: 0 1.25rem 1rem; }
 .chat-composer .composer-dock[data-variant="panel"] { margin: 0; }
 .panel { display: flex; flex-direction: column; min-height: 0; border-radius: 1.1rem; background: rgba(255, 255, 255, 0.78); box-shadow: var(--shadow-soft); }
