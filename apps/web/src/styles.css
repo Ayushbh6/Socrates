@@ -133,6 +133,22 @@ svg { width: 1rem; height: 1rem; flex: none; }
 }
 .lane-chip { color: var(--accent-strong); }
 .flow-stage { position: absolute; inset: 0; z-index: 10; overflow-y: auto; padding: 5.5rem 1rem 14rem; scroll-behavior: smooth; }
+/* The board: every strand of work beside the main conversation, in the header's middle (architecture/web.md, "Strands"). */
+.strands { display: flex; justify-content: safe center; gap: 0.5rem; min-width: 0; max-width: 100%; padding: 0.1rem 0.25rem; overflow-x: auto; pointer-events: auto; scrollbar-width: none; }
+.strands::-webkit-scrollbar { display: none; }
+.strand { display: inline-flex; align-items: center; flex: none; max-width: 22rem; border-radius: 999px; background: rgba(255, 255, 255, 0.72); box-shadow: var(--shadow-soft); backdrop-filter: blur(10px); color: var(--muted); font-size: 0.78rem; }
+.strand:hover { background: rgba(255, 255, 255, 0.95); color: var(--text); }
+.strand[data-current="true"] { background: rgba(255, 255, 255, 0.98); color: var(--text); box-shadow: 0 0 0 1px var(--accent-soft, rgba(91, 174, 164, 0.45)), var(--shadow-soft); }
+.strand[data-status="waiting"] { color: var(--warm); }
+/* One line per strand, the height of a header chip, so the row stays inside the header band above the notes. */
+.strand-open { display: inline-flex; align-items: center; gap: 0.45rem; min-width: 0; height: 2rem; padding: 0 0.8rem; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; }
+.strand-body { display: flex; align-items: baseline; gap: 0.35rem; min-width: 0; line-height: 1.2; }
+.strand-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
+.strand-step { flex: 0 1 auto; min-width: 3rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font-size: 0.72rem; }
+.strand-step::before { content: "· "; }
+.strand[data-current="true"] .strand-step, .strand:hover .strand-step { color: var(--muted); }
+.strand-close { margin-right: 0.35rem; }
+@media (max-width: 760px) { .strands { justify-content: flex-start; } }
 .flow-column { width: min(46rem, 100%); margin: 0 auto; }
 @media (min-width: 1100px) { .flow-column { width: min(46rem, calc(100vw - 38rem)); } }
 

@@ -25,6 +25,8 @@ export interface HistoryPart {
   lane: number | null;
   /** A main-conversation part handed to the lane busy with its task. */
   handedOff: boolean;
+  /** Why a handed-off part runs in its lane: the lane worked its task, or main was busy and it was placed beside it. */
+  handoffReason?: "busy_task" | "parallel";
   answer: string | null;
   /** Why an interrupted part ended. */
   interrupted: EventPayloads["turn_interrupted"]["reason"] | null;
@@ -107,6 +109,7 @@ function part(store: LedgerStore, t: Turn, laneId: string | null): HistoryPart {
     chat: t.chatId ? store.requireChat(t.chatId).ordinal : 1,
     lane: t.laneId ? store.requireLane(t.laneId).number : null,
     handedOff: laneId === null && t.laneId !== null,
+    ...(laneId === null && t.laneId !== null ? { handoffReason: (store.listEvents({ turnId: t.id, type: "turn_moved_to_lane" }).at(-1)?.payload as { reason?: "busy_task" | "parallel" } | undefined)?.reason ?? "busy_task" } : {}),
     // A stopped part shows its answer as far as it was written.
     answer: responseText(store, t) ?? interruption?.partial_answer ?? null,
     interrupted: interruption?.reason ?? null,

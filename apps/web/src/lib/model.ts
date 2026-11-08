@@ -15,7 +15,8 @@ export type Step =
   | { kind: "thinking"; text: string; truncated: boolean; seq: number; ms: number | null }
   /** A tool call in plain words, and once it finished, what it returned. */
   | { kind: "tool"; handle: string; task: string; turnId: string; call: CallView; status: "running" | "ok" | "error"; result: ResultView | null; at: string; approval?: { granted: boolean; detail: string } }
-  | { kind: "handed_off"; lane: number }
+  /** The turn runs in a lane: handed to the lane working its task, or placed beside a busy main. */
+  | { kind: "handed_off"; lane: number; reason?: "busy_task" | "parallel" }
   /** What the user added while this turn worked, folded into it. */
   | { kind: "steer"; text: string; at: string }
   | { kind: "warning"; detail: string }
@@ -376,7 +377,7 @@ function applyOne(e: Exchange, a: Activity | DraftArrived): Exchange {
     case "handed_off": {
       // The lane works on it now; the main conversation's part of it is over.
       const open = x.open.filter((t) => t !== a.turnId);
-      return { ...x, steps: [...x.steps, { kind: "handed_off", lane: a.lane }], open, state: open.length ? x.state : "done" };
+      return { ...x, steps: [...x.steps, { kind: "handed_off", lane: a.lane, ...(a.reason ? { reason: a.reason } : {}) }], open, state: open.length ? x.state : "done" };
     }
     case "warning":
       return { ...x, steps: [...x.steps, { kind: "warning", detail: a.detail }] };
@@ -420,7 +421,7 @@ export function fromHistory(item: HistoryItem, conversation: string): Exchange {
     message: item.message,
     attachments: item.attachments ?? [],
     route: first ? { goal: first.goal, task: first.task, chat: first.chat, projectTurn: first.projectTurn } : item.target ?? null,
-    steps: item.parts.flatMap((p): Step[] => (p.handedOff && p.lane !== null ? [{ kind: "handed_off" as const, lane: p.lane }] : [])),
+    steps: item.parts.flatMap((p): Step[] => (p.handedOff && p.lane !== null ? [{ kind: "handed_off" as const, lane: p.lane, ...(p.handoffReason ? { reason: p.handoffReason } : {}) }] : [])),
     answers: item.parts.flatMap((p) => (p.answer ? [p.answer] : [])),
     question: item.question,
     clarification: item.clarification ?? null,

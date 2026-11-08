@@ -171,6 +171,7 @@ export interface HistoryPart {
   chat: number;
   lane: number | null;
   handedOff: boolean;
+  handoffReason?: "busy_task" | "parallel";
   answer: string | null;
   interrupted: string | null;
   /** Why a completed part ended: "final", or the limit it reached. */
@@ -272,7 +273,7 @@ export type ActivityBody =
   | { kind: "tool_finished"; turnId: string; task: string; handle: string; status: "ok" | "error"; result: ResultView }
   | { kind: "answer"; turnId: string; text: string }
   | { kind: "finished"; turnId: string; status: "completed" | "interrupted"; reason: string | null; partial?: string | null; stop?: string | null }
-  | { kind: "handed_off"; turnId: string; lane: number; laneId?: string; goal?: { number: number; title: string }; task?: { number: number; title: string } }
+  | { kind: "handed_off"; turnId: string; lane: number; laneId?: string; goal?: { number: number; title: string }; task?: { number: number; title: string }; reason?: "busy_task" | "parallel" }
   /** A later message for the turn's task was folded into it while it ran. */
   | { kind: "steered"; turnId: string; steeredTurnId: string; steeredSeq?: number | null; text: string }
   | { kind: "lane"; laneId: string; number: number; state: "opened" | "closed" }

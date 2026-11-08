@@ -17,6 +17,8 @@ import { Orb } from "./Orb";
 import { QuestionCard } from "./QuestionCard";
 import { Sidebar } from "./Sidebar";
 import { StickyNotes } from "./StickyNotes";
+import { Strands } from "./Strands";
+import { strands } from "../lib/strands";
 import { TerminalDock } from "./TerminalDock";
 
 /**
@@ -48,6 +50,7 @@ export function Flow({ app, mode, dock, onMode, onSettings, view, setView }: { a
 
   const lanes = app.model.live?.lanes ?? app.status?.lanes ?? [];
   const lane = lanes.find((l) => l.id === conversation) ?? null;
+  const board = strands(app.model).length > 0;
   // A lane that closed takes the canvas back to main.
   useEffect(() => {
     if (conversation !== "main" && app.model.live && !lane) setConversation("main");
@@ -131,7 +134,10 @@ export function Flow({ app, mode, dock, onMode, onSettings, view, setView }: { a
         </div>
 
         <AppHeader app={app} mode={mode} dock={dock} sidebar={sidebar} sidebarId="flow-sidebar" onSidebar={() => setSidebar(!sidebar)} onMode={onMode} onSettings={onSettings} onApproval={(e) => { setConversation(e.conversation); setSelected(e.key); setFollowing(null); setSent(null); setSidebar(false); }}>
-          {conversation !== "main" && (
+          {/* The board sits in the header's middle, clear of the notes; a lane viewed with nothing else beside main keeps the plain chip. */}
+          {board ? (
+            <Strands app={app} conversation={conversation} onOpen={(id) => { setConversation(id); setSelected(null); setFollowing(null); setSent(null); }} />
+          ) : conversation !== "main" && (
             <button type="button" className="chip lane-chip" onClick={() => { setConversation("main"); setSelected(null); }}>
               Lane {lane?.number} <X aria-hidden />
             </button>

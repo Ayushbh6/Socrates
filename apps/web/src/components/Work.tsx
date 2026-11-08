@@ -313,7 +313,7 @@ function Diff({ text }: { text: string }) {
 function Meta({ step }: { step: Extract<Segment, { kind: "meta" }>["step"] }) {
   switch (step.kind) {
     case "handed_off":
-      return <p className="step-meta"><CornerDownRight aria-hidden /> Handed to lane {step.lane}, which is working on this task.</p>;
+      return <p className="step-meta"><CornerDownRight aria-hidden /> {step.reason === "parallel" ? <>Started beside the current work, in lane {step.lane}.</> : <>Handed to lane {step.lane}, which is working on this task.</>}</p>;
     case "steer":
       return <p className="step-meta steer"><CornerDownRight aria-hidden /> <span>You added, mid-work: <q>{step.text}</q></span></p>;
     case "warning":

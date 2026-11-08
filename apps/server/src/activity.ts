@@ -27,7 +27,7 @@ export type ActivityBody =
   | { kind: "tool_finished"; turnId: string; task: string; handle: string; status: "ok" | "error"; result: ResultView }
   | { kind: "answer"; turnId: string; text: string }
   | { kind: "finished"; turnId: string; status: "completed" | "interrupted"; reason: EventPayloads["turn_interrupted"]["reason"] | null; partial?: string | null; /** Why a completed turn ended (a limit means it can be continued). */ stop?: TurnStop | null }
-  | { kind: "handed_off"; turnId: string; lane: number; laneId: string; goal: { number: number; title: string }; task: { number: number; title: string } }
+  | { kind: "handed_off"; turnId: string; lane: number; laneId: string; goal: { number: number; title: string }; task: { number: number; title: string }; /** Handed to the lane working its task, or placed beside a busy main conversation. */ reason: "busy_task" | "parallel" }
   /** A later message for the turn's task was folded into it while it ran; `steeredTurnId` is that message's own turn. */
   | { kind: "steered"; turnId: string; steeredTurnId: string; steeredSeq: number | null; text: string }
   | { kind: "lane"; laneId: string; number: number; state: "opened" | "closed" }
@@ -147,7 +147,7 @@ export function activityOf(store: LedgerStore, event: StoredEvent): Activity | n
       const p = event.payload as EventPayloads["turn_moved_to_lane"];
       const goal = store.requireGoal(turn!.goalId!);
       const task = store.requireTask(turn!.taskId!);
-      return { ...base, conversation: "main", kind: "handed_off", turnId: event.turn_id!, lane: store.requireLane(p.lane_id).number, laneId: p.lane_id, goal: { number: goal.number, title: goal.title }, task: { number: task.number, title: task.title } };
+      return { ...base, conversation: "main", kind: "handed_off", turnId: event.turn_id!, lane: store.requireLane(p.lane_id).number, laneId: p.lane_id, goal: { number: goal.number, title: goal.title }, task: { number: task.number, title: task.title }, reason: p.reason ?? "busy_task" };
     }
     case "turn_steered": {
       if (!turn) return null;
