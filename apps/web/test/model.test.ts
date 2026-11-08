@@ -17,6 +17,17 @@ const item = (over: Partial<HistoryItem>): HistoryItem => ({
 });
 
 describe("the conversation model", () => {
+  it("keeps the router's reason with the place, live and from history", () => {
+    const reason = "You're continuing the login fix.";
+    let m = reduce(emptyModel(), { type: "sent", id: "r1", text: "Try again", to: "main", at });
+    m = run(m, act("main", { kind: "message", text: "Try again" }), act("main", { kind: "routed", turnId: "t1", projectTurn: 4, ...route, lane: null, reason }));
+    expect(m.conversations.main![0]!.route).toMatchObject({ ...route, reason });
+    const saved = reduce(emptyModel(), { type: "history", conversation: "main", items: [item({ parts: [{ ...item({}).parts[0]!, reason }] })] });
+    expect(saved.conversations.main![0]!.route).toMatchObject({ ...route, reason });
+    const unrouted = reduce(emptyModel(), { type: "history", conversation: "main", items: [item({})] });
+    expect(unrouted.conversations.main![0]!.route).not.toHaveProperty("reason");
+  });
+
   it("starts a fresh canvas empty while keeping saved history and live work selectable", () => {
     let m = reduce(emptyModel(), { type: "history", conversation: "main", items: [item({})] });
     const saved = m.conversations.main!;

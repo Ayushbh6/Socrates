@@ -113,7 +113,8 @@ interface Run {
   /** The current handed-off part; compound messages retain their main reservation. */
   handedTurnId?: string;
   /** Its stages before work, newest last (live only; architecture/web.md, "Routing line"). */
-  progress: { stage: ProgressStage; at: string }[];
+  /** `detail`: what a search looked for. */
+  progress: { stage: ProgressStage; at: string; detail?: string }[];
   /** The saved request's sequence number as soon as it is recorded, for other pages' progress. */
   requestSeq?: number;
   controller: AbortController;
@@ -524,7 +525,7 @@ export class LiveHub {
         run.requestSeq = this.runtime.store.requestRoot(userEventId).seq;
         if (target || replyTo) run.seq = run.requestSeq;
       },
-      onProgress: (stage) => this.progress(run, stage),
+      onProgress: (stage, detail) => this.progress(run, stage, detail),
       onBound: (turnId, taskId) => {
         run.tasks.add(taskId);
         schedule.bind();
@@ -612,11 +613,12 @@ export class LiveHub {
       started: new Promise<void>((resolve) => { start = resolve; }), start };
   }
 
-  /** A message's stage before its first model step, live only. Repeats (routing again after a search) are one stage; nothing here may fail the message. */
-  private progress(run: Run, stage: ProgressStage): void {
+  /** A message's stage before its first model step, live only. Repeats (routing again after a search) are one stage, unless a search looks for something else; nothing here may fail the message. */
+  private progress(run: Run, stage: ProgressStage, detail?: string): void {
     if (stage === "preparing" || stage === "starting") run.schedule.start();
-    if (run.progress.at(-1)?.stage === stage) return;
-    run.progress.push({ stage, at: this.runtime.store.clock.now().toISOString() });
+    const last = run.progress.at(-1);
+    if (last?.stage === stage && last.detail === detail) return;
+    run.progress.push({ stage, at: this.runtime.store.clock.now().toISOString(), ...(detail ? { detail } : {}) });
     try { this.broadcast(this.progressOf(run)); } catch (error) { this.runtime.log(`progress broadcast failed: ${String(error)}`); }
   }
 

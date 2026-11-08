@@ -46,7 +46,7 @@ Return exactly one JSON object and nothing else:
   "workspace_confidence": "high" | "low" | null,
   "parts": array | null,
   "reopen_task": boolean | null,
-  "reason": "one short sentence"
+  "reason": "one short sentence, shown to the user under the answer: in plain words, why the message belongs there, addressing them as you"
 }
 
 Legal combinations:

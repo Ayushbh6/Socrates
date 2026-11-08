@@ -38,6 +38,9 @@ export interface ResolvedPart {
   normalized?: string[];
 }
 
+/** What fills a missing reason; the page shows no reason for it. */
+export const NO_REASON = "(no reason given)";
+
 export interface ResolvedRoute {
   /** Fields the harness filled or set aside for the whole answer, such as a missing reason. */
   normalized?: string[];
@@ -76,17 +79,17 @@ export function validateDecisionText(text: string, ctx: RoutingContext, store: L
   } catch {
     return { ok: false, failureKind: "format", errors: ["Return exactly one JSON object matching the routing schema, with no other text."] };
   }
-  // The reason is only shown in Inspect: a missing one is filled in rather than asked for again.
+  // A missing reason is filled in rather than asked for again; the page then shows none.
   const normalized: string[] = [];
   const unexplained = (o: unknown) => !!o && typeof o === "object" && !Array.isArray(o) && (typeof (o as { reason?: unknown }).reason !== "string" || !(o as { reason: string }).reason.trim());
   if (unexplained(raw)) {
-    (raw as { reason: string }).reason = "(no reason given)";
+    (raw as { reason: string }).reason = NO_REASON;
     normalized.push("filled in a missing reason.");
   }
   const parts = (raw as { parts?: unknown } | null)?.parts;
   if (Array.isArray(parts)) parts.forEach((p, i) => {
     if (!unexplained(p)) return;
-    (p as { reason: string }).reason = "(no reason given)";
+    (p as { reason: string }).reason = NO_REASON;
     normalized.push(`part ${i + 1}: filled in a missing reason.`);
   });
   const parsed = RouterDecision.safeParse(raw);

@@ -236,7 +236,7 @@ The router returns strict structured data. It has exactly two tools — `ledger_
   "workspace_confidence": "high | low | null",
   "reopen_task": "boolean | null",
   "parts": "array | null",
-  "reason": "one short sentence"
+  "reason": "one short sentence, shown to the user under the answer: in plain words, why the message belongs there, addressing them as you"
 }
 ```
 
@@ -253,7 +253,7 @@ Rules:
 - `compound`: `parts` is populated and the other route-specific fields are null. Every part contains its exact sub-request, order, goal decision, task decision, reason, and dependency list (`depends_on`: the earlier parts it needs, or `[]` when independent; part 1 may omit it because it cannot depend on anything). A part that creates no goal may omit `new_goal_title`. Each part carries its own `workspace_confidence`, because parts may target different workspaces.
 - `reopen_task` is explicit when selecting a completed task: `true` resumes work by appending an open revision and clearing `completed_at`, with the same task ID; `false` answers a question about past work without changing completion. It is null for general, new tasks, and top-level compound; each compound part has its own value.
 - `workspace_confidence` is `low` whenever two or more workspaces were plausible and the router chose by recency. A `low` value arms the first-mutation gate described under "Workspace resolution."
-- `reason` is always written by the Goal Router. It briefly explains why the selected goal and task own the message or why a new goal/task or clarification is required. It is stored for inspection and evaluation; it is not normally shown to the user.
+- `reason` is always written by the Goal Router. It briefly explains why the selected goal and task own the message or why a new goal/task or clarification is required. Since 2026-11-08 (`docs/visible-routing-plan.md`, R1) it is written for the user and shown under the answer, after the place: it is saved on each bound turn (`turn_bound.reason`; a compound part keeps its own), sent with the `routed` activity and each history part. A harness fallback's reason ("Fallback: …") and a filled-in missing one are for Inspect only and are not saved on the turn. While routing, a `ledger_query` reports what it looked for with the `searching` stage (its words, else the goal or task by title, else its dates).
 
 ### `ledger_query` — the router's read-only recall tool
 
@@ -376,7 +376,7 @@ The backend validates this result. An answer that selects the same place in othe
 - a general `ask_user` candidate with a `task_label`: the label is dropped;
 - `reopen_task true` on a task that is already open: nothing to reopen;
 - `resume_task "current"` in the current goal: taken as continuing the current task;
-- a missing `reason`: filled in as "(no reason given)"; it is only shown in Inspect.
+- a missing `reason`: filled in as "(no reason given)"; it is only shown in Inspect, and the page shows no reason.
 
 One repair attempt is allowed for any other invalid answer. If that also fails:
 

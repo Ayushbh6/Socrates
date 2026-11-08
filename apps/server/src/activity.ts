@@ -12,7 +12,7 @@ export const THINKING_CHARS = 20_000;
 export type ActivityBody =
   | { kind: "message"; text: string; attachments: AttachmentView[]; requestId?: string; target?: Place }
   /** `messageSeq`: the message the turn answers, so chats working at once each find their own question. */
-  | { kind: "routed"; turnId: string; messageSeq: number | null; projectTurn: number; goal: { number: number; title: string }; task: { number: number; title: string }; /** Which chat of the task, from 1. */ chat: number; lane: number | null; /** For a redo: where the question was first asked. */ redoneFrom?: Place; clarification?: Clarification }
+  | { kind: "routed"; turnId: string; messageSeq: number | null; projectTurn: number; goal: { number: number; title: string }; task: { number: number; title: string }; /** Which chat of the task, from 1. */ chat: number; lane: number | null; /** For a redo: where the question was first asked. */ redoneFrom?: Place; clarification?: Clarification; /** The router's reason for this place, written for the user. */ reason?: string }
   /** The turn's question was asked again in another task (`to`); the turn is set aside. */
   | { kind: "redone"; turnId: string; to: Place }
   /** Memory changed in this turn: saved by its answer, or changed later from the Memory page (on the entry's source turn). */
@@ -91,7 +91,7 @@ export function activityOf(store: LedgerStore, event: StoredEvent): Activity | n
       const q = request ? store.requestTurns(request.id).find(t => t.kind === "clarification") : null;
       const first = store.redoOf(turn.id);
       const redoneFrom = first ? placeOf(store, first.id) : null;
-      return { ...base, kind: "routed", turnId: turn.id, ...(q ? {clarification: store.clarification(q.id)} : {}), messageSeq: request?.seq ?? null, ...(request?.id !== turn.userEventId && original ? {original} : {}), projectTurn: turn.projectTurn, goal: { number: goal.number, title: goal.title }, task: { number: task.number, title: task.title }, chat: turn.chatId ? store.requireChat(turn.chatId).ordinal : 1, lane: turn.laneId ? store.requireLane(turn.laneId).number : null, ...(redoneFrom ? { redoneFrom } : {}) };
+      return { ...base, kind: "routed", turnId: turn.id, ...(q ? {clarification: store.clarification(q.id)} : {}), messageSeq: request?.seq ?? null, ...(request?.id !== turn.userEventId && original ? {original} : {}), projectTurn: turn.projectTurn, goal: { number: goal.number, title: goal.title }, task: { number: task.number, title: task.title }, chat: turn.chatId ? store.requireChat(turn.chatId).ordinal : 1, lane: turn.laneId ? store.requireLane(turn.laneId).number : null, ...(redoneFrom ? { redoneFrom } : {}), ...((event.payload as EventPayloads["turn_bound"]).reason ? { reason: (event.payload as EventPayloads["turn_bound"]).reason } : {}) };
     }
     case "turn_redone": {
       const to = placeOf(store, (event.payload as EventPayloads["turn_redone"]).redo_turn_id);

@@ -172,6 +172,8 @@ export interface HistoryPart {
   lane: number | null;
   handedOff: boolean;
   handoffReason?: "busy_task" | "parallel";
+  /** The router's reason for this place, written for the user. */
+  reason?: string;
   answer: string | null;
   interrupted: string | null;
   /** Why a completed part ended: "final", or the limit it reached. */
@@ -261,7 +263,7 @@ export interface Place {
 
 export type ActivityBody =
   | { kind: "message"; text: string; attachments?: AttachmentView[]; requestId?: string; target?: Place }
-  | { kind: "routed"; turnId: string; messageSeq?: number | null; projectTurn: number; goal: { number: number; title: string }; task: { number: number; title: string }; chat?: number; lane: number | null; redoneFrom?: Place; clarification?: ClarificationView }
+  | { kind: "routed"; turnId: string; messageSeq?: number | null; projectTurn: number; goal: { number: number; title: string }; task: { number: number; title: string }; chat?: number; lane: number | null; redoneFrom?: Place; clarification?: ClarificationView; reason?: string }
   /** The turn's question was asked again in another task; the turn is set aside. */
   | { kind: "redone"; turnId: string; to: Place }
   /** Memory changed in this turn: saved by its answer, or changed later on the Memory page. */
@@ -338,7 +340,8 @@ export interface TerminalView {
 
 /** What a message is doing before its first model step, as the server reports it (live only). */
 export type ProgressStage = "remembering" | "recalling" | "routing" | "searching" | "rechecking" | "escalating" | "waiting" | "steering" | "slot" | "preparing" | "starting";
-export interface ProgressStep { stage: ProgressStage; at: string }
+/** `detail`: for a search, what it looked for. */
+export interface ProgressStep { stage: ProgressStage; at: string; detail?: string }
 
 export type ServerMessage =
   | ({ type: "state" } & LiveState)

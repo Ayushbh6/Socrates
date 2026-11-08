@@ -27,6 +27,12 @@ describe("the routing line", () => {
     expect(progressLine(ex(standard, { route }), 0, Date.parse(t(100)))).toBe("Preparing this task…");
   });
 
+  it("says what a search looked for, live and once passed", () => {
+    const searched: ProgressStep[] = [{ stage: "routing", at: t(0) }, { stage: "searching", at: t(900), detail: "headings list" }, { stage: "routing", at: t(1500) }];
+    expect(progressLine(ex(searched), 1, Date.parse(t(1000)))).toBe("Looking through earlier tasks: headings list…");
+    expect(progressTrail(ex(searched), 2).map((i) => i.label)).toEqual(["Looked for the goal and task", "Looked through earlier tasks: headings list", "Finding the goal and task…"]);
+  });
+
   it("says routing is still going only after it really has been slow", () => {
     const slow: ProgressStep[] = [{ stage: "routing", at: t(0) }];
     expect(progressLine(ex(slow), 0, Date.parse(t(SLOW_ROUTING_MS - 1)))).toBe("Finding the goal and task…");

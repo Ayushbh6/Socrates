@@ -45,6 +45,12 @@ const DONE: Record<ProgressStage, string> = {
   starting: "Started work",
 };
 
+/** A stage's words; a search says what it looked for. */
+function stageLabel(step: ProgressStep, done: boolean): string {
+  if (step.stage === "searching" && step.detail) return done ? `Looked through earlier tasks: ${step.detail}` : `Looking through earlier tasks: ${step.detail}…`;
+  return done ? DONE[step.stage] : NOW[step.stage];
+}
+
 const place = (route: Route, sep: string) => `${route.goal.title} ${sep} ${route.task.title}`;
 /** Routed in Flow, rather than sent to a chosen chat (Standard) or a lane's task. */
 const wasRouted = (trail: ProgressStep[]) => trail.some((s) => s.stage === "routing");
@@ -62,7 +68,7 @@ export function progressLine(e: Shown, shown: number, now: number): string {
     const first = e.progress.find((s) => s.stage === "routing")!;
     if (now - Date.parse(first.at) >= SLOW_ROUTING_MS) return "Still finding the right task…";
   }
-  return NOW[step.stage];
+  return stageLabel(step, false);
 }
 
 export interface TrailItem { label: string; offsetMs: number; done: boolean }
@@ -73,7 +79,7 @@ export function progressTrail(e: Shown & Pick<Exchange, "at">, shown: number, se
   const routed = wasRouted(e.progress);
   return e.progress.slice(0, shown + 1).map((s, i, list) => {
     const done = i < list.length - 1 || settled;
-    const label = s.stage === "preparing" && routed && e.route ? `${done ? "Chose" : "Opening"} ${place(e.route, "/")}` : done ? DONE[s.stage] : NOW[s.stage];
+    const label = s.stage === "preparing" && routed && e.route ? `${done ? "Chose" : "Opening"} ${place(e.route, "/")}` : stageLabel(s, done);
     return { label, offsetMs: Math.max(0, Date.parse(s.at) - start), done };
   });
 }

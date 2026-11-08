@@ -77,6 +77,8 @@ export interface EventPayloads {
     workspace_confidence: "high" | "low" | null;
     first_mutation_gate_armed: boolean;
     route: string;
+    /** The router's one-sentence reason for this place, written for the user; absent when nothing routed the turn (a chosen chat, a redo) or no reason was given. */
+    reason?: string;
     user_event_id: string;
     /** Original request when the current user message answers a clarification. */
     request_event_id: string;

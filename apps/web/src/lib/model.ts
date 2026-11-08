@@ -49,8 +49,8 @@ export interface Exchange {
   message: string;
   /** Images the user attached to the message. */
   attachments: AttachmentView[];
-  /** The goal and task of its first part. */
-  route: { goal: { number: number; title: string }; task: { number: number; title: string }; chat?: number; projectTurn?: number } | null;
+  /** The goal and task of its first part, and the router's reason for them (written for the user). */
+  route: { goal: { number: number; title: string }; task: { number: number; title: string }; chat?: number; projectTurn?: number; reason?: string } | null;
   steps: Step[];
   answers: string[];
   /** Initial reveal position when an indexed answer replaces a plain-text draft. */
@@ -277,7 +277,7 @@ function activity(model: Model, a: Activity | DraftArrived): Model {
       if (!lane.some((e) => e.turns.includes(a.turnId))) {
         // The lane's copy keeps the page's own id for the message, so the canvas can follow it there.
         result = withConversation(result, laneId, [...lane, blank({key: `t${a.turnId}`, conversation: laneId, at: a.at, message: updated.message, attachments: updated.attachments, sendId: updated.sendId,
-          requestId: updated.requestId, clarification: updated.clarification, route: a.goal && a.task ? {goal:a.goal,task:a.task,projectTurn:updated.route?.projectTurn} : updated.route, turns:[a.turnId], open:[a.turnId] })]);
+          requestId: updated.requestId, clarification: updated.clarification, route: a.goal && a.task ? {goal:a.goal,task:a.task,projectTurn:updated.route?.projectTurn,...(updated.route?.reason ? {reason:updated.route.reason} : {})} : updated.route, turns:[a.turnId], open:[a.turnId] })]);
       }
     }
   }
@@ -334,7 +334,7 @@ function applyOne(e: Exchange, a: Activity | DraftArrived): Exchange {
       return { ...x, draftCalls: { ...x.draftCalls, [thinking ? thinkingKey(a.turnId) : a.turnId]: { call: a.call, settled: false } }, ...(thinking ? { thinking: draft } : { draft }) };
     }
     case "routed":
-      return { ...x, state: "working", ...((a.clarification || x.clarification) ? {workStartedAt: x.workStartedAt ?? a.at} : {}), clarification: a.clarification ?? (x.clarification ? {...x.clarification, state: "answered"} : null), route: !x.route?.projectTurn ? { goal: a.goal, task: a.task, chat: a.chat, projectTurn: a.projectTurn } : x.route, redoneFrom: x.redoneFrom ?? a.redoneFrom ?? null, lastAt: a.at };
+      return { ...x, state: "working", ...((a.clarification || x.clarification) ? {workStartedAt: x.workStartedAt ?? a.at} : {}), clarification: a.clarification ?? (x.clarification ? {...x.clarification, state: "answered"} : null), route: !x.route?.projectTurn ? { goal: a.goal, task: a.task, chat: a.chat, projectTurn: a.projectTurn, ...(a.reason ? { reason: a.reason } : {}) } : x.route, redoneFrom: x.redoneFrom ?? a.redoneFrom ?? null, lastAt: a.at };
     case "redone":
       return { ...e, redoneTo: a.to };
     case "memory": {
@@ -420,7 +420,7 @@ export function fromHistory(item: HistoryItem, conversation: string): Exchange {
     at: item.at,
     message: item.message,
     attachments: item.attachments ?? [],
-    route: first ? { goal: first.goal, task: first.task, chat: first.chat, projectTurn: first.projectTurn } : item.target ?? null,
+    route: first ? { goal: first.goal, task: first.task, chat: first.chat, projectTurn: first.projectTurn, ...(first.reason ? { reason: first.reason } : {}) } : item.target ?? null,
     steps: item.parts.flatMap((p): Step[] => (p.handedOff && p.lane !== null ? [{ kind: "handed_off" as const, lane: p.lane, ...(p.handoffReason ? { reason: p.handoffReason } : {}) }] : [])),
     answers: item.parts.flatMap((p) => (p.answer ? [p.answer] : [])),
     question: item.question,

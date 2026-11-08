@@ -1832,6 +1832,7 @@ export class LedgerStore {
     workspaceConfidence?: "high" | "low" | null;
     gateArmed?: boolean;
     route: string;
+    reason?: string;
     requestEventId?: string;
     requestRange?: [number, number] | null;
     clarificationTurnId?: string | null;
@@ -1851,6 +1852,7 @@ export class LedgerStore {
           workspace_confidence: input.workspaceConfidence ?? null,
           first_mutation_gate_armed: gateArmed,
           route: input.route,
+          ...(input.reason ? { reason: input.reason } : {}),
           user_event_id: input.userEventId,
           request_event_id: input.requestEventId ?? input.userEventId,
           request_range: input.requestRange ?? null,

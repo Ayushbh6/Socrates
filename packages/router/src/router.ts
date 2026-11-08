@@ -4,6 +4,7 @@ import {
   type Effort,
   type EventPayloads,
   LEDGER_QUERY_MAX_CALLS,
+  LedgerQueryInput,
   type ModelClient,
   ModelError,
   type ModelResponse,
@@ -20,6 +21,7 @@ import {
   type ResolvedPart,
   type ResolvedRoute,
   type SeenSelectors,
+  NO_REASON,
   emptySeen,
   validateAskUser,
   validateDecisionText,
@@ -86,7 +88,8 @@ interface Counters { invalidFinal: number; invalidTools: number; semanticErrors:
 export type RoutingStage = "routing" | "searching" | "rechecking" | "escalating";
 
 interface Budget {
-  progress?: (stage: RoutingStage) => void;
+  /** `detail`: for a search, what it looked for (`searchLabel`). */
+  progress?: (stage: RoutingStage, detail?: string) => void;
   counters: Counters;
   ledgerQueries: number;
   messages: ModelMessage[];
@@ -128,7 +131,7 @@ export class GoalRouter {
   }
 
   /** Persist the exact message, route it, and bind it. A lane's message is recorded in that lane. */
-  async route(message: string, signal?: AbortSignal, options: { laneId?: string | null; userEventId?: string; clarificationTurnId?: string | null; laneActivity?: ReadonlyMap<string, string | null>; mainActivity?: Iterable<string>; remembered?: string | null; beforeBind?: (taskIds: string[]) => Promise<void>; onProgress?: (stage: RoutingStage) => void } = {}): Promise<RoutingResult> {
+  async route(message: string, signal?: AbortSignal, options: { laneId?: string | null; userEventId?: string; clarificationTurnId?: string | null; laneActivity?: ReadonlyMap<string, string | null>; mainActivity?: Iterable<string>; remembered?: string | null; beforeBind?: (taskIds: string[]) => Promise<void>; onProgress?: (stage: RoutingStage, detail?: string) => void } = {}): Promise<RoutingResult> {
     signal?.throwIfAborted();
     const laneId = options.laneId ?? null;
     const userEvent = options.userEventId ? this.store.getEvent(options.userEventId) : this.store.recordUserMessage(message, laneId);
@@ -247,7 +250,11 @@ export class GoalRouter {
           budget.progress?.("rechecking");
           continue;
         }
-        if (response.toolCalls.some(c => c.name === "ledger_query")) budget.progress?.("searching");
+        const searches = response.toolCalls.filter(c => c.name === "ledger_query");
+        if (searches.length) {
+          const looked = [...new Set(searches.map((c) => searchLabel(this.store, c.input)).filter((l): l is string => !!l))].join(", ");
+          budget.progress?.("searching", looked || undefined);
+        }
         for (const call of response.toolCalls) {
           const result = this.executeTool(call, ctx, seen, budget);
           if (result.isError) budget.counters.invalidTools++;
@@ -485,6 +492,8 @@ export class GoalRouter {
           workspaceConfidence: part.target.kind === "general" ? null : part.workspaceConfidence,
           gateArmed: part.target.kind !== "general" && part.workspaceConfidence === "low",
           route: describeRoute(part),
+          // A harness fallback's reason is for Inspect only.
+          ...(!meta.fallback && shownReason(part.reason) ? { reason: shownReason(part.reason)! } : {}),
           requestEventId: ctx.pending?.turn.userEventId ?? userEventId,
           requestRange: route.compound ? [requestStart, requestEnd] : null,
           clarificationTurnId: ctx.pending?.turn.id ?? null,
@@ -582,6 +591,36 @@ function syntheticRoute(ctx: RoutingContext, target: ResolvedPart["target"], rea
     ],
     reason,
   };
+}
+
+/** What a ledger search looked for, in words the user knows: its words, else the goal or task by name, else its dates. */
+export function searchLabel(store: LedgerStore, input: unknown): string | null {
+  const q = LedgerQueryInput.safeParse(input);
+  if (!q.success) return null;
+  const { match, task, goal, workspace, from, to } = q.data;
+  if (match) return match;
+  const byNumber = task ? parseTaskSelector(task) : null;
+  if (byNumber) {
+    const g = store.getGoalByNumber(byNumber.goal);
+    const t = g ? store.getTaskByNumber(g.id, byNumber.task) : null;
+    if (t) return t.title;
+  }
+  if (task && !byNumber) return task;
+  const goalNumber = goal ? parseGoalSelector(goal) : null;
+  if (goalNumber !== null) {
+    const g = store.getGoalByNumber(goalNumber);
+    if (g) return g.title;
+  }
+  if (goal && goalNumber === null) return goal;
+  if (workspace) return workspace;
+  if (from && to) return from === to ? from : `${from} to ${to}`;
+  return from ? `since ${from}` : to ? `until ${to}` : null;
+}
+
+/** The reason as the page shows it: none when the harness had to fill it in. */
+function shownReason(reason: string): string | null {
+  const text = reason.trim();
+  return text && text !== NO_REASON ? text : null;
 }
 
 function describeRoute(part: ResolvedPart): string {

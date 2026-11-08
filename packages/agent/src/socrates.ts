@@ -116,7 +116,7 @@ export interface HandleOptions {
   /** Quiet status lines while work continues, such as a context refresh during rollover. */
   onStatus?: (text: string) => void;
   /** Each stage before work starts, as it really begins (live only; architecture/web.md, "Routing line"). */
-  onProgress?: (stage: ProgressStage) => void;
+  onProgress?: (stage: ProgressStage, detail?: string) => void;
   /**
    * Where the message goes: omitted, the main conversation; "new", a new
    * lane; or an open lane's id. The first message of a lane is routed like

@@ -27,6 +27,8 @@ export interface HistoryPart {
   handedOff: boolean;
   /** Why a handed-off part runs in its lane: the lane worked its task, or main was busy and it was placed beside it. */
   handoffReason?: "busy_task" | "parallel";
+  /** The router's reason for this place, written for the user (only for a routed part). */
+  reason?: string;
   answer: string | null;
   /** Why an interrupted part ended. */
   interrupted: EventPayloads["turn_interrupted"]["reason"] | null;
@@ -96,6 +98,12 @@ export function requestHistory(store: LedgerStore, requestId: string, laneId: st
   };
 }
 
+/** The router's reason, saved when the turn was bound. */
+function routeReason(store: LedgerStore, turnId: string): { reason?: string } {
+  const reason = (store.listEvents({ turnId, type: "turn_bound" })[0]?.payload as EventPayloads["turn_bound"] | undefined)?.reason;
+  return reason ? { reason } : {};
+}
+
 function part(store: LedgerStore, t: Turn, laneId: string | null): HistoryPart {
   const interruption = store.interruption(t.id);
   const goal = store.requireGoal(t.goalId!);
@@ -110,6 +118,7 @@ function part(store: LedgerStore, t: Turn, laneId: string | null): HistoryPart {
     lane: t.laneId ? store.requireLane(t.laneId).number : null,
     handedOff: laneId === null && t.laneId !== null,
     ...(laneId === null && t.laneId !== null ? { handoffReason: (store.listEvents({ turnId: t.id, type: "turn_moved_to_lane" }).at(-1)?.payload as { reason?: "busy_task" | "parallel" } | undefined)?.reason ?? "busy_task" } : {}),
+    ...routeReason(store, t.id),
     // A stopped part shows its answer as far as it was written.
     answer: responseText(store, t) ?? interruption?.partial_answer ?? null,
     interrupted: interruption?.reason ?? null,

@@ -11,7 +11,8 @@ import { Work } from "./Work";
 
 /**
  * Everything Socrates did for one question: its work, folded apart from the
- * answer, its approvals, and the answer. `redo` offers "Redo in…" (null: why
+ * answer, its approvals, and the answer. Its place comes with the router's
+ * reason for it, when it was routed. `redo` offers "Redo in…" (null: why
  * not now); an answer set aside by a redo folds to one line that opens it.
  * `onContinue` is given for the newest answer of its conversation: when a
  * safeguard ended its work, it offers to carry on.
@@ -26,6 +27,7 @@ export function AnswerView({ exchange, approvals, redo, onContinue }: { exchange
           {exchange.route && <span className="route-name">{exchange.route.goal.title}<span className="route-sep">/</span>{exchange.route.task.title}</span>}
           {exchange.redoneFrom && <span className="route-from">Redone from <PlaceName place={exchange.redoneFrom} goals={goals} /></span>}
           {redo && <RedoMenu exchange={exchange} blocked={redo.blocked} {...(redo.onRedone ? { onRedone: redo.onRedone } : {})} />}
+          {exchange.route?.reason && <span className="route-why">{exchange.route.reason}</span>}
         </p>
       )}
       {exchange.redoneTo && (
