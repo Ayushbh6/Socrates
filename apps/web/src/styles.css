@@ -341,7 +341,7 @@ svg { width: 1rem; height: 1rem; flex: none; }
 .work-narration { margin: 0.4rem 0 0.35rem; color: var(--text); font-size: 0.93rem; line-height: 1.6; overflow-wrap: anywhere; }
 .work-narration p, .work-narration ul, .work-narration ol { margin: 0 0 0.4rem; }
 .work-narration > :last-child { margin-bottom: 0; }
-.work-narration code { padding: 0.05rem 0.25rem; border-radius: 0.25rem; background: rgb(var(--ink) / 0.18); font-family: var(--mono); font-size: 0.85em; }
+.work-narration code { padding: 0.05rem 0.3rem; border-radius: 0.3rem; background: rgb(var(--ink) / 0.07); box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.07); font-family: var(--mono); font-size: 0.85em; }
 /* One row: an icon, what it did in words, what it came to, and a chevron to open it. */
 .row-line { display: flex; align-items: center; gap: 0.5rem; width: 100%; min-width: 0; margin: 0; padding: 0.26rem 0.45rem; border: 0; border-radius: 0.5rem; background: transparent; color: var(--muted); font-size: 0.86rem; line-height: 1.45; text-align: left; }
 button.row-line:hover { background: var(--hover); color: var(--text); }
@@ -364,6 +364,7 @@ button.row-line:hover { background: var(--hover); color: var(--text); }
 .row-approval svg { width: 0.85rem; height: 0.85rem; }
 .row-summary.exit { padding: 0.02rem 0.4rem; border-radius: 0.35rem; background: rgb(var(--ink-deep) / 0.05); font-family: var(--mono); font-size: 0.68rem; }
 .row-summary.exit[data-failed="true"] { background: var(--bad-tint); }
+.row-summary.exit[data-failed="false"] { background: var(--good-tint); color: var(--good); }
 .row-state { flex: none; width: 0.85rem; height: 0.85rem; }
 .tool[data-status="error"] .row-state { color: var(--danger); }
 .row-chevron { flex: none; width: 0.8rem; height: 0.8rem; opacity: 0; transition: transform 160ms, opacity 120ms; }
@@ -389,21 +390,71 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .step-meta.warn { color: var(--warm); }
 .step-meta.steer { color: var(--text); background: var(--surface-2, rgba(127, 127, 127, 0.08)); border-radius: 0.5rem; padding: 0.35rem 0.6rem; margin: 0.35rem 0; align-items: flex-start; }
 .step-meta.steer q { quotes: "“" "”"; font-style: italic; }
-/* What a running command prints, newest lines only. */
-.tool-live { max-height: 9.5em; margin: 0.05rem 0 0.35rem 1.95rem; padding: 0.5rem 0.8rem; overflow: hidden; border: 1px solid rgb(var(--ink-deep) / 0.07); border-radius: 0.6rem; background: var(--bg-raised); color: var(--muted); font-family: var(--mono); font-size: 0.72rem; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
-/* An opened call: a card with the whole command, its output or diff, and a footer. */
-.tool-card { min-width: 0; margin: 0.15rem 0 0.55rem 1.95rem; overflow: hidden; border: 1px solid rgb(var(--ink-deep) / 0.08); border-radius: 0.65rem; background: var(--bg-raised); }
-.tool-card pre { margin: 0; font-family: var(--mono); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
-.tool-card-command { max-height: 12rem; padding: 0.6rem 0.85rem; overflow: auto; border-bottom: 1px solid rgb(var(--ink-deep) / 0.07); background: rgb(var(--ink-deep) / 0.03); color: var(--text); font-size: 0.76rem; }
-.tool-prompt { color: var(--accent); user-select: none; }
-.tool-card-output { max-height: 18rem; padding: 0.6rem 0.85rem; overflow: auto; color: var(--text-2); font-size: 0.74rem; }
-.tool-card .tool-diff { max-height: 18rem; padding: 0.5rem 0; overflow: auto; white-space: pre; overflow-wrap: normal; }
+/* What a running command prints, newest lines only, in the same calm code panel as an opened call. */
+.tool-live { max-height: 9.5em; margin: 0.1rem 0 0.4rem 1.95rem; padding: 0.55rem 0.85rem; overflow: hidden; border: 1px solid var(--code-line); border-radius: 0.65rem; background: var(--code-bg); color: var(--code-text); font-family: var(--mono); font-size: 0.72rem; line-height: 1.5; white-space: pre; -webkit-mask-image: linear-gradient(to bottom, transparent, #000 2em); mask-image: linear-gradient(to bottom, transparent, #000 2em); }
+/* An opened call: a card with the whole command, its output laid out to read, and a footer. */
+.tool-card { min-width: 0; margin: 0.2rem 0 0.6rem 1.95rem; overflow: hidden; border: 1px solid var(--code-line); border-radius: 0.75rem; background: var(--code-bg); box-shadow: 0 1px 2px rgb(var(--shade) / 0.04); animation: card-open 180ms cubic-bezier(0.22, 1, 0.36, 1); }
+@keyframes card-open { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+.tool-card pre { margin: 0; font-family: var(--mono); line-height: 1.55; }
+.card-command { position: relative; display: flex; align-items: flex-start; gap: 0.55rem; padding: 0.6rem 2.4rem 0.6rem 0.85rem; border-bottom: 1px solid var(--code-line); background: var(--code-head); }
+.card-command pre { flex: 1; min-width: 0; max-height: 12rem; overflow: auto; color: var(--code-text); font-size: 0.76rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-prompt { flex: none; color: var(--accent); font-family: var(--mono); font-size: 0.76rem; line-height: 1.55; user-select: none; }
+.card-output { position: relative; }
 .tool-card-empty { margin: 0; padding: 0.55rem 0.85rem; color: var(--faint); font-size: 0.76rem; }
-.tool-card-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.2rem 0.6rem; min-height: 1.9rem; padding: 0.2rem 0.4rem 0.2rem 0.85rem; border-top: 1px solid rgb(var(--ink-deep) / 0.07); color: var(--faint); font-size: 0.72rem; font-variant-numeric: tabular-nums; }
+.tool-card-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.2rem 0.6rem; min-height: 1.95rem; padding: 0.2rem 0.4rem 0.2rem 0.85rem; border-top: 1px solid var(--code-line); background: var(--code-head); color: var(--faint); font-size: 0.72rem; font-variant-numeric: tabular-nums; }
 .tool-card-actions { display: flex; flex: none; align-items: center; gap: 0.5rem; }
 .tool-card-foot .quiet-button { padding: 0.15rem 0.5rem; font-size: 0.74rem; }
+.tool-card[data-failed="true"] .card-output .out-text pre { color: var(--bad); }
+/* Copy: a quiet square at the top right that shows on hover. */
+.copy-button { position: absolute; top: 0.4rem; right: 0.45rem; z-index: 1; display: grid; place-items: center; width: 1.6rem; height: 1.6rem; padding: 0; border: 1px solid var(--code-line); border-radius: 0.45rem; background: var(--code-bg); color: var(--faint); opacity: 0; transition: opacity 140ms, color 140ms; }
+.copy-button svg { width: 0.8rem; height: 0.8rem; }
+.copy-button:hover { color: var(--text); }
+.copy-button[data-done="true"] { color: var(--good); opacity: 1; }
+.card-command:hover .copy-button, .card-output:hover .copy-button, .copy-button:focus-visible { opacity: 1; }
+@media (hover: none) { .copy-button { opacity: 0.8; } }
+/* Output laid out to read (lib/output.ts): no wrapping, so columns and indentation hold; long lines scroll sideways. */
+.out { max-height: 22rem; overflow: auto; color: var(--code-text); font-size: 0.74rem; scrollbar-width: thin; }
+.out pre { padding: 0.6rem 0.85rem; white-space: pre; }
+.out-text pre { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-2); font-family: var(--mono); }
+.out-label { position: sticky; top: 0; z-index: 1; margin: 0; padding: 0.35rem 0.85rem; background: var(--code-bg); color: var(--faint); font-size: 0.68rem; letter-spacing: 0.02em; }
+.out-cut { margin: 0; padding: 0.35rem 0.85rem; color: var(--faint); font-size: 0.68rem; font-style: italic; }
+.out-cut:first-child { padding-bottom: 0; }
+.code-grid { display: grid; grid-template-columns: auto minmax(0, 1fr); min-width: max-content; }
+.code-grid .gutter { padding: 0.6rem 0.6rem 0.6rem 0.85rem; color: var(--code-faint); text-align: right; user-select: none; }
+.code-grid .code-body { padding: 0.6rem 0.85rem 0.6rem 0.2rem; }
+.out-code .out-label + .code-grid .gutter, .out-code .out-label + .code-grid .code-body { padding-top: 0.15rem; }
+.match-file + .match-file { border-top: 1px solid var(--code-line); }
+.out-file { display: flex; align-items: center; gap: 0.4rem; margin: 0; padding: 0.5rem 0.85rem 0; font-family: var(--sans); font-size: 0.76rem; }
+.out-file svg, .out-files svg { width: 0.85rem; height: 0.85rem; color: var(--faint); }
+.out-name { color: var(--text); font-family: var(--mono); font-size: 0.74rem; }
+.out-dir { overflow: hidden; color: var(--faint); font-family: var(--mono); font-size: 0.7rem; text-overflow: ellipsis; white-space: nowrap; }
+.out-matches .code-grid .gutter, .out-matches .code-grid .code-body { padding-top: 0.25rem; padding-bottom: 0.5rem; }
+.out-matches mark { border-radius: 0.2rem; background: rgb(var(--teal) / 0.2); color: inherit; box-shadow: 0 0 0 1px rgb(var(--teal) / 0.2); }
+.out-files ul { display: grid; gap: 0.05rem; margin: 0; padding: 0.45rem 0.5rem; list-style: none; }
+.out-files li { display: flex; align-items: center; gap: 0.45rem; min-width: 0; padding: 0.2rem 0.35rem; border-radius: 0.4rem; }
+.out-files li:hover { background: var(--hover); }
+.terminal-text { color: var(--code-text); }
+.out pre.terminal-text[data-wrap="true"] { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* An edit's change: a sign column, added and removed lines tinted, hunks and file names quiet. */
+.tool-card .tool-diff { max-height: 22rem; padding: 0.45rem 0; overflow: auto; font-size: 0.74rem; white-space: pre; overflow-wrap: normal; }
+.tool-diff .diff-line { display: block; min-width: max-content; padding: 0 0.85rem 0 0.4rem; }
+.diff-sign { display: inline-block; width: 1.2rem; color: var(--code-faint); text-align: center; user-select: none; }
+.diff-line[data-type="add"] .diff-sign { color: var(--good); }
+.diff-line[data-type="del"] .diff-sign { color: var(--bad); }
+.tool-diff .diff-line[data-type="head"] { padding: 0.35rem 0.85rem 0.15rem; color: var(--text); font-weight: 600; }
+.tool-diff .diff-line[data-type="hunk"] { margin: 0.25rem 0; padding-left: 1.6rem; background: rgb(var(--teal) / 0.06); }
 @media (max-width: 560px) { .row-folder { display: none; } .tool-card, .tool-live { margin-left: 0.4rem; } }
-.tool-diff .diff-line { display: block; padding: 0 0.85rem; }
+/* Code colours: highlight.js classes on the theme's tokens. */
+.hljs-keyword, .hljs-selector-tag, .hljs-built_in, .hljs-literal, .hljs-doctag { color: var(--hl-keyword); }
+.hljs-string, .hljs-regexp, .hljs-addition, .hljs-symbol, .hljs-template-tag { color: var(--hl-string); }
+.hljs-number, .hljs-variable.constant_, .hljs-bullet { color: var(--hl-number); }
+.hljs-comment, .hljs-quote { color: var(--hl-comment); font-style: italic; }
+.hljs-title, .hljs-title.function_, .hljs-title.class_, .hljs-section { color: var(--hl-title); }
+.hljs-attr, .hljs-attribute, .hljs-property, .hljs-params, .hljs-name, .hljs-selector-class, .hljs-selector-id { color: var(--hl-attr); }
+.hljs-meta, .hljs-type, .hljs-tag, .hljs-subst, .hljs-variable, .hljs-template-variable { color: var(--hl-meta); }
+.hljs-deletion { color: var(--bad); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
 .spin { animation: spin 1s linear infinite; color: var(--accent); }
 @keyframes spin { to { transform: rotate(360deg); } }
 .approval { margin: 0.4rem 0 1.2rem; padding: 1rem 1.1rem; border-radius: 1rem; background: var(--approval-bg); box-shadow: var(--shadow-float); }
@@ -420,9 +471,16 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .prose > :first-child { margin-top: 0; }
 .prose p, .prose ul, .prose ol { margin: 0 0 0.9rem; }
 .prose h1, .prose h2, .prose h3 { margin: 1.4rem 0 0.6rem; font-size: 1.05rem; font-weight: 600; }
-.prose code { padding: 0.1rem 0.3rem; border-radius: 0.3rem; background: rgb(var(--ink) / 0.18); font-family: var(--mono); font-size: 0.86em; }
+.prose code { padding: 0.1rem 0.32rem; border-radius: 0.32rem; background: rgb(var(--ink) / 0.07); box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.07); font-family: var(--mono); font-size: 0.86em; }
 .prose pre { padding: 0.85rem 1rem; overflow-x: auto; border-radius: 0.7rem; background: rgb(var(--ink) / 0.05); }
 .prose pre code { padding: 0; background: none; }
+/* A fenced block in an answer: the code panel of the tool cards, its language above, a copy button. */
+.code-block { position: relative; margin: 0 0 1rem; overflow: hidden; border: 1px solid var(--code-line); border-radius: 0.75rem; background: var(--code-bg); }
+.code-block-head { display: flex; align-items: center; justify-content: space-between; min-height: 2rem; padding: 0 0.4rem 0 0.9rem; border-bottom: 1px solid var(--code-line); background: var(--code-head); color: var(--faint); font-family: var(--mono); font-size: 0.7rem; }
+.code-block-head .copy-button { position: static; opacity: 1; border: 0; background: transparent; }
+.code-block pre, .work-narration .code-block pre { margin: 0; padding: 0.8rem 0.95rem; overflow-x: auto; border-radius: 0; background: transparent; color: var(--code-text); font-family: var(--mono); font-size: 0.8rem; line-height: 1.6; }
+.work-narration .code-block { margin: 0.3rem 0 0.5rem; }
+.work-narration .code-block code, .prose .code-block code { padding: 0; background: none; font-size: inherit; }
 .prose a { color: var(--accent-strong); }
 .prose table { border-collapse: collapse; margin: 0 0 1rem; font-size: 0.9rem; }
 .prose th, .prose td { padding: 0.35rem 0.7rem; background: rgb(var(--ink) / 0.03); text-align: left; }
@@ -728,6 +786,11 @@ button.row-line:hover .row-chevron, button.row-line:focus-visible .row-chevron, 
 .icon-button[data-on="true"] { background: var(--tint); color: var(--accent-strong); }
 .evidence-body { flex: 1; min-height: 6rem; margin: 0.25rem 0 0; padding: 0.85rem 1rem; overflow: auto; border-radius: 0.7rem; background: rgb(var(--ink) / 0.045); font-family: var(--mono); font-size: 0.76rem; line-height: 1.55; white-space: pre; }
 .evidence-body[data-wrap="true"] { white-space: pre-wrap; overflow-wrap: anywhere; }
+.evidence-body { background: var(--code-bg); border: 1px solid var(--code-line); color: var(--code-text); }
+.evidence-laid { padding: 0; white-space: normal; }
+.evidence-laid .out { max-height: none; overflow: visible; font-size: 0.76rem; }
+.evidence-command { margin: 0.25rem 0 0.4rem; padding: 0.6rem 0.85rem; max-height: 9rem; overflow: auto; border-radius: 0.6rem; background: var(--code-head); color: var(--code-text); font-family: var(--mono); font-size: 0.76rem; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.evidence-facts { margin: 0; padding: 0.55rem 0.85rem 0; color: var(--faint); font-size: 0.72rem; }
 .diff-line[data-type="add"] { color: var(--good); background: var(--good-tint); }
 .diff-line[data-type="del"] { color: var(--bad); background: var(--bad-tint); }
 .diff-line[data-type="hunk"] { color: var(--accent-strong); }

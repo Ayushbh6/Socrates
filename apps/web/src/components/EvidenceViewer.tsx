@@ -6,6 +6,8 @@ import remarkGfm from "remark-gfm";
 import { api } from "../lib/api";
 import { useDialog } from "../lib/dialog";
 import { viewEvidence } from "../lib/evidence";
+import { evidenceLayout } from "../lib/output";
+import { Code, ToolOutput } from "./ToolOutput";
 import type { Evidence } from "../lib/types";
 
 /** The complete recorded output of one tool call: a diff in colour, a result as tidy JSON, or its text. */
@@ -22,7 +24,8 @@ export function EvidenceViewer({ task, handle, onClose }: { task: string; handle
     api.evidence(task, handle).then((found) => { if (active) setEvidence(found); }, (e) => { if (active) setError(e instanceof Error ? e.message : String(e)); });
     return () => { active = false; };
   }, [task, handle]);
-  const view = evidence ? viewEvidence(evidence.content) : null;
+  const laid = evidence ? evidenceLayout(evidence.tool, evidence.content, evidence.call?.target ?? null) : null;
+  const view = evidence && !laid ? viewEvidence(evidence.content) : null;
 
   // At the page level, so no panel's blur or clipping can trap the dialog.
   return createPortal(
@@ -39,9 +42,16 @@ export function EvidenceViewer({ task, handle, onClose }: { task: string; handle
           </div>
         </div>
         {error && <p className="setup-error" role="alert">{error}</p>}
+        {evidence?.call?.command && <pre className="evidence-command"><span aria-hidden className="tool-prompt">$ </span><Code code={evidence.call.command} language="bash" /></pre>}
+        {laid && (
+          <div className="evidence-body evidence-laid" data-wrap={wrap}>
+            {laid.facts.length > 0 && <p className="evidence-facts">{laid.facts.join(" · ")}</p>}
+            <ToolOutput layout={laid.layout.kind === "terminal" ? { ...laid.layout, wrap: wrap || laid.layout.wrap } : laid.layout} cut={null} pattern={evidence?.tool === "grep" ? evidence.call?.target ?? null : null} />
+          </div>
+        )}
         {view && (
           <pre className="evidence-body" data-wrap={wrap}>
-            {view.kind === "diff" ? view.lines.map((l, i) => <span key={i} className="diff-line" data-type={l.type}>{l.text}{"\n"}</span>) : view.text}
+            {view.kind === "diff" ? view.lines.map((l, i) => <span key={i} className="diff-line" data-type={l.type}>{l.text}{"\n"}</span>) : view.kind === "json" ? <Code code={view.text} language="json" /> : view.text}
           </pre>
         )}
         {evidence && (evidence.truncated || evidence.outputLost || evidence.captureComplete === false) && (

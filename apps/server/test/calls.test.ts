@@ -30,6 +30,7 @@ describe("tool calls in plain words", () => {
     expect(describeCall("terminal_control", { action: "read", output: "out_1" }, (id) => (id === "out_1" ? `cd ${homedir()}/x && npm test\n# again` : null)).target).toBe("npm test");
     expect(describeCall("read", { path: `${homedir()}/notes.md` }).target).toBe("~/notes.md");
     expect(describeCall("terminal", { command: "npm test" }).active).toBe("Running");
+    expect(describeCall("grep", { pattern: "x" }).tool).toBe("grep");
   });
 
   it("says what was typed and pressed in a terminal, and what a wait waits for", () => {

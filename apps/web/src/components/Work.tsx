@@ -7,6 +7,9 @@ import type { Exchange } from "../lib/model";
 import type { CallView } from "../lib/types";
 import { type Segment, type ToolStep, type WorkItem, arriving, callFailed, callVerb, elapsed, groupLabel, thoughtLabel, waitingLine, workSegments, workSummary } from "../lib/work";
 import { EvidenceViewer, ThinkingViewer } from "./EvidenceViewer";
+import { layoutOf, plainTerminal } from "../lib/output";
+import { Code, CopyButton, ToolOutput, splitPath } from "./ToolOutput";
+import { MARKDOWN } from "./Prose";
 import { STAGE_MIN_MS, orientedLine, progressLine, progressTrail } from "../lib/progress";
 
 /** The current time, every second while `on`. */
@@ -143,7 +146,7 @@ function LiveStatus({ label, since, now }: { label: string; since: string; now: 
 function SegmentView({ segment, newest, now }: { segment: Segment; newest: boolean; now: number }) {
   switch (segment.kind) {
     case "narration":
-      return <div className="work-narration" data-live={segment.live}><Markdown remarkPlugins={[remarkGfm]}>{segment.text}</Markdown></div>;
+      return <div className="work-narration" data-live={segment.live}><Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN}>{segment.text}</Markdown></div>;
     case "group":
       return segment.items.length === 1 ? <ItemView item={segment.items[0]!} now={now} /> : <Group items={segment.items} newest={newest} now={now} />;
     case "meta":
@@ -220,12 +223,6 @@ export function shortFolder(folder: string): string {
   return folder.length <= 28 || parts.length <= 4 ? folder : [...parts.slice(0, 2), "…", ...parts.slice(-2)].join("/");
 }
 
-/** A path as its file name, with the folder it is in apart. */
-function splitPath(path: string): { name: string; dir: string } {
-  const at = path.replace(/\/+$/, "").lastIndexOf("/");
-  return at < 0 ? { name: path, dir: "" } : { name: path.slice(at + 1), dir: path.slice(0, at) };
-}
-
 /**
  * One call (architecture/web.md, "Work and answer"). A command reads as its
  * first line in mono, with its folder, extra lines, approval and exit beside
@@ -241,7 +238,7 @@ function ToolRow({ step, output, now }: { step: ToolStep; output: string | null;
   const result = step.result;
   const took = running ? now - Date.parse(step.at) : result?.ms ?? null;
   const time = took !== null && took >= 1000 ? elapsed(took) : null;
-  const live = running && output ? output.replace(/\n+$/, "").split("\n").slice(-LIVE_LINES).join("\n") : "";
+  const live = running && output ? plainTerminal(output).replace(/\n+$/, "").split("\n").slice(-LIVE_LINES).join("\n") : "";
   const command = step.call.kind === "terminal" && step.call.command !== undefined ? step.call : null;
   const file = (step.call.kind === "read" || step.call.kind === "edit") && step.call.target ? splitPath(step.call.target) : null;
   const more = command?.lines && command.lines > 1 ? command.lines - 1 : 0;
@@ -273,11 +270,24 @@ function ToolRow({ step, output, now }: { step: ToolStep; output: string | null;
       </button>
       {live && <pre className="tool-live" aria-live="off">{live}</pre>}
       {open && (
-        <div className="tool-card">
-          {command && <pre className="tool-card-command"><span aria-hidden className="tool-prompt">$ </span>{command.command}</pre>}
+        <div className="tool-card" data-failed={failed}>
+          {command && (
+            <div className="card-command">
+              <span aria-hidden className="tool-prompt">$</span>
+              <pre><Code code={command.command ?? ""} language="bash" /></pre>
+              <CopyButton text={command.command ?? ""} label="Copy the command" />
+            </div>
+          )}
           {result?.diff ? <Diff text={result.diff} /> : result?.preview ? (
-            // A command's preview is the end of its output; anything else's, the start.
-            <pre className="tool-card-output">{command && result.truncated ? "…\n" : ""}{result.preview}{!command && result.truncated ? "\n…" : ""}</pre>
+            <div className="card-output">
+              <ToolOutput
+                layout={layoutOf(step.call.tool, step.call.kind, result.preview, step.call.target || null, failed && !command)}
+                // A command's preview is the end of its output; anything else's, the start.
+                cut={result.truncated ? (command ? "before" : "after") : null}
+                pattern={step.call.tool === "grep" ? step.call.target : null}
+              />
+              <CopyButton text={result.preview} label="Copy the output" />
+            </div>
           ) : !running && command ? <p className="tool-card-empty">No output</p> : null}
           <div className="tool-card-foot">
             <span>{[command?.folder ? shortFolder(command.folder) : null, result?.summary && !/^\+\d+ −\d+$/.test(result.summary) ? result.summary : null, time].filter(Boolean).join(" · ") || (running ? "Running…" : "")}</span>
@@ -311,7 +321,10 @@ function Summary({ text, failed }: { text: string; failed: boolean }) {
 function Diff({ text }: { text: string }) {
   return (
     <pre className="tool-diff">
-      {diffLines(text).map((l, i) => <span key={i} className="diff-line" data-type={l.type}>{l.text || " "}</span>)}
+      {diffLines(text).map((l, i) => {
+        const signed = l.type === "add" || l.type === "del" || l.type === "same";
+        return <span key={i} className="diff-line" data-type={l.type}>{signed ? <><span className="diff-sign" aria-hidden>{l.type === "add" ? "+" : l.type === "del" ? "−" : " "}</span>{l.text.slice(1) || " "}</> : l.text || " "}</span>;
+      })}
     </pre>
   );
 }

@@ -12,6 +12,8 @@ export type CallKind = "read" | "search" | "edit" | "terminal" | "memory" | "cap
 /** One call: `${verb} ${target} ${detail}` once done, `${active} …` while it runs. */
 export interface CallView {
   kind: CallKind;
+  /** The tool's own name ("read", "grep", "terminal_control"…), so the page can lay out its output; older events' views lack it. */
+  tool?: string;
   verb: string;
   active: string;
   /** The file, pattern, command or terminal, shown as code; "" when there is none. */
@@ -101,6 +103,10 @@ const WAIT_FOR: Record<string, string> = { exit: "to finish", ready: "to be read
  * so reading it back says which command it was.
  */
 export function describeCall(tool: string, input: unknown, commandOf: (outputId: string) => string | null = () => null): CallView {
+  return { ...describeKind(tool, input, commandOf), tool };
+}
+
+function describeKind(tool: string, input: unknown, commandOf: (outputId: string) => string | null): CallView {
   const i = (typeof input === "object" && input !== null ? input : {}) as Record<string, unknown>;
   switch (tool) {
     case "read": {

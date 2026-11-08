@@ -230,6 +230,8 @@ export interface Folders {
 /** A tool call in plain words (architecture/server.md, "Live activity"). */
 export interface CallView {
   kind: "read" | "search" | "edit" | "terminal" | "memory" | "capability" | "other";
+  /** The tool's own name ("read", "grep", "terminal_control"…); older servers leave it out. */
+  tool?: string;
   verb: string;
   active: string;
   target: string;
