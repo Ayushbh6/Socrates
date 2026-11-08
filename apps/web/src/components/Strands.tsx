@@ -1,6 +1,6 @@
-import { X } from "lucide-react";
+import { SquareTerminal, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { type Strand, strands } from "../lib/strands";
+import { type Strand, strandTerminals, strands } from "../lib/strands";
 import { type AppState, store } from "../lib/store";
 
 /**
@@ -9,14 +9,14 @@ import { type AppState, store } from "../lib/store";
  * task and its latest step. Choosing one brings its question onto the canvas.
  * The row is empty, and not drawn, while main works alone.
  */
-export function Strands({ app, conversation, onOpen }: { app: AppState; conversation: string; onOpen: (conversation: string) => void }) {
+export function Strands({ app, conversation, onOpen, onTerminal }: { app: AppState; conversation: string; onOpen: (conversation: string) => void; /** Show a terminal in the panel. */ onTerminal?: (id: string) => void }) {
   const now = useClock(10_000);
   const list = strands(app.model, now);
   if (!list.length) return null;
   return (
     <nav className="strands" aria-label="Work in progress">
       {list.map((s) => (
-        <div key={s.conversation} className="strand" data-current={s.conversation === conversation} data-status={s.status}>
+        <div key={s.conversation} className="strand" data-current={s.conversation === conversation} data-status={s.status} data-tone={s.tone}>
           <button type="button" className="strand-open" onClick={() => onOpen(s.conversation)} title={s.message}>
             <span className="lane-dot" data-running={s.running} data-waiting={s.waitingForApproval} />
             <span className="strand-body">
@@ -24,12 +24,25 @@ export function Strands({ app, conversation, onOpen }: { app: AppState; conversa
               <small className="strand-step">{line(s, now)}</small>
             </span>
           </button>
+          {onTerminal && <StrandTerminals strand={s} app={app} onTerminal={onTerminal} />}
           {s.closable && (
             <button type="button" className="icon-button strand-close" aria-label={`Close ${s.label}`} title="Close this lane" onClick={() => store.closeLane(s.conversation)}><X aria-hidden /></button>
           )}
         </div>
       ))}
     </nav>
+  );
+}
+
+/** How many terminals the strand has running, in its colour; it opens the first in the panel. */
+function StrandTerminals({ strand, app, onTerminal }: { strand: Strand; app: AppState; onTerminal: (id: string) => void }) {
+  const mine = strandTerminals(strand, app.terminals ?? []);
+  if (!mine.length) return null;
+  const label = `${mine.length} terminal${mine.length === 1 ? "" : "s"} running from ${strand.label === "Main" ? "the main conversation" : strand.label.toLowerCase()}: ${mine.map((t) => t.name).join(", ")}`;
+  return (
+    <button type="button" className="strand-terminals" onClick={() => onTerminal(mine[0]!.id)} aria-label={`${label}. Show in the terminal panel`} title={label}>
+      <SquareTerminal aria-hidden />{mine.length}
+    </button>
   );
 }
 

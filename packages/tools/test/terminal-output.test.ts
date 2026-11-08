@@ -67,6 +67,20 @@ describe.skipIf(process.platform === "win32")("saved terminal output", () => {
     expect(countTokens(long.json.output)).toBeLessThanOrEqual(4_100);
   });
 
+  it("keeps each chat's own place in a shared session, so one lane's read never hides output from another", async () => {
+    const { h } = withArchive();
+    const started = await h.call("terminal", { command: "echo first; sleep 30", background: true, name: "shared", ready: { pattern: "first" } });
+    expect(started.json.output).toBe("first\n");
+    const chatB = otherChat(h, "Check the server");
+    // Chat B has read nothing of it yet, though chat A has: B is shown it all.
+    const b = await h.call("terminal_control", { action: "read", terminal: "shared" }, { binding: chatB });
+    expect(b.json.output).toBe("first\n");
+    // Each now has nothing new.
+    expect((await h.call("terminal_control", { action: "read", terminal: "shared" })).json.output).toBe("");
+    expect((await h.call("terminal_control", { action: "read", terminal: "shared" }, { binding: chatB })).json.output).toBe("");
+    await h.call("terminal_control", { action: "terminate", terminal: "shared" });
+  });
+
   it("labels output by whose run it is, so another chat's run is never taken for this one", async () => {
     const { h } = withArchive();
     const a = await h.call("terminal", { command: "echo from-chat-A; echo ok" });

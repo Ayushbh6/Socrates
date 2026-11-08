@@ -136,7 +136,7 @@ export function Flow({ app, mode, dock, onMode, onSettings, view, setView }: { a
         <AppHeader app={app} mode={mode} dock={dock} sidebar={sidebar} sidebarId="flow-sidebar" onSidebar={() => setSidebar(!sidebar)} onMode={onMode} onSettings={onSettings} onApproval={(e) => { setConversation(e.conversation); setSelected(e.key); setFollowing(null); setSent(null); setSidebar(false); }}>
           {/* The board sits in the header's middle, clear of the notes; a lane viewed with nothing else beside main keeps the plain chip. */}
           {board ? (
-            <Strands app={app} conversation={conversation} onOpen={(id) => { setConversation(id); setSelected(null); setFollowing(null); setSent(null); }} />
+            <Strands app={app} conversation={conversation} onOpen={(id) => { setConversation(id); setSelected(null); setFollowing(null); setSent(null); }} onTerminal={dock.select} />
           ) : conversation !== "main" && (
             <button type="button" className="chip lane-chip" onClick={() => { setConversation("main"); setSelected(null); }}>
               Lane {lane?.number} <X aria-hidden />
@@ -183,7 +183,12 @@ export function Flow({ app, mode, dock, onMode, onSettings, view, setView }: { a
         }}
       />
 
-      <TerminalDock app={app} dock={dock} variant="overlay" />
+      <TerminalDock app={app} dock={dock} variant="overlay" onOwner={(t) => {
+        const to = t.owner.strand === "main" ? "main" : t.owner.strand === "lane" && t.owner.lane?.open ? t.owner.lane.id : null;
+        if (!to) return false;
+        setConversation(to); setSelected(null); setFollowing(null); setSent(null);
+        return true;
+      }} />
 
       <Sidebar
         app={app}

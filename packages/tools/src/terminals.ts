@@ -129,8 +129,12 @@ export class TerminalSession {
   exitReason: ExitReason | null = null;
   stateVersion = 1;
   ready: boolean | null;
-  /** Output offset up to which the agent has received output. */
-  observed = 0;
+  /**
+   * Output offset up to which each reader has received output, by reader (a
+   * chat): one lane reading a shared server never hides what it printed from
+   * another. A reader that has read nothing starts at the beginning.
+   */
+  private readonly seenBy = new Map<string, number>();
   stdinOpen = true;
   /** When the process last printed anything. */
   lastOutputAt = Date.now();
@@ -166,6 +170,30 @@ export class TerminalSession {
 
   get selector(): string {
     return this.spec.name ?? this.id;
+  }
+
+  /** Agent calls waiting on it right now (a launch, or terminal_control wait), so the page can show it is in use. */
+  private holds = 0;
+
+  get held(): boolean {
+    return this.holds > 0;
+  }
+
+  /** An agent call waits on it until the returned function is called. */
+  hold(): () => void {
+    this.holds++;
+    let done = false;
+    return () => { if (!done) { done = true; this.holds--; } };
+  }
+
+  /** Where this reader's unseen output starts. */
+  seen(reader: string): number {
+    return Math.min(this.seenBy.get(reader) ?? 0, this.output.end);
+  }
+
+  /** This reader has now received output up to `offset`. */
+  markSeen(reader: string, offset: number): void {
+    this.seenBy.set(reader, Math.max(this.seenBy.get(reader) ?? 0, offset));
   }
 
   /** A tab restored after a restart: the output its last run saved. */

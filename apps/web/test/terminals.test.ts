@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { cameForward, fallback, terminalState } from "../src/lib/terminals";
+import { cameForward, fallback, groupByOwner, laneTone, ownerLine, ownerOf, terminalState } from "../src/lib/terminals";
+import { strandTerminals } from "../src/lib/strands";
 import type { TerminalView } from "../src/lib/types";
 
+const MAIN = { by: "agent" as const, strand: "main" as const, lane: null, goal: "Demo site", goalNumber: 1, taskNumber: 1 };
+const lane = (n: number, open = true) => ({ ...MAIN, strand: "lane" as const, lane: { id: `lane_${n}`, number: n, open } });
+const YOU = { ...MAIN, by: "user" as const, strand: null };
+
 const term = (id: string, over: Partial<TerminalView> = {}): TerminalView => ({
-  id, name: id, command: "npm run dev", cwd: ".", task: null, status: "running", exitCode: null, signal: null, reason: null,
+  id, name: id, command: "npm run dev", cwd: ".", task: null, owner: MAIN, watched: false, status: "running", exitCode: null, signal: null, reason: null,
   pty: false, background: true, ready: null, inputRequired: false, ports: [], cols: null, rows: null, startedAt: "", exitedAt: null, ...over,
 });
 
@@ -39,5 +44,31 @@ describe("which session the panel shows when its own is gone", () => {
     expect(terminalState(term("a", { status: "exited", reason: "terminated", signal: "SIGTERM" }))).toBe("stopped");
     expect(terminalState(term("a", { status: "exited", reason: "exited", exitCode: 1 }))).toBe("failed");
     expect(terminalState(term("a", { status: "exited", reason: "exited", exitCode: 0 }))).toBe("done");
+  });
+});
+
+describe("whose a terminal is", () => {
+  it("names your shells, main, each lane and a standard chat, each in its own tone", () => {
+    expect(ownerOf(term("a", { owner: YOU }))).toMatchObject({ key: "you", label: "You", tone: "you" });
+    expect(ownerOf(term("b", { task: "Dev server" }))).toMatchObject({ key: "main", label: "Main", detail: "Dev server", tone: "main" });
+    expect(ownerOf(term("c", { owner: lane(2), task: "Server B" }))).toMatchObject({ key: "lane:lane_2", label: "Lane 2", detail: "Server B", tone: "2" });
+    // Lane numbers keep growing; their colours repeat every four.
+    expect(laneTone(5)).toBe("1");
+    expect(ownerOf(term("d", { owner: { ...MAIN, strand: "chat", taskNumber: 4 }, task: "Fix login" }))).toMatchObject({ key: "chat:1/4", label: "Fix login" });
+    expect(ownerLine(term("e", { owner: lane(3, false) }))).toBe("Started by Socrates in lane 3 (closed)");
+    expect(ownerLine(term("f", { owner: YOU }))).toBe("Opened by you");
+  });
+
+  it("groups tabs by owner where each group's first terminal started, so groups never jump", () => {
+    const list = [term("t1"), term("t2", { owner: lane(1) }), term("t3", { owner: YOU }), term("t4"), term("t5", { owner: lane(1) })];
+    const groups = groupByOwner(list);
+    expect(groups.map((g) => g.owner.label)).toEqual(["Main", "Lane 1", "You"]);
+    expect(groups.flatMap((g) => g.terminals.map((t) => t.id))).toEqual(["t1", "t4", "t2", "t5", "t3"]);
+  });
+
+  it("finds the running terminals a strand chip counts", () => {
+    const list = [term("t1"), term("t2", { owner: lane(1) }), term("t3", { owner: lane(1), status: "exited" }), term("t4", { owner: YOU })];
+    expect(strandTerminals({ conversation: "lane_1" }, list).map((t) => t.id)).toEqual(["t2"]);
+    expect(strandTerminals({ conversation: "main" }, list).map((t) => t.id)).toEqual(["t1"]);
   });
 });

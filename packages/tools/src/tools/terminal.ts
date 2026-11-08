@@ -60,6 +60,11 @@ function bounded(text: string, hint: string, limit = OUTPUT_TOKENS) {
   return out;
 }
 
+/** Who reads a session's output: the chat this call works in, so each chat has its own place in a shared session. */
+function readerOf(ctx: HandlerContext): string {
+  return ctx.binding.chatId ?? ctx.binding.taskId;
+}
+
 function exitFields(s: TerminalSession) {
   return { exit_code: s.exitCode, signal: s.signal };
 }
@@ -103,9 +108,11 @@ export const terminalTool: ToolHandler<TerminalInput> = {
     throwIfCancelled(ctx.signal);
     const session = launch(ctx, terminals, spec);
     const unwatch = watchOutput(session, ctx);
+    const release = session.hold();
     try {
       return await finishLaunch(ctx, terminals, session, spec, input.yield_ms, started);
     } finally {
+      release();
       unwatch();
     }
   },
@@ -130,7 +137,7 @@ async function finishLaunch(ctx: HandlerContext, terminals: TerminalSupervisor, 
     await terminals.terminate(session);
     throw new ToolError("cancelled", "The launch was cancelled and the process was stopped.", "No action needed.", false);
   }
-  return withScreen(session, running(session, started, terminals.previewTokens));
+  return withScreen(session, running(session, started, terminals.previewTokens, readerOf(ctx)));
 }
 
 /**
@@ -140,7 +147,7 @@ async function finishLaunch(ctx: HandlerContext, terminals: TerminalSupervisor, 
 function watchOutput(session: TerminalSession, ctx: HandlerContext): () => void {
   const progress = ctx.progress;
   if (!progress) return () => {};
-  const from = session.observed;
+  const from = session.seen(readerOf(ctx));
   const stop = new AbortController();
   void (async () => {
     let sent = from;
@@ -304,11 +311,10 @@ function gapText(meta: Pick<OutputMeta, "gap" | "complete" | "ended_at">): strin
   return meta.ended_at ? "complete" : "still saving";
 }
 
-function running(session: TerminalSession, started: number, preview: number): ToolOutput {
-  const from = session.observed;
-  const seen = session.output.slice(from);
+function running(session: TerminalSession, started: number, preview: number, reader: string): ToolOutput {
+  const seen = session.output.slice(session.seen(reader));
   const out = bounded(seen.text, `terminal_control read with cursor ${cursorOf(session, seen.from)} pages through all of it`, preview);
-  session.observed = session.output.end;
+  session.markSeen(reader, session.output.end);
   const result = {
     status: session.status === "running" ? "running" : "completed",
     terminal: session.selector,
@@ -318,7 +324,7 @@ function running(session: TerminalSession, started: number, preview: number): To
     ...(session.proc?.pty ? { pty: true, input_required: session.inputRequired() } : {}),
     ...(session.status === "exited" ? exitFields(session) : {}),
     output: out.text,
-    cursor: cursorOf(session, session.observed),
+    cursor: cursorOf(session, session.seen(reader)),
     truncated: out.truncated || seen.lost,
     output_lost: seen.lost,
     wall_time_ms: Date.now() - started,
@@ -326,8 +332,8 @@ function running(session: TerminalSession, started: number, preview: number): To
   return { content: json(result), result, facts: commandFacts(session) };
 }
 
-function parseCursor(cursor: string | undefined, session: TerminalSession, terminals: TerminalSupervisor): number {
-  if (cursor === undefined) return session.observed;
+function parseCursor(cursor: string | undefined, session: TerminalSession, terminals: TerminalSupervisor, reader: string): number {
+  if (cursor === undefined) return session.seen(reader);
   const m = /^(?:(term-\d+):)?c(\d+)$/.exec(cursor);
   if (!m) throw new ToolError("invalid_cursor", `${cursor} is not a terminal cursor.`, "Pass a cursor returned by terminal or terminal_control, such as term-3:c120, or omit it.");
   if (m[1] && m[1] !== session.id) {
@@ -340,6 +346,9 @@ function parseCursor(cursor: string | undefined, session: TerminalSession, termi
   }
   return Math.min(Number(m[2]), session.output.end);
 }
+
+/** Ended sessions `list` shows the agent, newest first; older ones are only counted. */
+const LIST_EXITED = 10;
 
 /** Typing from the page more than this long ago is no longer news to the agent. */
 const USER_TYPED_NEWS_MS = 300_000;
@@ -357,11 +366,11 @@ function identity(session: TerminalSession) {
 }
 
 /** Unseen output since the agent's last observation, bounded to head and tail. */
-function unseen(session: TerminalSession, preview: number) {
-  const seen = session.output.slice(session.observed);
+function unseen(session: TerminalSession, preview: number, reader: string) {
+  const seen = session.output.slice(session.seen(reader));
   const out = bounded(seen.text, `terminal_control read with cursor ${cursorOf(session, seen.from)} pages through all of it`, preview);
-  session.observed = session.output.end;
-  return { output: out.text, cursor: cursorOf(session, session.observed), truncated: out.truncated || seen.lost, output_lost: seen.lost };
+  session.markSeen(reader, session.output.end);
+  return { output: out.text, cursor: cursorOf(session, session.seen(reader)), truncated: out.truncated || seen.lost, output_lost: seen.lost };
 }
 
 type WaitInput = Extract<z.infer<typeof TerminalControlInput>, { action: "wait" }>;
@@ -390,12 +399,13 @@ async function waitFor(input: WaitInput, ctx: HandlerContext, terminals: Termina
     if (without) throw new ToolError("no_ready_condition", `${without.selector} was started without a ready condition.`, 'Wait for event "pattern" or "output" instead, or restart it with ready.');
   }
   const pattern = input.event === "pattern" ? compilePattern(input.pattern!, "pattern") : null;
+  const reader = readerOf(ctx);
   const idleMs = input.idle_ms ?? 2000;
   const deadline = Date.now() + (input.timeout_ms ?? MAX_WAIT_MS);
 
   /** The event a session has now, if any. Whatever is waited for, a program that asks for input cannot go on without it, and an exit ends every wait. */
   const happened = async (s: TerminalSession): Promise<string | null> => {
-    const fresh = s.output.slice(s.observed).text;
+    const fresh = s.output.slice(s.seen(reader)).text;
     if (input.event === "exit" && s.status === "exited") return "exit";
     if (input.event === "output" && fresh.length > 0) return "output";
     if (pattern && pattern.test(fresh)) return "pattern";
@@ -409,6 +419,7 @@ async function waitFor(input: WaitInput, ctx: HandlerContext, terminals: Termina
   };
 
   const unwatch = many ? () => {} : watchOutput(sessions[0]!, ctx);
+  const releases = sessions.map((s) => s.hold());
   let won: { session: TerminalSession; event: string } | null = null;
   try {
     while (!won) {
@@ -423,6 +434,7 @@ async function waitFor(input: WaitInput, ctx: HandlerContext, terminals: Termina
       await Promise.race(sessions.map((s) => s.changed(Math.min(250, left), ctx.signal)));
     }
   } finally {
+    for (const release of releases) release();
     unwatch();
   }
   if (!won) {
@@ -442,7 +454,7 @@ async function waitFor(input: WaitInput, ctx: HandlerContext, terminals: Termina
     event,
     ready: session.ready,
     ...(session.proc?.pty ? { input_required: session.inputRequired() } : {}),
-    ...unseen(session, terminals.previewTokens),
+    ...unseen(session, terminals.previewTokens, reader),
     ...(screen ? { screen } : {}),
     ...exitFields(session),
     ...(many ? { others: sessions.filter((s) => s !== session).map((s) => ({ terminal: s.selector, status: s.status, ready: s.ready, input_required: s.inputRequired() })) } : {}),
@@ -531,7 +543,11 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
     const terminals = supervisor(ctx);
     if (input.action === "list") {
       const now = Date.now();
-      const rows = await Promise.all(terminals.list().map(async (s) => ({
+      // The app keeps every ended tab until the user closes it; the agent is shown the newest few.
+      const all = terminals.list();
+      const ended = all.filter((s) => s.status !== "running").sort((a, b) => (b.exitedAt?.getTime() ?? 0) - (a.exitedAt?.getTime() ?? 0));
+      const shown = [...all.filter((s) => s.status === "running"), ...ended.slice(0, LIST_EXITED)];
+      const rows = await Promise.all(shown.map(async (s) => ({
         terminal: s.selector,
         session_id: s.id,
         status: s.status,
@@ -550,7 +566,7 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
         ...(s.userInputAt ? { user_typed_s_ago: Math.round((now - s.userInputAt) / 1000) } : {}),
         ...exitFields(s),
       })));
-      const result = { action: "list", terminals: rows };
+      const result = { action: "list", terminals: rows, ...(ended.length > LIST_EXITED ? { older_exited: ended.length - LIST_EXITED } : {}) };
       return { content: json(result), result };
     }
 
@@ -569,7 +585,7 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
       }
 
       case "read": {
-        const from = parseCursor(input.cursor, session, terminals);
+        const from = parseCursor(input.cursor, session, terminals, readerOf(ctx));
         const slice = session.output.slice(from);
         const maxLines = Math.min(input.limit_lines ?? READ_DEFAULT_LINES, READ_MAX_LINES);
         const filter = input.filter ? compilePattern(input.filter, "filter") : null;
@@ -609,7 +625,7 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
         }
         const next = slice.from + scanned;
         const end = Math.min(next, session.output.end);
-        session.observed = Math.max(session.observed, end);
+        session.markSeen(readerOf(ctx), end);
         const result = {
           action: "read",
           ...identity(session),
@@ -698,7 +714,7 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
           await terminals.terminate(replacement);
           throwIfCancelled(ctx.signal);
         }
-        const out = running(replacement, started, terminals.previewTokens);
+        const out = running(replacement, started, terminals.previewTokens, readerOf(ctx));
         const result = { action: "restart", previous_session_id: session.id, ...(out.result as object), state_version: replacement.stateVersion };
         return { content: json(result), result, facts: out.facts ?? [] };
       }

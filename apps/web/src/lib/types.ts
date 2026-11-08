@@ -323,6 +323,16 @@ export interface LiveState {
 }
 
 /** A terminal session the agent started, as the terminal panel lists it (apps/server/src/terminals.ts). */
+/** Where a terminal was started: the user's own shell, or Socrates' in the main conversation, a lane or a standard-mode chat. */
+export interface TerminalOwner {
+  by: "agent" | "user";
+  strand: "main" | "lane" | "chat" | null;
+  lane: { id: string; number: number; open: boolean } | null;
+  goal: string | null;
+  goalNumber: number | null;
+  taskNumber: number | null;
+}
+
 export interface TerminalView {
   id: string;
   name: string;
@@ -330,6 +340,10 @@ export interface TerminalView {
   cwd: string;
   /** The task that started it, by title. */
   task: string | null;
+  /** Whose it is (web.md, "Whose terminal"). */
+  owner: TerminalOwner;
+  /** Socrates is waiting on it right now. */
+  watched: boolean;
   status: "running" | "exited";
   exitCode: number | null;
   signal: string | null;

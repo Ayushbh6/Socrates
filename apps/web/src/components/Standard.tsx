@@ -140,7 +140,13 @@ export function Standard({ app, mode, dock, onMode, onSettings }: { app: AppStat
           {task && goal && activeSession && activeSession.sequence !== chat && <aside className="continued-note" role="status"><span>Viewing an earlier session. Your next reply continues in {chatTitle(task.title, activeSession.sequence)}.</span><button type="button" className="quiet-button" onClick={() => setView({chat: {goal: goal.number, task: task.number, chat: activeSession.sequence}})}>Open current session</button></aside>}
           <Composer app={app} conversation="main" laneNumber={null} variant="panel" chat={target} placeholder={task ? "Reply…" : "Ask Socrates…"} onModel={onSettings} onNewLane={() => null} onSent={(id) => { setFollowing(id); if (fresh) setView({ ...fresh, sent: id }); }} />
         </div>
-        <TerminalDock app={app} dock={dock} variant="docked" />
+        <TerminalDock app={app} dock={dock} variant="docked" onOwner={(t) => {
+          const { goalNumber: goal, taskNumber: task } = t.owner;
+          const found = app.goals.find((g) => g.number === goal)?.tasks.find((x) => x.number === task);
+          if (!goal || !task || !found) return false;
+          setView({ chat: { goal, task, chat: found.sessions?.find((x) => !x.closedAt)?.sequence ?? 1 } });
+          return true;
+        }} />
       </section>
 
       {toast && (

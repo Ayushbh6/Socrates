@@ -20,6 +20,10 @@ export interface TerminalView {
   cwd: string;
   /** The task that started it, by its title; the page shows no goal or task numbers. */
   task: string | null;
+  /** Whose it is: the user's own shell, or Socrates' in the main conversation, a lane or a standard-mode chat (web.md, "Whose terminal"). */
+  owner: TerminalOwner;
+  /** An agent call is waiting on it now: a launch still watching it, or terminal_control wait. */
+  watched: boolean;
   status: "running" | "exited";
   exitCode: number | null;
   signal: string | null;
@@ -36,6 +40,21 @@ export interface TerminalView {
   exitedAt: string | null;
 }
 
+/** Where a session was started. Numbers are kept so the page can open the lane or chat; only titles are shown. */
+export interface TerminalOwner {
+  by: "agent" | "user";
+  /** The agent's turn ran in the main conversation, a lane, or a standard-mode chat; null for a user's shell or a run whose turn is unknown. */
+  strand: "main" | "lane" | "chat" | null;
+  lane: { id: string; number: number; open: boolean } | null;
+  /** Its goal's title ("General" for the general conversation), and the numbers of its goal and task. */
+  goal: string | null;
+  goalNumber: number | null;
+  taskNumber: number | null;
+}
+
+/** Routes of a standard-mode chat's turns (agent CHAT_ROUTES). */
+const CHAT_ROUTES = new Set(["standard", "standard_new"]);
+
 /**
  * The terminal panel's side of the live connection (architecture/server.md,
  * "Terminal panel"): the sessions the agent started, as a list that is sent
@@ -47,6 +66,8 @@ export class TerminalPanel {
   private last = "";
   private readonly changing = new Set<string>();
   private readonly ports = new Map<string, number[]>();
+  /** Where each session was started, which never changes; only whether its lane is still open is looked up again. */
+  private readonly owners = new Map<string, Omit<TerminalOwner, "lane"> & { laneId: string | null }>();
   private portsAt = 0;
   private readonly watching = new Map<WebSocket, Map<string, { stop: () => void; pending: string; timer: ReturnType<typeof setTimeout> | null }>>();
   private readonly timer: ReturnType<typeof setInterval>;
@@ -219,6 +240,8 @@ export class TerminalPanel {
       command: s.spec.command,
       cwd: s.spec.cwd,
       task: this.taskTitle(s.spec.origin ?? null),
+      owner: this.ownerOf(s),
+      watched: s.status === "running" && s.held,
       status: s.status,
       exitCode: s.exitCode,
       signal: s.signal,
@@ -233,6 +256,24 @@ export class TerminalPanel {
       startedAt: s.startedAt.toISOString(),
       exitedAt: s.exitedAt?.toISOString() ?? null,
     };
+  }
+
+  private ownerOf(s: TerminalSession): TerminalOwner {
+    let known = this.owners.get(s.id);
+    if (!known) {
+      const store = this.runtime.store;
+      const o = s.spec.owner;
+      const turn = o?.turnId ? store.getTurn(o.turnId) : null;
+      const goal = o?.goalId ? store.getGoal(o.goalId) : null;
+      const task = o?.taskId ? store.getTask(o.taskId) : null;
+      const by = s.spec.shell ? "user" : "agent";
+      const strand = by === "user" || !turn ? null : turn.laneId ? "lane" : CHAT_ROUTES.has(store.turnRoute(turn.id) ?? "") ? "chat" : "main";
+      known = { by, strand, laneId: turn?.laneId ?? null, goal: goal ? (goal.general ? "General" : goal.title) : null, goalNumber: goal?.number ?? null, taskNumber: task?.number ?? null };
+      this.owners.set(s.id, known);
+    }
+    const { laneId, ...rest } = known;
+    const lane = laneId ? this.runtime.store.getLane(laneId) : null;
+    return { ...rest, lane: lane ? { id: lane.id, number: lane.number, open: !lane.closedAt } : null };
   }
 
   /** "g2/t3" is the task's title on the page. */

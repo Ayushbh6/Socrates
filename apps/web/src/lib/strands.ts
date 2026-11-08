@@ -1,4 +1,6 @@
 import type { Exchange, Model } from "./model";
+import { type OwnerTone, laneTone } from "./terminals";
+import type { TerminalView } from "./types";
 import { type ToolStep, callVerb } from "./work";
 
 /**
@@ -26,6 +28,13 @@ export interface Strand {
   waitingForApproval: boolean;
   /** A finished lane can be closed from the row. */
   closable: boolean;
+  /** Its colour, which its terminals' tabs share. */
+  tone: OwnerTone;
+}
+
+/** The running terminals a strand started, oldest first: the chip's terminal count opens the first. */
+export function strandTerminals(s: Pick<Strand, "conversation">, terminals: TerminalView[]): TerminalView[] {
+  return terminals.filter((t) => t.status === "running" && t.owner?.by === "agent" && (s.conversation === "main" ? t.owner.strand === "main" : t.owner.lane?.id === s.conversation));
 }
 
 /** A finished lane stays on the board this long after its last activity. */
@@ -41,14 +50,14 @@ export function strands(model: Model, now = Date.now()): Strand[] {
     if (status === null) continue;
     const at = latest.lastAt ?? latest.at;
     if (!lane.running && !lane.waitingForApproval && now - Date.parse(at) > STRAND_RECENT_MS) continue;
-    out.push({ conversation: lane.id, label: `Lane ${lane.number}`, title: latest.route?.task.title ?? null, message: latest.message, status, step: latestStep(latest), at: status === "working" || status === "waiting" ? latest.at : at, running: lane.running, waitingForApproval: lane.waitingForApproval, closable: !lane.running && !lane.waitingForApproval });
+    out.push({ conversation: lane.id, label: `Lane ${lane.number}`, title: latest.route?.task.title ?? null, message: latest.message, status, step: latestStep(latest), at: status === "working" || status === "waiting" ? latest.at : at, running: lane.running, waitingForApproval: lane.waitingForApproval, closable: !lane.running && !lane.waitingForApproval, tone: laneTone(lane.number) });
   }
   const main = (model.conversations.main ?? []).findLast((e) => e.state === "working" || e.state === "sending" || e.state === "waiting") ?? (out.length ? (model.conversations.main ?? []).at(-1) : undefined);
   if (main) {
     const status = main.state === "working" || main.state === "sending" ? "working" : main.state === "waiting" ? "waiting" : stateOf(main);
     if (status && (out.length || status === "working" || status === "waiting")) {
       // Main alone, working, is not a board: the row shows only when there is something beside it.
-      if (out.length) out.unshift({ conversation: "main", label: "Main", title: main.route?.task.title ?? null, message: main.message, status, step: latestStep(main), at: main.at, running: status === "working", waitingForApproval: status === "waiting", closable: false });
+      if (out.length) out.unshift({ conversation: "main", label: "Main", title: main.route?.task.title ?? null, message: main.message, status, step: latestStep(main), at: main.at, running: status === "working", waitingForApproval: status === "waiting", closable: false, tone: "main" });
     }
   }
   return out;
