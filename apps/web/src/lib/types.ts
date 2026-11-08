@@ -59,6 +59,8 @@ export interface Status {
   embeddings: Embeddings & { state: "ready" | "unavailable"; detail: string | null; index: { documents: number } | null };
   /** The memory decider: asked about each message ("ready"), switched "off", or without an OpenRouter key ("no_key"). */
   decider: "ready" | "off" | "no_key";
+  /** Speaking to Socrates: ready with an OpenRouter key, the model that transcribes and its language; older servers leave it out. */
+  voice?: { ready: boolean; model: string; language: string | null };
   timeZone: string;
   busy: boolean;
   lanes: Lane[];
@@ -96,6 +98,8 @@ export interface Settings {
   memory: { save: boolean; use: boolean; decider: boolean };
   /** What a model costs, in US dollars per million tokens, by model id; over the list prices Socrates looks up. */
   prices: Record<string, { input: number; cachedInput: number | null; cacheWrite: number | null; output: number }>;
+  /** The OpenRouter model that turns the microphone's speech into text, and its language (null: detected). */
+  voice?: { model: string; language: string | null };
 }
 
 /** A model provider, its default models and the keys it reads. */

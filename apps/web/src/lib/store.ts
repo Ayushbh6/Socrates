@@ -89,6 +89,11 @@ export class Store {
     return () => this.listeners.delete(listener);
   };
 
+  /** What is typed in a conversation's box now (a voice transcript arriving later reads it fresh). */
+  draftOf(conversation: string): string {
+    return this.state.drafts[conversation] ?? "";
+  }
+
   setDraft(conversation: string, text: string): void {
     this.set({ drafts: { ...this.state.drafts, [conversation]: text } });
   }

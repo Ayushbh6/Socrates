@@ -7,7 +7,7 @@ import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
 import { type EventPayloads, type EventRefs, MEMORY_KINDS } from "@socrates/contracts";
-import { PROVIDER_DEFAULTS } from "@socrates/providers";
+import { AUDIO_MAX_BYTES, PROVIDER_DEFAULTS } from "@socrates/providers";
 import { callLine } from "@socrates/retrieval";
 import { IMAGE_MAX_BYTES, ToolError } from "@socrates/tools";
 import { z } from "zod";
@@ -15,7 +15,10 @@ import { AttachmentError, findAttachment, storeAttachment, viewOf } from "./atta
 import { describeCall } from "./calls";
 import { KEY_NAMES, KeyError } from "./keys";
 import { LiveHub } from "./live";
-import { CALL_RETENTION_DAYS, type Runtime, RuntimeBusyError, SettingsError } from "./runtime";
+import { CALL_RETENTION_DAYS, type Runtime, RuntimeBusyError, SettingsError, TranscriptionError } from "./runtime";
+
+/** The recordings a browser makes, by content type, as OpenRouter names their formats. */
+const AUDIO_FORMATS: Record<string, string> = { "audio/wav": "wav", "audio/x-wav": "wav", "audio/wave": "wav", "audio/webm": "webm", "audio/ogg": "ogg", "audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/mp4": "m4a", "audio/m4a": "m4a", "audio/x-m4a": "m4a", "audio/aac": "aac", "audio/flac": "flac" };
 import * as observe from "./observe";
 import { DbError, browse, isDb, overview, row as dbRow } from "./dbview";
 import { guard, problem, sameSecret, sessionCookie } from "./security";
@@ -136,6 +139,7 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
       models: runtime.models,
       embeddings: { ...runtime.settings.embeddings, ...runtime.embeddings, index },
       decider: runtime.deciderState(),
+      voice: runtime.voiceState(),
       timeZone: runtime.timeZone,
       busy: runtime.socrates?.busy ?? false,
       lanes: runtime.lanes(),
@@ -184,6 +188,25 @@ export async function buildServer({ runtime, token, replayMax, webRoot = WEB_ROO
     if (!found) return reply.code(404).send(problem("not_found", "There is no such attachment."));
     // Content-addressed: the same id is always the same image.
     return reply.header("cache-control", "private, max-age=31536000, immutable").type(found.media_type).send(readFileSync(found.path));
+  });
+
+  // Speaking to Socrates: a recording in, its text out (architecture/server.md, "Voice"). The audio is not kept.
+  app.addContentTypeParser(/^audio\//, { parseAs: "buffer", bodyLimit: AUDIO_MAX_BYTES }, (_request, body, done) => done(null, body));
+  app.post("/api/transcribe", async (request, reply) => {
+    if (!Buffer.isBuffer(request.body) || request.body.length === 0) return reply.code(400).send(problem("invalid_request", "Send the recording's bytes with its audio content type."));
+    const type = String(request.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase();
+    const format = AUDIO_FORMATS[type];
+    if (!format) return reply.code(415).send(problem("invalid_request", `Recordings in ${type || "this format"} cannot be transcribed; send WAV, WebM, Ogg, MP3 or M4A.`));
+    const stop = new AbortController();
+    // The page went away before the answer: stop paying for the transcription. (A request's own "close" fires once its body is read.)
+    reply.raw.on("close", () => { if (!reply.raw.writableEnded) stop.abort(); });
+    try {
+      const { text, seconds } = await runtime.transcribe(request.body, format, stop.signal);
+      return { text, seconds };
+    } catch (error) {
+      if (error instanceof TranscriptionError) return reply.code(502).send(problem("transcription_failed", error.message));
+      throw error;
+    }
   });
 
   app.get("/api/goals", async () => goalsView(runtime.store, runtime.chatsGoalNumber()));

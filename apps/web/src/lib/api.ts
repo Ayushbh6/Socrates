@@ -28,7 +28,16 @@ async function upload(image: Blob, name: string): Promise<AttachmentView> {
   return data as AttachmentView;
 }
 
+/** Turn one recording into text (architecture/server.md, "Voice"). */
+async function transcribe(audio: Blob, signal?: AbortSignal): Promise<{ text: string; seconds: number | null }> {
+  const response = await fetch("/api/transcribe", { method: "POST", headers: { "content-type": audio.type || "audio/wav" }, body: audio, ...(signal ? { signal } : {}) });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) throw new ApiError(response.status, data?.error?.code ?? "failed", data?.error?.message ?? "The recording could not be transcribed.");
+  return data as { text: string; seconds: number | null };
+}
+
 export const api = {
+  transcribe,
   terminalFolder: (goal?: number) => call<{ cwd: string }>("GET", `/api/terminals/folder${goal ? `?goal=${goal}` : ""}`),
   createTerminal: (input: { cwd?: string; goal?: number; task?: number; name?: string }) => call<{ id: string }>("POST", "/api/terminals", input),
   terminalAction: (id: string, action: "stop" | "restart" | "close" | "rename", name?: string) => call<{ id: string }>("POST", `/api/terminals/${encodeURIComponent(id)}`, { action, ...(name ? { name } : {}) }),
@@ -87,4 +96,4 @@ export const api = {
 };
 
 /** What the page changes in settings besides access and the working folder; the profile and memory's switches may be sent in part. */
-export type SettingsPatch = Partial<Omit<Settings, "access" | "workingFolder" | "profile" | "memory">> & { profile?: Partial<Settings["profile"]>; memory?: Partial<Settings["memory"]> };
+export type SettingsPatch = Partial<Omit<Settings, "access" | "workingFolder" | "profile" | "memory" | "voice">> & { profile?: Partial<Settings["profile"]>; memory?: Partial<Settings["memory"]>; voice?: Partial<NonNullable<Settings["voice"]>> };

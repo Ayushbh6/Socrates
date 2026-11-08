@@ -4,7 +4,7 @@ import path from "node:path";
 import { repairHistoricalNotes, type LaneState, MemoryGate, Socrates, WorkMemoryFiles, interruptUnfinishedTurns } from "@socrates/agent";
 import { InstalledCatalog } from "@socrates/capabilities";
 import { type CallRecord, type DeciderClient, type Effort, type EmbeddingClient, type ModelClient, ModelError } from "@socrates/contracts";
-import { type EffortLevels, type ListedModel, PROVIDER_DEFAULTS, type Price, type Provider, costOf, detectEfforts, detectVision, listModels, listPrice, makeDecider, makeEmbedder, makeModel, reportedCost, splitModelId, withDecisionRecording, withRecording } from "@socrates/providers";
+import { type EffortLevels, type ListedModel, PROVIDER_DEFAULTS, type Price, type Provider, costOf, detectEfforts, detectVision, listModels, listPrice, makeDecider, makeEmbedder, makeModel, reportedCost, splitModelId, transcribe, transcriptionRecord, type Transcript, withDecisionRecording, withRecording } from "@socrates/providers";
 import { Retrieval } from "@socrates/retrieval";
 import { abortable, type Clock, newId } from "@socrates/shared";
 import { CallLog, type Goal, LedgerStore, type Turn, type Workspace } from "@socrates/store";
@@ -58,6 +58,8 @@ export interface RuntimeDeps {
   clock?: Clock;
   /** The process environment; keys in the data folder override it. */
   env?: Record<string, string | undefined>;
+  /** The network for voice transcription; tests pass a fake. */
+  fetch?: typeof fetch;
   embeddingProbeTimeoutMs?: number;
   /** Allows startup services to be stopped before the HTTP listener exists. */
   signal?: AbortSignal;
@@ -339,6 +341,7 @@ export class Runtime {
     if (sent.profile) sent.profile = { ...this.settings.profile, ...(sent.profile as object) };
     if (sent.memory) sent.memory = { ...this.settings.memory, ...(sent.memory as object) };
     if (sent.terminal) sent.terminal = { ...this.settings.terminal, ...(sent.terminal as object) };
+    if (sent.voice) sent.voice = { ...this.settings.voice, ...(sent.voice as object) };
     let next = Settings.parse({ ...this.settings, ...sent });
     if ((parsed.access as { folders?: unknown } | undefined)?.folders) {
       next.access.folders = [...new Set(next.access.folders.map((folder) => workspaceFolder(folder, this.config.home)))];
@@ -356,7 +359,7 @@ export class Runtime {
     const sameChat = !!this.socrates && !!next.chat && !!inUse && next.chat.provider === inUse.provider && next.chat.model === inUse.model;
     // The model that names chats is used after an answer, never inside a turn, so it can change while Socrates works.
     const titlerOnly = !!this.socrates && !!this.models.router;
-    if (Object.keys(sent).every((key) => key === "access" || key === "profile" || key === "memory" || key === "prices" || key === "terminal" || key === "inactiveTaskMonths" || (key === "chat" && sameChat) || (key === "titler" && titlerOnly))) {
+    if (Object.keys(sent).every((key) => key === "access" || key === "profile" || key === "memory" || key === "prices" || key === "terminal" || key === "voice" || key === "inactiveTaskMonths" || (key === "chat" && sameChat) || (key === "titler" && titlerOnly))) {
       const effort = next.chat?.effort;
       if (sameChat && effort && !inUse!.effort?.levels.includes(effort)) {
         const levels = inUse!.effort?.levels ?? [];
@@ -673,6 +676,33 @@ export class Runtime {
     this.savingCalls.add(saving);
   }
 
+  /** Whether the composer's microphone can transcribe: it needs an OpenRouter key (architecture/server.md, "Voice"). */
+  voiceState(): { ready: boolean; model: string; language: string | null } {
+    return { ready: !!this.env().OPENROUTER_API_KEY, model: this.settings.voice.model, language: this.settings.voice.language };
+  }
+
+  /**
+   * Turn one recording into text with the chosen OpenRouter model. Logged
+   * and priced like any model call (role "transcription"); the audio itself
+   * is never kept.
+   */
+  async transcribe(audio: Uint8Array, format: string, signal?: AbortSignal): Promise<Transcript> {
+    const env = this.env();
+    const apiKey = env.OPENROUTER_API_KEY;
+    if (!apiKey) throw new TranscriptionError("Speaking to Socrates needs an OpenRouter key. Add one in Settings > API keys.");
+    const req = { model: this.settings.voice.model, audio, format, language: this.settings.voice.language, ...(signal ? { signal } : {}), ...(this.deps.fetch ? { fetch: this.deps.fetch } : {}) };
+    const startedAt = new Date().toISOString();
+    const t0 = performance.now();
+    try {
+      const result = await transcribe({ ...req, apiKey });
+      this.saveCall(transcriptionRecord(req, startedAt, Math.round(performance.now() - t0), result, null), env);
+      return result;
+    } catch (error) {
+      this.saveCall(transcriptionRecord(req, startedAt, Math.round(performance.now() - t0), null, error), env);
+      throw new TranscriptionError(redact(message(error), env));
+    }
+  }
+
   /** The price in force for each model that has made calls: the user's own, else its list price, else none. */
   async priceTable(): Promise<{ model: string; source: "settings" | "list" | null; price: Price | null }[]> {
     const env = this.env();
@@ -758,6 +788,14 @@ function withEffort(model: ModelClient, effort: () => Effort | null, maxOutputTo
       return model.complete({ ...request, effort: level, ...(output ? { maxOutputTokens: output } : {}) });
     },
   };
+}
+
+/** A recording that could not be turned into text, worded for the person speaking. */
+export class TranscriptionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TranscriptionError";
+  }
 }
 
 export class SettingsError extends Error {

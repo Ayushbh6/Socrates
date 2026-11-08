@@ -87,8 +87,17 @@ export type PriceSetting = z.infer<typeof PriceSetting>;
  * - profile: the user's name and whether onboarding is done;
  * - memory: whether Socrates saves new memories, whether it uses them, and whether the decider is asked about each message; all on by default (the decider also needs an OpenRouter key);
  * - prices: what a model costs, by its id ("deepseek:deepseek-flash"), over the list prices Socrates looks up;
+ * - voice: the OpenRouter model that turns speech into text for the composer's microphone, and its language (null lets the model detect it);
  * - terminal: how much of a long command output the agent is shown (4,000–5,000 tokens), and how long (15 days) and how much (1 GB in all, 100 MB for one output) saved output is kept.
  */
+/** Speaking to Socrates (architecture/server.md, "Voice"). */
+export const VoiceSettings = z.object({
+  model: z.string().trim().min(1).max(200).regex(/^[\w.-]+\/[\w.:-]+$/, "Use an OpenRouter model id such as mistralai/voxtral-small-24b-2507-stt."),
+  language: z.string().trim().regex(/^[a-z]{2}$/, "Use a two-letter language code such as en, or leave it empty to detect it.").nullable(),
+}).strict();
+export type VoiceSettings = z.infer<typeof VoiceSettings>;
+export const DEFAULT_VOICE: VoiceSettings = { model: "mistralai/voxtral-small-24b-2507-stt", language: null };
+
 export const Settings = z.object({
   chat: ChatChoice.nullable().default(null),
   router: ChatChoice.nullable().default(null),
@@ -110,11 +119,12 @@ export const Settings = z.object({
   memory: MemorySwitches.default({ save: true, use: true, decider: true }),
   prices: z.record(z.string().min(1).max(250), PriceSetting).default({}),
   terminal: TerminalSettings.default({ previewTokens: 4_500, retentionDays: 15, totalCapMB: 1_024, perOutputCapMB: 100 }),
+  voice: VoiceSettings.default(DEFAULT_VOICE),
 }).strict();
 export type Settings = z.infer<typeof Settings>;
 
 /** What PUT /api/settings accepts: any subset of the settings, and of `access`, `profile` and `memory`. */
-export const SettingsPatch = Settings.partial().extend({ access: Access.partial().strict().optional(), profile: ProfilePatch.optional(), memory: MemorySwitches.partial().strict().optional(), terminal: TerminalSettings.partial().strict().optional() }).strict();
+export const SettingsPatch = Settings.partial().extend({ access: Access.partial().strict().optional(), profile: ProfilePatch.optional(), memory: MemorySwitches.partial().strict().optional(), terminal: TerminalSettings.partial().strict().optional(), voice: VoiceSettings.partial().strict().optional() }).strict();
 
 export function loadSettings(file: string): Settings {
   if (!existsSync(file)) return Settings.parse({});

@@ -43,10 +43,13 @@ This file hands the project to whichever agent harness works on it next. Read it
 - **Model outputs are noisy:** judge prompt changes on repeated runs, and report numbers honestly (trial log entries 58–60 show the format).
 - **Live data:** `~/.socrates-v2` is the user's real v2 data. Read it only through a read-only backup, and never touch `~/.socrates` (v0.1.20).
 
-## Where things stand (2026-11-08; release through entry 93)
+## Where things stand (2026-11-08; release through entry 96)
 
 The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `server.md`, `web.md`, `observability.md`). The trial log numbers each change. Recently shipped, newest last:
 
+- **Dark mode (entry 94):** Light, Dark or Match system (Settings > Appearance, or the sun/moon button beside the gear); every colour in `styles.css` is a token defined for both themes (`architecture/web.md`, "Theme"). Add new colours as tokens, never as literals.
+- **Tool cards laid out per tool (entry 95):** the server sends `call.tool`; `src/lib/output.ts` and `ToolOutput.tsx` show commands as terminal output, reads as numbered code, grep as matches under files, glob as a file list, JSON indented; highlight.js colours code in cards and answers.
+- **Voice (entry 96):** the composer's microphone records, shows a live waveform and transcribes through OpenRouter (`POST /api/transcribe`, `settings.voice`, default `mistralai/voxtral-small-24b-2507-stt`), logged as role `transcription` (`architecture/server.md`, "Voice").
 - **Routing you can see, R1 (entry 91; plan `docs/visible-routing-plan.md`):** the route line under each question shows the router's reason, written for the user, live and after a reload (`turn_bound.reason`); a router search says what it looked for. Wording changes in the router prompt can move Luna's fixture score: a reason wording that named labels cost 8 decisions, so measure both routers before shipping one.
 - **Routing you can see, R2 (entry 92):** the router's readable thinking streams under the routing line and is kept on `routing_completed.thinking`; the reason opens to it. Only DeepSeek with thinking on gives any: Luna does no reasoning when tools are attached.
 - **Routing you can see, R3 (entry 93):** the router's goal shortlist is also searched with the user's previous message in the conversation, at half weight. It matters only with more than four goals (the user's live data has three besides General).

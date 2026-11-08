@@ -12,3 +12,4 @@ export * from "./recorder";
 export * from "./prices";
 
 export * from "./decision-budget";
+export * from "./transcribe";

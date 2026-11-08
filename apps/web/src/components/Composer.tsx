@@ -7,6 +7,8 @@ import { type AppState, type PendingImage, store } from "../lib/store";
 import { type AttachmentView, type ChatChoice, type KeepChoice, MAX_RUNNING_LANES } from "../lib/types";
 import { EffortMenu, ModelMenu } from "./ModelPicker";
 import { Popover } from "./Popover";
+import { MicButton, VoiceBar, useVoice } from "./Voice";
+import { appendSpoken } from "../lib/voice";
 
 /** The message box: Send, Queue while main (or, in standard mode, the chat) works, or Send in a new lane (architecture/web.md, "Composer"). */
 export function Composer({ app, conversation, laneNumber, onNewLane, onModel, onSent, chat, keep, onUnkeep, statusTarget, placeholder, variant = "float", compact = false, autoFocus = true }: {
@@ -82,16 +84,23 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, on
     if (autoFocus) area.current?.focus();
   }, [conversation, autoFocus]);
 
-  const submit = (how: "send" | "queue" | "lane" = target) => {
-    if (empty || unavailable || (how === "lane" && runningLanes >= MAX_RUNNING_LANES)) return;
-    const kept = keep?.choice ?? (!chat && taskStatusRequest(text) ? statusTarget : undefined);
-    const sent = how === "lane" ? onNewLane(text, attachments) : how === "queue" ? store.queue(text, attachments, chat, kept) : store.send(text, conversation, attachments, chat, kept);
+  const submit = (how: "send" | "queue" | "lane" = target, body: string = text) => {
+    if ((!body.trim() && !attachments.length) || unavailable || (how === "lane" && runningLanes >= MAX_RUNNING_LANES)) return;
+    const kept = keep?.choice ?? (!chat && taskStatusRequest(body) ? statusTarget : undefined);
+    const sent = how === "lane" ? onNewLane(body, attachments) : how === "queue" ? store.queue(body, attachments, chat, kept) : store.send(body, conversation, attachments, chat, kept);
     if (!sent) return;
     onSent?.(sent);
     setText("");
     store.clearImages(conversation);
     setMenu(false);
   };
+  // Speech goes after what is typed; "send" sends it at once, as the send button would.
+  const voice = useVoice((spoken, send) => {
+    const next = appendSpoken(store.draftOf(conversation), spoken);
+    setText(next);
+    if (send) submit(target, next);
+    else requestAnimationFrame(() => { const el = area.current; if (el) { el.focus(); el.setSelectionRange(next.length, next.length); } });
+  });
   const keys = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
@@ -132,6 +141,11 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, on
           </p>
         )}
         {images.length > 0 && <Thumbnails images={images} onRemove={(key) => store.removeImage(conversation, key)} />}
+        {voice.error && (
+          <p className="composer-note voice-error" role="alert"><AlertTriangle aria-hidden /> <span>{voice.error}</span>
+            <button type="button" className="icon-button" onClick={voice.clearError} aria-label="Dismiss"><X aria-hidden /></button>
+          </p>
+        )}
         {images.length > 0 && app.status?.models.chat?.vision === false && (
           <p className="composer-note"><AlertTriangle aria-hidden /> {app.status.models.chat.model} can't see images: Socrates will know only their names and sizes.</p>
         )}
@@ -145,6 +159,7 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, on
           placeholder={images.length && empty ? "Say what to do with the images…" : laneNumber ? `Message lane ${laneNumber}…` : busy ? (chat ? (target === "queue" ? "Socrates is working in this chat. Your message will wait in the queue…" : "Socrates is working in this chat. Your message joins the work in progress…") : "Socrates is working. Something new starts beside it; a follow-up joins the work in progress…") : placeholder ?? "Ask Socrates…"}
           aria-label="Message"
         />
+        {voice.active ? <VoiceBar voice={voice} /> : (
         <div className="composer-row">
           <button type="button" className="icon-button attach-button" onClick={() => picker.current?.click()} disabled={images.length >= IMAGES_MAX} aria-label="Attach images" title={images.length >= IMAGES_MAX ? `At most ${IMAGES_MAX} images` : "Attach images (or drop or paste them)"}>
             <ImagePlus aria-hidden />
@@ -163,6 +178,7 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, on
               <Square aria-hidden />
             </button>
           )}
+          {app.status?.voice && <MicButton voice={voice} ready={app.status.voice.ready} model={app.status.voice.model} />}
           <div className="send-group">
             <button type="button" className="send-button" disabled={empty || unavailable} onClick={() => submit()} aria-label={target === "queue" ? "Queue" : "Send"} title={target === "queue" ? `Queue: runs when ${chat ? "this chat" : "Socrates"} is free` : "Send"}>
               {target === "queue" ? <ListPlus aria-hidden /> : <ArrowUp aria-hidden />}
@@ -180,6 +196,7 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, on
             )}
           </div>
         </div>
+        )}
       </div>
     </div>
   );

@@ -30,6 +30,7 @@ export function SettingsDialog({ app, onClose }: { app: AppState; onClose: () =>
         <Appearance />
         <Models app={app} providers={providers} />
         <ChatNames app={app} providers={providers} />
+        <VoiceSection app={app} />
         <Keys providers={providers} />
         <MemorySection app={app} />
         <MemorySearch app={app} />
@@ -53,6 +54,45 @@ function Appearance() {
     <Section title="Appearance">
       <div className="segmented" role="radiogroup" aria-label="Theme">
         {THEMES.map((t) => <button key={t.id} type="button" role="radio" aria-checked={choice === t.id} data-on={choice === t.id} onClick={() => setThemeChoice(t.id)}>{t.label}</button>)}
+      </div>
+    </Section>
+  );
+}
+
+const VOICE_MODELS = [
+  { id: "mistralai/voxtral-small-24b-2507-stt", label: "Voxtral Small (Mistral)" },
+  { id: "meta/muse-voice-transcribe-1.0", label: "Muse Voice Transcribe (Meta)" },
+];
+
+/** Which OpenRouter model hears the microphone, and in which language. Applies to the next recording. */
+function VoiceSection({ app }: { app: AppState }) {
+  const saved = app.settings!.voice ?? { model: VOICE_MODELS[0]!.id, language: null };
+  const [model, setModel] = useState(saved.model);
+  const [language, setLanguage] = useState(saved.language ?? "");
+  const listed = VOICE_MODELS.some((m) => m.id === model);
+  const { busy, save, feedback } = useSave();
+  const ready = app.status!.voice?.ready ?? false;
+  return (
+    <Section title="Voice">
+      <p className="settings-hint">
+        The microphone beside Send turns what you say into text through OpenRouter (about a third of a cent a minute). The recording is sent once and not kept.
+        {!ready ? " It needs an OpenRouter key." : ""}
+      </p>
+      <div className="field-row">
+        <span className="field-label">Model</span>
+        <select value={listed ? model : ""} onChange={(e) => setModel(e.target.value || model)} aria-label="Transcription model">
+          {VOICE_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+          <option value="">Another OpenRouter model…</option>
+        </select>
+        <input value={model} onChange={(e) => setModel(e.target.value)} aria-label="Transcription model id" spellCheck={false} />
+      </div>
+      <div className="field-row">
+        <span className="field-label">Language</span>
+        <input value={language} maxLength={2} placeholder="Detected from what you say; or a code such as en, de" onChange={(e) => setLanguage(e.target.value.toLowerCase())} aria-label="Language" spellCheck={false} />
+      </div>
+      <div className="settings-actions">
+        {feedback}
+        <button type="button" className="solid-button" disabled={busy || !model.trim() || (language !== "" && !/^[a-z]{2}$/.test(language))} onClick={() => save(() => store.saveSettings({ voice: { model: model.trim(), language: language || null } }))}>Save</button>
       </div>
     </Section>
   );

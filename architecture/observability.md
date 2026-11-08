@@ -14,6 +14,7 @@ Every call to a model is saved once it ends, whatever it was for:
 | `compaction` | a history checkpoint or handover capsule (`agent-harness.md`, "Context and compaction") |
 | `embedding` | an embedding request for memory search, without tokens: what was embedded, how long it took, whether it worked |
 | `decision` | one request to the memory decider (`agent-harness.md`, "Memory"): the questions and the text it was asked about as the request, the probabilities as the reply (`{"recall":0.12,"save":0.98}` or `{"work":0.9}`), its tokens and the price OpenRouter reported; the message's questions are asked before routing, so they have the user message but no turn, and a message's trace lists them first; the question about a finished turn has its turn, goal, task and chat |
+| `transcription` | one recording the composer's microphone sent to OpenRouter to be turned into text (`server.md`, "Voice"): the audio's format and size as the request (never the audio), the transcript as the reply, the seconds and cost OpenRouter reported; it belongs to no message or turn (it happens before one is sent) and counts under Other |
 
 A request carries a `trace` (`CallTrace` in `packages/contracts`): its role, the user message it works on, and whatever else the call site knows (turn, lane, goal, task, chat, step). The router has the message but no turn yet; the working agent and the compactor have both. Providers ignore it.
 

@@ -26,7 +26,7 @@ export interface Totals {
   firstTokenSamples?: number;
 }
 
-export type Role = "router" | "work" | "wrap_up" | "repair" | "note_repair" | "compaction" | "embedding" | "decision" | "other";
+export type Role = "router" | "work" | "wrap_up" | "repair" | "note_repair" | "compaction" | "embedding" | "decision" | "transcription" | "other";
 
 export interface Breakdown extends Totals {
   role: Role;
@@ -250,6 +250,7 @@ export function roleLabel(call: Pick<CallRow, "role" | "step">): string {
     case "compaction": return `Compaction${call.step && call.step > 1 ? ` retry` : ""}`;
     case "embedding": return "Embedding";
     case "decision": return "Memory decider";
+    case "transcription": return "Voice transcription";
     default: return "Call";
   }
 }
@@ -310,7 +311,7 @@ export function groupOf(role: Role): Group | null {
     case "compaction": return "Compaction";
     case "wrap_up": case "repair": case "note_repair": return "Wrap-up and repair";
     case "decision": return "Decider";
-    case "other": return "Other";
+    case "transcription": case "other": return "Other";
     default: return null;
   }
 }
