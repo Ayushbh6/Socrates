@@ -122,7 +122,9 @@ export function selectContextHistory(store: LedgerStore, newestFirst: Iterable<T
 /** Foreground exchanges only; another concurrent Standard chat is excluded by task-scoped callers. */
 export function foregroundTurns(store: LedgerStore, lanes: (string | null)[] = [null]): Turn[] {
   const seen = new Set<string>();
-  return [...store.recentExchanges(lanes)].flatMap(e => store.requestTurns(e.userEventId).filter(t => t.kind === 'task' && lanes.includes(t.laneId) && !seen.has(t.id)).map(t => { seen.add(t.id); return t; })).sort((a,b) => b.projectTurn - a.projectTurn);
+  // Main's stream keeps the turns the user asked there that ran in a lane.
+  const moved = lanes.includes(null) ? store.movedTurnIds() : new Set<string>();
+  return [...store.recentExchanges(lanes)].flatMap(e => store.requestTurns(e.userEventId).filter(t => t.kind === 'task' && (lanes.includes(t.laneId) || moved.has(t.id)) && !seen.has(t.id)).map(t => { seen.add(t.id); return t; })).sort((a,b) => b.projectTurn - a.projectTurn);
 }
 
 function tailTokens(text: string, budget: number): string {

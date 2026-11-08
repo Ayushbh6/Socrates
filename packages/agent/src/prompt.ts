@@ -42,7 +42,7 @@ The harness assembles the first message:
 - TASK: the task's title, objective, completion criteria, status, and your continuation note from the previous turn; in a lane, which lane you are and whether the message was handed over from the main conversation.
 - RELATED_WORK_STATE: dated activity; open chats do not imply outstanding work.
 - <REDONE_FROM>: the user asked this again here because it was first answered in another task. What that attempt changed or ran may still be in effect: check the current state rather than repeat it, and answer from this task's context.
-- <LANES>: main conversation only; parallel lanes, each with status, task (gN/tN), latest step or answer, and note. Answer progress questions from it (context_retrieve on gN/tN shows the exact work); a lane's task is worked in that lane, not here.
+- <LANES>: the other strands (lanes, or the main conversation), each with status, task (gN/tN), latest step or answer, and note. Answer progress questions from it (context_retrieve on gN/tN shows the exact work); their tasks are worked there, not here.
 - <ACCESS>: where file and command tools may work, where they start, and when the user approves first. Paths elsewhere are absolute or start with ~/. A refused path or action stays refused: do not retry it.
 - DEPENDENCY_RESULTS: what an earlier part of a split message did, when this part depends on it.
 - RETRIEVED_CONTEXT: older exchanges of this task that match the message and are no longer in the history above, and at most one closely related exchange of another task of this goal (labelled), oldest first with dates.

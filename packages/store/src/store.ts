@@ -255,6 +255,9 @@ const num = (v: unknown): number => Number(v);
 /** A turn of a goal and task that are not archived, for queries on `turns`. */
 const LIVE_TURN = "(turns.task_id IS NULL OR (turns.task_id NOT IN (SELECT id FROM tasks WHERE archived_at IS NOT NULL) AND turns.goal_id NOT IN (SELECT id FROM goals WHERE archived_at IS NOT NULL)))";
 
+/** A main-conversation turn, or one asked there and moved to a lane (`turn_moved_to_lane`). */
+const MOVED_FROM_MAIN = "(turns.lane_id IS NULL OR turns.id IN (SELECT turn_id FROM events WHERE type = 'turn_moved_to_lane' AND turn_id IS NOT NULL))";
+
 /** A turn not set aside by a redo (`turn_redone`). */
 const NOT_REDONE = "turns.id NOT IN (SELECT turn_id FROM events WHERE type = 'turn_redone' AND turn_id IS NOT NULL)";
 
@@ -748,6 +751,11 @@ export class LedgerStore {
   /** Every turn set aside by a redo. */
   redoneTurnIds(): Set<string> {
     return new Set(this.all("SELECT turn_id FROM events WHERE type = 'turn_redone'").map((r) => str(r.turn_id)));
+  }
+
+  /** Turns the user asked in the main conversation that ran in a lane (handed to it, or placed beside busy main); they stay part of main's stream. */
+  movedTurnIds(): Set<string> {
+    return new Set(this.all("SELECT turn_id FROM events WHERE type = 'turn_moved_to_lane' AND turn_id IS NOT NULL").map((r) => str(r.turn_id)));
   }
 
   /** The turn that asked this turn's question again, when it was redone. */
@@ -2128,11 +2136,11 @@ export class LedgerStore {
   }
 
   /** Hand a main-conversation turn to the lane whose run holds its task. */
-  moveTurnToLane(turnId: string, laneId: string): Turn {
+  moveTurnToLane(turnId: string, laneId: string, reason: "busy_task" | "parallel" = "busy_task"): Turn {
     return this.transaction(() => {
       const turn = this.requireTurn(turnId);
       this.requireLane(laneId);
-      this.appendEvent("turn_moved_to_lane", { lane_id: laneId }, { goal_id: turn.goalId, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turnId });
+      this.appendEvent("turn_moved_to_lane", { lane_id: laneId, reason }, { goal_id: turn.goalId, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turnId });
       this.run("UPDATE turns SET lane_id = ? WHERE id = ?", laneId, turnId);
       return this.requireTurn(turnId);
     });
@@ -2165,7 +2173,8 @@ export class LedgerStore {
   *recentExchanges(lanes: (string | null)[] = [null]): Generator<Exchange> {
     const batch = 50;
     const ids = lanes.filter((l): l is string => l !== null);
-    const where = [...(lanes.includes(null) ? ["t.lane_id IS NULL"] : []), ...(ids.length ? [`t.lane_id IN (${ids.map(() => "?").join(", ")})`] : [])].join(" OR ") || "0";
+    // The main stream is what the user asked there, including turns that ran in a lane after being handed or placed there.
+    const where = [...(lanes.includes(null) ? [`${MOVED_FROM_MAIN.replaceAll("turns.", "t.")}`] : []), ...(ids.length ? [`t.lane_id IN (${ids.map(() => "?").join(", ")})`] : [])].join(" OR ") || "0";
     let before = Number.MAX_SAFE_INTEGER;
     const seen = new Set<string>();
     while (true) {
@@ -2189,7 +2198,8 @@ export class LedgerStore {
         if (seen.has(userEventId)) continue;
         seen.add(userEventId);
         const redone = this.redoneTurnIds();
-        const turns = this.requestTurns(userEventId).filter(turn => lanes.includes(turn.laneId) && !redone.has(turn.id));
+        const moved = lanes.includes(null) ? this.movedTurnIds() : new Set<string>();
+        const turns = this.requestTurns(userEventId).filter(turn => (lanes.includes(turn.laneId) || moved.has(turn.id)) && !redone.has(turn.id));
         const work = turns.filter(t => t.kind === "task" && t.responseEventId);
         const clarification = turns.find(t => t.kind === "clarification");
         const q = clarification ? this.clarification(clarification.id) : null;

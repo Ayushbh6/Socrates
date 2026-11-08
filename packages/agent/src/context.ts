@@ -99,7 +99,7 @@ export function assembleContext(input: ContextInput): TextPart[] {
   const project = projectContext({store, goalId: goal.id, workspace: input.workspace ?? null, access: input.access, query: projectQuery(task, message.request), semantic: {anchors: input.semantic?.anchors ?? [], related: input.semantic?.related ?? []}, maxTokens: budgets.projectContextMax ?? DEFAULT_BUDGETS.projectContextMax});
   const relatedWork = general && /\b(?:pending|unfinished|current work|open tasks|working on|task status|catch me up)\b/i.test(message.request);
   const volatile = [
-    contextSection("TASK", `task_ref: g${goal.number}/t${task.number}\ntitle: ${JSON.stringify(task.title)}\nobjective: ${JSON.stringify(task.objective)}\ncompletion_criteria: ${JSON.stringify(task.completionCriteria ?? "none")}\n${taskStatus(store, task, turn).join("\n")}\n${input.part ? `part: ${input.part.order} of ${input.part.count}; assigned request: ${JSON.stringify(message.request)}; do only this part\n` : ""}${turn.laneId ? `lane_ref: ${turn.laneId}\nlane: you are lane ${store.requireLane(turn.laneId).number}, working this task beside the main conversation.${laneOf(store, turn)?.handedOff ? ' The user wrote this message in the main conversation; it was handed to you because you work this task. "The lane" in it means you.' : ''}\n` : ""}\n## CONTINUATION_NOTE\ntext:\n${quoteEvidence(task.continuationNote ?? "none")}\nsource_turn_ref: ${taskNote.sourceTurn ?? "unknown"}\nfreshness: ${taskNote.freshness}\nfreshness_reason: ${JSON.stringify(taskNote.reason ?? "none")}`),
+    contextSection("TASK", `task_ref: g${goal.number}/t${task.number}\ntitle: ${JSON.stringify(task.title)}\nobjective: ${JSON.stringify(task.objective)}\ncompletion_criteria: ${JSON.stringify(task.completionCriteria ?? "none")}\n${taskStatus(store, task, turn).join("\n")}\n${input.part ? `part: ${input.part.order} of ${input.part.count}; assigned request: ${JSON.stringify(message.request)}; do only this part\n` : ""}${turn.laneId ? `lane_ref: ${turn.laneId}\nlane: you are lane ${store.requireLane(turn.laneId).number}, working this task beside the main conversation.${laneOf(store, turn)?.moved === "busy_task" ? ' The user wrote this message in the main conversation; it was handed to you because you work this task. "The lane" in it means you.' : laneOf(store, turn)?.moved === "parallel" ? ' The user wrote this message in the main conversation; it runs here because the main conversation was busy with other work.' : ''}\n` : ""}\n## CONTINUATION_NOTE\ntext:\n${quoteEvidence(task.continuationNote ?? "none")}\nsource_turn_ref: ${taskNote.sourceTurn ?? "unknown"}\nfreshness: ${taskNote.freshness}\nfreshness_reason: ${JSON.stringify(taskNote.reason ?? "none")}`),
     contextSection("SESSION", `chat_ref: ${chat.id}\nsequence: ${chat.ordinal}\ncontinuation_of: ${chat.continuationOf ?? "none"}\nhandover_ref: ${chat.handoverRef ?? "none"}\ncompactions_completed: ${chat.compactionCount}`),
     handoff,
     redoneFrom(store, turn),
@@ -181,10 +181,11 @@ function activeCapabilities(c: ContextInput["capabilities"]): string | null {
   return block("ACTIVE_CAPABILITIES", lines.join("\n"));
 }
 
-/** The lane a turn runs in, and whether its message was handed over from the main conversation. */
-function laneOf(store: LedgerStore, turn: Turn): { number: number; handedOff: boolean } | null {
+/** The lane a turn runs in, and why a message the user wrote in the main conversation runs there: handed to the lane working its task, or placed beside a busy main. */
+function laneOf(store: LedgerStore, turn: Turn): { number: number; moved: "busy_task" | "parallel" | null } | null {
   if (!turn.laneId) return null;
-  return { number: store.requireLane(turn.laneId).number, handedOff: store.listEvents({ turnId: turn.id, type: "turn_moved_to_lane" }).length > 0 };
+  const move = store.listEvents({ turnId: turn.id, type: "turn_moved_to_lane" }).at(-1);
+  return { number: store.requireLane(turn.laneId).number, moved: move ? ((move.payload as { reason?: "busy_task" | "parallel" }).reason ?? "busy_task") : null };
 }
 
 /** Standard mode routes bind work to the chat selected by the user. */

@@ -12,7 +12,7 @@ import {
 } from "@socrates/store";
 import { type SemanticHit, fuse, recencyBoost } from "@socrates/retrieval";
 import { countTokens, truncateToTokens, eventTime, zonedParts } from "@socrates/shared";
-import { laneSummaries } from "./lanes";
+import { MAIN_STRAND, laneSummaries, mainRunSummaries } from "./lanes";
 
 /**
  * Builds everything the Goal Router sees (Goal-router.md, "Exact router input"):
@@ -81,6 +81,8 @@ export interface BuildContextOptions {
   laneId?: string | null;
   /** Host snapshot: active lanes mapped to their executing turn, or null while routing/queued. */
   laneActivity?: ReadonlyMap<string, string | null>;
+  /** Host snapshot: the turns running in the main conversation now, shown as strands when this message is placed beside them. */
+  mainActivity?: Iterable<string>;
   /** Saved memories that may bear on the message, one per line, or null (Goal-router.md, "REMEMBERED"). */
   remembered?: string | null;
 }
@@ -141,8 +143,9 @@ export function buildRoutingContext(store: LedgerStore, message: string, options
     contextSection("GOAL_DIRECTORY", `as_of: ${contextTime(now, options.timeZone)}\ncoverage: current goal and at most ${MAX_OLDER_CANDIDATES} older candidates; omitted work available through ledger_query\n\n${renderKnownGoals(store, goals, current)}`),
   ];
   if (options.remembered) sections.push(contextSection("RECALLED_MEMORIES", options.remembered));
-  const lanes = laneSummaries(store, now, laneId, options.laneActivity);
-  if (lanes.length) sections.push(contextSection("ACTIVE_LANES", lanes.map(l => `## LANE\nlane_ref: ${l.lane.id}\nlane_number: ${l.lane.number}\ngoal_ref: ${l.goal ? `g${l.goal.number}` : "none"}\ntask_ref: ${l.goal && l.task ? `g${l.goal.number}/t${l.task.number}` : "none"}\nstatus: ${l.status}\nsummary:\n${quoteEvidence(excerpt(l.latestStep ?? l.task?.continuationNote ?? "none", 300))}`).join("\n\n")));
+  // While the main conversation works, a message placed beside it sees main's running turn as a strand too.
+  const lanes = [...mainRunSummaries(store, options.mainActivity ?? []), ...laneSummaries(store, now, laneId, options.laneActivity)];
+  if (lanes.length) sections.push(contextSection("ACTIVE_LANES", lanes.map(l => `## LANE\nlane_ref: ${l.lane.id}\nlane_number: ${l.lane.number}${l.lane.id === MAIN_STRAND.id ? " (the main conversation itself, working now)" : ""}\ngoal_ref: ${l.goal ? `g${l.goal.number}` : "none"}\ntask_ref: ${l.goal && l.task ? `g${l.goal.number}/t${l.task.number}` : "none"}\nstatus: ${l.status}\nsummary:\n${quoteEvidence(excerpt(l.latestStep ?? l.task?.continuationNote ?? "none", 300))}`).join("\n\n")));
   const laneSelectors = {
     goals: lanes.flatMap(l => l.goal ? [l.goal.number] : []),
     tasks: lanes.flatMap(l => l.goal && l.task ? [`g${l.goal.number}/t${l.task.number}`] : []),

@@ -15,7 +15,7 @@ This file hands the project to whichever agent harness works on it next. Read it
 
 ## Running it
 
-- **Live app:** `pnpm socrates` builds the web app, serves http://127.0.0.1:4200 with data in `~/.socrates-v2`, prints a one-time login link and opens a browser tab. Keep it running in the background with output in `.socrates/app.log`. To restart: `lsof -ti tcp:4200 | xargs kill`, then `pnpm socrates > .socrates/app.log 2>&1` in the background.
+- **Live app:** `pnpm socrates` builds the web app, serves http://127.0.0.1:4200 (or `$SOCRATES_PORT`; the user's running instance has used 3001, so check `.socrates/app.log` for the port before restarting) with data in `~/.socrates-v2`, prints a one-time login link and opens a browser tab. Keep it running in the background with output in `.socrates/app.log`. To restart: `lsof -ti tcp:<port> | xargs kill`, then `SOCRATES_PORT=<port> pnpm socrates > .socrates/app.log 2>&1` in the background.
 - **Checks:** `pnpm typecheck`, `pnpm test` (Vitest), and `pnpm --filter @socrates/web build`.
 - **Deadline test:** the pending-approval regression now permits 1 second for setup and asserts approval was reached before testing deadline cancellation. Avoid running the full suite concurrently with local embedding/live evals: their CPU load can time out PTY tests.
 - **Trying things on real data without touching it:**
@@ -42,9 +42,11 @@ This file hands the project to whichever agent harness works on it next. Read it
 - **Model outputs are noisy:** judge prompt changes on repeated runs, and report numbers honestly (trial log entries 58–60 show the format).
 - **Live data:** `~/.socrates-v2` is the user's real v2 data. Read it only through a read-only backup, and never touch `~/.socrates` (v0.1.20).
 
-## Where things stand (2026-10-18; release through entry 85)
+## Where things stand (2026-11-08; release through entry 86)
 
 The design lives in `architecture/` (`agent-harness.md`, `Goal-router.md`, `server.md`, `web.md`, `observability.md`). The trial log numbers each change. Recently shipped, newest last:
+
+- **Multitasking, phase A (entry 86; plan in `docs/multitasking-plan.md`):** a message sent while the main conversation works is placed by Socrates, not refused or queued: routed first, then run at once in a lane Socrates opens when its task is free, handed to the lane busy with it, or made to wait its turn when it continues main's own task (`lane: "auto"`, `turn_moved_to_lane.reason`, progress stages `waiting`/`slot`). Every strand sees the others in `<LANES>` (a lane sees main as "main conversation"); main's stream includes turns asked there that ran in a lane. Phases B (steer a running task mid-turn), C (strands on the canvas) and D (live multi-project scenario) follow in that order; the 4-lane cap stays by the user's decision.
 
 - **Terminals:** always-visible button, user-created interactive shells and shared agent/user tabs with create, rename, stop, restart and close. Explicit/project/working-folder/single-allowed/home defaults; existing sessions never move. Tabs and processes survive modes, chats, reloads and model changes. Full app restart restores stopped tabs only. Both tools share workspace supervisors, screen/read/multi-wait and 8 s typing protection (trial log entry 52; `architecture/web.md`, "Terminal panel").
 - **Chat names:** a non-thinking model names chats. By default that is `qwen/qwen3-30b-a3b-instruct-2507` on OpenRouter; it can be chosen in Settings > Chat names and applies without a restart.

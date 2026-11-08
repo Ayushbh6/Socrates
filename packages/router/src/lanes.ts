@@ -59,6 +59,34 @@ export function laneSummaries(store: LedgerStore, now: Date, exclude: string | n
   return out;
 }
 
+/** The main conversation, when it is listed beside the lanes as a strand of running work. */
+export const MAIN_STRAND: Lane = { id: "main", number: 0, openedAt: "", closedAt: null };
+
+/** "lane 2", or "main conversation" for the main strand. */
+export function laneName(lane: Lane): string {
+  return lane.id === MAIN_STRAND.id ? "main conversation" : `lane ${lane.number}`;
+}
+
+/**
+ * The main conversation's running turns, one summary each, so a lane (or the
+ * router placing a message while main works) sees them as it sees the lanes.
+ * `exclude` leaves out the turn asking.
+ */
+export function mainRunSummaries(store: LedgerStore, turnIds: Iterable<string>, exclude: string | null = null): LaneSummary[] {
+  const out: LaneSummary[] = [];
+  for (const id of turnIds) {
+    if (id === exclude) continue;
+    const turn = store.getTurn(id);
+    if (!turn || turn.kind !== "task" || turn.status !== "in_progress" || turn.laneId) continue;
+    const goal = store.requireGoal(turn.goalId!);
+    const task = store.requireTask(turn.taskId!);
+    const workspace = goal.workspaceId ? (store.getWorkspace(goal.workspaceId)?.name ?? null) : null;
+    const last = store.evidenceForTurn(turn.id).at(-1);
+    out.push({ lane: MAIN_STRAND, status: "working", goal, task, workspace, at: turn.createdAt, latestStep: last ? callLine(last.tool, last.input) : null, text: null });
+  }
+  return out;
+}
+
 /** "14:05" today, "2026-10-02 14:05" otherwise. */
 export function laneTime(at: string, now: Date, timeZone: string): string {
   const when = zonedParts(new Date(at), timeZone);
@@ -74,6 +102,6 @@ export function renderLanesForRouter(store: LedgerStore, summaries: LaneSummary[
   return summaries.map((s) => {
     const status = s.status === "working" ? "working" : s.status === "waiting_for_answer" ? "waiting for the user's answer" : s.status === "starting" || s.status === "idle" ? s.status : `${s.status} at ${laneTime(s.at, now, timeZone)}`;
     const work = s.goal && s.task ? ` — goal g${s.goal.number} "${excerpt(s.goal.title, 80)}" · task ${laneSelector(store, s)} "${excerpt(s.task.title, 80)}" · workspace ${s.workspace ?? "—"}` : "";
-    return `lane ${s.lane.number} — ${status}${work}`;
+    return `${laneName(s.lane)} — ${status}${work}`;
   }).join("\n");
 }

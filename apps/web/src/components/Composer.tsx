@@ -141,7 +141,7 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, on
           onChange={(e) => setText(e.target.value)}
           onKeyDown={keys}
           onPaste={paste}
-          placeholder={images.length && empty ? "Say what to do with the images…" : laneNumber ? `Message lane ${laneNumber}…` : busy ? `Socrates is working${chat ? " in this chat" : ""}. Your message will wait in the queue…` : placeholder ?? "Ask Socrates…"}
+          placeholder={images.length && empty ? "Say what to do with the images…" : laneNumber ? `Message lane ${laneNumber}…` : busy ? (chat ? "Socrates is working in this chat. Your message will wait in the queue…" : "Socrates is working. Something new starts beside it; a follow-up waits its turn…") : placeholder ?? "Ask Socrates…"}
           aria-label="Message"
         />
         <div className="composer-row">
@@ -172,7 +172,7 @@ export function Composer({ app, conversation, laneNumber, onNewLane, onModel, on
             {menu && (
               <Popover onClose={() => setMenu(false)} className="send-menu" align="right" above>
                 <MenuItem icon={<ArrowUp aria-hidden />} title="Send" detail={chat ? "To this chat" : conversation === "main" ? "To the main conversation" : `To lane ${laneNumber}`} disabled={empty || unavailable || target === "queue"} onClick={() => submit("send")} />
-                <MenuItem icon={<ListPlus aria-hidden />} title="Queue" detail={chat ? "Runs as soon as this chat is free" : "Runs as soon as Socrates is free"} disabled={empty || unavailable || conversation !== "main" || (chat ? target !== "queue" : !live?.busy)} onClick={() => submit("queue")} />
+                <MenuItem icon={<ListPlus aria-hidden />} title="Queue" detail={chat ? "Runs as soon as this chat is free" : "Runs after the current work, whatever it is about"} disabled={empty || unavailable || conversation !== "main" || (chat ? target !== "queue" : !live?.busy)} onClick={() => submit("queue")} />
                 {/* Standard mode's chats each run on their own, so they need no lanes. */}
                 {!chat && <MenuItem icon={<Split aria-hidden />} title="Send in a new lane" detail={runningLanes >= MAX_RUNNING_LANES ? `${MAX_RUNNING_LANES} lanes are already working` : "Works beside the main conversation"} disabled={empty || unavailable || runningLanes >= MAX_RUNNING_LANES} onClick={() => submit("lane")} />}
               </Popover>

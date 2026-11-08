@@ -334,7 +334,7 @@ export interface TerminalView {
 }
 
 /** What a message is doing before its first model step, as the server reports it (live only). */
-export type ProgressStage = "remembering" | "recalling" | "routing" | "searching" | "rechecking" | "escalating" | "waiting" | "preparing" | "starting";
+export type ProgressStage = "remembering" | "recalling" | "routing" | "searching" | "rechecking" | "escalating" | "waiting" | "slot" | "preparing" | "starting";
 export interface ProgressStep { stage: ProgressStage; at: string }
 
 export type ServerMessage =
@@ -344,7 +344,7 @@ export type ServerMessage =
   /** `seq`: the saved message, when it was bound at once (a standard-mode chat's), so a message queued and started later is known as this page's. */
   | { type: "accepted"; id: string; conversation: string; seq?: number }
   | ({ type: "approval" } & PendingApproval)
-  | { type: "handed_off"; id: string; conversation: string; lane: number; mainReleased: boolean }
+  | { type: "handed_off"; id: string; conversation: string; lane: number; mainReleased: boolean; reason?: "busy_task" | "parallel" }
   | { type: "status"; id: string; conversation: string; text: string }
   /** The stages so far of a message getting started; `seq` is its saved request, once recorded. */
   | { type: "progress"; id: string; conversation: string; seq?: number; trail: ProgressStep[] }

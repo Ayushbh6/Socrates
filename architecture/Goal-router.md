@@ -214,7 +214,7 @@ The directory always includes the current goal when present, with up to six task
 
 `RECENT_ACTIVITY` is no longer duplicated in router input. Task/chat status is not execution outcome or an obligation. Historical fields carry request/completion timestamps, stable retrieval references, answer-validation status/reason, and explicit excerpt markers. Collision-safe fences quote source content. Historical validator messages are evidence, not current policy. Unfinished/current requests and set-aside Redo attempts are excluded. Tool capture gaps are distinct from prompt excerpts.
 
-`ACTIVE_LANES` contains bounded recorded state, not another lane's raw transcript. Memory matching keeps existing thresholds and a 250-token routing allowance; records now include memory, scope and source references. Empty optional blocks are omitted. The router does not receive the worker's project files or full task context before choosing ownership.
+`ACTIVE_LANES` contains bounded recorded state, not another lane's raw transcript. For a message placed while the main conversation works (`agent-harness.md`, "Lanes"), it also lists main's running turn as lane number `0`, "the main conversation itself, working now", with its goal and task selectors, so the router knows that task is being worked. Memory matching keeps existing thresholds and a 250-token routing allowance; records now include memory, scope and source references. Empty optional blocks are omitted. The router does not receive the worker's project files or full task context before choosing ownership.
 
 ## Router output
 

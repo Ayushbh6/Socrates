@@ -52,15 +52,19 @@ export function Flow({ app, mode, dock, onMode, onSettings, view, setView }: { a
   useEffect(() => {
     if (conversation !== "main" && app.model.live && !lane) setConversation("main");
   }, [conversation, lane, app.model.live]);
-  // A message sent to a new lane brings its lane onto the canvas once the server names it.
+  // A message sent to a new lane, or sent while main worked, brings the lane it lands in onto the canvas once the server names it;
+  // one that stays in main (its work begins there) is simply followed there.
   useEffect(() => {
     if (!following) return;
-    const found = Object.entries(app.model.conversations).find(([, list]) => list.some((e) => e.sendId === following));
+    const found = Object.entries(app.model.conversations).find(([id, list]) => id !== "main" && list.some((e) => e.sendId === following));
     if (found) {
       setConversation(found[0]);
       setSelected(null);
       setFollowing(null);
+      return;
     }
+    const inMain = (app.model.conversations.main ?? []).find((e) => e.sendId === following);
+    if (inMain && (inMain.steps.length > 0 || inMain.answers.length > 0 || inMain.state === "done" || inMain.state === "failed")) setFollowing(null);
   }, [following, app.model.conversations]);
 
   useEffect(() => {
@@ -163,7 +167,7 @@ export function Flow({ app, mode, dock, onMode, onSettings, view, setView }: { a
         conversation={conversation}
         laneNumber={lane?.number ?? null}
         onModel={onSettings}
-        onSent={(id) => { setSent(id); setSelected(null); setKeep(null); }}
+        onSent={(id) => { setSent(id); setSelected(null); setKeep(null); if (conversation === "main" && app.model.live?.busy) setFollowing(id); }}
         keep={conversation === "main" && keep ? { choice: keep, title: app.goals.find((g) => g.number === keep.goal)?.tasks.find((t) => t.number === keep.task)?.title ?? "this task" } : undefined}
         onUnkeep={() => setKeep(null)}
         onNewLane={(text, attachments) => {

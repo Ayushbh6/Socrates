@@ -5,7 +5,7 @@ import type { Attachment, Effort, EventRefs, FinalAnswer, ModelClient, TurnStop 
 import { homedir } from "node:os";
 import { abortable, countTokens } from "@socrates/shared";
 import { TokenCalibration, DECIDER_INPUT_TOKENS } from "@socrates/providers";
-import { GoalRouter, type RoutedPart, type RoutingStage, laneSummaries, renderActivity } from "@socrates/router";
+import { GoalRouter, type RoutedPart, type RoutingStage, laneSummaries, mainRunSummaries, renderActivity } from "@socrates/router";
 import { foregroundTurns, selectContextHistory, contextSection, contextTime, currentRequest, type Evidence, type Goal, type Lane, type LedgerStore, type Task, type Turn } from "@socrates/store";
 import type { SemanticHit, SemanticIndex } from "@socrates/retrieval";
 import { type AccessGrant, type AccessPolicy, type Approve, type CapabilityCatalog, RunState, type ShelfOptions, type SupervisorOptions, ToolRunner, WorkspaceRoot, canReadAutomatically, capabilityCandidates, skillShelf } from "@socrates/tools";
@@ -119,17 +119,24 @@ export interface HandleOptions {
   /**
    * Where the message goes: omitted, the main conversation; "new", a new
    * lane; or an open lane's id. The first message of a lane is routed like
-   * any other; later ones continue the lane's task.
+   * any other; later ones continue the lane's task. "auto": the application
+   * sent it to the main conversation while main works (agent-harness.md,
+   * "Lanes"): it is recorded in main and routed like a main message, and once
+   * its task is free it runs in main if main is free by then, else in a lane
+   * opened for it (the turn moves there, `turn_moved_to_lane` with reason
+   * `parallel`), else waits for a slot. A task busy in a lane still takes it.
    */
-  lane?: "new" | string;
+  lane?: "new" | "auto" | string;
   /** Receives a new lane's id as soon as it is opened, before routing. */
   onLane?: (laneId: string) => void;
   /**
-   * A part of a main-conversation message whose task is busy in a lane was
-   * handed to that lane; it runs there next, and the main conversation is
-   * free for the next message.
+   * A part of a main-conversation message runs in a lane: handed to the lane
+   * busy with its task (`busy_task`; it runs there next), or placed in a lane
+   * opened for it because main was busy (`parallel`). `mainHeld` says whether
+   * this message still holds the main conversation afterwards (a compound
+   * message does until its parts finish; a single-part or "auto" one never).
    */
-  onHandoff?: (laneId: string, turnId: string) => void;
+  onHandoff?: (laneId: string, turnId: string, placement: { reason: "busy_task" | "parallel"; mainHeld: boolean }) => void;
   /**
    * The readable part of a reply while it arrives, for the turn that is
    * working. Temporary: nothing is saved, and the saved narration or answer
@@ -203,7 +210,7 @@ export type HandleResult =
   | { kind: "answered"; text: string; acknowledgment: string | null; parts: PartResult[]; laneId: string | null; notice: string | null; notices: string[] };
 
 /** What a message is doing before its first model step: the router's stages plus the harness's own. */
-export type ProgressStage = "remembering" | "recalling" | RoutingStage | "waiting" | "preparing" | "starting";
+export type ProgressStage = "remembering" | "recalling" | RoutingStage | "waiting" | "slot" | "preparing" | "starting";
 
 /**
  * Whether a turn ends with a failure still standing, for "do X, then mark this
@@ -315,8 +322,10 @@ export class Socrates {
   private readonly goalRuns = new Map<string, number>();
   /** Approval requests per live turn; removed when a turn stops, even if its callback never settles. */
   private readonly approvalsWaiting = new Map<string, number>();
-  /** Each running turn's approval callback and lane. */
-  private readonly approvers = new Map<string, { approve: Approve; laneId: string | null }>();
+  /** Each running turn's approval callback and lane; `chat` marks a standard-mode chat running beside main. */
+  private readonly approvers = new Map<string, { approve: Approve; laneId: string | null; chat: boolean }>();
+  /** Messages placed with `lane: "auto"` waiting for the main conversation or a lane to be free. */
+  private readonly slotWaiters: (() => void)[] = [];
 
   constructor(private readonly options: SocratesOptions) {
     this.store = options.store;
@@ -378,9 +387,16 @@ export class Socrates {
     return activity;
   }
 
-  /** What every lane beside the main conversation is doing, for `<LANES>`. */
-  private laneViews(): LaneView[] {
-    return laneSummaries(this.store, this.store.clock.now(), null, this.laneActivity()).map((s) => ({ ...s, waitingForApproval: this.waitingForApproval(s.lane.id) }));
+  /** The turns running in the main conversation now (not standard-mode chats beside it). */
+  private mainTurnIds(): string[] {
+    return [...this.approvers].filter(([, run]) => run.laneId === null && !run.chat).map(([turnId]) => turnId);
+  }
+
+  /** What every other strand is doing, for a turn's `<LANES>`: the lanes except its own, and the main conversation's running turn unless this is it. */
+  private strandViews(turn: Turn): LaneView[] {
+    const lanes = laneSummaries(this.store, this.store.clock.now(), turn.laneId, this.laneActivity()).map((s) => ({ ...s, waitingForApproval: this.waitingForApproval(s.lane.id) }));
+    const main = mainRunSummaries(this.store, this.mainTurnIds(), turn.id).map((s) => ({ ...s, waitingForApproval: this.mainTurnIds().some((id) => (this.approvalsWaiting.get(id) ?? 0) > 0) }));
+    return [...main, ...lanes];
   }
 
   /** Close an idle lane; its history stays in the ledger. */
@@ -405,14 +421,16 @@ export class Socrates {
     // Capture the destination before routing can change it. The browser supplies a
     // viewed-task target; non-UI callers use the binding at acceptance time.
     const lifecycle = taskStatusRequest(message);
+    const auto = options.lane === "auto";
     if (lifecycle && options.lane !== "new" && !options.target && !options.replyTo && !options.redoOf) {
-      const current = this.store.currentBinding(options.lane && options.lane !== "new" ? options.lane : null);
+      const current = this.store.currentBinding(options.lane && options.lane !== "new" && !auto ? options.lane : null);
       if (current && !current.task.general && !current.task.archivedAt) options = { ...options, target: { taskId: current.task.id }, pinned: true };
     }
     let laneId: string | null;
     const alongside = options.alongside === true && !!options.target && !options.lane && !options.replyTo;
     try {
-      laneId = alongside ? this.claimChat() : this.claim(options.lane);
+      // An "auto" message holds nothing yet: it takes main or a lane once its task is free.
+      laneId = alongside ? this.claimChat() : auto ? null : this.claim(options.lane);
     } catch (error) {
       return Promise.reject(error);
     }
@@ -424,7 +442,7 @@ export class Socrates {
     } catch (error) {
       if (laneId) this.leaveLane(laneId);
       else if (alongside) this.chatRuns--;
-      else this.mainBusy = false;
+      else if (!auto) this.releaseMainSlot();
       return Promise.reject(error);
     }
     const signal = AbortSignal.any([this.lifetime.signal, ...(options.signal ? [options.signal] : [])]);
@@ -489,7 +507,42 @@ export class Socrates {
   private leaveLane(laneId: string): void {
     const n = (this.laneRuns.get(laneId) ?? 1) - 1;
     if (n > 0) this.laneRuns.set(laneId, n);
-    else this.laneRuns.delete(laneId);
+    else {
+      this.laneRuns.delete(laneId);
+      this.freedSlot();
+    }
+  }
+
+  private releaseMainSlot(): void {
+    this.mainBusy = false;
+    this.freedSlot();
+  }
+
+  /** Wake every "auto" message waiting for a place to run; each checks again. */
+  private freedSlot(): void {
+    for (const wake of this.slotWaiters.splice(0)) wake();
+  }
+
+  /**
+   * Where an "auto" message runs once its task is free: the main conversation
+   * when it is free (null), else a new lane (its id) while fewer than
+   * MAX_RUNNING_LANES run, else the first of those to free up.
+   */
+  private async takeSlot(signal: AbortSignal, progress?: (stage: ProgressStage) => void): Promise<string | null> {
+    for (let waited = false; ; waited = true) {
+      signal.throwIfAborted();
+      if (!this.mainBusy) {
+        this.mainBusy = true;
+        return null;
+      }
+      if (this.laneRuns.size < MAX_RUNNING_LANES) {
+        const lane = this.store.openLane();
+        this.enterLane(lane.id);
+        return lane.id;
+      }
+      if (!waited) progress?.("slot");
+      await abortable(new Promise<void>((wake) => this.slotWaiters.push(wake)), signal);
+    }
   }
 
   /** Serialize a lane before routing as well as execution, preserving cancelled queue tails. */
@@ -512,13 +565,13 @@ export class Socrates {
   }
 
   private async handleIn(laneId: string | null, message: string, options: HandleOptions, userEventId?: string): Promise<HandleResult> {
-    // A chat running alongside holds its own place, not the main conversation's.
-    let holdsMain = laneId === null && !options.alongside;
+    // A chat running alongside holds its own place, not the main conversation's; an "auto" message takes a place per part, once its task is free.
+    let holdsMain = laneId === null && !options.alongside && options.lane !== "auto";
     let holdsChat = laneId === null && options.alongside === true;
     const releaseMain = () => {
       if (!holdsMain) return;
       holdsMain = false;
-      this.mainBusy = false;
+      this.releaseMainSlot();
     };
     try {
       const signal = AbortSignal.any([this.lifetime.signal, ...(options.signal ? [options.signal] : [])]);
@@ -550,7 +603,7 @@ export class Socrates {
       } else {
         reading = this.askGate(message, userEventId, null, signal, options.replyTo, options.onProgress);
         const remembered = await this.rememberedForRouting(gateMessage, await reading, signal, options.onProgress);
-        const routed = await this.router.route(message, signal, { laneId, userEventId, ...(options.replyTo ? {clarificationTurnId: options.replyTo} : options.newRequest ? {clarificationTurnId: null} : {}), laneActivity: this.laneActivity(), beforeBind, ...(remembered ? { remembered } : {}), ...(options.onProgress ? { onProgress: options.onProgress } : {}) });
+        const routed = await this.router.route(message, signal, { laneId, userEventId, ...(options.replyTo ? {clarificationTurnId: options.replyTo} : options.newRequest ? {clarificationTurnId: null} : {}), laneActivity: this.laneActivity(), mainActivity: this.mainTurnIds(), beforeBind, ...(remembered ? { remembered } : {}), ...(options.onProgress ? { onProgress: options.onProgress } : {}) });
         if (routed.kind === "clarify") {
           const notice = laneId ? laneNotice(this.store.requireLane(laneId).number, { kind: "clarify", question: routed.text }) : null;
           return { kind: "clarify", text: routed.text, laneId, notice, notices: notice ? [notice] : [] };
@@ -701,14 +754,15 @@ export class Socrates {
   private async runLocked(part: RoutedPart, parts: RoutedPart[], signal: AbortSignal, options: RunOptions, channel: string | null, releaseMain: () => void): Promise<PartResult> {
     const taskId = part.task.id;
     const held = this.taskLocks.get(taskId);
-    const laneId = channel;
+    let laneId = channel;
     if (channel === null && held?.laneId) {
       const destination = held.laneId;
-      this.store.moveTurnToLane(part.turn.id, destination);
+      this.store.moveTurnToLane(part.turn.id, destination, "busy_task");
       this.enterLane(destination);
       releaseMain();
       try {
-        options.onHandoff?.(destination, part.turn.id);
+        // A compound message keeps main until its parts finish; an "auto" message never held it.
+        options.onHandoff?.(destination, part.turn.id, { reason: "busy_task", mainHeld: options.lane !== "auto" && parts.length > 1 });
         // Do not reserve the task before the lane is available: its earlier
         // queued messages may themselves need that task.
         return await this.enqueueLane(destination, () => this.runLocked(part, parts, signal, options, destination, () => {}), signal);
@@ -725,14 +779,27 @@ export class Socrates {
     });
     const goalId = part.goal.id;
     let acquired = false;
+    let releaseSlot = () => {};
     try {
       if (held && !held.settled && !held.cancelled) options.onProgress?.("waiting");
       await abortable(previous, signal);
       signal.throwIfAborted();
       acquired = true;
+      if (channel === null && options.lane === "auto") {
+        // The task is ours; now a place to run it: main if free, else a lane opened for it.
+        const slot = await this.takeSlot(signal, options.onProgress);
+        if (slot === null) releaseSlot = () => this.releaseMainSlot();
+        else {
+          releaseSlot = () => this.leaveLane(slot);
+          laneId = slot;
+          entry.laneId = slot;
+          this.store.moveTurnToLane(part.turn.id, slot, "parallel");
+          options.onHandoff?.(slot, part.turn.id, { reason: "parallel", mainHeld: false });
+        }
+      }
       const fresh = !this.goalRuns.get(goalId);
       this.goalRuns.set(goalId, (this.goalRuns.get(goalId) ?? 0) + 1);
-      this.approvers.set(part.turn.id, { approve: options.approve ?? this.options.approve, laneId });
+      this.approvers.set(part.turn.id, { approve: options.approve ?? this.options.approve, laneId, chat: options.alongside === true });
       try {
         return await this.runPart({ ...part, turn: this.store.requireTurn(part.turn.id) }, parts, signal, options, fresh);
       } finally {
@@ -743,6 +810,7 @@ export class Socrates {
         else this.goalRuns.delete(goalId);
       }
     } finally {
+      releaseSlot();
       unlock();
       if (!acquired) {
         entry.cancelled = true;
@@ -822,7 +890,8 @@ export class Socrates {
     const candidates = capabilityCandidates({ store, catalog: capabilities.catalog, goalId: goal.id, message: request, run, semantic: semantic.capabilities });
     // Rebuilt from the current active set each time, so compaction mid-turn keeps a Skill activated earlier in the turn.
     // The main conversation sees what its lanes are doing, as of the start of this turn.
-    const lanes = turn.laneId ? null : lanesBlock(store, this.laneViews(), store.clock.now(), this.options.timeZone);
+    // Every strand sees the others, as of the start of this turn: the lanes, and the main conversation's running turn.
+    const lanes = lanesBlock(store, this.strandViews(turn), store.clock.now(), this.options.timeZone);
     // Chosen once per turn, like the capability candidates, and recorded as offered.
     // Asked when the message arrived, so it is long done; it reads as nothing when it failed or was slow.
     const gated = await (options.reading ?? Promise.resolve(null));

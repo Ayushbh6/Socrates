@@ -272,7 +272,8 @@ function activity(model: Model, a: Activity | DraftArrived): Model {
     if (laneId) {
       const lane = result.conversations[laneId] ?? [];
       if (!lane.some((e) => e.turns.includes(a.turnId))) {
-        result = withConversation(result, laneId, [...lane, blank({key: `t${a.turnId}`, conversation: laneId, at: a.at, message: updated.message, attachments: updated.attachments,
+        // The lane's copy keeps the page's own id for the message, so the canvas can follow it there.
+        result = withConversation(result, laneId, [...lane, blank({key: `t${a.turnId}`, conversation: laneId, at: a.at, message: updated.message, attachments: updated.attachments, sendId: updated.sendId,
           requestId: updated.requestId, clarification: updated.clarification, route: a.goal && a.task ? {goal:a.goal,task:a.task,projectTurn:updated.route?.projectTurn} : updated.route, turns:[a.turnId], open:[a.turnId] })]);
       }
     }
@@ -523,11 +524,13 @@ export function conversationBusy(live: LiveState | null, conversation: string): 
 }
 
 /**
- * What Enter does: a message to main waits in the queue while main works;
- * a lane queues its own messages, so they are sent.
+ * What Enter does in Flow: send. While main works, Socrates places the
+ * message itself (beside the running work, or after it when it continues
+ * that task); Queue stays an explicit choice in the menu. A lane queues its
+ * own messages, so they are sent too.
  */
-export function sendTarget(conversation: string, mainBusy: boolean): "send" | "queue" {
-  return conversation === "main" && mainBusy ? "queue" : "send";
+export function sendTarget(_conversation: string, _mainBusy: boolean): "send" | "queue" {
+  return "send";
 }
 
 /**

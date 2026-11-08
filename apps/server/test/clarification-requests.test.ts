@@ -94,14 +94,16 @@ describe("routing question lifecycle through live clients and history", () => {
     expect(recent.items[0].parts[0].task.title).toBe("General · Sun 11 Oct");
     expect(JSON.stringify(s.agent.requests.at(-1)!.messages)).toContain(`Finished: ${original}`);
   });
-  it("queues a clarification reply behind active Flow work and before a later Standard send", async () => {
+  it("a clarification reply sent while Flow works in the same task waits for that turn, and a later Standard send waits for the reply", async () => {
     let release!: () => void;
     const hold = new Promise<void>(resolve => {release = resolve;});
     const s = await setup({hold});
     s.p.send({type: "send", id: "hold", text: "Hold main", to: "main"});
     await expect.poll(() => s.agent.requests.some(r => messageOf(r) === "Hold main")).toBe(true);
+    // The reply is taken at once and routed; its task (General) is the one main holds, so it waits its turn rather than sitting in the queue.
     s.p.send({type: "reply", id: "reply", clarification: s.question.id, text: "Work"});
-    await s.p.next(m => m.type === "state" && m.queue.some((q: any) => q.replyTo === s.question.id));
+    await s.p.next(m => m.type === "progress" && m.id === "reply" && m.trail.some((t: any) => t.stage === "waiting"));
+    await s.p.next(m => m.type === "state" && m.queue.length === 0 && m.routingQuestions.every((q: any) => q.turnId !== s.question.turnId || q.state !== "pending"));
     const day = s.rt.store.ensureGeneral("Europe/Vienna");
     s.p.send({type: "queue", id: "later", text: "A later Standard request", chat: {goal: day.goal.number, task: day.task.number}});
     await s.p.next(m => m.type === "state" && m.queue.some((q: any) => q.id === "later"));

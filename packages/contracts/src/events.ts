@@ -25,7 +25,8 @@ export interface EventPayloads {
    */
   turn_redone: { redo_turn_id: string };
   /** A main-conversation turn whose task was busy in a lane, handed to that lane. */
-  turn_moved_to_lane: { lane_id: string };
+  /** `reason`: the lane already worked this task (`busy_task`, the default), or the main conversation was busy and the turn was placed beside it (`parallel`). */
+  turn_moved_to_lane: { lane_id: string; reason?: "busy_task" | "parallel" };
   routing_completed: {
     outcome: "decision" | "clarify";
     decision: unknown;

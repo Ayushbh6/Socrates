@@ -87,7 +87,7 @@ describe("the live connection", () => {
     expect(await p.next((m) => m.type === "reset")).toMatchObject({ seq: expect.any(Number) });
   });
 
-  it("refuses main while it works, queues for it, and runs the queue as soon as main is free", async () => {
+  it("takes a message to main while it works and places it in a lane beside main; explicit Queue messages still wait for main", async () => {
     const hold = gate();
     const agent = new Responder("a", async (m) => {
       if (m === "Run the slow suite.") await hold.opened;
@@ -98,8 +98,14 @@ describe("the live connection", () => {
     p.send({ type: "send", id: "slow", text: "Run the slow suite.", to: "main" });
     await p.next((m) => m.type === "state" && m.busy);
 
+    // Sent to main while main works: accepted in main, routed to a free task, placed in a lane Socrates opens, answered while main still works.
     p.send({ type: "send", id: "early", text: "What is 2 + 2?", to: "main" });
-    expect(await p.next((m) => m.type === "error" && m.id === "early")).toMatchObject({ code: "main_busy" });
+    expect(await p.next((m) => m.type === "accepted" && m.id === "early")).toMatchObject({ conversation: "main" });
+    const placed = await p.next((m) => m.type === "handed_off" && m.id === "early");
+    expect(placed).toMatchObject({ conversation: expect.stringMatching(/^lane/), lane: 1, mainReleased: true, reason: "parallel" });
+    expect(await p.next((m) => m.type === "activity" && m.kind === "handed_off")).toMatchObject({ conversation: "main", lane: 1, laneId: placed.conversation });
+    expect(await p.next(isResult("early"))).toMatchObject({ conversation: placed.conversation, result: { text: "Done: What is 2 + 2?", notices: [expect.stringMatching(/^Lane 1 finished: /)] } });
+    expect((await p.next((m) => m.type === "state")).busy).toBe(true);
 
     p.send({ type: "queue", id: "q1", text: "What is 2 + 2?" });
     p.send({ type: "queue", id: "q2", text: "Draft a greeting." });
@@ -197,7 +203,7 @@ describe("the live connection", () => {
     const lane = (await p.next((m) => m.type === "accepted" && m.id === "lane")).conversation;
     await p.next((m) => m.type === "activity" && m.kind === "routed" && m.conversation === lane);
     p.send({ type: "send", id: "more", text: "Also rename the config.", to: "main" });
-    expect(await p.next((m) => m.type === "handed_off")).toEqual({ type: "handed_off", id: "more", conversation: lane, lane: 1, mainReleased: true });
+    expect(await p.next((m) => m.type === "handed_off")).toEqual({ type: "handed_off", id: "more", conversation: lane, lane: 1, mainReleased: true, reason: "busy_task" });
     expect(await p.next((m) => m.type === "activity" && m.kind === "handed_off")).toMatchObject({ conversation: "main", lane: 1 });
     p.send({ type: "send", id: "hi", text: "Hello.", to: "main" });
     expect((await p.next(isResult("hi"))).result.text).toBe("Done: Hello.");

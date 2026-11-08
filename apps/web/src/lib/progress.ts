@@ -25,6 +25,7 @@ const NOW: Record<ProgressStage, string> = {
   rechecking: "Checking the routing decision again…",
   escalating: "Taking a closer look at where this belongs…",
   waiting: "Waiting for the earlier message in this task…",
+  slot: "Waiting for a free lane…",
   preparing: "Preparing this task…",
   starting: "Starting work…",
 };
@@ -37,6 +38,7 @@ const DONE: Record<ProgressStage, string> = {
   rechecking: "Checked the routing decision again",
   escalating: "Took a closer look",
   waiting: "Waited for the earlier message",
+  slot: "Waited for a free lane",
   preparing: "Prepared this task",
   starting: "Started work",
 };

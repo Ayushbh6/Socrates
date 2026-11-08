@@ -480,7 +480,7 @@ it("retains main's reservation while a compound message still has main work", as
 });
 
 describe("the main conversation sees its lanes", () => {
-  it("<LANES> shows each lane's status, task, latest step, note and answer, in main only", async () => {
+  it("<LANES> shows each lane's status, task, latest step, note and answer, to main and to every other lane", async () => {
     const w = await world({ files: { "a.txt": "alpha\n" } });
     const reading = gate();
     const approving = gate();
@@ -521,8 +521,12 @@ describe("the main conversation sees its lanes", () => {
     ].join("\n"));
     expect(mainContext.indexOf("<LANES>")).toBeGreaterThan(mainContext.indexOf("# TASK"));
     expect(mainContext.indexOf("<LANES>")).toBeLessThan(mainContext.indexOf("# CURRENT_REQUEST"));
-    // A lane's own context does not list the lanes.
+    // A lane that ran alone saw no other strand; a lane that started beside a finished one saw it.
     expect(contextText(agent.requests.find((r) => messageOf(r) === "Note the plan.")!)).not.toContain("<LANES>");
+    const readContext = contextText(agent.requests.find((r) => messageOf(r) === "Read the file.")!);
+    expect(readContext).toContain("<LANES>");
+    expect(readContext).toContain(`lane 1 · finished at 10:00 · g2/t1 "Write notes"`);
+    expect(readContext).not.toContain("lane 2 ·");
     expect(notes.notice).toBe("Lane 1 finished: Write notes — Done with Note the plan.");
 
     reading.open();
@@ -693,4 +697,134 @@ it("uses live run state after restart, including while a recovered lane resumes"
   // Summary repair does not rewrite the exact history of the interrupted process.
   expect(w.store.requireTurn(stale.id).status).toBe("in_progress");
   await s.close();
+});
+
+describe("placing a message sent while main works (lane: \"auto\")", () => {
+  it("a message for a free task runs at once in a lane Socrates opens, both strands see each other, and main's stream keeps the turn", async () => {
+    const w = await world();
+    const slow = gate();
+    const router = new Responder("test:router", (m) => (m.startsWith("Start the docs") ? createGoal("Docs site", "Set up the docs site") : m === "Hello there." ? { text: decision({ decision: "resume_existing", goal_label: "general", workspace_confidence: null }) } : continueTask()));
+    const agent = new Responder("test:agent", async (m) => {
+      if (m === "Run the slow suite.") await slow.opened;
+      return final({ full_answer: `Done: ${m}` });
+    });
+    const s = socrates(w.store, router, agent);
+    const main = s.handle("Run the slow suite.");
+    await new Promise((done) => setTimeout(done, 10));
+    expect(s.busy).toBe(true);
+
+    const placements: unknown[] = [];
+    const stages: string[] = [];
+    const docs = await s.handle("Start the docs site.", { lane: "auto", onHandoff: (laneId, turnId, placement) => placements.push({ laneId, turnId, placement }), onProgress: (stage) => stages.push(stage) });
+    const laneId = s.lanes()[0]!.id;
+    // The result belongs to the main conversation the message was sent to; its part ran in the lane.
+    expect(docs).toMatchObject({ kind: "answered", text: "Done: Start the docs site.", laneId: null, notices: [expect.stringMatching(/^Lane 1 finished: Set up the docs site/)] });
+    const turn = docs.kind === "answered" ? docs.parts[0]!.turn : null;
+    expect(turn?.laneId).toBe(laneId);
+    expect(placements).toEqual([{ laneId, turnId: turn!.id, placement: { reason: "parallel", mainHeld: false } }]);
+    expect(stages).not.toContain("slot");
+    expect(w.store.listEvents({ type: "turn_moved_to_lane" }).map((e) => e.payload)).toEqual([{ lane_id: laneId, reason: "parallel" }]);
+    // Main kept working, and its current task is still its own.
+    expect(await settled(main)).toBe(false);
+    expect(s.busy).toBe(true);
+    expect(w.store.currentBinding()!.task.id).toBe(w.taskId);
+    // The lane's agent knew why it ran there, and saw the main conversation's running turn as a strand.
+    const context = contextText(agent.requests.find((r) => messageOf(r) === "Start the docs site.")!);
+    expect(context).toContain("lane: you are lane 1, working this task beside the main conversation. The user wrote this message in the main conversation; it runs here because the main conversation was busy with other work.");
+    const block = /<LANES>\n([\s\S]*?)\n<\/LANES>/.exec(context)![1]!;
+    expect(block).toContain("lane_ref: main");
+    expect(block).toContain(`summary: main conversation · working since 10:00 · g1/t1 "Fix the server" in goal "Project work"`);
+
+    slow.open();
+    expect(await main).toMatchObject({ kind: "answered", text: "Done: Run the slow suite.", laneId: null });
+    expect(s.busy).toBe(false);
+    // The docs exchange is part of main's stream for routing: the user asked it there.
+    await s.handle("Hello there.");
+    expect(contextText(router.requests.at(-1)!)).toContain("Start the docs site.");
+    expect(contextText(router.requests.at(-1)!)).toContain("Done: Start the docs site.");
+    await s.close();
+  });
+
+  it("a message for main's own task waits for main's turn, then runs in main without opening a lane", async () => {
+    const w = await world();
+    const slow = gate();
+    const router = new Responder("test:router", () => continueTask());
+    const agent = new Responder("test:agent", async (m) => {
+      if (m === "Run the slow suite.") await slow.opened;
+      return final({ full_answer: `Done: ${m}` });
+    });
+    const s = socrates(w.store, router, agent);
+    const main = s.handle("Run the slow suite.");
+    await new Promise((done) => setTimeout(done, 10));
+    const stages: string[] = [];
+    const more = s.handle("Also update the README.", { lane: "auto", onProgress: (stage) => stages.push(stage) });
+    await new Promise((done) => setTimeout(done, 20));
+    expect(await settled(more)).toBe(false);
+    expect(stages).toContain("waiting");
+    expect(w.store.listLanes()).toEqual([]);
+
+    slow.open();
+    await main;
+    const result = await more;
+    expect(result).toMatchObject({ kind: "answered", text: "Done: Also update the README.", laneId: null, notices: [] });
+    expect(result.kind === "answered" && result.parts[0]!.turn.laneId).toBeNull();
+    expect(w.store.listLanes()).toEqual([]);
+    expect(w.store.listEvents({ type: "turn_moved_to_lane" })).toHaveLength(0);
+    // It ran after main's turn, with that turn in its history.
+    expect(contextText(agent.requests.find((r) => messageOf(r) === "Also update the README.")!)).toContain("Run the slow suite.");
+    expect(s.busy).toBe(false);
+    await s.close();
+  });
+
+  it("a message whose task is busy in a lane is handed to that lane, as before", async () => {
+    const w = await world();
+    const hold = gate();
+    const router = new Responder("test:router", () => continueTask());
+    const agent = new Responder("test:agent", async (m) => {
+      if (m === "Refactor the server.") await hold.opened;
+      return final({ full_answer: `Done: ${m}` });
+    });
+    const s = socrates(w.store, router, agent);
+    const lane = s.handle("Refactor the server.", { lane: "new" });
+    await new Promise((done) => setTimeout(done, 10));
+    const laneId = s.lanes()[0]!.id;
+    const placements: unknown[] = [];
+    const handed = s.handle("Also update the README.", { lane: "auto", onHandoff: (id, _turn, placement) => placements.push({ id, placement }) });
+    await new Promise((done) => setTimeout(done, 10));
+    expect(placements).toEqual([{ id: laneId, placement: { reason: "busy_task", mainHeld: false } }]);
+    expect(s.busy).toBe(false);
+    hold.open();
+    await lane;
+    const result = await handed;
+    expect(result).toMatchObject({ kind: "answered", laneId: null, text: "Done: Also update the README." });
+    expect(result.kind === "answered" && result.parts[0]!.turn.laneId).toBe(laneId);
+    expect(w.store.listLanes()).toHaveLength(1);
+    await s.close();
+  });
+
+  it(`beyond ${MAX_RUNNING_LANES} running lanes a placed message waits for a free slot instead of being refused`, async () => {
+    const w = await world();
+    const hold = gate();
+    const router = new Responder("test:router", (m) => (m.startsWith("Main") ? continueTask() : createGoal(m.slice(0, 20), m.slice(0, 20))));
+    const agent = new Responder("test:agent", async (m) => {
+      if (m.startsWith("Lane") || m.startsWith("Main")) await hold.opened;
+      return final({ full_answer: `Done: ${m}` });
+    });
+    const s = socrates(w.store, router, agent);
+    const main = s.handle("Main work.");
+    const lanes = Array.from({ length: MAX_RUNNING_LANES }, (_, i) => s.handle(`Lane ${i + 1} work.`, { lane: "new" }));
+    await new Promise((done) => setTimeout(done, 20));
+    expect(s.lanes().filter((l) => l.running)).toHaveLength(MAX_RUNNING_LANES);
+    const stages: string[] = [];
+    const extra = s.handle("One more thing.", { lane: "auto", onProgress: (stage) => stages.push(stage) });
+    await new Promise((done) => setTimeout(done, 30));
+    expect(await settled(extra)).toBe(false);
+    expect(stages).toContain("slot");
+    expect(w.store.listLanes()).toHaveLength(MAX_RUNNING_LANES);
+
+    hold.open();
+    await Promise.all([main, ...lanes]);
+    expect(await extra).toMatchObject({ kind: "answered", text: "Done: One more thing." });
+    await s.close();
+  });
 });

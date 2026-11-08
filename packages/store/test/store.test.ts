@@ -548,7 +548,7 @@ describe("handoff history boundaries", () => {
     replay.close(); store.close();
   });
 
-  it("filters compound responses and bindings to the requested conversation", () => {
+  it("keeps a part handed to a lane in main's stream (the user asked it there), while the lane's stream shows only its own", () => {
     const { store } = openStore();
     const goal = store.createGoal({ title: "Shop" });
     const first = store.createTask(goal.id, { title: "One" });
@@ -561,9 +561,14 @@ describe("handoff history boundaries", () => {
     store.completeTurn(b.id, { responseEventId: store.recordResponse("LANE ANSWER").id });
     store.moveTurnToLane(b.id, lane.id);
     const main = [...store.recentExchanges()][0]!;
-    expect(main.response).toBe("MAIN ANSWER");
-    expect(main.bindings.map((b) => b.taskId)).toEqual([first.id]);
+    expect(main.response).toBe("MAIN ANSWER\n\nLANE ANSWER");
+    expect(main.bindings.map((b) => b.taskId)).toEqual([first.id, second.id]);
     expect([...store.recentExchanges([lane.id])][0]!.response).toBe("LANE ANSWER");
+    // A lane the user addressed directly is not part of main's stream.
+    const own = store.recordUserMessage("Lane only", lane.id);
+    const c = store.bindTurn({ userEventId: own.id, taskId: second.id, route: "test" });
+    store.completeTurn(c.id, { responseEventId: store.recordResponse("OWN ANSWER").id });
+    expect([...store.recentExchanges()].map((e) => e.response)).toEqual(["MAIN ANSWER\n\nLANE ANSWER"]);
     store.close();
   });
 });

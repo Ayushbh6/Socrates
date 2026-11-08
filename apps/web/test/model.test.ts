@@ -98,6 +98,15 @@ describe("the conversation model", () => {
     );
     expect(m.conversations.main![0]).toMatchObject({ state: "done", steps: [{ kind: "handed_off", lane: 1 }] });
     expect(m.conversations.lane_1!.map((e) => [e.message, e.state])).toEqual([["Write NOTES.md", "done"], ["Also add a line to the notes", "working"]]);
+    // The lane's copy of a message this page sent keeps its id, so the canvas can follow it there.
+    let placed = reduce(emptyModel(), { type: "sent", id: "c7", text: "Check my calendar", to: "main", at });
+    placed = run(placed,
+      act("main", { kind: "message", text: "Check my calendar" }),
+      act("main", { kind: "routed", turnId: "t12", projectTurn: 8, ...route, lane: null }),
+      act("lane_1", { kind: "lane", laneId: "lane_1", number: 1, state: "opened" }),
+      act("main", { kind: "handed_off", turnId: "t12", lane: 1, laneId: "lane_1", ...route }),
+    );
+    expect(placed.conversations.lane_1![0]).toMatchObject({ message: "Check my calendar", sendId: "c7", state: "working" });
   });
 
   it("keeps one exchange when a new lane's message is saved before the send is accepted", () => {
@@ -113,8 +122,8 @@ describe("the conversation model", () => {
     expect(m.conversations.lane_2![0]).toMatchObject({ sendId: "c5", answers: ["Created."], state: "working" });
   });
 
-  it("queues a message to main while main works, and sends everything else", () => {
-    expect(sendTarget("main", true)).toBe("queue");
+  it("sends every message, even to main while it works: Socrates places it (Queue stays an explicit choice)", () => {
+    expect(sendTarget("main", true)).toBe("send");
     expect(sendTarget("main", false)).toBe("send");
     expect(sendTarget("lane_1", true)).toBe("send");
   });

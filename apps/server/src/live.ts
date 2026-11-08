@@ -300,12 +300,7 @@ export class LiveHub {
         hasWords(command.text, undefined);
         const q = this.runtime.store.clarification(command.clarification);
         if (q.state !== "pending" || this.queue.some(item => item.replyTo === q.turnId)) throw new LiveError("clarification_resolved", "That routing question already has a reply.");
-        if (q.conversation === "main" && this.socrates().busy) {
-          if (this.queue.length >= QUEUE_MAX) throw new LiveError("queue_full", "The queue is full. Try again when a message finishes.");
-          this.acceptedIds.add(command.id);
-          this.queue.push({id: command.id, text: command.text, attachments: [], replyTo: q.turnId, conversation: q.conversation, schedule: this.schedule()});
-          return this.publishState();
-        }
+        // A reply while main works is placed like any message sent then (see `start`).
         return this.start(command.id, command.text, q.conversation, undefined, false, [], undefined, undefined, undefined, undefined, q.turnId);
       }
       case "cancel_question": {
@@ -465,7 +460,6 @@ export class LiveHub {
     this.draftsUnsent.delete(key);
   }
 
-  /** Start one message: in main (refused while main is busy; queue it instead), a new lane, or an open lane. */
   /** The stored images a message names; every one must exist. */
   private attachments(named: { id: string; name: string }[] | undefined): Attachment[] {
     return (named ?? []).map(({ id, name }) => {
@@ -496,7 +490,9 @@ export class LiveHub {
       const lane = this.runtime.store.getLane(to);
       if (!lane || lane.closedAt) throw new LiveError("lane_closed", "That lane is closed.");
     }
-    if (to === "main" && !chat && socrates.busy) throw new LiveError("main_busy", "Socrates is working in the main conversation; queue this message or send it in a lane.");
+    // Sent to main while main works: Socrates routes it and places it (agent-harness.md, "Lanes"): a free task runs now
+    // in a lane it opens, main's own task waits its turn, a task busy in a lane is handed to it. Nothing is refused.
+    const auto = to === "main" && !chat && socrates.busy;
     const running = socrates.lanes().filter((l) => l.running);
     if (to !== "main" && !running.some((l) => l.id === to) && running.length >= MAX_RUNNING_LANES) {
       throw new LiveError("lane_limit", `${MAX_RUNNING_LANES} lanes are already working; wait for one to finish or stop one.`);
@@ -514,7 +510,7 @@ export class LiveHub {
       ...(contextFromTask ? {contextFromTask} : {}),
       ...(attachments.length ? { attachments } : {}),
       approve: (request, origin) => this.ask(run, request, origin),
-      ...(to === "main" ? {} : { lane: to === "new_lane" ? "new" : to }),
+      ...(to === "main" ? (auto ? { lane: "auto" as const } : {}) : { lane: to === "new_lane" ? "new" : to }),
       ...(anchorDecisions?.length ? { anchorDecisions } : {}),
       // Standard bypasses routing and runs beside other chats; both modes roll over inside the same task.
       ...(target ? (keep ? { target, pinned: true } : { target, alongside: true }) : {}),
@@ -524,12 +520,7 @@ export class LiveHub {
         run.requestSeq = this.runtime.store.requestRoot(userEventId).seq;
         if (target || replyTo) run.seq = run.requestSeq;
       },
-      onProgress: (stage) => {
-        // Repeats (routing again after a search) are one stage; nothing here may fail the message.
-        if (run.progress.at(-1)?.stage === stage) return;
-        run.progress.push({ stage, at: this.runtime.store.clock.now().toISOString() });
-        try { this.broadcast(this.progressOf(run)); } catch (error) { this.runtime.log(`progress broadcast failed: ${String(error)}`); }
-      },
+      onProgress: (stage) => this.progress(run, stage),
       onBound: (turnId, taskId) => {
         run.tasks.add(taskId);
         schedule.bind();
@@ -540,12 +531,12 @@ export class LiveHub {
         run.conversation = laneId;
         this.broadcast({ type: "accepted", id, conversation: laneId });
       },
-      onHandoff: (laneId, turnId) => {
+      onHandoff: (laneId, turnId, placement) => {
         run.handedTurnId = turnId;
-        // Single-part handoffs free main. A compound message still owns it. A chat never held it.
-        if (run.chat || !socrates.busy) run.conversation = laneId;
+        // Single-part handoffs free main. A compound message still owns it. A chat, or a message placed while main was busy, never held it.
+        if (run.chat || !placement.mainHeld) run.conversation = laneId;
         if (run.conversation === laneId) schedule.handOff();
-        this.broadcast({ type: "handed_off", id, conversation: laneId, lane: this.runtime.store.requireLane(laneId).number, mainReleased: !socrates.busy });
+        this.broadcast({ type: "handed_off", id, conversation: laneId, lane: this.runtime.store.requireLane(laneId).number, mainReleased: !placement.mainHeld, reason: placement.reason });
         this.publishState();
         this.drain();
       },
@@ -616,6 +607,13 @@ export class LiveHub {
       handedOff: new Promise<void>((resolve) => { handOff = resolve; }), handOff };
   }
 
+  /** A message's stage before its first model step, live only. Repeats (routing again after a search) are one stage; nothing here may fail the message. */
+  private progress(run: Run, stage: ProgressStage): void {
+    if (run.progress.at(-1)?.stage === stage) return;
+    run.progress.push({ stage, at: this.runtime.store.clock.now().toISOString() });
+    try { this.broadcast(this.progressOf(run)); } catch (error) { this.runtime.log(`progress broadcast failed: ${String(error)}`); }
+  }
+
   /** Do not reserve the task ahead of an older message still in the host's queue or router. */
   private async beforeBind(run: Run, taskIds: string[], signal: AbortSignal): Promise<void> {
     for (const id of taskIds) run.tasks.add(id);
@@ -629,7 +627,11 @@ export class LiveHub {
     ].filter((s) => s.order < run.schedule.order);
     await abortable(Promise.all(earlier.map(async (s) => {
       await s.bound;
-      if (taskIds.some((id) => s.tasks.has(id))) await Promise.race([s.done, s.handedOff]);
+      if (taskIds.some((id) => s.tasks.has(id))) {
+        // The routing line says so: this message continues a task an earlier one is still working.
+        this.progress(run, "waiting");
+        await Promise.race([s.done, s.handedOff]);
+      }
     })), signal);
   }
 

@@ -166,9 +166,10 @@ export function promptHistoryRecord(record: HistoryRecord): string {
   return `## ${record.kind === "checkpoint" ? "CHECKPOINT" : "HANDOVER"}\n${record.kind === "handover" ? "handover_ref" : "checkpoint_ref"}: ${record.handle}\nsource_chat_ref: ${record.chatId}\ncovers_turn_refs: ${record.from}–${record.to}\nretrieve_refs: ${record.handle}\nmechanical: ${record.mechanical}\nsource: ${record.mechanical ? "mechanical fallback" : "generated summary; exact evidence takes precedence"}\n${record.kind === "checkpoint" ? "summary" : "content"}:\n${quoteEvidence(renderRecord(record))}`;
 }
 
-/** General has one chronological evidence window across daily tasks, never lane history. */
+/** General has one chronological evidence window across daily tasks: the main stream, including turns asked there that ran in a lane, never a lane's own history. */
 export function generalHistoryParts(store: LedgerStore, current: Turn, timeZone: string, previousBudget = 20_000, totalBudget = 30_000, asOf = store.clock.now()): { parts: TextPart[]; included: number[]; omitted: number; used: number; budget: number; dates: string[] } {
   const redone = store.redoneTurnIds();
+  const moved = store.movedTurnIds();
   const units: {at: number; text?: string; turn?: Turn; taskId?: string}[] = [];
   for (const task of store.listTasks(current.goalId!)) {
     const record = store.latestHistoryRecord(task.id), omission = store.pendingOmission(task.id);
@@ -176,7 +177,7 @@ export function generalHistoryParts(store: LedgerStore, current: Turn, timeZone:
     if (record) units.push({at: record.to, taskId: task.id, text: `task_ref: g${store.requireGoal(task.goalId).number}/t${task.number}\n${promptHistoryRecord(record)}`});
     if (omission) units.push({at: omission.to, text: omissionMarker(omission)});
     for (const t of store.turnsForTask(task.id)) {
-      if (t.projectTurn < current.projectTurn && store.requestRoot(t.userEventId).id !== store.requestRoot(current.userEventId).id && !t.laneId && t.status !== "in_progress" && t.projectTurn > boundary && (t.completedAt ?? t.createdAt) <= asOf.toISOString() && !redone.has(t.id)) units.push({at: t.projectTurn, turn: t});
+      if (t.projectTurn < current.projectTurn && store.requestRoot(t.userEventId).id !== store.requestRoot(current.userEventId).id && (!t.laneId || moved.has(t.id)) && t.status !== "in_progress" && t.projectTurn > boundary && (t.completedAt ?? t.createdAt) <= asOf.toISOString() && !redone.has(t.id)) units.push({at: t.projectTurn, turn: t});
     }
   }
   units.sort((a,b) => b.at-a.at);
